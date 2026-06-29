@@ -1,0 +1,50 @@
+name: events
+category: events
+description: >-
+  What's on in NYC — concerts, sports, festivals, free park events, pop-ups, and
+  watch parties — grounded in live sources (Ticketmaster + NYC Parks) and trusted
+  editorial event guides, with links back to every official page.
+keywords:
+  - events
+  - what's on
+  - what's happening
+  - this weekend
+  - tonight
+  - concert
+  - festival
+  - free things
+  - things to do
+  - pop-up
+seeds:
+  - https://www.nyctourism.com/events/
+  - https://www.nyc.gov/events
+allowlist:
+  - nyctourism.com
+  - nycgovparks.org
+  - timeout.com
+  - secretnyc.co
+  - nycforfree.co
+source_tiers:
+  authoritative:
+    - nyc.gov
+    - nycgovparks.org
+    - nyctourism.com
+    - cityofnewyork.us
+  editorial:
+    - timeout.com
+    - secretnyc.co
+    - nycforfree.co
+  community:
+    - eventbrite.com
+prompt: |
+  For "what's on" / events / festivals / "things to do this weekend" questions, call
+  whats_on_events first — it returns live, dated, linked events from Ticketmaster + NYC
+  Parks (future events only). Pass `keyword` (the topic), optional `classification`
+  (Music/Sports/Arts & Theatre) and `borough`. For curated guides, call index_search over
+  the indexed event pages and cite them. For the long tail, use web_search: results are
+  tagged by trust tier — state authoritative/editorial sources plainly, but prefix any
+  community-tagged (⚠️) result with "community-posted, confirm before you go." Never
+  recommend private-residence or "DM for address" gatherings, and never invent an event
+  that isn't grounded — if nothing comes back, say so and link the official source.
+tools: tools.py
+eval: eval.yaml

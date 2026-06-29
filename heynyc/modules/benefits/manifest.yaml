@@ -1,0 +1,47 @@
+name: benefits
+category: benefits
+description: >-
+  Find NYC benefit programs (SNAP/food stamps, Fair Fares, HEAP, SCRIE/DRIE rent
+  freeze, IDNYC, WIC, Cash Assistance, child care, and more): what they offer, who
+  may roughly qualify, and how to apply — grounded in the city's Benefits & Programs
+  dataset, with an "as of" date on every fact.
+keywords:
+  - benefits
+  - snap
+  - food stamps
+  - fair fares
+  - heap
+  - scrie
+  - drie
+  - rent freeze
+  - idnyc
+  - wic
+  - cash assistance
+  - child care
+  - help paying
+  - do i qualify
+  - what am i eligible for
+  - eligibility
+tools: tools.py
+eval: eval.yaml
+allowlist:
+  - access.nyc.gov
+  - nyc.gov
+prompt: |
+  For questions about affording essentials or NYC benefit programs (SNAP/food stamps,
+  Fair Fares, HEAP, SCRIE/DRIE rent freeze, IDNYC, WIC, Cash Assistance, child care,
+  "help paying for X", "what am I eligible for"), call
+  benefits_search(query=<the user's need in plain words>, category=<optional>).
+  Report ONLY the programs the tool returns and cite each {cite:Sn} with its apply link.
+  BROAD / "what am I eligible for" QUERIES: do NOT just ask the user to narrow it down — most
+  New Yorkers miss benefits because they don't know they exist. Call benefits_search to surface a
+  few common programs across major needs (food, rent/utilities, cash, child care, transit), present
+  them, and point the user to the official screener at access.nyc.gov to find what they personally
+  qualify for. You can also ask one quick follow-up, but lead with grounded programs + the screener.
+  ELIGIBILITY: the tool's eligibility text is general, grounded guidance with an "as of"
+  date — share it WITH that date and its caveats, but NEVER tell someone they definitely
+  do or do not qualify, even if they give you income or household numbers. For a
+  personalized determination, route them to the official screener at access.nyc.gov or 311.
+  Always state the "as of" date for thresholds/deadlines and defer to official/311 for
+  right-now certainty. If the tool returns no match or an error, say you don't have it and
+  point to access.nyc.gov / 311 — never invent a program, amount, or eligibility rule.

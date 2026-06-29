@@ -1,0 +1,37 @@
+name: cooling_centers
+category: health
+description: >-
+  Find cooling and heat-relief sites (misting stations, spray showers, and other
+  cooling features) across NYC during hot weather.
+keywords:
+  - cooling
+  - cooling center
+  - heat
+  - hot
+  - heat wave
+  - air conditioning
+  - ac
+  - misting
+  - spray shower
+  - beat the heat
+  - stay cool
+datasets:
+  - id: h2bn-gu9k
+    category: cooling_center
+    field_map:
+      name: propertyname
+      lat: y
+      lon: x
+      status: status
+      borough: borough
+    where: "status='Activated'"
+seeds:
+  - https://finder.nyc.gov/coolingcenters/
+allowlist:
+  - finder.nyc.gov
+prompt: |
+  For heat-relief / cooling questions, call nearest(category="cooling_center", near=<user's address>).
+  Report only the sites the tool returns (the dataset is already filtered to activated sites) and cite them.
+  These are outdoor heat-relief features (misting stations, spray showers). For staffed, air-conditioned
+  cooling centers during a declared heat emergency, also point the user to finder.nyc.gov/coolingcenters and 311.
+eval: eval.yaml

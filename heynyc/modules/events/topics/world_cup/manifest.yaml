@@ -1,0 +1,50 @@
+name: world_cup
+category: events
+description: >-
+  FIFA World Cup 2026 in the NYC/NJ area — official fan events, fan festivals, and
+  watch parties (final 2026-07-19 at MetLife). Seasonal: retire ~2 weeks after by
+  deleting this folder.
+keywords:
+  - world cup
+  - fifa
+  - soccer
+  - football
+  - match
+  - watch party
+  - fan zone
+  - fan festival
+  - fan fest
+ticketmaster_keyword: world cup
+seeds:
+  - https://www.nynjfwc26.com/fan-events
+  - https://www.nyctourism.com/worldcup26/
+  - https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/host-cities/new-york-new-jersey
+  - https://www.worldcup.nyc/
+allowlist:
+  - nynjfwc26.com
+  - worldcup.nyc
+  - fifa.com
+  - rockefellercenter.com
+  - brooklynbridgepark.org
+  - globalcitizen.org
+source_tiers:
+  authoritative:
+    - nynjfwc26.com
+    - nyctourism.com
+    - fifa.com
+    - rockefellercenter.com
+    - brooklynbridgepark.org
+    - globalcitizen.org
+  editorial:
+    - worldcup.nyc
+    - 6sqft.com
+    - cbsnews.com
+prompt: |
+  For World Cup 2026 questions, call whats_on_events with keyword "world cup" for live
+  watch parties / fan events from Ticketmaster, and call index_search to ground answers in
+  the official fan-event pages (these are the catalogued sources — prefer them over a raw
+  web_search). When using web_search, pass prefer=["nynjfwc26.com","worldcup.nyc"] to boost
+  the official sites. Always link to the official page, and note that some venues (Central
+  Park, Brooklyn Bridge Park) require a free ticket. Don't invent match results, scores, or
+  watch parties that aren't grounded.
+eval: eval.yaml
