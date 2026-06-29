@@ -1,0 +1,58 @@
+"""Environment-driven configuration. Secrets via env only — never hardcoded."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+PACKAGE_DIR = Path(__file__).resolve().parent.parent  # the `heynyc` package
+PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
+load_dotenv(PROJECT_ROOT / ".env")
+
+# LLM
+HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
+
+# Judge model — deliberately a DIFFERENT family than the agent to avoid
+# self-enhancement bias in LLM-as-judge (judges prefer their own outputs).
+# Falls back to the agent model if no alternate provider key is configured.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+HEYNYC_JUDGE_MODEL = os.getenv("HEYNYC_JUDGE_MODEL") or (
+    "openai/gpt-4o-mini" if OPENAI_API_KEY else HEYNYC_MODEL
+)
+
+# Paths
+HEYNYC_DATA_DIR = Path(os.getenv("HEYNYC_DATA_DIR") or (PROJECT_ROOT / ".data"))
+MODULES_DIR = PACKAGE_DIR / "modules"  # modules ship inside the package
+
+# External services
+SOCRATA_APP_TOKEN = os.getenv("SOCRATA_APP_TOKEN", "")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+TICKETMASTER_API_KEY = os.getenv("TICKETMASTER_API_KEY", "")  # Discovery API (events backbone)
+MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")  # forgiving fallback geocoder (intersections/POIs)
+GEOSEARCH_BASE = "https://geosearch.planninglabs.nyc/v2"
+MAPBOX_GEOCODE_BASE = "https://api.mapbox.com/geocoding/v5/mapbox.places"
+
+# Forgiving geocoder (intersections/POIs/fuzzy) — swappable provider via geopy.
+# NYC GeoSearch stays the authoritative address path; this is the fallback.
+# Prefer Mapbox when a token is present (free ≤100k/mo, NYC-biased, reliable);
+# otherwise fall back to the keyless public Nominatim (dev/demo-grade, slow).
+HEYNYC_GEOCODER = os.getenv("HEYNYC_GEOCODER") or ("mapbox" if MAPBOX_TOKEN else "nominatim")
+HEYNYC_USER_AGENT = os.getenv("HEYNYC_USER_AGENT", "heynyc/0.1 (civic assistant)")
+# Below this provider confidence, an intersection result is flagged low-confidence
+# so the agent clarifies (which borough?) instead of answering for the wrong place.
+HEYNYC_GEOCODE_MIN_CONFIDENCE = float(os.getenv("HEYNYC_GEOCODE_MIN_CONFIDENCE", "0.8"))
+SOCRATA_BASE = "https://data.cityofnewyork.us/resource"
+OSRM_BASE = os.getenv("HEYNYC_OSRM_BASE", "https://router.project-osrm.org")
+
+# NYC bounding box (W,S,E,N) to keep Mapbox results within the city.
+NYC_BBOX = "-74.2591,40.4774,-73.7004,40.9176"
+NYC_PROXIMITY = "-73.9857,40.7484"  # Midtown, biases POI matches toward NYC
+
+# Base domains every module may cite via web search; modules extend this.
+BASE_ALLOWLIST = [
+    "nyc.gov",
+    "nyctourism.com",
+    "cityofnewyork.us",
+    "mta.info",
+]
