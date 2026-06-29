@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Internal design docs — specs, plans, handoffs, dev notes. Kept local, not shipped.
+# (Public/contributor docs live as README.md per folder + CONTRIBUTING.md + CHANGELOG.md.)
+docs/
+
+# Data / build artifacts
+.data/
+.cache/
+*.lance
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Node / frontend (Phase 6)
+node_modules/
+.next/
+dist/
+
+# VSCode
+.vscode/

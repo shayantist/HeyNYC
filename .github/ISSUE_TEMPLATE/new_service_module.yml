@@ -1,0 +1,56 @@
+name: Propose a new service module
+description: Suggest a NYC service or topic HeyNYC should be able to help with. No coding required.
+title: "[module] <service name>"
+labels: ["module-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping HeyNYC cover more of NYC! Fill in what you can, and a maintainer
+        (or you) can turn this into a module. See [docs/MODULES.md](../blob/main/docs/MODULES.md).
+  - type: input
+    id: name
+    attributes:
+      label: Service / topic name
+      placeholder: e.g. Senior centers, SNAP food benefits, Free tax prep
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What should it help people do?
+      placeholder: One or two sentences on what the agent should help a New Yorker find or do.
+    validations:
+      required: true
+  - type: textarea
+    id: official_urls
+    attributes:
+      label: Official NYC page(s)
+      description: Links to the authoritative nyc.gov / official pages for this service.
+      placeholder: |
+        https://www.nyc.gov/...
+    validations:
+      required: true
+  - type: input
+    id: dataset
+    attributes:
+      label: NYC Open Data dataset (for "find nearest X" only)
+      description: Search https://data.cityofnewyork.us, then paste the dataset id from its URL.
+      placeholder: e.g. 3ptp-nu4r
+  - type: textarea
+    id: questions
+    attributes:
+      label: Example questions
+      description: 2–3 real questions a person might ask about this service.
+      placeholder: |
+        - Where's the nearest senior center to Flushing?
+        - What programs do senior centers offer?
+    validations:
+      required: true
+  - type: checkboxes
+    id: grounding
+    attributes:
+      label: Grounding
+      options:
+        - label: I understand HeyNYC must never invent facts; it should cite official sources or say it doesn't know.
+          required: true
