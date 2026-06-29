@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from heynyc.core.citations import CitationRegistry
+from heynyc.core.manifest import DatasetBinding, ServiceModule
+from heynyc.core.registry import Registry
+from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.geo import (
+    GeoPoint,
+    _distance_handler,
+    _looks_like_intersection,
+    _nearest_handler,
+    geocode,
+    haversine_m,
+    miles,
+    travel_distance,
+)
+
+
+def test_looks_like_intersection():
+    assert _looks_like_intersection("116 St and Broadway")
+    assert _looks_like_intersection("W 116 St & Broadway")
+    assert _looks_like_intersection("5 Ave / 42 St")
+    # No street numbers → treat as a place name, not an intersection
+    assert not _looks_like_intersection("Union Square")
+    assert not _looks_like_intersection("Fordham Road, the Bronx")
+
+FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough"}
+
+
+def test_haversine_known_distance():
+    # Columbia University ↔ Times Square ≈ 5.8 km
+    d = haversine_m(40.8075, -73.9626, 40.7580, -73.9855)
+    assert 5500 < d < 6200
+
+
+def test_miles():
+    assert round(miles(1609.344), 3) == 1.0
+
+
+def _geosearch_response(lat: float, lon: float, label: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"features": [{"geometry": {"coordinates": [lon, lat]}, "properties": {"label": label}}]},
+    )
+
+
+async def test_geocode_parses_lon_lat_order():
+    def handler(request):
+        return _geosearch_response(40.8075, -73.9626, "Columbia University, Manhattan")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await geocode("Columbia University", client=client)  # non-intersection → GeoSearch
+    await client.aclose()
+    assert point is not None
+    assert round(point.lat, 4) == 40.8075
+    assert round(point.lon, 4) == -73.9626
+    assert "Columbia" in point.label
+
+
+async def test_geocode_no_match_returns_none():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"features": []})))
+    # GeoSearch empty AND forgiving provider empty → None (inject to stay offline).
+    assert await geocode("nowhere", client=client, forgiving=_fake_forgiving(None)) is None
+    await client.aclose()
+
+
+def _fake_forgiving(point):
+    """Build an injectable forgiving-geocoder coroutine returning a fixed GeoPoint."""
+    async def fn(text):
+        return point
+    return fn
+
+
+async def test_high_confidence_match_not_flagged():
+    # A high-confidence NYC-biased match is trusted regardless of phrasing.
+    forg = _fake_forgiving(GeoPoint(40.8073, -73.9626, "Broadway & W 116 St, Manhattan",
+                                    confidence=0.95, match_type="mapbox"))
+    point = await geocode("116 St and Broadway", forgiving=forg)
+    assert point.match_type == "mapbox"
+    assert point.low_confidence is False
+
+
+async def test_low_confidence_match_flagged():
+    # A genuinely low provider confidence → flagged so the agent clarifies.
+    forg = _fake_forgiving(GeoPoint(40.749, -73.988, "Broadway, New York", confidence=0.5, match_type="mapbox"))
+    # Intersection routes to the forgiving provider first, so the injected stub is used (offline).
+    point = await geocode("broadway and 116", forgiving=forg)
+    assert point.low_confidence is True
+
+
+async def test_forgiving_fallback_when_geosearch_empty():
+    forg = _fake_forgiving(GeoPoint(40.75, -73.99, "Apollo Theater, Harlem", match_type="nominatim"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"features": []})  # GeoSearch whiffs on the POI
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await geocode("the Apollo Theater", client=client, forgiving=forg)
+    await client.aclose()
+    assert point.match_type == "nominatim"
+    assert "Apollo" in point.label
+
+
+async def test_low_confidence_origin_makes_nearest_clarify(monkeypatch):
+    # A low-confidence geocode must produce a clarify request, not (wrong) results.
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+    out = await _nearest_handler({"category": "cooling_center", "near": "Broadway and 116th"}, ctx)
+    await client.aclose()
+    assert "which borough" in out.lower()
+    assert "- " not in out  # no location list emitted
+
+
+def _registry_with_cooling() -> Registry:
+    module = ServiceModule(
+        name="cooling_centers",
+        category="health",
+        datasets=[DatasetBinding(id="h2bn-gu9k", category="cooling_center", field_map=FIELD_MAP, where="status='Activated'")],
+    )
+    return Registry([module])
+
+
+async def test_nearest_handler_ranks_and_cites():
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if "geosearch" in host:
+            return _geosearch_response(40.7500, -73.9900, "Origin, Manhattan")
+        if "cityofnewyork" in host:
+            return httpx.Response(
+                200,
+                json=[
+                    {"propertyname": "Far Site", "y": "40.8000", "x": "-73.9600", "status": "Activated", "borough": "Manhattan"},
+                    {"propertyname": "Close Site", "y": "40.7510", "x": "-73.9910", "status": "Activated", "borough": "Manhattan"},
+                    {"propertyname": "No Coords", "status": "Activated"},
+                ],
+            )
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+    out = await _nearest_handler({"category": "cooling_center", "near": "origin", "k": 2}, ctx)
+    await client.aclose()
+
+    # Closest first, bad-coords row skipped
+    lines = [l for l in out.splitlines() if l.startswith("- ")]
+    assert len(lines) == 2
+    assert "Close Site" in lines[0]
+    assert "Far Site" in lines[1]
+    # Citations registered as DATA, inline cite ids present
+    assert ctx.citations.mapping()["S1"]["kind"] == "DATA"
+    assert "{cite:S1}" in out
+    # Transparency: the resolved origin label is surfaced
+    assert "Resolved 'origin'" in out
+    # A deterministic Google Maps link is offered per place (navigation handoff)
+    assert "google.com/maps" in out
+
+
+async def test_nearest_handler_dedupes_repeated_sites():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "geosearch" in request.url.host:
+            return _geosearch_response(40.7500, -73.9900, "Origin")
+        return httpx.Response(
+            200,
+            json=[
+                {"propertyname": "Dup Park", "y": "40.7510", "x": "-73.9910", "status": "Activated", "borough": "Manhattan"},
+                {"propertyname": "Dup Park", "y": "40.7510", "x": "-73.9910", "status": "Activated", "borough": "Manhattan"},
+                {"propertyname": "Other Park", "y": "40.7600", "x": "-73.9800", "status": "Activated", "borough": "Manhattan"},
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+    out = await _nearest_handler({"category": "cooling_center", "near": "origin", "k": 3}, ctx)
+    await client.aclose()
+    site_lines = [l for l in out.splitlines() if l.startswith("- ")]
+    assert len(site_lines) == 2  # dup collapsed
+    assert sum("Dup Park" in l for l in site_lines) == 1
+
+
+async def test_nearest_handler_unknown_category():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+    out = await _nearest_handler({"category": "bus_depot", "near": "x"}, ctx)
+    await client.aclose()
+    assert "No dataset for category 'bus_depot'" in out
+    assert "cooling_center" in out
+
+
+async def test_travel_distance_osrm_then_fallback():
+    def ok(request):
+        return httpx.Response(200, json={"routes": [{"distance": 1609.344, "duration": 600}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(ok))
+    res = await travel_distance(GeoPoint(40.75, -73.99), GeoPoint(40.76, -73.98), client=client)
+    await client.aclose()
+    assert round(miles(res["meters"]), 2) == 1.0
+    assert res["minutes"] == 10.0
+    assert res["source"] == "osrm"
+
+    bad = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    res2 = await travel_distance(GeoPoint(40.75, -73.99), GeoPoint(40.76, -73.98), client=bad)
+    await bad.aclose()
+    assert res2["source"] == "haversine"
+    assert res2["minutes"] is None
+
+
+async def test_distance_handler_reports_route():
+    def handler(request: httpx.Request):
+        if "geosearch" in request.url.host:
+            return _geosearch_response(40.75, -73.99, "A")
+        return httpx.Response(200, json={"routes": [{"distance": 3218.69, "duration": 1200}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+    out = await _distance_handler({"origin": "A", "destination": "B"}, ctx)
+    await client.aclose()
+    assert "2.00 mi" in out
+    assert "20.0 min" in out
