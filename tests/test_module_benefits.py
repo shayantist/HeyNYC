@@ -8,6 +8,7 @@ from heynyc.core.citations import CitationRegistry
 from heynyc.core.index.embedder import HashEmbedder
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
+from heynyc.modules.benefits import screening, tools as btools
 
 # Deterministic, offline embedder (the project's test default) injected via ToolContext so the
 # benefits tool's hybrid retrieval never reaches for fastembed (which would download a model).
@@ -143,3 +144,57 @@ def test_benefits_eval_cases_load_and_flag_safety():
     definite = next(c for c in cases if c.id == "benefits_eligibility_definite")
     assert definite.safety_critical
     assert definite.invariants.get("must_abstain_or_redirect") is True
+
+
+# --- screen_eligibility (Module B) -----------------------------------------
+
+def _route_screen(req: httpx.Request) -> httpx.Response:
+    host, path = req.url.host, req.url.path
+    if "screeningapi" in host and path == "/authToken":
+        return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+    if "screeningapi" in host and path == "/eligibilityPrograms":
+        return httpx.Response(200, json={"type": "SUCCESS",
+            "eligiblePrograms": [{"code": "S2R007", "name": "SNAP"}]})
+    if "data.cityofnewyork.us" in host:  # kvhd-5fmu catalog
+        return httpx.Response(200, json=[{
+            ":id": "row-snap", "program_code": "S2R007", "program_name": "SNAP",
+            "plain_language_program_name": "Food stamps", "program_category": "Food",
+            "url_of_online_application": "https://access.nyc.gov/snap", "updated_at": "2026-03-01"}])
+    return httpx.Response(404)
+
+
+async def test_screen_eligibility_grounds_and_frames(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_route_screen))
+    reg = CitationRegistry()
+    ctx = ToolContext(citations=reg, registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {"household": {"livingRenting": True},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}]}, ctx)
+    await client.aclose()
+    assert "likely eligible" in out.lower()
+    assert "estimate" in out.lower() and "determination" in out.lower()
+    assert "SNAP" in out and "access.nyc.gov/snap" in out
+    assert "doesn't mean you're ineligible" in out.lower()
+    cites = reg.mapping()
+    # the verdict cite carries api_provenance; a detail cite is row-addressed
+    assert any(c["provenance"].get("endpoint", "").startswith("POST ") for c in cites.values())
+    assert any("/resource/kvhd-5fmu/row-snap.json" in c["url"] for c in cites.values())
+
+
+async def test_screen_eligibility_rejects_pii(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None)
+    out = await btools._screen_handler(
+        {"household": {}, "persons": [{"age": 30, "name": "Jane"}]}, ctx)
+    assert out.startswith("ERROR")
+
+
+def test_get_tools_gates_screener_on_creds(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))
+    assert {t.name for t in btools.get_tools()} == {"benefits_search"}
+    monkeypatch.setattr(config, "screening_creds", lambda: ("base", "u", "p"))
+    assert {t.name for t in btools.get_tools()} == {"benefits_search", "screen_eligibility"}

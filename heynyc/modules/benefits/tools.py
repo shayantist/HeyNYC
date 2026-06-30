@@ -14,9 +14,12 @@ from datetime import date
 
 import httpx
 
+from heynyc.core import config
+from heynyc.core.citations import api_provenance, data_provenance
 from heynyc.core.freshness import staleness_caveat
 from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.datasets import query_dataset
+from heynyc.core.tools.datasets import query_dataset, row_url
+from heynyc.modules.benefits import screening
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -182,8 +185,136 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     return header + "\n".join(blocks)
 
 
+_ESTIMATE = ("an estimate from NYC's official screener (ACCESS NYC), not a determination; "
+             "you'll need to apply to find out for sure")
+_ACCESS_NYC = "https://access.nyc.gov/eligibility/"
+
+
+async def _screen_handler(args: dict, ctx: ToolContext) -> str:
+    household = dict(args.get("household") or {})
+    persons = list(args.get("persons") or [])
+    interested = args.get("interested_programs") or None
+    base, user, pw = config.screening_creds()
+    if not (user and pw):
+        return ("ERROR: eligibility screening isn't configured. Use benefits_search and tell the "
+                f"user to check {OFFICIAL}.")
+    try:
+        screening.assert_pii_free(household, persons)
+    except ValueError as exc:
+        return f"ERROR: {exc} Collect only age, household type, and income — never names/DOB/address."
+
+    own = ctx.http is None
+    client = ctx.http or httpx.AsyncClient(timeout=30.0)
+    try:
+        token = await screening.get_token(client, base, user, pw)
+        try:
+            result = await screening.screen(client, base, token, household, persons, interested)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:            # token went stale → re-auth once
+                screening.clear_token(base)
+                token = await screening.get_token(client, base, user, pw)
+                result = await screening.screen(client, base, token, household, persons, interested)
+            elif exc.response.status_code == 504:          # screening timeout — NEVER a false negative
+                return ("ERROR: the screener is busy right now — don't tell the user they're ineligible; "
+                        "ask them to try again in a moment.")
+            else:
+                raise
+        if (result.get("type") or "").upper() == "FAILURE":
+            errs = "; ".join(e.get("message", "") for e in result.get("errors", []))
+            return f"ERROR: the screener rejected the inputs ({errs}). Re-ask for the missing field."
+        eligible = result.get("eligiblePrograms") or []
+        catalog = await query_dataset(DATASET_ID, limit=200, client=client)
+    except httpx.HTTPError:
+        return f"ERROR: couldn't reach the screener right now. Don't guess — point the user to {OFFICIAL}."
+    finally:
+        if own:
+            await client.aclose()
+
+    today = date.today().isoformat()
+    by_code: dict[str, dict] = {}
+    for row in catalog:
+        code = _clean(row.get("program_code"))
+        # prefer the English row if the dataset carries language variants
+        if code and (code not in by_code or _clean(row.get("language")).lower() == "english"):
+            by_code[code] = row
+
+    verdict = ctx.citations.register(
+        _ACCESS_NYC,
+        snippet=f"NYC Benefits Screening API — likely-eligible estimate ({len(eligible)} program(s))",
+        title="NYC Benefits Screening (ACCESS NYC)",
+        kind="DATA", valid_as_of=today,
+        provenance=api_provenance(
+            endpoint=f"POST {base}/eligibilityPrograms",
+            request_summary=screening.request_summary(household, persons),
+            response={"eligiblePrograms": eligible},
+            field_pointer="/eligiblePrograms", as_of=today),
+    )
+    if not eligible:
+        return ("Based on what you shared, the screener didn't return any likely-eligible programs "
+                f"{{cite:{verdict}}}. That is NOT a determination of ineligibility — encourage the user "
+                f"to apply or check {OFFICIAL}; more detail may surface more programs.")
+
+    lines = [f"Based on what you shared, you're likely eligible for these — {_ESTIMATE} {{cite:{verdict}}}:"]
+    for prog in eligible:
+        code, name = prog.get("code", ""), prog.get("name", "")
+        row = by_code.get(code)
+        if row:
+            rid = _clean(row.get(":id"))
+            cite = ctx.citations.register(
+                row_url(DATASET_ID, rid) if rid else SOURCE_URL,
+                snippet=f"{_clean(row.get('program_name')) or name} — likely eligible (program_code {code})",
+                title=_clean(row.get("program_name")) or name, kind="DATA", valid_as_of=_as_of(row),
+                provenance=data_provenance(row, record_id=rid, field_pointer="/"))
+            url = _apply_url(row)
+            lines.append(f"- {name} ({_clean(row.get('program_category'))}) {{cite:{cite}}}"
+                         + (f" — apply: {url}" if url else ""))
+        else:  # screenable but not in our catalog cache — fall back to the API's name, cite the verdict
+            lines.append(f"- {name} {{cite:{verdict}}}")
+    lines.append("A program not listed here doesn't mean you're ineligible. "
+                 "Want help applying to any of these?")
+    return "\n".join(lines)
+
+
+def screen_eligibility_tool() -> Tool:
+    return Tool(
+        name="screen_eligibility",
+        description=(
+            "Estimate which NYC benefit programs a household is LIKELY eligible for, via the city's "
+            "official Benefits Screening API (the ACCESS NYC rules engine). Pass a PII-FREE profile "
+            "gathered from the user: household flags + a list of persons (age + householdMemberType "
+            "required; optional income/flags). NEVER pass names, DOB, SSN, or address. Returns a "
+            "likely-eligible estimate (NOT a determination); a program's absence is never proof of "
+            "ineligibility."),
+        parameters={
+            "type": "object",
+            "properties": {
+                "household": {"type": "object", "description":
+                    "Household-level flags: livingRenting, livingRentalType (enum), livingOwner, "
+                    "livingShelter, cashOnHand (number). PII-free."},
+                "persons": {"type": "array", "description":
+                    "1-8 people; at least one householdMemberType='HeadOfHousehold'.",
+                    "items": {"type": "object", "properties": {
+                        "age": {"type": "integer"},
+                        "householdMemberType": {"type": "string"},
+                        "incomes": {"type": "array", "items": {"type": "object", "properties": {
+                            "amount": {"type": "string"}, "type": {"type": "string"},
+                            "frequency": {"type": "string"}}}},
+                        "student": {"type": "boolean"}, "pregnant": {"type": "boolean"},
+                        "disabled": {"type": "boolean"}, "veteran": {"type": "boolean"},
+                        "unemployed": {"type": "boolean"}},
+                        "required": ["age", "householdMemberType"]}},
+                "interested_programs": {"type": "array", "items": {"type": "string"},
+                    "description": "Optional program-code filter."},
+            },
+            "required": ["persons"],
+        },
+        handler=_screen_handler,
+        open_world=True,
+    )
+
+
 def get_tools() -> list[Tool]:
-    return [
+    tools = [
         Tool(
             name="benefits_search",
             description=(
@@ -217,3 +348,7 @@ def get_tools() -> list[Tool]:
             open_world=True,  # hits the live Socrata dataset
         )
     ]
+    _, user, pw = config.screening_creds()
+    if user and pw:  # the screener only appears when its API creds are configured
+        tools.append(screen_eligibility_tool())
+    return tools

@@ -76,3 +76,18 @@ CHANNEL_RATE_LIMIT = int(os.getenv("HEYNYC_CHANNEL_RATE_LIMIT", "20"))          
 CHANNEL_RATE_WINDOW_S = int(os.getenv("HEYNYC_CHANNEL_RATE_WINDOW_S", "60"))
 CHANNEL_MAX_CONCURRENCY = int(os.getenv("HEYNYC_CHANNEL_MAX_CONCURRENCY", "8"))
 CHANNEL_DEDUP_TTL_S = int(os.getenv("HEYNYC_CHANNEL_DEDUP_TTL_S", str(7 * 24 * 3600)))
+
+# --- NYC Benefits Screening API (Module B) ---
+SCREENING_ENV = os.getenv("SCREENING_ENV", "sandbox")  # sandbox | prod
+SCREENING_BASES = {
+    "sandbox": "https://sandbox.screeningapi.cityofnewyork.us",
+    "prod": "https://screeningapi.cityofnewyork.us",
+}
+
+
+def screening_creds() -> tuple[str, str, str]:
+    """(base_url, username, password) for the active SCREENING_ENV; empty strings if unset."""
+    env = SCREENING_ENV if SCREENING_ENV in SCREENING_BASES else "sandbox"
+    user = os.getenv(f"SCREENING_{env.upper()}_USERNAME", "")
+    pw = os.getenv(f"SCREENING_{env.upper()}_PASSWORD", "")
+    return SCREENING_BASES[env], user, pw
