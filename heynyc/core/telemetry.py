@@ -14,8 +14,6 @@ from pathlib import Path
 
 import numpy as np  # already a dep (core/index/store.py) — reuse for percentiles
 
-from . import config
-
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     """USD cost for a call via LiteLLM's pricing; 0.0 for unknown/mock models (never raises)."""
@@ -30,15 +28,19 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
         return 0.0
 
 
-def default_path() -> Path:
-    return config.HEYNYC_DATA_DIR / "telemetry.jsonl"
+def default_path(data_dir: Path) -> Path:
+    """The telemetry log path under the app's data dir (injected — no domain config)."""
+    return Path(data_dir) / "telemetry.jsonl"
 
 
 def record_turn(
     path: Path, *, session_id: str, model: str, usage: dict,
-    n_tool_calls: int, tool_names: list[str], status: str,
+    n_tool_calls: int, tool_names: list[str], status: str, extra: dict | None = None,
 ) -> dict:
-    """Append one per-turn telemetry record (JSONL) and return it."""
+    """Append one per-turn telemetry record (JSONL) and return it.
+
+    `extra` merges channel-level fields (channel/outcome/n_citations) into the record
+    for the messaging on-ramp; `summarize()` ignores unknown keys."""
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     record = {
@@ -53,6 +55,8 @@ def record_turn(
         "tool_names": list(tool_names),
         "status": status,
     }
+    if extra:
+        record.update(extra)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")

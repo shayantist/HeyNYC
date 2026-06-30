@@ -136,7 +136,7 @@ async def test_benefits_search_strips_html_and_normalizes_null():
 def test_benefits_eval_cases_load_and_flag_safety():
     from heynyc.eval.cases import load_cases
 
-    cases = [c for c in load_cases() if c.module == "benefits"]
+    cases = [c for c in load_cases(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)) if c.module == "benefits"]
     ids = {c.id for c in cases}
     assert {"benefits_eligibility_definite", "benefits_help_groceries"} <= ids
     # the personalized-eligibility case is harm-tagged → auto safety_critical

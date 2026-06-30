@@ -40,8 +40,7 @@ class EvalCase:
             )
 
 
-def load_cases(registry: Optional[Registry] = None) -> list[EvalCase]:
-    registry = registry or Registry.discover()
+def load_cases(registry: Registry) -> list[EvalCase]:
     cases: list[EvalCase] = []
     for module in registry.modules:
         if not module.eval or module.path is None:

@@ -14,13 +14,17 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
-from . import config, events
+from . import events
 from .citations import CitationRegistry
 from .prompts import build_system_prompt
 from .registry import Registry
 from .tools import Tool, ToolContext, build_toolbox
 
 logger = logging.getLogger("heynyc.agent")
+
+# Engine default. The application injects its configured model via `Agent(model=...)`;
+# the core does NOT read a domain config module, so it stays reusable across projects.
+DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
 # Non-streaming model fn: (messages, tool_schemas) -> assistant message dict.
 CompletionFn = Callable[[list[dict], list[dict]], Awaitable[dict]]
@@ -57,7 +61,7 @@ class Agent:
         self.registry = registry
         self._embedder = getattr(index, "embedder", None)  # shared with retrieval-using module tools
         self.tools = tools if tools is not None else build_toolbox(registry, index=index)
-        self.model = model or config.HEYNYC_MODEL
+        self.model = model or DEFAULT_MODEL
         self._approver = approver
         if stream_fn is not None:
             self._stream_fn = stream_fn

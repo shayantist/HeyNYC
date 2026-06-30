@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from heynyc.core import config
 from heynyc.core.registry import Registry
 
 
@@ -65,4 +66,4 @@ prompt: |
 
 @pytest.fixture
 def registry(modules_dir: Path) -> Registry:
-    return Registry.discover(modules_dir)
+    return Registry.discover(modules_dir, config.BASE_ALLOWLIST)

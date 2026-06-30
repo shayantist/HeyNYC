@@ -101,7 +101,7 @@ def _cmd_new_module(name: str) -> None:
 
 
 def _cmd_modules() -> None:
-    registry = Registry.discover()
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
     if not registry.modules:
         print("No modules found in heynyc/modules/.")
         return
@@ -116,7 +116,7 @@ async def _cmd_index_build() -> None:
     from heynyc.core.index import default_embedder, open_store
     from heynyc.core.index.corpus import build_index
 
-    registry = Registry.discover()
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
     config.HEYNYC_DATA_DIR.mkdir(parents=True, exist_ok=True)
     store = open_store(_INDEX_PATH)
     print(f"Building index for {len(registry.seeds())} seed URL(s)...")
@@ -137,8 +137,8 @@ def _cmd_index_search(query: str) -> None:
 async def _cmd_chat(question: str) -> None:
     from heynyc.core import telemetry
 
-    registry = Registry.discover()
-    agent = Agent(registry, index=_load_retriever(required=False))
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
     if result.citations:
@@ -146,7 +146,7 @@ async def _cmd_chat(question: str) -> None:
         for cid, c in result.citations.items():
             print(f"  [{cid}] {c['title'] or c['url']} — {c['url']}")
     telemetry.record_turn(
-        telemetry.default_path(), session_id="chat", model=agent.model,
+        telemetry.default_path(config.HEYNYC_DATA_DIR), session_id="chat", model=agent.model,
         usage=result.usage, n_tool_calls=len(result.tool_calls_made),
         tool_names=result.tool_calls_made, status=result.status,
     )
@@ -196,8 +196,8 @@ async def _cmd_repl() -> None:
     from rich.text import Text
 
     console = Console()
-    registry = Registry.discover()
-    agent = Agent(registry, index=_load_retriever(required=False))
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     convo = agent.conversation()
 
     console.print("[bold]HeyNYC[/] — ask about NYC services & events. [dim]Ctrl-C to exit.[/]\n")
@@ -257,7 +257,7 @@ async def _cmd_eval(use_judge: bool, repeat: int = 1, out: str | None = None, mo
     from heynyc.core.agent import Agent
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
 
-    registry = Registry.discover()
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
     retriever = _load_retriever(required=False)
     cases = load_cases(registry)
     if module:
@@ -269,14 +269,14 @@ async def _cmd_eval(use_judge: bool, repeat: int = 1, out: str | None = None, mo
     print(f"Running {len(cases)} eval case(s) across {len(registry.modules)} module(s)...")
 
     def factory():
-        return Agent(registry, index=retriever)
+        return Agent(registry, model=config.HEYNYC_MODEL, index=retriever)
 
     results = await run_all(factory, cases, reminders=_default_reminders())
     judge = None
     if use_judge:
-        from heynyc.eval.judges import llm_judge
+        from heynyc.eval.judges import make_llm_judge
 
-        judge = llm_judge
+        judge = make_llm_judge(config.HEYNYC_JUDGE_MODEL)
     report = await evaluate(results, judge=judge)
     print("\n" + report.render())
 
@@ -318,6 +318,10 @@ def main() -> None:
     ev.add_argument("--repeat", type=int, default=1, help="run the safety subset K times and report pass^K")
     ev.add_argument("--out", default=None, help="run directory to write traces + report into")
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
+    serve = sub.add_parser("serve", help="run the messaging webhook server (WhatsApp/SMS)")
+    serve.add_argument("--provider", default=None, help="meta | twilio | both (default: env WHATSAPP_PROVIDER)")
+    serve.add_argument("--host", default="0.0.0.0")
+    serve.add_argument("--port", type=int, default=8000)
 
     args = parser.parse_args()
     if args.command == "modules":
@@ -335,9 +339,15 @@ def main() -> None:
     elif args.command == "stats":
         from heynyc.core import telemetry
 
-        _render_stats(telemetry.default_path())
+        _render_stats(telemetry.default_path(config.HEYNYC_DATA_DIR))
     elif args.command == "eval":
         asyncio.run(_cmd_eval(use_judge=args.judge, repeat=args.repeat, out=args.out, module=args.module))
+    elif args.command == "serve":
+        import uvicorn
+
+        from heynyc.channels.app import create_app
+
+        uvicorn.run(create_app(provider=args.provider), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

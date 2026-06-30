@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from . import config
 from .manifest import DatasetBinding, ServiceModule
 
 # Trust-tier ordering for web_search ranking; higher = more trusted. (§10.4)
@@ -17,12 +16,14 @@ TIER_RANK = {"authoritative": 3, "editorial": 2, "community": 1}
 
 
 class Registry:
-    def __init__(self, modules: list[ServiceModule]):
+    def __init__(self, modules: list[ServiceModule], base_allowlist: Optional[list[str]] = None):
         self.modules = modules
+        self.base_allowlist = list(base_allowlist or [])
 
     @classmethod
-    def discover(cls, modules_dir: Optional[Path] = None) -> "Registry":
-        modules_dir = modules_dir or config.MODULES_DIR
+    def discover(cls, modules_dir: Path, base_allowlist: Optional[list[str]] = None) -> "Registry":
+        """Scan `modules_dir` for manifests. `modules_dir` + `base_allowlist` are injected by the
+        application — the engine reads no domain config module."""
         modules: list[ServiceModule] = []
         if modules_dir.exists():
             for child in sorted(modules_dir.iterdir()):
@@ -42,7 +43,7 @@ class Registry:
                             submodule = ServiceModule.from_manifest(sub_manifest)
                             submodule.parent = module.name
                             modules.append(submodule)
-        return cls(modules)
+        return cls(modules, base_allowlist=base_allowlist)
 
     def dataset_bindings(self) -> dict[str, DatasetBinding]:
         """category -> DatasetBinding. Later modules win on category collision."""
@@ -54,7 +55,7 @@ class Registry:
 
     def allowlist(self) -> list[str]:
         """Base allowlist plus every module's additions, deduped and sorted."""
-        domains = set(config.BASE_ALLOWLIST)
+        domains = set(self.base_allowlist)
         for module in self.modules:
             domains.update(module.allowlist)
         return sorted(domains)

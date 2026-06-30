@@ -37,13 +37,14 @@ Grade with JSON only: {{"grounded": true|false, "reason": "<one sentence>"}}.
 """
 
 
-async def _litellm_complete(prompt: str) -> str:
+DEFAULT_JUDGE_MODEL = "openai/gpt-4o-mini"  # engine default; the app injects via make_llm_judge()
+
+
+async def _litellm_complete(prompt: str, model: str) -> str:
     import litellm
 
-    from ..core import config
-
     resp = await litellm.acompletion(
-        model=config.HEYNYC_JUDGE_MODEL,
+        model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
@@ -56,10 +57,22 @@ def _format_citations(citations: dict) -> str:
     return "\n".join(f"{cid} → {c.get('url','')} → {c.get('snippet','')[:160]}" for cid, c in citations.items())
 
 
+def make_llm_judge(model: str = DEFAULT_JUDGE_MODEL):
+    """Build a judge callable bound to `model` (the app injects its configured judge model)."""
+    async def _judge(cr: CaseResult, complete_fn: Optional[JudgeComplete] = None) -> CheckResult:
+        return await _run_judge(cr, complete_fn, model)
+    return _judge
+
+
 async def llm_judge(cr: CaseResult, complete_fn: Optional[JudgeComplete] = None) -> CheckResult:
+    """Back-compat default judge (uses DEFAULT_JUDGE_MODEL)."""
+    return await _run_judge(cr, complete_fn, DEFAULT_JUDGE_MODEL)
+
+
+async def _run_judge(cr: CaseResult, complete_fn: Optional[JudgeComplete], model: str) -> CheckResult:
     if cr.error:
         return CheckResult("llm_grounded", passed=False, detail=f"agent error: {cr.error}")
-    complete = complete_fn or _litellm_complete
+    complete = complete_fn or (lambda p: _litellm_complete(p, model))
     prompt = _RUBRIC.format(
         query=cr.case.query,
         answer=cr.text or "(empty)",
