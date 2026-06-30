@@ -13,7 +13,10 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..core.citations import content_hash
 from .runner import CaseResult
+
+_DIST_TOL_MI = 0.05  # covers the answer's :.2f rounding + float noise
 
 # Coarse keyword fallback for the abstain/refusal signal — a known-brittle approximation
 # (false positives + false negatives) kept ONLY for unattended runs with no judge; it never
@@ -168,6 +171,39 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
     )
 
 
+def check_data_grounding(cr: CaseResult) -> Optional[CheckResult]:
+    """Deterministic floor for structured (DATA) citations: the cited row's snapshot is intact
+    (hash matches) and any value WE computed (distance) re-derives from that row. Re-derivation,
+    not the {cite:Sn} marker, is the evidence. (Answer-text claim matching is a deferred next
+    layer — Part C; the agent-judge reads the snapshot for the semantic call in the interim.)"""
+    failures: list[str] = []
+    checked = 0
+    for cid, c in cr.citations.items():
+        if c.get("kind") != "DATA":
+            continue
+        prov = c.get("provenance") or {}
+        snapshot = prov.get("snapshot")
+        if not snapshot:
+            continue
+        checked += 1
+        if content_hash(snapshot) != prov.get("content_hash"):
+            failures.append(f"{cid}: snapshot hash mismatch")
+        deriv = prov.get("derivation") or {}
+        if "distance_mi" in deriv:
+            # Lazy import: the distance verifier is geo-specific (a domain verifier), so the
+            # generic eval framework doesn't drag tools/geo (→ config) in at import time.
+            from ..core.tools.geo import haversine_m, miles
+
+            o, p = deriv.get("origin"), deriv.get("point")
+            recomputed = miles(haversine_m(o[0], o[1], p[0], p[1]))
+            if abs(recomputed - deriv["distance_mi"]) > _DIST_TOL_MI:
+                failures.append(f"{cid}: distance {deriv['distance_mi']:.3f} != recomputed {recomputed:.3f}")
+    if checked == 0:
+        return None
+    return CheckResult("data_grounding", passed=not failures,
+                       detail="" if not failures else "; ".join(failures))
+
+
 async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None) -> list[CheckResult]:
     if cr.error:
         return [CheckResult("run", passed=False, detail=f"agent error: {cr.error}")]
@@ -177,6 +213,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
         check_cite_kinds(cr),
         check_contains(cr),
         check_abstention(cr),
+        check_data_grounding(cr),
         await check_link_liveness(cr, link_checker),
     ]
     return [c for c in checks if c is not None]
