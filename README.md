@@ -49,6 +49,8 @@ uv run python -m heynyc repl             # interactive, streaming chat
 Other commands: `modules` (list), `new-module <name>` (scaffold), `chat "..."` (one-shot),
 `index-search "..."` (query the index), `eval` (run the no-hallucination gate).
 
+- **Messaging on-ramp (WhatsApp/SMS):** `uv run python -m heynyc serve` — text the agent from WhatsApp or SMS. Setup + design in the **[channels guide](heynyc/channels/README.md)**.
+
 ## Contributing
 
 On top of contributing to the code, one great way to contribute is adding service modules. See **[CONTRIBUTING.md](CONTRIBUTING.md)**

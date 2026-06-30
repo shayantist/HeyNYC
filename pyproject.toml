@@ -23,6 +23,13 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
 ]
+whatsapp = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pywa>=4.2",
+    "twilio>=9.0",
+    "python-multipart>=0.0.9",
+]
 
 [build-system]
 requires = ["hatchling"]
