@@ -223,3 +223,30 @@ async def test_distance_handler_reports_route():
     await client.aclose()
     assert "2.00 mi" in out
     assert "20.0 min" in out
+
+
+def test_place_citation_is_row_addressed_and_carries_recomputable_provenance():
+    from heynyc.core.citations import content_hash
+    from heynyc.core.tools.datasets import Place
+    from heynyc.core.tools.geo import _place_citation
+
+    reg = CitationRegistry()
+
+    class _Binding:
+        id = "h2bn-gu9k"
+
+    class _Ctx:
+        citations = reg
+
+    place = Place(name="Marconi Park", lat=40.74, lon=-73.88, status="Activated",
+                  borough="Queens", record_id="row-9", updated_at="2026-06-20",
+                  raw={":id": "row-9", "propertyname": "Marconi Park", "status": "Activated"})
+    cid = _place_citation(_Ctx(), place, _Binding(), origin_lat=40.75, origin_lon=-73.87, dist_mi=0.68)
+    c = reg.mapping()[cid]
+    assert c["kind"] == "DATA"
+    assert c["url"] == "https://data.cityofnewyork.us/resource/h2bn-gu9k/row-9.json"
+    assert c["valid_as_of"] == "2026-06-20"
+    prov = c["provenance"]
+    assert prov["record_id"] == "row-9"
+    assert prov["content_hash"] == content_hash(place.raw)
+    assert prov["derivation"] == {"origin": [40.75, -73.87], "point": [40.74, -73.88], "distance_mi": 0.68}

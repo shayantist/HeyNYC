@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from heynyc.core.tools.datasets import Place, dataset_url, normalize, query_dataset
+from heynyc.core.tools.datasets import Place, dataset_url, normalize, query_dataset, row_url
 
 FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough"}
 
@@ -69,3 +69,29 @@ async def test_query_dataset_no_token_header_when_blank():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     await query_dataset("abc-1234", client=client, app_token="")
     await client.aclose()
+
+
+def test_row_url_is_single_row_permalink():
+    assert row_url("h2bn-gu9k", "row-abc.123").endswith("/resource/h2bn-gu9k/row-abc.123.json")
+
+
+def test_normalize_captures_system_fields():
+    records = [{":id": "row-1", ":updated_at": "2026-06-20T00:00:00.000",
+                "propertyname": "Marconi Park", "y": "40.7", "x": "-73.8",
+                "status": "Activated", "borough": "Queens"}]
+    [place] = normalize(records, FIELD_MAP, source_url="https://x")
+    assert place.record_id == "row-1" and place.updated_at == "2026-06-20T00:00:00.000"
+    assert place.raw[":id"] == "row-1"
+
+
+async def test_query_dataset_requests_system_fields():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json=[])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await query_dataset("abc-1234", client=client)
+    await client.aclose()
+    assert seen["params"]["$$exclude_system_fields"] == "false"

@@ -5,9 +5,11 @@ import pytest
 from heynyc.core import config
 from heynyc.core.registry import Registry
 from heynyc.eval.cases import EvalCase, load_cases
+from heynyc.core.citations import content_hash
 from heynyc.eval.checks import (
     check_abstention,
     check_cite_kinds,
+    check_data_grounding,
     check_expected_tools,
     check_forbidden_tools,
     check_link_liveness,
@@ -350,3 +352,43 @@ async def test_nonblocking_semantic_checks_dont_fail_gate():
     failed = {c.name for c in report.reports[0].checks if not c.passed}
     assert "abstention" in failed          # the coarse check flagged it
     assert report.passed                   # ...but the gate still passes (non-blocking)
+
+
+# --- data grounding (Part C: row-addressed DATA citations) ----------------
+
+def _data_citation(distance_mi, snapshot=None, hash_override=None):
+    snap = snapshot if snapshot is not None else {":id": "row-9", "status": "Activated"}
+    return {
+        "url": "https://data.cityofnewyork.us/resource/h2bn-gu9k/row-9.json",
+        "kind": "DATA", "snippet": "Marconi Park",
+        "provenance": {
+            "record_id": "row-9", "field_pointer": "/",
+            "content_hash": hash_override or content_hash(snap), "snapshot": snap,
+            "derivation": {"origin": [40.75, -73.87], "point": [40.74, -73.88], "distance_mi": distance_mi},
+        },
+    }
+
+
+def _true_mi():
+    from heynyc.core.tools.geo import haversine_m, miles
+    return round(miles(haversine_m(40.75, -73.87, 40.74, -73.88)), 2)
+
+
+def test_data_grounding_passes_when_distance_recomputes():
+    res = check_data_grounding(_result(_case(), citations={"S1": _data_citation(_true_mi())}))
+    assert res.passed and res.blocking
+
+
+def test_data_grounding_fails_on_wrong_distance():
+    cr = _result(_case(), citations={"S1": _data_citation(5.0)})  # fabricated distance
+    assert not check_data_grounding(cr).passed
+
+
+def test_data_grounding_fails_on_tampered_snapshot():
+    cr = _result(_case(), citations={"S1": _data_citation(_true_mi(), hash_override="deadbeef")})
+    assert not check_data_grounding(cr).passed
+
+
+def test_data_grounding_ignores_non_data_citations():
+    cr = _result(_case(), citations={"S1": {"url": "https://nyc.gov", "kind": "DOC", "snippet": "x"}})
+    assert check_data_grounding(cr) is None

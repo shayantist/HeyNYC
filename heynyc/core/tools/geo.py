@@ -15,8 +15,9 @@ import httpx
 
 from .. import config
 from ..config import GEOSEARCH_BASE, OSRM_BASE
+from ..citations import data_provenance
 from .base import Tool, ToolContext
-from .datasets import dataset_url, normalize, query_dataset
+from .datasets import dataset_url, normalize, query_dataset, row_url
 
 _INTERSECTION_RE = re.compile(r"(?:\b(?:and|at)\b|&|/)", re.IGNORECASE)
 
@@ -201,6 +202,27 @@ async def _geocode_handler(args: dict, ctx: ToolContext) -> str:
     )
 
 
+def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float, dist_mi: float) -> str:
+    """Register a row-addressed DATA citation: permalink URL + the row snapshot, content hash,
+    field locator, and the distance derivation (so the eval floor can recompute it)."""
+    url = row_url(binding.id, place.record_id) if place.record_id else place.source_url
+    prov = data_provenance(
+        place.raw,
+        record_id=place.record_id,
+        field_pointer="/",  # whole-row; field-level pointer is a later refinement
+        derivation={"origin": [origin_lat, origin_lon], "point": [place.lat, place.lon],
+                    "distance_mi": dist_mi},
+    )
+    return ctx.citations.register(
+        url,
+        snippet=f"{place.name} — {place.borough} (status: {place.status})",
+        title=f"NYC Open Data ({binding.id})",
+        kind="DATA",
+        valid_as_of=place.updated_at,
+        provenance=prov,
+    )
+
+
 async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     category = args["category"]
     binding = ctx.registry.dataset_bindings().get(category)
@@ -238,12 +260,8 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     lines = [f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})", _resolution_note(args["near"], origin)]
     for place in ranked:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, place.lat, place.lon))
-        cite = ctx.citations.register(
-            url,
-            snippet=f"{place.name} — {place.borough} (status: {place.status})",
-            title=f"NYC Open Data ({binding.id})",
-            kind="DATA",
-        )
+        cite = _place_citation(ctx, place, binding,
+                               origin_lat=origin.lat, origin_lon=origin.lon, dist_mi=dist_mi)
         where = place.address or place.borough or "NYC"
         lines.append(
             f"- {place.name} ({where}) — {dist_mi:.2f} mi straight-line, "

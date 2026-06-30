@@ -23,11 +23,18 @@ class Place:
     status: str = ""
     borough: str = ""
     source_url: str = ""
+    record_id: str = ""   # Socrata `:id` — the per-row primary key (row-addressing)
+    updated_at: str = ""  # Socrata `:updated_at` — the row's "as of" / change signal
     raw: dict = field(default_factory=dict)
 
 
 def dataset_url(dataset_id: str) -> str:
     return f"{SOCRATA_BASE}/{dataset_id}.json"
+
+
+def row_url(dataset_id: str, row_id: str) -> str:
+    """Single-row permalink: /resource/{4x4}/{:id}.json (Socrata row identifier)."""
+    return f"{SOCRATA_BASE}/{dataset_id}/{row_id}.json"
 
 
 def _get(record: dict, field_map: dict, key: str, default: str = "") -> str:
@@ -56,6 +63,8 @@ def normalize(records: list[dict], field_map: dict, source_url: str = "") -> lis
                 status=str(_get(record, field_map, "status")),
                 borough=str(_get(record, field_map, "borough")),
                 source_url=source_url,
+                record_id=str(record.get(":id", "")),
+                updated_at=str(record.get(":updated_at", "")),
                 raw=record,
             )
         )
@@ -74,7 +83,9 @@ async def query_dataset(
     app_token: Optional[str] = None,
 ) -> list[dict]:
     """Run a SoQL query against a Socrata dataset and return raw records."""
-    params: dict = {"$limit": limit}
+    # `$$exclude_system_fields=false` returns the `:id` / `:updated_at` system fields so each
+    # row is addressable (row permalink) and carries its own "as of" date.
+    params: dict = {"$limit": limit, "$$exclude_system_fields": "false"}
     if where:
         params["$where"] = where
     if select:
