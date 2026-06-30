@@ -33,6 +33,8 @@ class ToolContext:
     registry: Registry
     http: Optional[Any] = None  # httpx.AsyncClient; None → tools create their own
     embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse it (None → default/Hash)
+    output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
+    drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

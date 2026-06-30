@@ -87,11 +87,14 @@ class Agent:
         history: Optional[list[dict]] = None,
         max_iters: int = 8,
         reminders: Optional[list[str]] = None,
+        output_dir=None,
+        drafts=None,
     ) -> AsyncIterator[events.Event]:
         """Run one turn, yielding events (text deltas, tool lifecycle, terminal done)."""
         messages = self._build_messages(user_message, history, reminders)
         citations = CitationRegistry()
-        ctx = ToolContext(citations=citations, registry=self.registry, embedder=self._embedder)
+        ctx = ToolContext(citations=citations, registry=self.registry, embedder=self._embedder,
+                          output_dir=output_dir, drafts=drafts)
         tools_made: list[str] = []
         turn_started = time.perf_counter()
         turn_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -172,10 +175,13 @@ class Agent:
         history: Optional[list[dict]] = None,
         max_iters: int = 8,
         reminders: Optional[list[str]] = None,
+        output_dir=None,
+        drafts=None,
     ) -> AgentResult:
         """Drain the event stream into a single AgentResult."""
         result: Optional[AgentResult] = None
-        async for event in self.stream(user_message, history=history, max_iters=max_iters, reminders=reminders):
+        async for event in self.stream(user_message, history=history, max_iters=max_iters,
+                                       reminders=reminders, output_dir=output_dir, drafts=drafts):
             if isinstance(event, events.Done):
                 result = event.result
         assert result is not None  # stream always ends with Done
@@ -286,16 +292,20 @@ class Conversation:
         self.agent = agent
         self.turns: list[dict] = []
 
-    async def send(self, user_message: str, max_iters: int = 8, reminders=None) -> AgentResult:
-        result = await self.agent.run(user_message, history=self.turns, max_iters=max_iters, reminders=reminders)
+    async def send(self, user_message: str, max_iters: int = 8, reminders=None,
+                   output_dir=None, drafts=None) -> AgentResult:
+        result = await self.agent.run(user_message, history=self.turns, max_iters=max_iters,
+                                      reminders=reminders, output_dir=output_dir, drafts=drafts)
         self.turns.append({"role": "user", "content": user_message})
         self.turns.append({"role": "assistant", "content": result.text})
         return result
 
-    async def stream(self, user_message: str, max_iters: int = 8, reminders=None):
+    async def stream(self, user_message: str, max_iters: int = 8, reminders=None,
+                     output_dir=None, drafts=None):
         """Stream a turn's events, then commit the turn to history."""
         final_text = ""
-        async for event in self.agent.stream(user_message, history=self.turns, max_iters=max_iters, reminders=reminders):
+        async for event in self.agent.stream(user_message, history=self.turns, max_iters=max_iters,
+                                             reminders=reminders, output_dir=output_dir, drafts=drafts):
             if isinstance(event, events.Done) and event.result is not None:
                 final_text = event.result.text
             yield event
