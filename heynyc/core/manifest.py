@@ -58,3 +58,8 @@ class ServiceModule(BaseModel):
         module = cls(**data)
         module.path = manifest_path.parent
         return module
+
+
+# Name alias for the shared engine-extraction contract (see the boundary spec): the generic
+# concept is "Module"; HeyNYC's concrete type is ServiceModule.
+Module = ServiceModule

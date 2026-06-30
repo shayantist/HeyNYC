@@ -10,8 +10,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime
+from pathlib import Path
 
-from heynyc.core import config, events
+from dotenv import load_dotenv
+
+# Load the app's .env HERE (config.py + the engine no longer auto-load it, so the core stays
+# reusable). Must run before importing config, which reads env at import time.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from heynyc.core import config, events  # noqa: E402
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
 

@@ -18,6 +18,16 @@ from .runner import CaseResult
 
 _DIST_TOL_MI = 0.05  # covers the answer's :.2f rounding + float noise
 
+# Domain verifiers register here; run_checks() invokes them after the generic checks, so a consumer
+# (e.g. Reach4Help) adds its own deterministic checks without editing the framework.
+_EXTRA_CHECKS: list = []
+
+
+def register_check(fn):
+    """Register a domain-specific deterministic check (cr -> Optional[CheckResult])."""
+    _EXTRA_CHECKS.append(fn)
+    return fn
+
 # Coarse keyword fallback for the abstain/refusal signal — a known-brittle approximation
 # (false positives + false negatives) kept ONLY for unattended runs with no judge; it never
 # blocks the gate. The authoritative semantic call is the agent-as-judge (2026-06-29 amendment §A).
@@ -171,6 +181,7 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
     )
 
 
+@register_check  # a domain verifier (geo-aware): registered, not hardcoded into run_checks()
 def check_data_grounding(cr: CaseResult) -> Optional[CheckResult]:
     """Deterministic floor for structured (DATA) citations: the cited row's snapshot is intact
     (hash matches) and any value WE computed (distance) re-derives from that row. Re-derivation,
@@ -213,7 +224,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
         check_cite_kinds(cr),
         check_contains(cr),
         check_abstention(cr),
-        check_data_grounding(cr),
         await check_link_liveness(cr, link_checker),
     ]
+    checks.extend(fn(cr) for fn in _EXTRA_CHECKS)  # domain verifiers (e.g. check_data_grounding)
     return [c for c in checks if c is not None]

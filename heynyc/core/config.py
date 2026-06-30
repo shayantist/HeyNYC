@@ -4,11 +4,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 PACKAGE_DIR = Path(__file__).resolve().parent.parent  # the `heynyc` package
 PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
-load_dotenv(PROJECT_ROOT / ".env")
+# NOTE: this module no longer loads .env on import — the app entrypoint (heynyc/__main__.py)
+# does, so the reusable engine never auto-reads a dotenv and tests stay hermetic.
 
 # LLM
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
@@ -56,3 +55,24 @@ BASE_ALLOWLIST = [
     "cityofnewyork.us",
     "mta.info",
 ]
+
+# --- Messaging on-ramp (channels). Secrets via env only. ---
+HEYNYC_PII_SALT = os.getenv("HEYNYC_PII_SALT", "")  # required when serving; pseudonymizes senders
+WHATSAPP_PROVIDER = os.getenv("WHATSAPP_PROVIDER", "meta")  # meta | twilio | both
+
+# Meta WhatsApp Cloud API
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")          # system-user Admin token (does not expire)
+WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
+
+# Twilio (WhatsApp sandbox / SMS)
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")  # e.g. whatsapp:+14155238886
+
+# Channel runtime knobs
+CHANNEL_RATE_LIMIT = int(os.getenv("HEYNYC_CHANNEL_RATE_LIMIT", "20"))          # msgs / window / user
+CHANNEL_RATE_WINDOW_S = int(os.getenv("HEYNYC_CHANNEL_RATE_WINDOW_S", "60"))
+CHANNEL_MAX_CONCURRENCY = int(os.getenv("HEYNYC_CHANNEL_MAX_CONCURRENCY", "8"))
+CHANNEL_DEDUP_TTL_S = int(os.getenv("HEYNYC_CHANNEL_DEDUP_TTL_S", str(7 * 24 * 3600)))
