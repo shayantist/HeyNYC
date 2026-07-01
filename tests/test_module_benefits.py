@@ -194,7 +194,93 @@ async def test_screen_eligibility_rejects_pii(monkeypatch):
 
 
 def test_get_tools_gates_screener_on_creds(monkeypatch):
+    monkeypatch.delenv("HEYNYC_FORMS", raising=False)
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))
     assert {t.name for t in btools.get_tools()} == {"benefits_search"}
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "u", "p"))
     assert {t.name for t in btools.get_tools()} == {"benefits_search", "screen_eligibility"}
+
+
+def test_get_tools_gates_forms_on_flag(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))
+    monkeypatch.delenv("HEYNYC_FORMS", raising=False)
+    assert "prepare_snap_application" not in {t.name for t in btools.get_tools()}
+    monkeypatch.setenv("HEYNYC_FORMS", "true")
+    assert "prepare_snap_application" in {t.name for t in btools.get_tools()}
+
+
+# --- prepare_snap_application (Task 5) — the paths that don't need reportlab -------------
+
+async def test_prepare_application_reviews_before_filling(tmp_path):
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
+                      output_dir=tmp_path)
+    out = await btools._prepare_application_handler({"slots": {       # confirmed omitted → false
+        "legal_name": "Ana Diaz", "residence_street": "1 Main St",
+        "residence_city": "Bronx", "residence_zip": "10453"}}, ctx)
+    assert out.startswith("REVIEW")
+    assert "penalty of perjury" in out               # the attestation is shown BEFORE any PDF
+    assert not list(tmp_path.glob("*.pdf"))          # nothing is produced until confirmed=true
+
+
+async def test_prepare_application_asks_when_required_missing(tmp_path):
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
+                      output_dir=tmp_path)
+    out = await btools._prepare_application_handler({"slots": {"legal_name": "Ana"}}, ctx)
+    assert out.startswith("NEED_MORE") and "Home street address" in out
+    assert not list(tmp_path.glob("*.pdf"))          # never fabricates the missing fields
+
+
+async def test_prepare_application_degrades_on_form_drift(tmp_path, monkeypatch):
+    from heynyc.modules.benefits import application as appmod
+    monkeypatch.setattr(appmod, "verify_template_integrity", lambda *a, **k: False)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
+                      output_dir=tmp_path)
+    out = await btools._prepare_application_handler({"slots": {
+        "legal_name": "Ana Diaz", "residence_street": "1 Main St",
+        "residence_city": "Bronx", "residence_zip": "10453"}, "confirmed": True}, ctx)
+    assert out.startswith("CANNOT_FILL") and "otda.ny.gov" in out    # degrade, never fill-wrong
+    assert not list(tmp_path.glob("*.pdf"))
+
+
+async def test_prepare_application_uses_persistent_draft_not_llm_memory(tmp_path):
+    # The point of the draft store: turn 2 the model passes ONLY the new fields (it "forgot" the
+    # name from turn 1), but the persisted structured draft retains it → all required present.
+    from heynyc.core.drafts import DraftStore
+    drafts = DraftStore(tmp_path).for_user("ukey")
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
+                      output_dir=tmp_path, drafts=drafts)
+    await btools._prepare_application_handler({"slots": {"legal_name": "Ana Diaz"}}, ctx)  # turn 1
+    out = await btools._prepare_application_handler({"slots": {                            # turn 2
+        "residence_street": "1 Main St", "residence_city": "Bronx", "residence_zip": "10453"}}, ctx)
+    assert out.startswith("REVIEW")                         # required complete via the merged draft
+    assert "Ana Diaz" in out                                # turn-1 name survived structurally
+    assert drafts.load("snap")["legal_name"] == "Ana Diaz"  # persisted, not reconstructed
+
+
+async def test_prepare_application_confirmed_writes_a_pdf(tmp_path, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
+                      output_dir=tmp_path)
+    out = await btools._prepare_application_handler({"slots": {
+        "legal_name": "Ana Diaz", "residence_street": "1 Main St",
+        "residence_city": "Bronx", "residence_zip": "10453",
+        "ssn": "078-05-1120"}, "confirmed": True}, ctx)
+    pdfs = list(tmp_path.glob("*.pdf"))
+    assert len(pdfs) == 1 and pdfs[0].read_bytes()[:4] == b"%PDF"
+    assert "attached" in out.lower()
+    # PII is never logged (it goes onto the local PDF only)
+    assert "078-05-1120" not in caplog.text and "Ana Diaz" not in caplog.text
+
+
+def test_application_eval_cases_present_and_flagged():
+    from heynyc.eval.cases import load_cases
+    cases = [c for c in load_cases(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST))
+             if c.module == "benefits"]
+    ids = {c.id for c in cases}
+    assert {"benefits_apply_no_fabrication", "benefits_apply_confirm_not_submit",
+            "benefits_apply_no_coaching"} <= ids
+    # the "coach me to qualify" case is harm-tagged → auto safety_critical
+    coaching = next(c for c in cases if c.id == "benefits_apply_no_coaching")
+    assert coaching.safety_critical
+    assert coaching.invariants.get("forbid_compliance") is True

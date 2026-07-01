@@ -9,8 +9,12 @@ asserts personalized eligibility; "do I qualify" defers to the official screener
 from __future__ import annotations
 
 import html
+import os
 import re
+import tempfile
+import uuid
 from datetime import date
+from pathlib import Path
 
 import httpx
 
@@ -19,6 +23,7 @@ from heynyc.core.citations import api_provenance, data_provenance
 from heynyc.core.freshness import staleness_caveat
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import query_dataset, row_url
+from heynyc.modules.benefits import application as appmod
 from heynyc.modules.benefits import screening
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -313,6 +318,85 @@ def screen_eligibility_tool() -> Tool:
     )
 
 
+def _forms_enabled() -> bool:
+    return os.getenv("HEYNYC_FORMS", "").lower() in ("1", "true", "yes")
+
+
+async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
+    """Prepare a draft LDSS-4826 from CONFIRMED, user-provided answers. Two steps:
+    confirmed=false → return the field-level review + two-tier attestation (no PDF produced);
+    confirmed=true → render the PDF and hand it back. Fills only provided slots, never invents,
+    never logs PII, and degrades if the official form has drifted (integrity guard)."""
+    raw = dict(args.get("slots") or {})
+    if getattr(ctx, "drafts", None) is not None:
+        raw = ctx.drafts.merge("snap", raw)   # accumulate into the persistent structured draft
+    confirmed = bool(args.get("confirmed"))
+    clean, missing, errors = appmod.validate_slots(raw)
+    if errors:
+        return "NEED_FIX: " + "; ".join(errors) + " — re-ask the user only for these; never guess."
+    if missing:
+        labels = ", ".join(s.label for s in appmod.SLOTS if s.key in missing)
+        return (f"NEED_MORE: still need {labels}. Ask the user for these in plain language — "
+                f"do not fill them in yourself.")
+    if not appmod.verify_template_integrity():
+        url = appmod.template_provenance().get("source_url", "otda.ny.gov")
+        return (f"CANNOT_FILL: the official form may have changed — don't auto-fill it. Send the "
+                f"user the blank form at {url} and offer to walk them through it instead.")
+    if not confirmed:                                  # the meaningful-attestation gate
+        return "REVIEW: " + appmod.review_request(clean)
+    try:
+        pdf = appmod.fill_application(clean)           # bytes; values never logged
+    except appmod.FormDriftError:
+        url = appmod.template_provenance().get("source_url", "otda.ny.gov")
+        return f"CANNOT_FILL: the form's layout changed — don't auto-fill. Blank form: {url}."
+    out_dir = Path(ctx.output_dir) if getattr(ctx, "output_dir", None) else Path(tempfile.mkdtemp())
+    out_path = out_dir / f"snap-ldss4826-{uuid.uuid4().hex[:8]}.pdf"
+    out_path.write_bytes(pdf)
+    # The PDF is delivered out-of-band by the channel from the request's artifacts dir; we do NOT
+    # put the filesystem path in the text the model sees (defense-in-depth against a path leak).
+    return appmod.application_summary(clean, missing) + "\n(Your filled draft is attached as a document.)"
+
+
+def prepare_application_tool() -> Tool:
+    props = {s.key: {"type": "string",
+                     "description": s.label + (" — read back for the user to re-confirm"
+                                               if s.high_stakes else "")}
+             for s in appmod.SLOTS}
+    return Tool(
+        name="prepare_snap_application",
+        description=(
+            "Prepare a DRAFT of the official NYS SNAP application (LDSS-4826) for the user to print, "
+            "sign, and mail THEMSELVES — it is never submitted for them and is not a determination. "
+            "You are a scribe: only transcribe answers the USER gave; never invent, infer, or coach a "
+            "value, and never decide eligibility. Two steps: (1) call with confirmed=false to get a "
+            "field-level review + the attestation, show it to the user, and have them re-confirm the "
+            "high-stakes fields (name, DOB, SSN, income) in their own words; (2) only AFTER they "
+            "confirm, call again with confirmed=true to get the draft. If the tool returns NEED_MORE / "
+            "NEED_FIX / CANNOT_FILL, follow it. Never promise approval."),
+        parameters={
+            "type": "object",
+            "properties": {
+                "slots": {
+                    "type": "object",
+                    "description": ("Answers the user gave, keyed by field name. PII only — never "
+                                    "logged or sent anywhere but the user's own draft."),
+                    "properties": props,
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": ("False (or omit) to get the review first; true ONLY after the "
+                                    "user has reviewed and confirmed their answers."),
+                },
+            },
+            "required": ["slots"],
+        },
+        handler=_prepare_application_handler,
+        read_only=False, idempotent=False,    # writes a file
+        requires_approval=True,                # side-effecting: produces a signable artifact
+        open_world=False,
+    )
+
+
 def get_tools() -> list[Tool]:
     tools = [
         Tool(
@@ -351,4 +435,6 @@ def get_tools() -> list[Tool]:
     _, user, pw = config.screening_creds()
     if user and pw:  # the screener only appears when its API creds are configured
         tools.append(screen_eligibility_tool())
+    if _forms_enabled():  # the form-fill scribe appears only when HEYNYC_FORMS is set
+        tools.append(prepare_application_tool())
     return tools

@@ -1,0 +1,11 @@
+# Provenance for the vendored LDSS-4826 template — the form analog of valid_as_of +
+# content_hash. The drift-guard re-hashes this template (offline, every run) and re-fetches
+# the live source (periodic job) against `sha256`; on mismatch we DEGRADE (hand over the
+# blank official form) rather than print onto a form that has changed under us.
+form: LDSS-4826
+revision: "Rev. 12/23"
+source_url: "https://otda.ny.gov/programs/applications/4826.pdf"
+sha256: "619e409c9286e6fd78791eaf9d6b7cd573708afcb59c46cc73d430015b0671a3"
+size_bytes: 594715
+num_pages: 12
+verified_on: "2026-06-30"

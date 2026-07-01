@@ -207,6 +207,14 @@ async def _cmd_repl() -> None:
     agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     convo = agent.conversation()
 
+    # Form-fill test surface: persist a structured draft + collect generated PDFs, so the REPL
+    # exercises the full pipeline. (Set HEYNYC_FORMS=true to expose the SNAP application tool.)
+    from heynyc.core.drafts import DraftStore
+
+    drafts = DraftStore(config.HEYNYC_DATA_DIR / "repl-drafts").for_user("repl-user")
+    artifacts_dir = config.HEYNYC_DATA_DIR / "repl-artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
     console.print("[bold]HeyNYC[/] — ask about NYC services & events. [dim]Ctrl-C to exit.[/]\n")
     modules = ", ".join(m.name for m in registry.modules)
     console.print(f"[dim]Modules loaded: {modules or 'none'}[/]\n")
@@ -238,9 +246,11 @@ async def _cmd_repl() -> None:
                 parts.append(Spinner("dots", text=Text(" thinking…", style="dim")))
             return Group(*parts)
 
+        before_pdfs = set(artifacts_dir.glob("*.pdf"))
         console.print("[bold cyan]heynyc ▸[/]")
         with Live(render(), console=console, refresh_per_second=12, vertical_overflow="visible") as live:
-            async for event in convo.stream(question, reminders=_default_reminders()):
+            async for event in convo.stream(question, reminders=_default_reminders(),
+                                             output_dir=artifacts_dir, drafts=drafts):
                 if isinstance(event, events.ToolStart):
                     _append_segment(segments, "tool", f"· using {event.name}…")
                 elif isinstance(event, events.TextDelta):
@@ -254,6 +264,8 @@ async def _cmd_repl() -> None:
             console.print("[dim]Sources:[/]")
             for cid, c in citations.items():
                 console.print(f"  [dim]\\[{cid}] {c['title'] or c['url']} — {c['url']}[/]")
+        for pdf in sorted(set(artifacts_dir.glob("*.pdf")) - before_pdfs):
+            console.print(f"[bold green]📄 saved your filled draft →[/] {pdf}")
         console.print()
 
 

@@ -1,0 +1,13 @@
+# Slot -> overlay position for the FLAT LDSS-4826 (Rev. 12/23). Anchored to the form's own
+# label text (not absolute coords) so it tolerates minor layout shifts and self-detects drift.
+# page: 0-based PDF page index (2 = the "Page 2" data page). anchor: the label word to find.
+# occurrence: nth match of that word in reading order (disambiguates duplicate labels).
+# dx/dy: offset (PDF points) from the anchor's right edge / baseline. The integrity hash + the
+# missing-anchor FormDriftError guard against the form changing under these coordinates.
+mode: overlay-anchor
+revision: "Rev. 12/23"
+fields:
+  legal_name:       { page: 2, anchor: "Name:",    occurrence: 0, dx: 6, dy: 0, size: 9 }
+  residence_street: { page: 2, anchor: "Address:", occurrence: 0, dx: 6, dy: 0, size: 9 }
+  residence_city:   { page: 2, anchor: "City",     occurrence: 0, dx: 6, dy: 0, size: 9 }
+  residence_zip:    { page: 2, anchor: "Code",     occurrence: 0, dx: 6, dy: 0, size: 9 }
