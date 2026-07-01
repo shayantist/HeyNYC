@@ -15,6 +15,9 @@ keywords:
   - free things
   - things to do
   - pop-up
+examples:
+  - "What's happening in NYC this weekend?"
+  - "Any free events tonight?"
 seeds:
   - https://www.nyctourism.com/events/
   - https://www.nyc.gov/events

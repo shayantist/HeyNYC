@@ -15,6 +15,9 @@ keywords:
   - spray shower
   - beat the heat
   - stay cool
+examples:
+  - "Where's the nearest cooling center?"
+  - "It's too hot — where can I cool off today?"
 datasets:
   - id: h2bn-gu9k
     category: cooling_center

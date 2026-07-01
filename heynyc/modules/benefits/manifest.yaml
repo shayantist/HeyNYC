@@ -22,6 +22,11 @@ keywords:
   - do i qualify
   - what am i eligible for
   - eligibility
+examples:
+  - "I'm struggling to afford groceries — what can I get?"
+  - "Am I eligible for SNAP?"
+  - "Help me apply for food stamps"
+  - "Are there NYC programs to help pay my rent?"
 tools: tools.py
 eval: eval.yaml
 allowlist:

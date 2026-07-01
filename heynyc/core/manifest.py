@@ -35,6 +35,7 @@ class ServiceModule(BaseModel):
     category: str = "general"
     description: str = ""
     keywords: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)  # user-facing example queries — the single source for capability discovery
     datasets: list[DatasetBinding] = Field(default_factory=list)
     seeds: list[str] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)

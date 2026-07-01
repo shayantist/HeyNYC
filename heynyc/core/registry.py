@@ -88,6 +88,43 @@ class Registry:
                 sections.append(f"## {module.name} ({module.category})\n{module.prompt.strip()}")
         return "\n\n".join(sections)
 
+    def welcome_examples(self, n: int = 4) -> list[str]:
+        """A small, category-spread sample of example queries (first-contact / ice-breakers).
+        One per module first (so the sample spans services), then fill from the extras."""
+        out: list[str] = []
+        for module in self.modules:
+            if module.examples:
+                out.append(module.examples[0])
+        for module in self.modules:
+            for example in module.examples[1:]:
+                if len(out) >= n:
+                    break
+                out.append(example)
+        return out[:n]
+
+    def capability_menu(self) -> list[tuple[str, str, list[str]]]:
+        """The grounded 'what can you do' for the welcome/help reply — one row per top-level
+        module: (category, blurb, examples). Submodules fold into their parent. Pure function of
+        installed modules → it can't drift from what's actually loaded."""
+        menu: list[tuple[str, str, list[str]]] = []
+        for module in self.modules:
+            if module.parent:                       # submodules don't get their own menu row
+                continue
+            if module.examples or module.description:
+                menu.append((module.category, module.description or module.name, list(module.examples)))
+        return menu
+
+    def welcome_text(self) -> str:
+        """A warm, grounded 'here's what I can do' for first contact / the help intent — generated
+        from the modules' examples, never a bare 'How can I help?'. Single source = the manifests,
+        so it can never drift from what's actually installed."""
+        lines = ["Hi! I'm HeyNYC — I help you find and use NYC services, grounded in real city data, "
+                 "and I cite my sources.", "", "Here are some things you can ask me:"]
+        for example in self.welcome_examples(6):
+            lines.append(f"  • {example}")
+        lines += ["", "Just tell me what you need — in any language."]
+        return "\n".join(lines)
+
     def load_module_tools(self) -> list:
         """Import each module's optional tools.py and collect its get_tools().
 

@@ -331,6 +331,7 @@ def main() -> None:
     chat = sub.add_parser("chat", help="ask the agent a question (one-shot)")
     chat.add_argument("question")
     sub.add_parser("repl", help="interactive streaming chat (feels like Claude Code)")
+    sub.add_parser("capabilities", help="print the grounded 'what can you do' menu (from module examples)")
     sub.add_parser("stats", help="show cost/usage telemetry from past chat turns")
     ev = sub.add_parser("eval", help="run the no-hallucination eval gate")
     ev.add_argument("--judge", action="store_true", help="also run the LLM groundedness judge (different model family)")
@@ -355,6 +356,8 @@ def main() -> None:
         asyncio.run(_cmd_chat(args.question))
     elif args.command == "repl":
         asyncio.run(_cmd_repl())
+    elif args.command == "capabilities":
+        print(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST).welcome_text())
     elif args.command == "stats":
         from heynyc.core import telemetry
 

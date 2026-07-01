@@ -14,6 +14,9 @@ keywords:
   - fan zone
   - fan festival
   - fan fest
+examples:
+  - "Where can I watch the World Cup in NYC?"
+  - "Any World Cup fan events near me?"
 ticketmaster_keyword: world cup
 seeds:
   - https://www.nynjfwc26.com/fan-events
