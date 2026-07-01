@@ -17,6 +17,9 @@ class MetaReplier:
     async def send_text(self, text: str) -> None:
         await self._wa.send_message(to=self._to, text=text, preview_url=True)
 
+    async def send_document(self, path: str, caption: str = "") -> None:
+        await self._wa.send_document(to=self._to, document=path, caption=caption)
+
     async def indicate_typing(self) -> None:
         await self._wa.indicate_typing(message_id=self._mid)   # also marks read
 

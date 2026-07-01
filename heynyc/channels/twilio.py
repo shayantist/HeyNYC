@@ -23,6 +23,18 @@ class TwilioReplier:
             self._client.messages.create, from_=self._from, to=self._to, body=text
         )
 
+    async def send_document(self, path: str, caption: str = "") -> None:
+        # Twilio fetches media by PUBLIC URL; a local file can't be attached directly. If we're
+        # given a hosted URL, send it as media; otherwise degrade to a text note (Meta is the
+        # document-capable channel — see the channels README).
+        if path.startswith(("http://", "https://")):
+            await asyncio.to_thread(
+                self._client.messages.create,
+                from_=self._from, to=self._to, body=caption or "", media_url=[path],
+            )
+        else:
+            await self.send_text(f"{caption or 'Your document is ready'} — I'll send a download link shortly.")
+
     async def indicate_typing(self) -> None:
         return  # Twilio has no typing indicator
 

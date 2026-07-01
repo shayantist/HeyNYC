@@ -6,10 +6,11 @@ import re
 
 WA_LIMIT = 4096
 _CITE = re.compile(r"\s*\{cite:S\d+\}")
+_ATTACH = re.compile(r"\s*\[attached:[^\]]*\]")   # delivered out-of-band; never shown in text
 
 
 def _strip_markers(text: str) -> str:
-    return _CITE.sub("", text or "").strip()
+    return _ATTACH.sub("", _CITE.sub("", text or "")).strip()
 
 
 def _sources_footer(citations: dict) -> str:

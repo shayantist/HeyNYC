@@ -29,6 +29,8 @@ def build_agent() -> Agent:
 
 
 def build_deps(agent: Agent) -> Deps:
+    from heynyc.core.drafts import DraftStore
+
     from .base import KeyedLocks
     from .store import ChannelStore
 
@@ -41,6 +43,7 @@ def build_deps(agent: Agent) -> Deps:
         agent=agent, store=store, sessions_dir=data / "sessions", salt=config.HEYNYC_PII_SALT,
         telemetry_path=telemetry.default_path(config.HEYNYC_DATA_DIR), feedback_path=data / "feedback.jsonl",
         locks=KeyedLocks(), semaphore=asyncio.Semaphore(config.CHANNEL_MAX_CONCURRENCY),
+        drafts=DraftStore(data / "drafts"),
     )
 
 

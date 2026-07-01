@@ -1,5 +1,5 @@
 """The channel-agnostic port: a normalized inbound message, a provider-specific
-replier, and the fire-and-forget dispatch seam (swap for arq+Redis later)."""
+replier, and the fire-and-forget dispatch seam (swap for a Celery/Dramatiq queue later)."""
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +27,7 @@ class InboundMessage:
 class Replier(Protocol):
     async def send_text(self, text: str) -> None: ...
     async def indicate_typing(self) -> None: ...      # no-op on channels without it
+    async def send_document(self, path: str, caption: str = "") -> None: ...  # e.g. a filled PDF
 
 
 async def _guard(coro) -> None:

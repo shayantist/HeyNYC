@@ -34,7 +34,7 @@ def _deps(tmp_path, **kw):
                 locks=KeyedLocks(), semaphore=asyncio.Semaphore(8))
 
 
-def _msg(text="hi", mid="m1"):
+def _msg(text="when do cooling centers open?", mid="m1"):
     return InboundMessage(channel="whatsapp_meta", sender="+1555", text=text, message_id=mid)
 
 
@@ -44,6 +44,14 @@ async def test_happy_path_replies_types_and_records(tmp_path):
     assert replier.typed == 1
     assert replier.sent and "{cite:" not in replier.sent[0]
     assert (tmp_path / "t.jsonl").exists()
+
+
+async def test_help_intent_returns_capability_menu_without_running_agent(tmp_path):
+    deps, replier = _deps(tmp_path), FakeReplier()
+    await handle(_msg(text="hi"), replier, deps)
+    assert replier.typed == 0                         # a greeting short-circuits — no agent run
+    assert replier.sent and "How can I help" not in replier.sent[0]
+    assert "•" in replier.sent[0]                     # the grounded, example-led capability menu
 
 
 async def test_duplicate_message_is_ignored(tmp_path):

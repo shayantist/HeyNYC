@@ -68,6 +68,6 @@ feed the agent-as-judge rubric later.
 ## v1 scope
 
 Built: WhatsApp (Meta + Twilio) + SMS-ready Twilio, dedup, rate-limit, per-user ordering, analytics,
-user flagging. Deferred (seams in place): inbound voice notes, outbound templates, an arq+Redis queue,
+user flagging. Deferred (seams in place): inbound voice notes, outbound templates, a Celery/Dramatiq queue,
 dashboards, the public-reply governance layer, and the web channel. See the spec:
 `docs/superpowers/specs/2026-06-29-multichannel-onramp-design.md`.
