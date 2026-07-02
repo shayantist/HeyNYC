@@ -1,0 +1,49 @@
+name: advisories
+category: alerts
+description: >-
+  Current NYC emergency advisories and alerts (extreme heat, air quality, closures,
+  boil-water, and more) from Notify NYC / NYC Emergency Management.
+keywords:
+  - advisory
+  - alert
+  - emergency
+  - heat warning
+  - air quality
+  - is it safe outside
+  - beach closure
+  - notify nyc
+  - boil water
+examples:
+  - "Are there any advisories right now?"
+  - "Is it safe to be outside today?"
+tools: tools.py
+eval: eval.yaml
+seeds:
+  - https://www.nyc.gov/notifynyc
+allowlist:
+  - nyc.gov
+  - everbridge.net
+prompt: |
+  For "are there any advisories/alerts right now", "is it safe outside today", a heat or
+  air-quality warning, "is <beach> open", or a boil-water question, call nyc_advisories.
+  Report ONLY the advisories the tool returns, cite each one {cite:Sn}, and ALWAYS state each
+  advisory's "in effect until <expires>" as-of. If the tool returns none, say plainly that there
+  are no active Notify NYC advisories right now — do NOT imply nothing at all is happening beyond
+  what this one feed covers.
+
+  TIE-INS (only when the matching advisory is actually active):
+    - HEAT advisory → also offer cooling centers via nearest(category="cooling_center",
+      near=<the user's address>), and mention that the city often extends public pool hours during
+      heat emergencies.
+    - AIR QUALITY advisory → pass along the sensitive-groups guidance from the advisory text
+      (e.g. people with asthma/heart conditions, older adults, and young children should limit
+      strenuous outdoor activity); don't invent thresholds the advisory doesn't state.
+    - CLOSURE / transport advisory → point the user to transit (mta.info / 511NY) for service status.
+
+  HONEST LIMITS — include these when relevant, and never paper over them:
+    - This is the public Notify NYC feed. It is not the whole picture of city conditions.
+    - Its geography is often citywide (all five boroughs) even for a locally-scoped event, so an
+      advisory listing every borough does not necessarily mean it affects a specific block.
+    - It can lag the SMS/email alerts by a few minutes.
+  NEVER invent an advisory, a severity, or an expiry. If nothing is active, don't manufacture one —
+  point the user to Notify NYC (nyc.gov/notifynyc) or 311 and offer to check again.
