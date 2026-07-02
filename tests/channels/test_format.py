@@ -30,7 +30,7 @@ def test_no_citations_no_footer():
 
 def test_splits_long_text_on_paragraph_boundaries_footer_last():
     para = "x" * 3000
-    r = FakeResult(f"{para}\n\n{para}", {"S1": {"url": "https://nyc.gov", "title": "T"}})
+    r = FakeResult(f"{para}\n\n{para} {{cite:S1}}", {"S1": {"url": "https://nyc.gov", "title": "T"}})
     out = render(r)
     assert len(out) >= 2
     assert all(len(c) <= WA_LIMIT for c in out)

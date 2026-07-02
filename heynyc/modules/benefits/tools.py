@@ -27,6 +27,7 @@ from heynyc.modules.benefits import application as appmod
 from heynyc.modules.benefits import screening
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
 
 
 def _clean(value) -> str:
@@ -45,6 +46,26 @@ def _clean(value) -> str:
         text = html.unescape(text)
         text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def _first_href(value) -> str:
+    """Pull the first real URL out of an HTML field. The dataset buries per-program deep links
+    inside <a href="..."> in prose fields (get_help_online, how_to_apply_summary, ...); _clean()
+    strips the markup, so we extract the href here — otherwise the real link is lost and the model
+    is tempted to invent one."""
+    if not value:
+        return ""
+    m = _HREF_RE.search(str(value))
+    if not m:
+        return ""
+    url = html.unescape(m.group(1)).strip()
+    if url.startswith(("mailto:", "tel:", "#")):
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    elif not url.startswith("http") and "." in url.split("/")[0]:
+        url = "https://" + url          # scheme-less domain like "nyc.gov/taxprep"
+    return url if url.startswith("http") else ""
 
 DATASET_ID = "kvhd-5fmu"
 FRESHNESS_DAYS = 365  # §12 staleness guard: benefits eligibility rules re-check annually
@@ -110,6 +131,26 @@ def _apply_url(record: dict) -> str:
     )
 
 
+_HELP_FIELDS = ("get_help_online", "get_help_summary", "how_to_apply_summary",
+                "how_to_apply_or_enroll_online")
+
+
+def _help_url(record: dict) -> str:
+    """A real 'learn more / get help' deep link for the program — the href buried in its help /
+    how-to-apply prose, or its office-locations map. Empty if the row carries none."""
+    for f in _HELP_FIELDS:
+        u = _first_href(record.get(f))
+        if u:
+            return u
+    return _clean(record.get("office_locations_url"))
+
+
+def _best_url(record: dict) -> str:
+    """The most specific REAL url for a program's citation: the apply url, else a help/how-to deep
+    link, else the dataset landing page as a last resort — never the model's invention."""
+    return _apply_url(record) or _help_url(record) or SOURCE_URL
+
+
 def _block(record: dict, cite: str, as_of: str, today: str) -> str:
     name = _clean(record.get("program_name"))
     parts = [f"- {name} ({_clean(record.get('program_category'))}) {{cite:{cite}}}"]
@@ -131,6 +172,10 @@ def _block(record: dict, cite: str, as_of: str, today: str) -> str:
     url = _apply_url(record)
     if url:
         parts.append(f"  Apply: {url}")
+    else:
+        help_url = _help_url(record)
+        if help_url:
+            parts.append(f"  Learn more / get help: {help_url}")
     parts.append(f"  As of: {as_of or 'unknown'}")
     caveat = staleness_caveat(as_of, today, FRESHNESS_DAYS)
     if caveat:
@@ -174,7 +219,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         as_of = _as_of(record)
         name = _clean(record.get("program_name"))
         cite = ctx.citations.register(
-            _apply_url(record) or SOURCE_URL,
+            _best_url(record),
             snippet=f"{name} — {_clean(record.get('plain_language_program_name'))}",
             title=name or "NYC benefit program",
             kind="DATA",

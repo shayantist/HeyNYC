@@ -148,9 +148,11 @@ async def _cmd_chat(question: str) -> None:
     agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
-    if result.citations:
+    from heynyc.core.citations import used_citations
+    used = used_citations(result.text, result.citations)
+    if used:
         print("\nSources:")
-        for cid, c in result.citations.items():
+        for cid, c in used.items():
             print(f"  [{cid}] {c['title'] or c['url']} — {c['url']}")
     telemetry.record_turn(
         telemetry.default_path(config.HEYNYC_DATA_DIR), session_id="chat", model=agent.model,
@@ -260,9 +262,12 @@ async def _cmd_repl() -> None:
                     done = True
                 live.update(render())
 
-        if citations:
+        from heynyc.core.citations import used_citations
+        answer_text = "".join(s["text"] for s in segments if s["kind"] == "text")
+        used = used_citations(answer_text, citations)
+        if used:
             console.print("[dim]Sources:[/]")
-            for cid, c in citations.items():
+            for cid, c in used.items():
                 console.print(f"  [dim]\\[{cid}] {c['title'] or c['url']} — {c['url']}[/]")
         for pdf in sorted(set(artifacts_dir.glob("*.pdf")) - before_pdfs):
             console.print(f"[bold green]📄 saved your filled draft →[/] {pdf}")

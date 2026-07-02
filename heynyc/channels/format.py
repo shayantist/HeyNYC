@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from heynyc.core.citations import used_citations
+
 WA_LIMIT = 4096
 _CITE = re.compile(r"\s*\{cite:S\d+\}")
 _ATTACH = re.compile(r"\s*\[attached:[^\]]*\]")   # delivered out-of-band; never shown in text
@@ -48,7 +50,7 @@ def _split(text: str, limit: int) -> list[str]:
 
 def render(result) -> list[str]:
     body = _strip_markers(result.text)
-    footer = _sources_footer(result.citations)
+    footer = _sources_footer(used_citations(result.text, result.citations))
     if not footer:
         return _split(body, WA_LIMIT) or [""]
     # Reserve room for the footer on the last chunk.

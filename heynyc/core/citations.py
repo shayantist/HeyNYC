@@ -8,10 +8,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 CiteKind = Literal["DATA", "DOC", "WEB"]
+
+
+_USED_RE = re.compile(r"\{cite:(S\d+)\}")
+
+
+def used_citations(text: str, citations: dict) -> dict:
+    """Only the citations the answer actually references via {cite:Sn}. A tool may register more
+    sources than the answer ends up citing (a broad web_search, a tangential lookup); the Sources
+    footer must show only what backs the answer, never an unused source (e.g. a World Cup link under
+    a SNAP answer)."""
+    used = set(_USED_RE.findall(text or ""))
+    return {cid: c for cid, c in citations.items() if cid in used}
 
 
 def content_hash(snapshot: dict) -> str:
