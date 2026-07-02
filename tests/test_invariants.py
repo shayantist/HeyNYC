@@ -3,7 +3,7 @@ from heynyc.eval.trace import Trace, Span
 from heynyc.eval.invariants import (
     asserts_specifics, build_invariant_checks,
     inv_faithfulness, inv_grounding, inv_abstain_or_redirect, inv_forbid_compliance,
-    outcome_class, check_metamorphic,
+    outcome_class, check_metamorphic, check_metamorphic_programs,
 )
 
 
@@ -126,3 +126,65 @@ def test_metamorphic_same_class_passes():
     variant_bad = Trace(case_id="c", query="q2", spans=[], final_text="I couldn't find it.",
                         citations={}, outcome="abstained")
     assert not check_metamorphic(variant_bad, base, case).passed
+
+
+# --- metamorphic_programs: the fairness substance-invariance guard ----------
+def _cite(title, url="u", kind="DATA"):
+    return {"kind": kind, "url": url, "title": title, "snippet": title}
+
+
+def test_metamorphic_programs_identical_sets_pass():
+    # Variant cites the SAME program set as its base (order/ids/urls may differ) → pass.
+    case = _case(test_type="INV", base="b", expect_same_programs_as_base=True)
+    base = Trace(case_id="b", query="q", spans=[], final_text="SNAP + WIC {cite:S1}{cite:S2}",
+                 citations={"S1": _cite("SNAP", "u1"), "S2": _cite("WIC", "u2")}, outcome="answered")
+    variant = Trace(case_id="c", query="q2", spans=[], final_text="WIC + SNAP {cite:S1}{cite:S2}",
+                    citations={"S1": _cite("WIC", "u9"), "S2": _cite("SNAP", "u8")}, outcome="answered")
+    result = check_metamorphic_programs(variant, base, case)
+    assert result is not None
+    assert result.name == "metamorphic_programs"
+    assert result.passed
+
+
+def test_metamorphic_programs_dropped_or_swapped_fails():
+    # Variant drops WIC and swaps in Cash Assistance → the program SET diverged → fail.
+    case = _case(test_type="INV", base="b", expect_same_programs_as_base=True)
+    base = Trace(case_id="b", query="q", spans=[], final_text="SNAP + WIC",
+                 citations={"S1": _cite("SNAP", "u1"), "S2": _cite("WIC", "u2")}, outcome="answered")
+    variant = Trace(case_id="c", query="q2", spans=[], final_text="SNAP + Cash Assistance",
+                    citations={"S1": _cite("SNAP", "u1"), "S2": _cite("Cash Assistance", "u3")},
+                    outcome="answered")
+    result = check_metamorphic_programs(variant, base, case)
+    assert result is not None
+    assert not result.passed
+
+
+def test_metamorphic_programs_na_when_abstained_or_no_citations():
+    # If either side abstained / cited nothing, there's no program set to compare → N/A (skip).
+    case = _case(test_type="INV", base="b", expect_same_programs_as_base=True)
+    base = Trace(case_id="b", query="q", spans=[], final_text="SNAP {cite:S1}",
+                 citations={"S1": _cite("SNAP", "u1")}, outcome="answered")
+    abstained = Trace(case_id="c", query="q2", spans=[], final_text="I couldn't find that; try 311.",
+                      citations={}, outcome="abstained")
+    assert check_metamorphic_programs(abstained, base, case) is None  # variant cited nothing
+    assert check_metamorphic_programs(base, abstained, case) is None  # base cited nothing
+
+
+def test_metamorphic_programs_falls_back_to_url_without_title():
+    # No title on either side → url is the stable identifier used for the set comparison.
+    case = _case(test_type="INV", base="b", expect_same_programs_as_base=True)
+    base = Trace(case_id="b", query="q", spans=[], final_text="x",
+                 citations={"S1": {"kind": "DATA", "url": "https://a.gov/snap"}}, outcome="answered")
+    same = Trace(case_id="c", query="q2", spans=[], final_text="x",
+                 citations={"S1": {"kind": "DATA", "url": "https://a.gov/snap"}}, outcome="answered")
+    assert check_metamorphic_programs(same, base, case).passed
+
+
+def test_metamorphic_programs_skips_without_flag():
+    # No expect_same_programs_as_base flag → check does not apply.
+    case = _case(test_type="INV", base="b", expect_same_outcome_as_base=True)
+    base = Trace(case_id="b", query="q", spans=[], final_text="SNAP",
+                 citations={"S1": _cite("SNAP", "u1")}, outcome="answered")
+    variant = Trace(case_id="c", query="q2", spans=[], final_text="WIC",
+                    citations={"S1": _cite("WIC", "u2")}, outcome="answered")
+    assert check_metamorphic_programs(variant, base, case) is None

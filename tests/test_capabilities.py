@@ -36,6 +36,13 @@ def test_welcome_text_leads_with_examples_never_how_can_i_help():
     assert "SNAP" in text or "groceries" in text  # real, groundable capabilities
 
 
+def test_welcome_text_discloses_it_is_an_ai_not_a_city_employee():
+    # EU AI Act Art 50 + NYC GenAI transparency: first contact must disclose it's an AI, not staff.
+    low = _reg().welcome_text().lower()
+    assert "ai assistant" in low
+    assert "not a city employee" in low
+
+
 def test_is_help_detects_greetings_but_not_real_questions():
     from heynyc.channels.orchestrator import is_help
     assert is_help("hi") and is_help("Help!") and is_help("what can you do?")

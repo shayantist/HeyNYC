@@ -256,6 +256,31 @@ async def test_evaluate_runs_invariants_and_writes_run(tmp_path):
     assert data["total"] == 1
 
 
+async def test_evaluate_surfaces_metamorphic_programs_for_inv_pair(tmp_path):
+    # Report wiring: an INV case flagged expect_same_programs_as_base gets a `metamorphic_programs`
+    # check paired against its base's trace. Program set matches here → the check passes and is named.
+    base = _case(id="fb", capability="fairness")
+    variant = _case(id="fb__inv", capability="fairness", test_type="INV", base="fb",
+                    perturbation="protected_name", expect_same_programs_as_base=True)
+    base_cites = {"S1": {"kind": "DATA", "url": "u1", "title": "SNAP", "snippet": "SNAP"},
+                  "S2": {"kind": "DATA", "url": "u2", "title": "WIC", "snippet": "WIC"}}
+    # Variant surfaces the same two programs (different ids/urls is fine — title is the identifier).
+    var_cites = {"S1": {"kind": "DATA", "url": "u9", "title": "WIC", "snippet": "WIC"},
+                 "S2": {"kind": "DATA", "url": "u8", "title": "SNAP", "snippet": "SNAP"}}
+    base_cr = _result(base, text="SNAP and WIC {cite:S1}{cite:S2}", citations=base_cites)
+    var_cr = _result(variant, text="WIC y SNAP {cite:S1}{cite:S2}", citations=var_cites)
+
+    async def no_links(url):
+        return 200
+
+    report = await evaluate([base_cr, var_cr], link_checker=no_links)
+    var_report = next(r for r in report.reports if r.case_id == "fb__inv")
+    mp = next((c for c in var_report.checks if c.name == "metamorphic_programs"), None)
+    assert mp is not None, "INV fairness pair should get a metamorphic_programs check"
+    assert mp.passed
+    assert "metamorphic_programs" in report.metric_summary()
+
+
 async def test_run_eval_writes_run_dir(tmp_path):
     from heynyc.eval.report import evaluate, write_run
     from heynyc.eval.runner import run_all

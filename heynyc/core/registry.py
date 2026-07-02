@@ -122,7 +122,13 @@ class Registry:
                  "and I cite my sources.", "", "Here are some things you can ask me:"]
         for example in self.welcome_examples(6):
             lines.append(f"  • {example}")
-        lines += ["", "Just tell me what you need — in any language."]
+        lines += [
+            "",
+            "Just tell me what you need — in any language.",
+            "",
+            "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
+            "double-check anything important against the official source.",
+        ]
         return "\n".join(lines)
 
     def load_module_tools(self) -> list:

@@ -30,6 +30,9 @@ class EvalCase:
     base: str = ""  # for INV cases: the base case id this perturbs
     perturbation: str = ""  # paraphrase | typo | tool_reorder
     expect_same_outcome_as_base: bool = False
+    # Fairness substance-invariance: the SET of cited programs must match the base case's
+    # (see check_metamorphic_programs). Peripheral personalization is allowed; the program set is not.
+    expect_same_programs_as_base: bool = False
     safety_critical: bool = False
 
     def __post_init__(self) -> None:
@@ -68,6 +71,7 @@ def load_cases(registry: Registry) -> list[EvalCase]:
                     base=entry.get("base", ""),
                     perturbation=entry.get("perturbation", ""),
                     expect_same_outcome_as_base=entry.get("expect_same_outcome_as_base", False),
+                    expect_same_programs_as_base=entry.get("expect_same_programs_as_base", False),
                     safety_critical=entry.get("safety_critical", False),
                 )
             )

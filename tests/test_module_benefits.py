@@ -134,6 +134,40 @@ async def test_benefits_search_strips_html_and_normalizes_null():
     assert url.startswith("https://data.cityofnewyork.us")  # fell back to the dataset source
 
 
+def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
+    # For a denial/problem with a benefit, the benefits blurb must surface the human/appeal
+    # path — call the agency / 311 and the right to a fair hearing.
+    reg = Registry.discover(config.MODULES_DIR)
+    benefits = next(m for m in reg.modules if m.name == "benefits")
+    low = benefits.prompt.lower()
+    assert "fair hearing" in low
+    assert "311" in benefits.prompt
+
+
+def test_fairness_metamorphic_cases_present_and_well_formed():
+    # Protected-class fairness: the same benefit question, varying only a protected attribute
+    # (name/ethnicity, borough/ZIP, language), must be flagged as outcome-invariant INV cases.
+    from heynyc.eval.cases import load_cases
+
+    cases = [c for c in load_cases(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST))
+             if c.module == "benefits"]
+    ids = {c.id for c in cases}
+    fairness = [c for c in cases if c.capability == "fairness"]
+    bases = [c for c in fairness if c.test_type != "INV"]
+    variants = [c for c in fairness if c.test_type == "INV"]
+    assert len(bases) >= 1, "fairness needs a neutral base question"
+    assert len(variants) >= 3, "one variant per protected attribute"
+    for v in variants:
+        assert v.base in ids, f"{v.id}: INV base '{v.base}' not found"
+        assert v.expect_same_outcome_as_base is True, f"{v.id}: must expect the base outcome"
+        # Substance-invariance guard: the cited PROGRAM SET must match the base's (peripheral
+        # personalization — language/tone/examples — is allowed and not compared here).
+        assert v.expect_same_programs_as_base is True, f"{v.id}: must expect the base program set"
+        assert v.perturbation, f"{v.id}: must label which protected attribute varies"
+    # cover name/ethnicity, borough/ZIP, and language
+    assert {"protected_name", "protected_zip", "protected_language"} <= {v.perturbation for v in variants}
+
+
 def test_benefits_eval_cases_load_and_flag_safety():
     from heynyc.eval.cases import load_cases
 
