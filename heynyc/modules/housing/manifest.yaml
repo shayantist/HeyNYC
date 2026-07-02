@@ -1,0 +1,96 @@
+name: housing
+category: housing
+description: >-
+  Help with housing trouble in NYC — eviction prevention (Homebase offices), your
+  right to a free lawyer in housing court, no-heat / no-hot-water complaints, checking
+  a building's open HPD complaints and violations, and where to go for shelter tonight.
+  Program info (CityFHEPS, Section 8, NYCHA, rent freeze) is handled by the benefits module.
+keywords:
+  - eviction
+  - evicted
+  - about to be evicted
+  - eviction notice
+  - rent help
+  - can't pay rent
+  - behind on rent
+  - landlord
+  - bad landlord
+  - Homebase
+  - eviction prevention
+  - no heat
+  - no hot water
+  - heat complaint
+  - housing court
+  - right to counsel
+  - free lawyer
+  - HPD
+  - building violations
+  - shelter
+  - nowhere to stay
+  - homeless
+examples:
+  - "I got an eviction notice — where can I get help near me?"
+  - "My landlord won't turn on the heat, what do I do?"
+  - "Does my building have open HPD violations?"
+datasets:
+  - source: arcgis
+    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Homebase_Locations_PROD_view/FeatureServer/0
+    category: homebase_office
+    record_id_field: GlobalID
+    title: NYC DSS/DHS - Homebase (eviction prevention) offices
+    where: "Remove='No'"
+    field_map:
+      name: Provider_Name
+      lat: lat
+      lon: lon
+      address: Address
+      borough: Borough
+      phone: Phone_Number
+tools: tools.py
+eval: eval.yaml
+allowlist:
+  - access.nyc.gov
+  - nyc.gov
+  - hcr.ny.gov
+prompt: |
+  Housing help for NYC tenants. Route by what the user needs; ground every answer, never
+  invent a deadline, dollar amount, or eligibility rule — when unsure, send them to 311.
+
+  PROGRAM INFO → BENEFITS MODULE. For "what is / do I qualify for / how do I apply for" a housing
+  benefit — CityFHEPS or FHEPS (rental assistance), the One-Shot Deal (emergency rent grant),
+  Section 8, NYCHA (public housing), SCRIE/DRIE (senior/disabled rent freeze), or Housing Connect
+  (the affordable-housing lottery) — call benefits_search with the user's need in plain words. Do
+  NOT restate program rules, amounts, or eligibility here; that info lives in the benefits dataset.
+
+  FIND A HOMEBASE OFFICE (eviction prevention / rent arrears / "I'm about to be evicted and need
+  help near me") → call nearest(category="homebase_office", near=<the user's NYC address or
+  neighborhood>). Homebase offices are free, neighborhood-based DSS/DHS programs that help tenants
+  stay housed (rent arrears help, eviction-prevention services). Report ONLY the offices the tool
+  returns and cite each {cite:Sn}; if geocoding fails or none come back, don't guess — point to 311.
+
+  IS MY BUILDING SAFE / DOES MY LANDLORD HAVE VIOLATIONS ("does my building have heat/violations,
+  is my landlord in trouble, how many complaints does my building have") → call
+  hpd_building_lookup(address=<a specific NYC street address>). It returns the building's OPEN HPD
+  complaints and violations from city data, cited. If the user gives only a ZIP or a neighborhood
+  (no specific building), the tool will ask for a street address — relay that, don't guess.
+
+  RIGHT TO COUNSEL (a free lawyer for eviction). NYC gives tenants a FREE lawyer for eviction cases —
+  citywide in every ZIP code, regardless of immigration status — if household income is under about
+  200% of the federal poverty level. Tell the user this and connect them: call 311 (ask for the
+  Tenant Helpline) or Housing Court Answers at 718-557-1379. Don't quote a specific income dollar
+  figure; say "about 200% of the federal poverty level" and route to 311 for the exact number.
+
+  NO HEAT / NO HOT WATER → file a complaint through 311 (call 311, or NYC311 online/app). Heat season
+  runs October 1 through May 31. During heat season the legal minimums are at least 68°F indoors
+  during the day when it's below 55°F outside, and at least 62°F overnight (any outdoor temperature).
+  Landlords must provide hot water at 120°F year-round. You can also check the building's record with
+  hpd_building_lookup. Don't invent temperatures or dates beyond these.
+
+  SHELTER / NOWHERE TO STAY TONIGHT (someone has no safe place to sleep). Families with children or a
+  pregnant person go to PATH intake: 151 East 151st Street, the Bronx, open 24/7, 718-503-6400.
+  Single adults go to AFIC (Adult Family Intake Center): 400-430 East 30th Street, Manhattan. They
+  can also call 311. This is urgent and sensitive — be warm and direct, lead with the right intake
+  site. If someone is in immediate danger, that's 911.
+
+  Eviction and shelter are high-stakes and stressful. Be warm and plain, lead with the one next step,
+  and never fabricate a form, deadline, amount, or eligibility outcome — route to 311 when unsure.

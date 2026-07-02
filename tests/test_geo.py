@@ -112,6 +112,35 @@ async def test_geosearch_rejects_zip_misparsed_as_housenumber():
     await client.aclose()
 
 
+async def test_geosearch_geocode_extracts_bbl_from_pad_addendum():
+    # GeoSearch (NYC PAD) carries the building's Borough-Block-Lot under
+    # properties.addendum.pad.bbl — the tax-lot key for building-level datasets.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [-73.9010, 40.8536]},
+            "properties": {"label": "1910 Monterey Ave, Bronx",
+                           "addendum": {"pad": {"bbl": "2030600032"}}},
+        }]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await _geosearch_geocode("1910 Monterey Ave Bronx", client)
+    await client.aclose()
+    assert point is not None
+    assert point.bbl == "2030600032"
+
+
+async def test_geosearch_geocode_leaves_bbl_empty_without_addendum():
+    # No PAD addendum (a non-addressed match) → bbl stays "", never fabricated.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _geosearch_response(40.8075, -73.9626, "Columbia University, Manhattan")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await _geosearch_geocode("Columbia University", client)
+    await client.aclose()
+    assert point is not None
+    assert point.bbl == ""
+
+
 FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough"}
 
 

@@ -82,6 +82,10 @@ class GeoPoint:
     # True when the result is too ambiguous/uncertain to answer for — the agent
     # should clarify (which borough? a street address?) rather than proceed.
     low_confidence: bool = False
+    # NYC Borough-Block-Lot (10-char) from GeoSearch's PAD addendum — the building's
+    # tax-lot key, needed for building-level datasets (HPD complaints/violations).
+    # Only a specific street address carries one; ZIP/forgiving/POI matches leave it "".
+    bbl: str = ""
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -123,12 +127,17 @@ async def _geosearch_geocode(text: str, client: httpx.AsyncClient) -> Optional[G
     hn = props.get("housenumber")
     if isinstance(hn, str) and re.fullmatch(r"\d{5}", hn) and re.search(rf"\b{hn}\b", text):
         return None
+    # GeoSearch (NYC PAD) attaches the building's Borough-Block-Lot under addendum.pad.bbl,
+    # e.g. "1910 Monterey Ave Bronx" → "2030600032". Absent for non-addressed matches.
+    addendum = props.get("addendum") or {}
+    bbl = (addendum.get("pad") or {}).get("bbl") or ""
     return GeoPoint(
         lat=float(lat),
         lon=float(lon),
         label=props.get("label", ""),
         confidence=float(props.get("confidence", 0.0) or 0.0),
         match_type="geosearch",
+        bbl=bbl,
     )
 
 
