@@ -1,40 +1,54 @@
 name: cooling_centers
 category: health
 description: >-
-  Find cooling and heat-relief sites (misting stations, spray showers, and other
-  cooling features) across NYC during hot weather.
+  Find indoor, staffed, air-conditioned cooling centers (libraries, older-adult
+  centers, and other public sites) across NYC. These are activated by NYC Emergency
+  Management during declared heat emergencies, so they're only open when the city
+  has called one.
 keywords:
   - cooling
   - cooling center
   - heat
   - hot
   - heat wave
+  - heat emergency
   - air conditioning
   - ac
-  - misting
-  - spray shower
   - beat the heat
   - stay cool
+  - library
+  - older adult center
 examples:
   - "Where's the nearest cooling center?"
-  - "It's too hot — where can I cool off today?"
+  - "It's too hot — where can I cool off indoors today?"
 datasets:
-  - id: h2bn-gu9k
+  - source: arcgis
+    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/CoolingCenters_PROD_view/FeatureServer/0
     category: cooling_center
+    record_id_field: NYCEM_ID
+    title: NYC Emergency Management - Cooling Centers
+    where: "Finder_status='OPEN'"
     field_map:
-      name: propertyname
-      lat: y
-      lon: x
-      status: status
-      borough: borough
-    where: "status='Activated'"
+      name: Facility_name
+      lat: lat
+      lon: lon
+      address: Address
+      borough: Borough_name
+      status: Finder_status
+      phone: Phone
 seeds:
   - https://finder.nyc.gov/coolingcenters/
 allowlist:
   - finder.nyc.gov
 prompt: |
+  Cooling centers are INDOOR, staffed, air-conditioned public sites (libraries, older-adult
+  centers, and similar) that NYC Emergency Management activates during a declared heat
+  emergency. They are NOT outdoor misting stations or spray showers.
+
   For heat-relief / cooling questions, call nearest(category="cooling_center", near=<user's address>).
-  Report only the sites the tool returns (the dataset is already filtered to activated sites) and cite them.
-  These are outdoor heat-relief features (misting stations, spray showers). For staffed, air-conditioned
-  cooling centers during a declared heat emergency, also point the user to finder.nyc.gov/coolingcenters and 311.
+  Report only the sites the tool returns and cite each one. The tool is filtered to activated
+  ("OPEN") sites, so if it returns none, tell the user that no cooling centers are currently
+  activated — this is normal when the city has not declared a heat emergency — and point them to
+  finder.nyc.gov/coolingcenters and 311 to check for the latest activations. Hours vary by site,
+  so tell users to call ahead; the phone number is included in each tool result.
 eval: eval.yaml

@@ -16,7 +16,11 @@ def test_cooling_center_binding_present():
     bindings = registry.dataset_bindings()
     assert "cooling_center" in bindings
     binding = bindings["cooling_center"]
-    assert binding.id == "h2bn-gu9k"
+    # BUG-2 fix: repointed from the wrong Socrata outdoor-misting dataset to the ArcGIS
+    # indoor cooling-center finder (NYC Emergency Management), row-addressed by NYCEM_ID.
+    assert binding.source == "arcgis"
+    assert "CoolingCenters_PROD_view" in binding.url
+    assert binding.record_id_field == "NYCEM_ID"
     # field_map must cover the keys geo.normalize relies on
     for key in ("name", "lat", "lon", "status"):
         assert key in binding.field_map
