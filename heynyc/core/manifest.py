@@ -10,20 +10,41 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DatasetBinding(BaseModel):
-    """Binds a NYC Open Data (Socrata) dataset to a findable category.
+    """Binds a structured NYC data source to a findable category.
 
-    `field_map` maps the common shape (name/address/lat/lon/status/hours) to the
-    dataset's actual column names so `geo.nearest(category=...)` is uniform.
+    Two sources share one declarative shape (so `geo.nearest(category=...)` stays
+    uniform regardless of backend): a NYC Open Data (Socrata) dataset addressed by
+    `id`, or an ArcGIS Feature Service layer addressed by `url`. `field_map` maps the
+    common shape (name/address/lat/lon/status/phone) to the source's actual column
+    names.
     """
 
-    id: str  # Socrata dataset id, e.g. "h2bn-gu9k"
+    source: str = "socrata"  # "socrata" | "arcgis"
+    id: Optional[str] = None  # Socrata dataset id, e.g. "h2bn-gu9k" (socrata only)
+    url: Optional[str] = None  # ArcGIS FeatureServer/<n> layer URL (arcgis only)
     category: str  # category name used by geo.nearest, e.g. "cooling_center"
     field_map: dict[str, str] = Field(default_factory=dict)
-    where: Optional[str] = None  # optional default SoQL $where filter
+    where: Optional[str] = None  # optional default filter (SoQL $where / ArcGIS where)
+    record_id_field: Optional[str] = None  # stable id column for arcgis row-addressing, e.g. "NYCEM_ID"
+    title: Optional[str] = None  # citation title override
+
+    @model_validator(mode="after")
+    def _check_source(self) -> "DatasetBinding":
+        if self.source == "socrata":
+            if not self.id:
+                raise ValueError("socrata dataset binding requires 'id'")
+        elif self.source == "arcgis":
+            if not self.url:
+                raise ValueError("arcgis dataset binding requires 'url'")
+            if not self.record_id_field:
+                raise ValueError("arcgis dataset binding requires 'record_id_field'")
+        else:
+            raise ValueError(f"unknown dataset source '{self.source}' (expected 'socrata' or 'arcgis')")
+        return self
 
 
 class ServiceModule(BaseModel):

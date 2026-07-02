@@ -22,9 +22,10 @@ class Place:
     address: str = ""
     status: str = ""
     borough: str = ""
+    phone: str = ""
     source_url: str = ""
-    record_id: str = ""   # Socrata `:id` — the per-row primary key (row-addressing)
-    updated_at: str = ""  # Socrata `:updated_at` — the row's "as of" / change signal
+    record_id: str = ""   # per-row primary key (Socrata `:id`, or the arcgis `record_id_field`)
+    updated_at: str = ""  # Socrata `:updated_at` — the row's "as of" / change signal (blank for arcgis)
     raw: dict = field(default_factory=dict)
 
 
@@ -45,8 +46,17 @@ def _get(record: dict, field_map: dict, key: str, default: str = "") -> str:
     return default if value is None else value
 
 
-def normalize(records: list[dict], field_map: dict, source_url: str = "") -> list[Place]:
-    """Map raw Socrata records to Places. Records without usable coords are dropped."""
+def normalize(
+    records: list[dict],
+    field_map: dict,
+    source_url: str = "",
+    record_id_field: Optional[str] = None,
+) -> list[Place]:
+    """Map raw records (Socrata or arcgis) to Places. Records without usable coords are dropped.
+
+    `record_id_field` names the stable row-key column for arcgis sources (e.g. "NYCEM_ID");
+    when omitted we fall back to the Socrata `:id` system field.
+    """
     places: list[Place] = []
     for record in records:
         try:
@@ -54,6 +64,10 @@ def normalize(records: list[dict], field_map: dict, source_url: str = "") -> lis
             lon = float(_get(record, field_map, "lon"))
         except (TypeError, ValueError):
             continue
+        if record_id_field:
+            record_id = str(record.get(record_id_field, ""))
+        else:
+            record_id = str(record.get(":id", ""))
         places.append(
             Place(
                 name=str(_get(record, field_map, "name")),
@@ -62,8 +76,9 @@ def normalize(records: list[dict], field_map: dict, source_url: str = "") -> lis
                 address=str(_get(record, field_map, "address")),
                 status=str(_get(record, field_map, "status")),
                 borough=str(_get(record, field_map, "borough")),
+                phone=str(_get(record, field_map, "phone")),
                 source_url=source_url,
-                record_id=str(record.get(":id", "")),
+                record_id=record_id,
                 updated_at=str(record.get(":updated_at", "")),
                 raw=record,
             )

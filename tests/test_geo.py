@@ -162,6 +162,67 @@ async def test_nearest_handler_ranks_and_cites():
     assert "google.com/maps" in out
 
 
+def _registry_with_arcgis_cooling() -> Registry:
+    """The shipped (BUG-2-fixed) shape: cooling bound to the ArcGIS cooling-center finder."""
+    module = ServiceModule(
+        name="cooling_centers",
+        category="health",
+        datasets=[DatasetBinding(
+            source="arcgis",
+            url="https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/CoolingCenters_PROD_view/FeatureServer/0",
+            category="cooling_center",
+            record_id_field="NYCEM_ID",
+            title="NYC Emergency Management - Cooling Centers",
+            where="Finder_status='OPEN'",
+            field_map={"name": "Facility_name", "lat": "lat", "lon": "lon", "address": "Address",
+                       "borough": "Borough_name", "status": "Finder_status", "phone": "Phone"},
+        )],
+    )
+    return Registry([module])
+
+
+def _cooling_feature(lon, lat, **props) -> dict:
+    return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]}, "properties": props}
+
+
+async def test_nearest_handler_arcgis_ranks_surfaces_phone_and_cites():
+    # The ArcGIS declarative path: mock the Feature Service /query (GeoJSON) + the geocoder,
+    # then assert distance ranking, phone surfacing, and an NYCEM_ID-addressed DATA citation.
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if "geosearch" in host:
+            return _geosearch_response(40.7500, -73.9900, "Origin, Manhattan")
+        if "arcgis.com" in host:
+            return httpx.Response(200, json={"type": "FeatureCollection", "features": [
+                _cooling_feature(-73.9600, 40.8000, Facility_name="Far Library", Address="1 Far St",
+                                 Borough_name="Manhattan", Phone="212-555-0001",
+                                 Finder_status="OPEN", Facility_type="Library", NYCEM_ID="CC1001"),
+                _cooling_feature(-73.9910, 40.7510, Facility_name="Close Senior Center", Address="2 Near Ave",
+                                 Borough_name="Manhattan", Phone="212-555-0002",
+                                 Finder_status="OPEN", Facility_type="Older Adult Center", NYCEM_ID="CC1043"),
+                _cooling_feature(None, None, Facility_name="No Coords", Finder_status="OPEN", NYCEM_ID="CC9999"),
+            ]})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_arcgis_cooling(), http=client)
+    out = await _nearest_handler({"category": "cooling_center", "near": "origin", "k": 2}, ctx)
+    await client.aclose()
+
+    site_lines = [l for l in out.splitlines() if l.startswith("- ")]
+    assert len(site_lines) == 2                       # bad-coords row dropped
+    assert "Close Senior Center" in site_lines[0]     # nearest first
+    assert "Far Library" in site_lines[1]
+    assert "212-555-0002" in site_lines[0]            # phone surfaced from the ArcGIS Phone field
+    # nearest site's citation is registered first (S1), row-addressed by NYCEM_ID
+    c = ctx.citations.mapping()["S1"]
+    assert c["kind"] == "DATA"
+    assert "{cite:S1}" in out
+    assert "NYCEM_ID" in c["url"]                     # feature_query_url row-address on NYCEM_ID
+    assert "CC1043" in c["url"]
+    assert c["title"] == "NYC Emergency Management - Cooling Centers"
+
+
 async def test_nearest_handler_dedupes_repeated_sites():
     def handler(request: httpx.Request) -> httpx.Response:
         if "geosearch" in request.url.host:

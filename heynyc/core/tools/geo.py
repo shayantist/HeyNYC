@@ -16,6 +16,7 @@ import httpx
 from .. import config
 from ..config import GEOSEARCH_BASE, OSRM_BASE
 from ..citations import data_provenance
+from .arcgis import feature_query_url, query_feature_service
 from .base import Tool, ToolContext
 from .datasets import dataset_url, normalize, query_dataset, row_url
 
@@ -205,7 +206,13 @@ async def _geocode_handler(args: dict, ctx: ToolContext) -> str:
 def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float, dist_mi: float) -> str:
     """Register a row-addressed DATA citation: permalink URL + the row snapshot, content hash,
     field locator, and the distance derivation (so the eval floor can recompute it)."""
-    url = row_url(binding.id, place.record_id) if place.record_id else place.source_url
+    if getattr(binding, "source", "socrata") == "arcgis":
+        url = (feature_query_url(binding.url, place.record_id, id_field=binding.record_id_field)
+               if place.record_id else binding.url)
+        title = binding.title or "NYC ArcGIS finder"
+    else:
+        url = row_url(binding.id, place.record_id) if place.record_id else place.source_url
+        title = f"NYC Open Data ({binding.id})"
     prov = data_provenance(
         place.raw,
         record_id=place.record_id,
@@ -216,7 +223,7 @@ def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float
     return ctx.citations.register(
         url,
         snippet=f"{place.name} — {place.borough} (status: {place.status})",
-        title=f"NYC Open Data ({binding.id})",
+        title=title,
         kind="DATA",
         valid_as_of=place.updated_at,
         provenance=prov,
@@ -236,9 +243,13 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     if origin.low_confidence:
         return _clarify_message(args["near"])
 
-    records = await query_dataset(binding.id, where=binding.where, limit=2000, client=ctx.http)
-    url = dataset_url(binding.id)
-    places = normalize(records, binding.field_map, source_url=url)
+    if binding.source == "arcgis":
+        records = await query_feature_service(binding.url, where=binding.where or "1=1", client=ctx.http)
+        url = binding.url
+    else:
+        records = await query_dataset(binding.id, where=binding.where, limit=2000, client=ctx.http)
+        url = dataset_url(binding.id)
+    places = normalize(records, binding.field_map, source_url=url, record_id_field=binding.record_id_field)
     if not places:
         return f"No '{category}' locations found in the dataset."
 
@@ -263,9 +274,10 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         cite = _place_citation(ctx, place, binding,
                                origin_lat=origin.lat, origin_lon=origin.lon, dist_mi=dist_mi)
         where = place.address or place.borough or "NYC"
+        phone = f" phone: {place.phone}" if place.phone else ""
         lines.append(
             f"- {place.name} ({where}) — {dist_mi:.2f} mi straight-line, "
-            f"status={place.status or 'unknown'} {{cite:{cite}}} — directions: {maps_link(place.lat, place.lon)}"
+            f"status={place.status or 'unknown'}{phone} {{cite:{cite}}} — directions: {maps_link(place.lat, place.lon)}"
         )
     return "\n".join(lines)
 
