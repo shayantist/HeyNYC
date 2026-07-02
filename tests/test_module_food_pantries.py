@@ -49,13 +49,16 @@ def test_directions_link_is_google_maps_dir():
 
 
 def test_flags_reads_dietary_access_from_type_fp():
-    assert _flags(_pantry(type_fp="Halal")) == ["Halal"]
-    assert _flags(_pantry(type_fp="Kosher")) == ["Kosher"]
-    assert _flags(_pantry(type_fp="Food Pantry")) == []  # plain pantry → no special flag
+    assert _flags(_pantry(type_fp="FPH")) == ["Halal"]
+    assert _flags(_pantry(type_fp="FPHA")) == ["HIV Customers"]
+    assert _flags(_pantry(type_fp="FPK")) == ["Kosher"]
+    assert _flags(_pantry(type_fp="FPM")) == ["Mobile"]
+    assert _flags(_pantry(type_fp="FP")) == []  # plain pantry → no special flag
+    assert _flags(_pantry(type_fp="", type_sk="SKK")) == ["Kosher"]  # soup kitchen domain
 
 
 def _pantry(**over):
-    base = {"program": "Test Pantry", "lat": 40.75, "lon": -73.99, "type_fp": "Food Pantry"}
+    base = {"program": "Test Pantry", "lat": 40.75, "lon": -73.99, "type_fp": "FP"}
     base.update(over)
     return _to_pantry(base)
 
@@ -126,12 +129,13 @@ async def test_nearest_food_pantry_ranks_grounds_and_links():
     features = [
         _pantry_feature(-73.9600, 40.8000, program="Far Pantry", distadd="1 Far St",
                         distboro="Manhattan", distzip="10027", org_phone="212-555-0001",
-                        type_fp="Food Pantry", program_type="FP", OBJECTID=1),
+                        type_fp="FP", program_type="FP", OBJECTID=1, GlobalID="aaaa-1"),
         _pantry_feature(-73.9910, 40.7510, program="Close Halal Pantry", distadd="2 Near Ave",
                         distboro="Manhattan", distzip="10001", org_phone="212-555-0002",
-                        type_fp="Halal", program_type="FP", OBJECTID=2,
+                        type_fp="FPH", program_type="FP", OBJECTID=2, GlobalID="aaaa-2",
                         **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"}),
-        _pantry_feature(None, None, program="No Coords", type_fp="Food Pantry", OBJECTID=3),
+        _pantry_feature(None, None, program="No Coords", type_fp="FP", OBJECTID=3,
+                        GlobalID="aaaa-3"),
     ]
     citations = CitationRegistry()
     client = _routed_client(features)
@@ -151,7 +155,8 @@ async def test_nearest_food_pantry_ranks_grounds_and_links():
     assert citations.mapping()["S1"]["kind"] == "DATA"
     # citation is grounded in the ArcGIS source, carries provenance + an as-of date
     assert "arcgis" in citations.mapping()["S1"]["url"].lower()
-    assert citations.mapping()["S1"]["provenance"]["record_id"] == "2"
+    assert "globalid" in citations.mapping()["S1"]["url"].lower()  # row-addressed GlobalID permalink
+    assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
     assert citations.mapping()["S1"]["valid_as_of"]
 
 

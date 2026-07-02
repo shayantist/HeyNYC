@@ -14,6 +14,7 @@ Ref: https://developers.arcgis.com/rest/services-reference/enterprise/query-feat
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -33,12 +34,19 @@ def _feature_to_record(feature: dict) -> dict:
     return record
 
 
-def feature_query_url(url: str, object_id: str) -> str:
-    """A single-feature permalink: the layer's `/query` for one OBJECTID as GeoJSON.
+def feature_query_url(url: str, id_value, *, id_field: str = "OBJECTID") -> str:
+    """A single-feature permalink: the layer's `/query` for one row as GeoJSON.
 
     Row-addressed like the Socrata row permalink — a real, resolvable URL that returns exactly the
-    cited feature, so a DATA citation can be re-fetched and verified."""
-    return f"{url.rstrip('/')}/query?where=OBJECTID%3D{object_id}&outFields=*&f=geojson"
+    cited feature, so a DATA citation can be re-fetched and verified. `id_field` selects the row-key
+    field (defaults to the ArcGIS `OBJECTID`; pass e.g. `GlobalID` for a GUID-keyed layer). Integer-
+    like values are written unquoted (`OBJECTID=5`); anything else is quoted (`GlobalID='<guid>'`).
+    The whole `where` predicate is URL-encoded."""
+    if str(id_value).lstrip("-").isdigit():
+        predicate = f"{id_field}={id_value}"
+    else:
+        predicate = f"{id_field}='{id_value}'"
+    return f"{url.rstrip('/')}/query?where={quote(predicate)}&outFields=*&f=geojson"
 
 
 async def query_feature_service(

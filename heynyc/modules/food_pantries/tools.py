@@ -41,8 +41,13 @@ _NYC_TZ = ZoneInfo("America/New_York")
 
 # datetime.weekday(): Monday=0 … Sunday=6 → the source's fp_<day>_* prefixes.
 _DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-# Dietary / access descriptors carried in `type_fp` (beyond the plain "Food Pantry").
-_ACCESS_KEYWORDS = ("Halal", "Kosher", "HIV", "Mobile")
+# Dietary / access descriptors decoded from the `type_fp` / `type_sk` coded-value domains
+# (verified against the live FeatureServer layer definition). FP / SK are the plain base
+# types → no descriptor.
+_TYPE_DESCRIPTORS = {
+    "FPH": "Halal", "FPHA": "HIV Customers", "FPK": "Kosher", "FPM": "Mobile",
+    "SKK": "Kosher", "SKM": "Mobile",
+}
 
 
 def _clean(value) -> str:
@@ -138,8 +143,9 @@ class FoodPantry:
     address: str
     phone: str
     type_fp: str
+    type_sk: str
     notes: str
-    object_id: str
+    global_id: str
     valid_as_of: str
     raw: dict = field(default_factory=dict)
 
@@ -191,17 +197,23 @@ def _to_pantry(record: dict) -> FoodPantry | None:
         address=_address(record),
         phone=_clean(record.get("org_phone")),
         type_fp=_clean(record.get("type_fp")),
+        type_sk=_clean(record.get("type_sk")),
         notes=_clean(record.get("fp_notes")),
-        object_id=_clean(record.get("OBJECTID") or record.get("objectid")),
+        global_id=_clean(record.get("GlobalID")),
         valid_as_of=_valid_as_of(record),
         raw=record,
     )
 
 
 def _flags(pantry: FoodPantry) -> list[str]:
-    """Dietary/access descriptors from `type_fp` (Halal/Kosher/HIV/Mobile); [] for a plain pantry."""
-    text = pantry.type_fp.lower()
-    return [kw for kw in _ACCESS_KEYWORDS if kw.lower() in text]
+    """Dietary/access descriptors decoded from the `type_fp` / `type_sk` coded-value domains
+    (Halal/Kosher/HIV Customers/Mobile); [] for a plain FP/SK base type."""
+    flags: list[str] = []
+    for code in (pantry.type_fp, pantry.type_sk):
+        descriptor = _TYPE_DESCRIPTORS.get(code.strip().upper())
+        if descriptor and descriptor not in flags:
+            flags.append(descriptor)
+    return flags
 
 
 def directions_link(lat: float, lon: float) -> str:
@@ -216,10 +228,11 @@ def _pantry_citation(ctx: ToolContext, pantry: FoodPantry, *,
                      origin_lat: float, origin_lon: float, dist_mi: float) -> str:
     """Register a row-addressed DATA citation: the single-feature ArcGIS permalink, the row
     snapshot + content hash, and the distance derivation (so the eval floor can recompute it)."""
-    url = feature_query_url(FOODHELP_URL, pantry.object_id) if pantry.object_id else FOODHELP_URL
+    url = (feature_query_url(FOODHELP_URL, pantry.global_id, id_field="GlobalID")
+           if pantry.global_id else FOODHELP_URL)
     provenance = data_provenance(
         pantry.raw,
-        record_id=pantry.object_id,
+        record_id=pantry.global_id,
         field_pointer="/",
         derivation={"origin": [origin_lat, origin_lon], "point": [pantry.lat, pantry.lon],
                     "distance_mi": dist_mi},

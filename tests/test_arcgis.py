@@ -83,3 +83,16 @@ async def test_query_feature_service_empty_and_no_geometry():
 def test_feature_query_url_is_single_object_permalink():
     url = feature_query_url("https://arcgis.example/FeatureServer/0/", "42")
     assert url == "https://arcgis.example/FeatureServer/0/query?where=OBJECTID%3D42&outFields=*&f=geojson"
+
+
+def test_feature_query_url_supports_custom_id_field_and_types():
+    # A GUID GlobalID → a quoted, URL-encoded predicate: where=GlobalID='<guid>'.
+    guid = "200d88be-6abe-44ff-a13a-769d8c9ef9a1"
+    url = feature_query_url("https://arcgis.example/FeatureServer/0", guid, id_field="GlobalID")
+    assert f"where=GlobalID%3D%27{guid}%27" in url
+    assert url.endswith("&f=geojson")
+
+    # The default integer case stays OBJECTID and unquoted (just URL-encoded).
+    default = feature_query_url("https://arcgis.example/FeatureServer/0", 5)
+    assert "where=OBJECTID%3D5" in default
+    assert default.endswith("&f=geojson")
