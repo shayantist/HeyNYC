@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -31,6 +32,44 @@ def _looks_like_intersection(text: str) -> bool:
 
 EARTH_RADIUS_M = 6_371_000.0
 METERS_PER_MILE = 1609.344
+
+# NYC GeoSearch has no postalcode layer, so a bare ZIP like "10453" is parsed as
+# a house number and returns a confidently-wrong street match. We resolve bare
+# ZIPs from a bundled Census ZCTA-centroid table BEFORE GeoSearch ever sees them.
+_ZIP_CENTROIDS: Optional[dict[str, tuple[float, float]]] = None
+_ZCTA_PATH = Path(__file__).resolve().parent.parent / "data" / "zcta_centroids.tsv"
+
+
+def _zip_centroid(zip5: str) -> Optional[tuple[float, float]]:
+    """Centroid (lat, lon) for a 5-digit ZIP from the bundled Census ZCTA gazetteer.
+
+    Lazily loads `heynyc/core/data/zcta_centroids.tsv` (zip<TAB>lat<TAB>lon, no
+    header) into a module-level dict on first call. Returns None for an unknown
+    ZIP. A missing/unreadable file degrades to an empty table — never crashes."""
+    global _ZIP_CENTROIDS
+    if _ZIP_CENTROIDS is None:
+        table: dict[str, tuple[float, float]] = {}
+        try:
+            with _ZCTA_PATH.open(encoding="utf-8") as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) != 3:
+                        continue
+                    z, lat, lon = parts
+                    try:
+                        table[z] = (float(lat), float(lon))
+                    except ValueError:
+                        continue
+        except OSError:
+            pass  # data file absent → empty table, bare ZIPs return None
+        _ZIP_CENTROIDS = table
+    return _ZIP_CENTROIDS.get(zip5)
+
+
+def _in_nyc(lat: float, lon: float) -> bool:
+    """True if (lat, lon) falls inside `config.NYC_BBOX` (w,s,e,n)."""
+    w, s, e, n = (float(x) for x in config.NYC_BBOX.split(","))
+    return w <= lon <= e and s <= lat <= n
 
 
 @dataclass
@@ -78,6 +117,12 @@ async def _geosearch_geocode(text: str, client: httpx.AsyncClient) -> Optional[G
     feature = features[0]
     lon, lat = feature["geometry"]["coordinates"]
     props = feature.get("properties", {})
+    # Belt-and-suspenders: if GeoSearch parsed a 5-digit ZIP that appears in the
+    # input as its "house number" (the BUG-1 misparse), reject rather than return
+    # a confidently-wrong street. Narrow enough to never reject a real address.
+    hn = props.get("housenumber")
+    if isinstance(hn, str) and re.fullmatch(r"\d{5}", hn) and re.search(rf"\b{hn}\b", text):
+        return None
     return GeoPoint(
         lat=float(lat),
         lon=float(lon),
@@ -118,6 +163,18 @@ async def geocode(text: str, *, client: Optional[httpx.AsyncClient] = None, forg
     own = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
     try:
+        # ZIP guard: a bare ZIP-area query (a 5-digit token with no OTHER digit —
+        # "10453", "10453 Bronx", "Bronx 10453") resolves from the bundled ZCTA
+        # centroids, never GeoSearch (which has no postalcode layer and would
+        # misparse it as a house number). A bare ZIP must never become an address.
+        m = re.search(r"\b\d{5}\b", text)
+        if m and not re.search(r"\d", text.replace(m.group(), "", 1)):
+            centroid = _zip_centroid(m.group())
+            if centroid is not None and _in_nyc(*centroid):
+                lat, lon = centroid
+                return GeoPoint(lat=lat, lon=lon, label=f"ZIP {m.group()} area",
+                                confidence=1.0, match_type="zcta")
+            return None  # unknown or non-NYC ZIP → don't fall through to GeoSearch
         if _looks_like_intersection(text):
             point = await forgiving(text) or await _geosearch_geocode(text, client)
         else:
@@ -170,6 +227,11 @@ async def travel_distance(
 
 def _resolution_note(query: str, point: GeoPoint) -> str:
     """A transparency line so a wrong geocode is visible and correctable, not silent."""
+    if point.match_type == "zcta":
+        z = re.search(r"\d{5}", point.label)
+        zip5 = z.group() if z else point.label
+        return (f"(Resolved '{query}' to the center of ZIP {zip5}; "
+                f"for a precise spot, give a street address.)")
     source = "NYC GeoSearch" if point.match_type == "geosearch" else "map search"
     note = f"(Resolved '{query}' to '{point.label}' via {source}."
     if _looks_like_intersection(query) and point.match_type == "geosearch":

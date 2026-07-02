@@ -10,8 +10,11 @@ from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
     _distance_handler,
+    _geosearch_geocode,
+    _in_nyc,
     _looks_like_intersection,
     _nearest_handler,
+    _zip_centroid,
     geocode,
     haversine_m,
     miles,
@@ -26,6 +29,88 @@ def test_looks_like_intersection():
     # No street numbers → treat as a place name, not an intersection
     assert not _looks_like_intersection("Union Square")
     assert not _looks_like_intersection("Fordham Road, the Bronx")
+
+# --- BUG-1: bare NYC ZIP must resolve via the bundled ZCTA centroids, never
+# GeoSearch (which has no postalcode layer and misparses "10453" as a house
+# number → a confidently-wrong Queens street). ------------------------------
+
+def _wrong_queens_client() -> httpx.AsyncClient:
+    """A MockTransport that (wrongly) resolves anything to the BUG-1 Queens
+    house-number match. If the ZIP guard works, this is never called."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [-73.8310, 40.6816]},  # Richmond Hill, Queens
+            "properties": {"label": "10453 109 Street, Richmond Hill, Queens",
+                           "housenumber": "10453", "confidence": 1.0},
+        }]})
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_zip_centroid_lookup():
+    lat, lon = _zip_centroid("10453")
+    assert round(lat, 4) == 40.8525
+    assert round(lon, 4) == -73.9133
+    assert _zip_centroid("00000") is None
+
+
+def test_in_nyc_bbox():
+    assert _in_nyc(40.8525, -73.9133)      # the Bronx
+    assert not _in_nyc(34.1005, -118.4146)  # Beverly Hills
+
+
+async def test_bare_zip_bypasses_geosearch_to_zcta_centroid():
+    # GeoSearch would return the WRONG Queens venue; the ZIP guard must beat it.
+    client = _wrong_queens_client()
+    point = await geocode("10453", client=client, forgiving=_fake_forgiving(None))
+    await client.aclose()
+    assert point is not None
+    assert point.match_type == "zcta"
+    assert round(point.lat, 2) == 40.85        # Bronx centroid
+    assert abs(point.lat - 40.68) > 0.1        # NOT the Queens misparse
+
+
+async def test_zip_with_borough_word_resolves_same_centroid():
+    for query in ("10453 Bronx", "Bronx 10453"):
+        client = _wrong_queens_client()
+        point = await geocode(query, client=client, forgiving=_fake_forgiving(None))
+        await client.aclose()
+        assert point.match_type == "zcta"
+        assert round(point.lat, 4) == 40.8525
+        assert round(point.lon, 4) == -73.9133
+
+
+async def test_non_nyc_bare_zip_returns_none():
+    client = _wrong_queens_client()
+    assert await geocode("90210", client=client, forgiving=_fake_forgiving(None)) is None
+    await client.aclose()
+
+
+async def test_real_address_still_uses_geosearch():
+    # No 5-digit token → falls through to GeoSearch, unaffected by the ZIP guard.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _geosearch_response(40.8536, -73.9010, "1910 Monterey Ave, Bronx")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await geocode("1910 Monterey Ave Bronx", client=client, forgiving=_fake_forgiving(None))
+    await client.aclose()
+    assert point.match_type == "geosearch"
+    assert "Monterey" in point.label
+
+
+async def test_geosearch_rejects_zip_misparsed_as_housenumber():
+    # Belt-and-suspenders: a GeoSearch result whose housenumber is a 5-digit ZIP
+    # present in the input is rejected outright.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [-73.8310, 40.6816]},
+            "properties": {"label": "10453 109 Street, Richmond Hill, Queens",
+                           "housenumber": "10453", "confidence": 1.0},
+        }]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await _geosearch_geocode("10453", client) is None
+    await client.aclose()
+
 
 FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough"}
 
