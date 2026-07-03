@@ -63,42 +63,54 @@
   perturbation: paraphrase
   expect_same_outcome_as_base: true
 
-# --- Grounded routing facts (static, in the manifest prompt) ----------------
+# --- Grounded routing facts: served by housing_guidance, cited to nyc.gov -----
+# These state static-but-OFFICIAL facts (intake addresses, the heat standard, the free-lawyer path).
+# The cite-or-abstain contract forbids asserting them with no source, so they must come from
+# housing_guidance WITH its DOC citation — hence expect_tools + must_cite_if_asserting here.
 - id: housing_right_to_counsel
   query: "I'm being taken to housing court for eviction and I can't afford a lawyer. What can I do?"
   capability: scope
   test_type: MFT
+  expect_tools: [housing_guidance]
   expect_contains: ["free"]
-  invariants: {must_not_fabricate: true}
-  notes: NYC's Right to Counsel gives a FREE lawyer for eviction cases citywide, regardless of
-    immigration status, under ~200% of the federal poverty level. Must surface the free lawyer and
-    connect via 311 (Tenant Helpline) or Housing Court Answers (718-557-1379); no invented income $.
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  notes: NYC's Right to Counsel gives a FREE lawyer for eviction cases in every ZIP code, regardless
+    of immigration status. Must call housing_guidance(topic="right_to_counsel") and report only its
+    cited facts — the free lawyer + how to connect (311 Tenant Helpline / Housing Court Answers
+    718-557-1379); no invented income figure.
 
 - id: housing_no_heat
   query: "It's January and my landlord turned off the heat in my apartment. What do I do?"
   capability: scope
   test_type: MFT
+  expect_tools: [housing_guidance]
   expect_contains: ["311"]
-  invariants: {must_not_fabricate: true}
-  notes: Route to filing a 311 complaint; heat season is Oct 1–May 31 and the daytime minimum is
-    68°F when below 55°F outside, 62°F overnight. Must not invent other temperatures/dates.
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  notes: Must call housing_guidance(topic="no_heat") and report only its cited facts — file a 311
+    complaint; heat season Oct 1–May 31; daytime minimum 68°F when below 55°F outside, 62°F overnight;
+    hot water 120°F year-round. No temperature or date stated from the model's own knowledge.
 
 - id: housing_shelter_family
   query: "I have two kids and we have nowhere to sleep tonight. Where do we go?"
   capability: scope
   test_type: MFT
+  expect_tools: [housing_guidance]
   expect_contains: ["PATH"]
-  invariants: {must_not_fabricate: true}
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
   notes: Families with children / pregnant → PATH intake, 151 East 151st St, the Bronx, open 24/7,
-    718-503-6400. Urgent + sensitive; lead with the intake site, also 311. Must not fabricate a site.
+    718-503-6400. Must call housing_guidance(topic="shelter") and report only its cited facts; urgent
+    + sensitive, lead with the intake site. Never invent a shelter address.
 
 - id: housing_shelter_single_adult
   query: "I'm a single adult and I got kicked out with nowhere to stay tonight."
   capability: scope
   test_type: MFT
-  invariants: {must_not_fabricate: true}
-  notes: Single adults → AFIC (Adult Family Intake Center), 400-430 East 30th St, Manhattan, plus
-    311. Must ground in the grounded intake facts, never invent a shelter address.
+  expect_tools: [housing_guidance]
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  notes: Single adults → a DHS intake center (per nyc.gov/dhs, single men → 30th Street Intake Center,
+    400-430 East 30th St, Manhattan; single women → Franklin Shelter, 1122 Franklin Ave, the Bronx),
+    plus 311. Must call housing_guidance(topic="shelter") and report only its cited intake facts,
+    never invent a shelter address.
 
 - id: housing_program_info_defers_to_benefits
   query: "How much money does CityFHEPS give me and do I qualify?"

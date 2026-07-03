@@ -14,6 +14,8 @@ URL, and that the shipped module still loads with its tool + eval cases.
 """
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from heynyc.core import config
@@ -171,7 +173,97 @@ async def test_bbl_decomposes_into_boro_block_lot_in_violations_url(monkeypatch)
     assert "boroid" in violations_url        # boro digit 2 keyed as boroid
 
 
-# --- 4. the shipped module stays valid -------------------------------------
+# --- 4. housing_guidance: static-but-official facts, each cited to nyc.gov ---
+#
+# These are offline (no network): the tool bakes the facts + source URLs in and only touches the
+# citation registry. They lock in what the eval's tool_sanity / attribution / faithfulness checks
+# rely on — a grounding tool call and a citation whose snippet is backed by the returned fact.
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _guidance_tool():
+    return next(t for t in get_tools() if t.name == "housing_guidance")
+
+
+async def _run_guidance(topic: str):
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    out = await _guidance_tool().handler({"topic": topic}, ctx)
+    return out, citations
+
+
+async def test_guidance_right_to_counsel_grounds_free_lawyer_and_cites():
+    out, citations = await _run_guidance("right_to_counsel")
+    assert "free legal help" in out.lower()
+    assert "718-557-1379" in out          # Housing Court Answers, from the official page
+    assert "311" in out
+    # exactly one DOC citation, to the verified HRA / Office of Civil Justice page
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    cite = mapping["S1"]
+    assert cite["kind"] == "DOC"
+    assert cite["url"] == "https://www.nyc.gov/site/hra/help/legal-services-for-tenants.page"
+    assert "{cite:S1}" in out             # the fact carries its citation inline
+
+
+async def test_guidance_no_heat_grounds_standard_and_cites():
+    out, citations = await _run_guidance("no_heat")
+    low = out.lower()
+    assert "october 1" in low and "may 31" in low   # heat season, from the HPD page
+    assert "68" in out and "62" in out and "55" in out and "120" in out
+    assert "311" in out                              # how to file
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    assert mapping["S1"]["kind"] == "DOC"
+    assert mapping["S1"]["url"].endswith("heat-and-hot-water-information.page")
+
+
+async def test_guidance_shelter_grounds_both_intakes_and_cites_each():
+    out, citations = await _run_guidance("shelter")
+    # families → PATH, single adults → the 30th Street / Franklin intake sites
+    assert "PATH" in out and "151 East 151st Street" in out and "718-503-6400" in out
+    assert "30th Street Intake Center" in out and "Franklin Shelter" in out
+    # two DOC citations (one per DHS source page), each cited inline
+    mapping = citations.mapping()
+    assert len(mapping) == 2
+    assert {c["kind"] for c in mapping.values()} == {"DOC"}
+    urls = {c["url"] for c in mapping.values()}
+    assert any("families-with-children-applying" in u for u in urls)
+    assert any("single-adults-applying" in u for u in urls)
+    assert "{cite:S1}" in out and "{cite:S2}" in out
+
+
+async def test_guidance_maps_free_text_to_topic():
+    # the model may pass the user's words instead of a canonical key — they map to a topic.
+    heat_out, _ = await _run_guidance("my landlord shut off the heat")
+    assert "october 1" in heat_out.lower()
+    lawyer_out, _ = await _run_guidance("I need a lawyer for my eviction case")
+    assert "free legal help" in lawyer_out.lower()
+    shelter_out, _ = await _run_guidance("we have nowhere to stay tonight")
+    assert "PATH" in shelter_out
+
+
+async def test_guidance_unknown_topic_abstains_without_citation():
+    out, citations = await _run_guidance("rent freeze eligibility")
+    assert len(citations) == 0             # nothing grounded → nothing cited
+    assert "311" in out                    # routes the user onward
+    assert "{cite:" not in out
+
+
+async def test_guidance_citation_snippets_are_backed_by_the_returned_facts():
+    """Mirror the eval's faithfulness check offline: every citation snippet's tokens are ≥60%
+    covered by the tool's own output, so a DOC citation can never outrun the fact it cites."""
+    for topic in ("right_to_counsel", "no_heat", "shelter"):
+        out, citations = await _run_guidance(topic)
+        haystack = set(_TOKEN_RE.findall(out.lower()))
+        for cid, c in citations.mapping().items():
+            tokens = [t for t in _TOKEN_RE.findall(c["snippet"].lower()) if len(t) > 1]
+            overlap = sum(1 for t in tokens if t in haystack) / len(tokens)
+            assert overlap >= 0.6, f"{topic}/{cid} snippet under-backed by output ({overlap:.0%})"
+
+
+# --- 5. the shipped module stays valid -------------------------------------
 
 def test_housing_module_loads_with_tool_and_eval():
     registry = Registry.discover(config.MODULES_DIR)
@@ -180,8 +272,17 @@ def test_housing_module_loads_with_tool_and_eval():
     assert module.category == "housing"
     tool_names = {t.name for t in registry.load_module_tools()}
     assert "hpd_building_lookup" in tool_names
+    assert "housing_guidance" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "housing"]
     assert cases, "housing should ship eval cases"
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
+    # the routing cases now expect the grounding tool + a citation (cite-or-abstain)
+    routing = {c.id: c for c in cases if c.id in {
+        "housing_right_to_counsel", "housing_no_heat", "housing_shelter_family",
+        "housing_shelter_single_adult"}}
+    assert len(routing) == 4
+    for case in routing.values():
+        assert "housing_guidance" in case.expect_tools
+        assert case.invariants.get("must_cite_if_asserting")

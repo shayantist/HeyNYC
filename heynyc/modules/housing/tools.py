@@ -17,6 +17,7 @@ report what the data shows; empty results are stated plainly (no open records), 
 from __future__ import annotations
 
 import collections
+from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
@@ -174,6 +175,138 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
+# --- housing_guidance: static-but-OFFICIAL routing facts, each cited to its source page ----
+#
+# The Right-to-Counsel free-lawyer facts, the no-heat temperature standard, and the shelter-intake
+# sites are STATIC, but they are official facts — not the model's memory. Stating them from the
+# manifest prompt with no citation is exactly what the cite-or-abstain contract forbids (the eval's
+# tool_sanity check caught it). So they live here as grounded facts and are returned WITH a DOC
+# citation to the official nyc.gov page each one comes from. A DOC citation (an official document/
+# page, like index_search's) — not DATA (there is no queried dataset row) and not WEB (this is an
+# authoritative city page, not a web-search hit).
+#
+# Every URL + fact below was verified LIVE against the page (HTTP 200, page supports the fact) on
+# VERIFIED_ON. `snippet` is deliberately a subset of `body`'s wording so the eval's faithfulness
+# check (snippet ⊆ fetched tool output) holds. Re-verify the live pages before editing any fact.
+VERIFIED_ON = "2026-07-02"
+
+
+@dataclass(frozen=True)
+class _Fact:
+    url: str      # official nyc.gov source page (verified HTTP 200)
+    title: str    # citation title
+    snippet: str  # short cite label — subset of `body` wording (keeps faithfulness overlap high)
+    body: str     # the grounded fact text to report, cited
+
+
+_GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
+    "right_to_counsel": (
+        "Right to Counsel — a FREE lawyer for an eviction case:",
+        (
+            _Fact(
+                url="https://www.nyc.gov/site/hra/help/legal-services-for-tenants.page",
+                title="Legal Services for Tenants Facing Eviction — NYC's Right to Counsel (HRA / Office of Civil Justice)",
+                snippet=("NYC Right to Counsel gives tenants free legal help for an eviction case, in "
+                         "every ZIP code, regardless of immigration status; call Housing Court Answers "
+                         "718-557-1379 or 311 and ask for the Tenant Helpline"),
+                body=("NYC's Right-to-Counsel (Universal Access) law gives tenants free legal help for "
+                      "an eviction case in Housing Court or a NYCHA proceeding — available in every ZIP "
+                      "code, regardless of immigration status. To connect: call Housing Court Answers at "
+                      "718-557-1379 (Monday to Friday, 9am to 5pm), or call 311 and ask for the Tenant "
+                      "Helpline."),
+            ),
+        ),
+    ),
+    "no_heat": (
+        "No heat / no hot water — the standard and how to file:",
+        (
+            _Fact(
+                url="https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page",
+                title="Heat and Hot Water Information — NYC HPD",
+                snippet=("Heat season October 1 through May 31: indoor at least 68 when below 55 outside "
+                         "between 6am and 10pm, at least 62 between 10pm and 6am; hot water year-round at "
+                         "120; file a complaint by calling 311"),
+                body=("Heat season runs October 1 through May 31. During heat season, when it is below 55 "
+                      "degrees outside between 6am and 10pm the indoor temperature must be at least 68 "
+                      "degrees; between 10pm and 6am it must be at least 62 degrees regardless of the "
+                      "outdoor temperature. Landlords must provide hot water year-round at a minimum of "
+                      "120 degrees. If your landlord will not restore service, file a complaint by calling "
+                      "311 (or use 311 online or the app)."),
+            ),
+        ),
+    ),
+    "shelter": (
+        "Shelter intake tonight — where to go:",
+        (
+            _Fact(
+                url="https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+                title="Families with Children: Applying for Temporary Housing Assistance — NYC DHS (PATH)",
+                snippet=("Families with children or a pregnant person apply at PATH intake: 151 East 151st "
+                         "Street, the Bronx, open 24 hours a day, 718-503-6400"),
+                body=("Families with children or a pregnant person apply for shelter at DHS' PATH intake "
+                      "center: Prevention Assistance and Temporary Housing (PATH), 151 East 151st Street, "
+                      "the Bronx. PATH is open 24 hours a day, including weekends and holidays; the main "
+                      "phone number is 718-503-6400."),
+            ),
+            _Fact(
+                url="https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-applying.page",
+                title="Single Adults: Applying for Temporary Housing Assistance — NYC DHS",
+                snippet=("Single adults apply at a DHS intake center: men at the 30th Street Intake Center, "
+                         "400-430 East 30th Street, Manhattan; women at the Franklin Shelter, 1122 Franklin "
+                         "Avenue, the Bronx; you can also call 311"),
+                body=("Single adults apply at a DHS intake center: single adult men go to the 30th Street "
+                      "Intake Center, 400-430 East 30th Street, Manhattan; single adult women go to the "
+                      "Franklin Shelter, 1122 Franklin Avenue, the Bronx. (Note: beginning August 1, 2026, "
+                      "single adult men's intake moves to 8 East 3rd Street, Manhattan.) You can also call "
+                      "311 for the current intake site."),
+            ),
+        ),
+    ),
+}
+
+# free-text → canonical topic. The `topic` arg SHOULD be one of the three keys, but the model may
+# hand us the user's words ("my landlord shut the heat off"); map those to a topic rather than fail.
+_TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("right_to_counsel", ("counsel", "lawyer", "attorney", "legal", "represent", "housing court",
+                          "eviction help", "sued", "taken to court")),
+    ("no_heat", ("heat", "hot water", "cold", "boiler", "radiator", "temperature", "freezing")),
+    ("shelter", ("shelter", "homeless", "nowhere", "no place", "sleep tonight", "intake", "path",
+                 "afic", "kicked out", "nowhere to stay")),
+)
+
+
+def _resolve_topic(raw: str) -> str | None:
+    """Map the `topic` arg (a canonical key or free text) to one of the three guidance topics."""
+    key = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if key in _GUIDANCE:
+        return key
+    text = (raw or "").lower()
+    for topic, needles in _TOPIC_KEYWORDS:
+        if any(n in text for n in needles):
+            return topic
+    return None
+
+
+async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
+    topic = _resolve_topic(args.get("topic", ""))
+    if topic is None:
+        return ("I don't have grounded guidance for that topic. Use housing_guidance with topic = "
+                "'right_to_counsel' (free eviction lawyer), 'no_heat' (no heat / no hot water), or "
+                "'shelter' (shelter intake tonight). For a building's HPD record use "
+                "hpd_building_lookup; for anything else, point the user to 311.")
+    intro, facts = _GUIDANCE[topic]
+    lines = [intro]
+    for fact in facts:
+        cite = ctx.citations.register(
+            fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of="",
+        )
+        lines.append(f"- {fact.body} {{cite:{cite}}}")
+    lines.append("Report ONLY these grounded facts, each with its {cite:Sn}. Do not add or change an "
+                 "address, phone number, temperature, date, or eligibility figure — if the user needs "
+                 "more, send them to 311.")
+    return "\n".join(lines)
+
+
 def get_tools() -> list[Tool]:
     return [
         Tool(
@@ -202,5 +335,32 @@ def get_tools() -> list[Tool]:
             },
             handler=_handler,
             open_world=True,  # hits the live Socrata HPD datasets + geocoder
-        )
+        ),
+        Tool(
+            name="housing_guidance",
+            description=(
+                "Return NYC's official, grounded guidance for three high-stakes housing situations, "
+                "each WITH a citation to the official nyc.gov source page: `right_to_counsel` (the FREE "
+                "lawyer for an eviction case + how to connect), `no_heat` (no heat / no hot water — the "
+                "heat-season temperature standard + how to file), and `shelter` (where to go for shelter "
+                "intake tonight — families with children / pregnant vs. single adults). Pass `topic` = "
+                "one of those three (free text like 'landlord shut off the heat' or 'need a lawyer for "
+                "eviction' is mapped to the right topic). ALWAYS use this instead of stating a shelter "
+                "address, phone number, temperature standard, or eligibility figure from your own "
+                "knowledge — report only what it returns, cited."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": ("right_to_counsel | no_heat | shelter — the housing situation "
+                                        "(free text is mapped to one of these three)."),
+                    },
+                },
+                "required": ["topic"],
+            },
+            handler=_guidance_handler,
+            open_world=False,  # static official facts baked in + cited; no network call
+        ),
     ]
