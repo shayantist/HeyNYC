@@ -274,7 +274,7 @@ async def _cmd_repl() -> None:
         console.print()
 
 
-async def _cmd_eval(use_judge: bool, repeat: int = 1, out: str | None = None, module: str | None = None) -> None:
+async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None, module: str | None = None) -> None:
     from datetime import timezone
     from pathlib import Path
 
@@ -297,10 +297,13 @@ async def _cmd_eval(use_judge: bool, repeat: int = 1, out: str | None = None, mo
 
     results = await run_all(factory, cases, reminders=_default_reminders())
     judge = None
-    if use_judge:
-        from heynyc.eval.judges import make_llm_judge
+    if use_api_judge:
+        # The PAID, opt-in API judge. Thread today's date through so it treats live/future-dated
+        # tool data as current rather than "outdated". The default judge is the interactive Agent
+        # reviewing the traces (free) — it needs no in-harness call.
+        from heynyc.eval.judges import make_api_judge
 
-        judge = make_llm_judge(config.HEYNYC_JUDGE_MODEL)
+        judge = make_api_judge(config.HEYNYC_JUDGE_MODEL, now=datetime.now())
     report = await evaluate(results, judge=judge)
     print("\n" + report.render())
 
@@ -339,7 +342,14 @@ def main() -> None:
     sub.add_parser("capabilities", help="print the grounded 'what can you do' menu (from module examples)")
     sub.add_parser("stats", help="show cost/usage telemetry from past chat turns")
     ev = sub.add_parser("eval", help="run the no-hallucination eval gate")
-    ev.add_argument("--judge", action="store_true", help="also run the LLM groundedness judge (different model family)")
+    ev.add_argument(
+        "--api-judge", dest="api_judge", action="store_true",
+        help="also run the PAID API groundedness judge (a cross-family LLM call) for "
+             "parity/reproducibility. The default internal judge is the interactive Agent "
+             "reviewing the run traces (no API cost).",
+    )
+    # Back-compat hidden alias: `--judge` still maps to the same PAID API judge.
+    ev.add_argument("--judge", dest="api_judge", action="store_true", help=argparse.SUPPRESS)
     ev.add_argument("--repeat", type=int, default=1, help="run the safety subset K times and report pass^K")
     ev.add_argument("--out", default=None, help="run directory to write traces + report into")
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
@@ -368,7 +378,7 @@ def main() -> None:
 
         _render_stats(telemetry.default_path(config.HEYNYC_DATA_DIR))
     elif args.command == "eval":
-        asyncio.run(_cmd_eval(use_judge=args.judge, repeat=args.repeat, out=args.out, module=args.module))
+        asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out, module=args.module))
     elif args.command == "serve":
         import uvicorn
 

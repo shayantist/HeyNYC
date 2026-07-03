@@ -324,12 +324,12 @@ async def test_gate_with_injected_judge():
     async def judge(cr):
         from heynyc.eval.checks import CheckResult
 
-        return CheckResult("llm_grounded", passed=True, detail="correctly abstained")
+        return CheckResult("api_grounded", passed=True, detail="correctly abstained")
 
     results = await run_all(lambda: agent, [case])
     report = await evaluate(results, judge=judge)
     assert report.passed
-    assert any(c.name == "llm_grounded" for c in report.reports[0].checks)
+    assert any(c.name == "api_grounded" for c in report.reports[0].checks)
 
 
 def test_looks_like_abstention_recognizes_scope_and_prediction_declines():

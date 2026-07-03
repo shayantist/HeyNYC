@@ -4,6 +4,25 @@ How HeyNYC proves the agent doesn't lie before it ships. Every fact the agent st
 a real source it retrieved — or it abstains — and this suite enforces that. It's also the
 **definition of done** for a service module: a module isn't ready until its `eval.yaml` is green.
 
+## Two judges: Agent (default, free) vs API (opt-in, paid)
+
+Groundedness gets a *semantic* verdict on top of the deterministic gate, and there are **two
+distinct ways** to get it — don't conflate them:
+
+- **Agent judge — DEFAULT, free.** The interactive coding agent you're already running (Claude
+  Code on the subscription — or Codex / Gemini CLI / Qwen Coder) reads the run's traces and renders
+  the verdict against the [rubric below](#the-agent-judge-rubric). **No per-call API cost.** The
+  harness supports it simply by writing rich, reviewable OpenInference traces — there is *no*
+  automated in-harness call for it. This is the primary internal judge.
+- **API judge — opt-in with `--api-judge`, PAID.** A programmatic `litellm` call to a cross-family
+  model (`judges.py`), for reproducibility / parity / CI / the paper. It **costs money per call**
+  and emits one `api_grounded` check per case. Use it when you need a reproducible, machine-run
+  number; skip it for day-to-day work, where the Agent judge is enough.
+
+Both read the same traces and answer the same question ("is every claim supported by a source the
+agent actually retrieved?"). The Agent judge is a human-in-the-loop review; the API judge is an
+automated stand-in for it.
+
 ## Two tiers
 
 HeyNYC grades on two tiers — the documented best practice: **deterministic where you can, a
@@ -32,7 +51,7 @@ matching is too brittle to be the authority. Method: "Agent-as-a-Judge," arXiv 2
 ```bash
 uv run python -m heynyc eval                    # all modules: live agent + deterministic gate
 uv run python -m heynyc eval --module benefits  # just one module
-uv run python -m heynyc eval --judge            # + optional cross-family LLM groundedness judge
+uv run python -m heynyc eval --api-judge        # + the PAID cross-family API groundedness judge (parity/CI)
 uv run python -m heynyc eval --repeat 3         # pass^k reliability on the safety-critical subset
 ```
 
@@ -102,5 +121,5 @@ authority humans review pre-deploy, and it supersedes the gate's coarse keyword 
   contract for that module. Cases follow the CheckList matrix (capability × {MFT, INV, DIR}) with an
   OWASP/AILuminate `harm_category`.
 - **Checks** — this directory: `checks.py` (legacy + structural), `invariants.py` (outcome
-  invariants), `trace.py` (OpenInference traces), `report.py` (the gate), `judges.py` (optional LLM
-  judge), `runner.py`.
+  invariants), `trace.py` (OpenInference traces), `report.py` (the gate), `judges.py` (the opt-in
+  PAID `--api-judge`; the free default Agent judge needs no code, just the traces), `runner.py`.

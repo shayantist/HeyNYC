@@ -2,9 +2,10 @@
 
 Runs each module's golden `eval.yaml` cases through the agent and checks them with
 deterministic assertions (expected/forbidden tools, citation kinds, abstention,
-link liveness, substring expectations) plus an optional LLM judge (groundedness,
-abstention appropriateness). Modeled on DXA's agent_eval pattern and the SOTA RAG/
-agent eval stack (Azure Foundry / RAGAS / ALCE citation metrics).
+link liveness, substring expectations) plus an optional PAID API groundedness judge
+(`--api-judge`; the free default is the interactive Agent reviewing the traces).
+Modeled on DXA's agent_eval pattern and the SOTA RAG/ agent eval stack (Azure
+Foundry / RAGAS / ALCE citation metrics).
 """
 from __future__ import annotations
 
