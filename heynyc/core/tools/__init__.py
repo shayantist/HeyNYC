@@ -20,7 +20,7 @@ def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
     tools: dict[str, Tool] = {}
     for tool in geo_tools():
         tools[tool.name] = tool
-    for tool in web_search_tools(registry.allowlist(), registry.source_tiers()):
+    for tool in web_search_tools(registry.allowlist(), registry.source_tiers(), registry.news_tier()):
         tools[tool.name] = tool
     if index is not None:
         from .index_search import index_search_tools

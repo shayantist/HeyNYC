@@ -25,7 +25,7 @@ def _load_retriever():
 
 
 def build_agent() -> Agent:
-    return Agent(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST), model=config.HEYNYC_MODEL, index=_load_retriever())
+    return Agent(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST), model=config.HEYNYC_MODEL, index=_load_retriever())
 
 
 def build_deps(agent: Agent) -> Deps:

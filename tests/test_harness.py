@@ -157,12 +157,12 @@ async def test_community_web_result_carries_disclaimer_to_model(empty_registry):
     no live Tavily. (The isolated tool is unit-tested in test_web_search.py.)"""
     from heynyc.core.tools.web_search import web_search_tools
 
-    async def fake_search(query, allowed):
+    async def fake_search(query, allowed, recency=None):
         return [{"title": "User meetup", "url": "https://eventbrite.com/e/x", "snippet": "posted by a user"}]
 
-    [ws] = web_search_tools(
+    ws = web_search_tools(
         ["eventbrite.com"], source_tiers={"eventbrite.com": ("community", "events")}, search_fn=fake_search
-    )
+    )[0]  # the default web_search (recent_developments is the sibling recency tool)
     sf = _scripted_stream(
         [_message(None, [_tool_call("web_search", {"query": "any meetups?"})])],
         [_text("Here's what I found"), _message("Here's what I found")],

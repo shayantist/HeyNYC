@@ -56,6 +56,28 @@ BASE_ALLOWLIST = [
     "mta.info",
 ]
 
+# The "currency layer" — a small, curated set of reputable news / legal-news domains used
+# ONLY by the recency check (the recent_developments tool), never by the default web_search.
+# This is a deliberate, SUBORDINATE tier: news ranks BELOW gov/authoritative sources and its
+# results are labeled developing/contested, so the official grounded answer always stays
+# primary. Kept engine-independent (injected like BASE_ALLOWLIST) so it never pollutes the
+# per-module allowlists. Intentionally short and reputable-only — this is not "the open web."
+NEWS_ALLOWLIST = [
+    # NYC local newsrooms
+    "thecity.nyc",
+    "gothamist.com",
+    "citylimits.org",
+    "amny.com",
+    "nydailynews.com",
+    # National wire services / paper of record (for state + federal rulings that hit NYC)
+    "nytimes.com",
+    "apnews.com",
+    "reuters.com",
+    # Legal news (court rulings, new/amended law)
+    "nylj.com",            # New York Law Journal
+    "courthousenews.com",
+]
+
 # --- Messaging on-ramp (channels). Secrets via env only. ---
 HEYNYC_PII_SALT = os.getenv("HEYNYC_PII_SALT", "")  # required when serving; pseudonymizes senders
 WHATSAPP_PROVIDER = os.getenv("WHATSAPP_PROVIDER", "meta")  # meta | twilio | both

@@ -17,6 +17,17 @@ def test_system_prompt_injects_current_nyc_datetime():
     assert "GROUND EVERYTHING" in prompt
 
 
+def test_system_prompt_includes_active_recency_check():
+    # The freshness guard goes from passive date-stamping to an ACTIVE recency check: on
+    # time-sensitive law/policy/rights questions the agent must run recent_developments and
+    # surface any breaking change as a dated, cited heads-up on top of the official answer.
+    prompt = build_system_prompt(Registry([]))
+    low = prompt.lower()
+    assert "recent_developments" in prompt
+    assert "this may be changing" in low
+    assert "recency check" in low
+
+
 def test_system_prompt_surfaces_human_and_appeal_path():
     # When it can't help or a user reports a denial/problem, the agent must offer a way to
     # reach a human (311/the agency) and the official appeal path. (NYC GenAI Guidance.)

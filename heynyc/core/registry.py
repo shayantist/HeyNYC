@@ -14,7 +14,9 @@ from urllib.parse import urlparse
 from .manifest import DatasetBinding, ServiceModule
 
 # Trust-tier ordering for web_search ranking; higher = more trusted. (§10.4)
-TIER_RANK = {"authoritative": 3, "editorial": 2, "community": 1}
+# `news` is the currency layer's subordinate tier: it ranks BELOW gov/authoritative and
+# curated editorial sources, so a breaking-news result can never outrank an official one.
+TIER_RANK = {"authoritative": 4, "editorial": 3, "news": 2, "community": 1}
 
 # Friendly, user-facing service names for the capability table. Any module that is
 # not listed falls back to a title-cased version of its folder name, so a newly
@@ -62,14 +64,27 @@ def _domain(url: str) -> str:
 
 
 class Registry:
-    def __init__(self, modules: list[ServiceModule], base_allowlist: Optional[list[str]] = None):
+    def __init__(
+        self,
+        modules: list[ServiceModule],
+        base_allowlist: Optional[list[str]] = None,
+        news_tier: Optional[list[str]] = None,
+    ):
         self.modules = modules
         self.base_allowlist = list(base_allowlist or [])
+        # The currency-layer news domains (injected, like base_allowlist). Deliberately kept
+        # OUT of allowlist() so the default web_search never sees them — only the recency check.
+        self._news_tier = list(news_tier or [])
 
     @classmethod
-    def discover(cls, modules_dir: Path, base_allowlist: Optional[list[str]] = None) -> "Registry":
-        """Scan `modules_dir` for manifests. `modules_dir` + `base_allowlist` are injected by the
-        application — the engine reads no domain config module."""
+    def discover(
+        cls,
+        modules_dir: Path,
+        base_allowlist: Optional[list[str]] = None,
+        news_tier: Optional[list[str]] = None,
+    ) -> "Registry":
+        """Scan `modules_dir` for manifests. `modules_dir` + `base_allowlist` + `news_tier` are
+        injected by the application — the engine reads no domain config module."""
         modules: list[ServiceModule] = []
         if modules_dir.exists():
             for child in sorted(modules_dir.iterdir()):
@@ -89,7 +104,7 @@ class Registry:
                             submodule = ServiceModule.from_manifest(sub_manifest)
                             submodule.parent = module.name
                             modules.append(submodule)
-        return cls(modules, base_allowlist=base_allowlist)
+        return cls(modules, base_allowlist=base_allowlist, news_tier=news_tier)
 
     def dataset_bindings(self) -> dict[str, DatasetBinding]:
         """category -> DatasetBinding. Later modules win on category collision."""
@@ -100,11 +115,20 @@ class Registry:
         return bindings
 
     def allowlist(self) -> list[str]:
-        """Base allowlist plus every module's additions, deduped and sorted."""
+        """Base allowlist plus every module's additions, deduped and sorted.
+
+        Note: this is the trusted allowlist ONLY — it never includes the news tier, so the
+        default web_search stays gov/authoritative-grounded. The recency check unions in
+        news_tier() itself."""
         domains = set(self.base_allowlist)
         for module in self.modules:
             domains.update(module.allowlist)
         return sorted(domains)
+
+    def news_tier(self) -> list[str]:
+        """The curated currency-layer news domains (subordinate tier). Kept separate from
+        allowlist() on purpose: only the recency check (recent_developments) unions these in."""
+        return list(self._news_tier)
 
     def seeds(self) -> list[str]:
         """All module index seeds, deduped, order preserved."""

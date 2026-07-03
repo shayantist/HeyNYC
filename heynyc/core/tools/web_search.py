@@ -17,8 +17,13 @@ from .. import config
 from ..registry import TIER_RANK
 from .base import Tool, ToolContext
 
-# (query, allowed_domains) -> list of {"title","url","snippet"}
-SearchFn = Callable[[str, list[str]], Awaitable[list[dict]]]
+# (query, allowed_domains, recency=None) -> list of {"title","url","snippet"}
+# `recency` is an optional Tavily time_range ("day"/"week"/"month"/"year"): the default
+# web_search backend ignores it (stays untimed), the recency backend applies it.
+SearchFn = Callable[..., Awaitable[list[dict]]]
+
+# Tavily's time_range accepts exactly these; anything else falls back to "year".
+_RECENCY_WINDOWS = ("day", "week", "month", "year")
 
 
 def _domain_allowed(url: str, allowlist: list[str]) -> bool:
@@ -26,8 +31,8 @@ def _domain_allowed(url: str, allowlist: list[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in allowlist)
 
 
-async def tavily_search(query: str, allowed_domains: list[str]) -> list[dict]:
-    """Default backend. Returns [] when no API key (caller treats as unavailable)."""
+async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]:
+    """Shared Tavily call. Returns [] when no API key (caller treats as unavailable)."""
     if not config.TAVILY_API_KEY:
         return []
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -39,6 +44,7 @@ async def tavily_search(query: str, allowed_domains: list[str]) -> list[dict]:
                 "include_domains": allowed_domains,
                 "max_results": 5,
                 "search_depth": "basic",
+                **extra,
             },
         )
         response.raise_for_status()
@@ -46,12 +52,41 @@ async def tavily_search(query: str, allowed_domains: list[str]) -> list[dict]:
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")} for r in results]
 
 
+async def tavily_search(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
+    """Default backend — plain allowlisted search, no recency bias. IGNORES `recency` so the
+    default web_search stays untimed and can serve general/historical/older-than-a-year queries."""
+    return await _tavily(query, allowed_domains)
+
+
+async def tavily_search_recent(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
+    """Recency backend for the currency check. Applies a time window to bias toward recent items,
+    but keeps Tavily's general (relevance-first) topic rather than the `news` topic. The `news`
+    topic ranks by wire/trending volume, which buries a specific, slightly older LOCAL ruling under
+    fresh NATIONAL headlines: measured against this allowlist it never surfaced the March-2026
+    source-of-income appellate ruling for ANY query wording (broad, entity-rich, or by case name),
+    while the relevance-first topic returned that exact ruling as the top on-point result. Recency
+    comes from the entity-rich, year-bearing query the agent builds (rule 9) plus this window — not
+    from a news-trending sort that trades away relevance.
+
+    The window is agent-settable via `recency` (day/week/month/year): narrow to day/week for
+    fast-moving current events, default to a full year for slow-moving rules/laws/rulings. Defaults
+    to "year" when unset; defense in depth — any unexpected value also falls back to "year"."""
+    window = recency if recency in _RECENCY_WINDOWS else "year"
+    return await _tavily(query, allowed_domains, time_range=window)
+
+
 _BASE_GOV = {"nyc.gov", "cityofnewyork.us", "mta.info"}
 
 
-def _tier_of(url: str, source_tiers: dict[str, tuple[str, str]]) -> str:
-    """Best tier for a URL's host: an explicit source_tiers match (highest wins),
-    else a default — gov domains are authoritative, everything allowlisted is editorial."""
+def _tier_of(
+    url: str,
+    source_tiers: dict[str, tuple[str, str]],
+    news_tier: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Best tier for a URL's host: an explicit source_tiers match (highest wins), else a default —
+    gov domains are authoritative, a curated news-tier domain is `news` (subordinate), and
+    everything else allowlisted is editorial. Gov always outranks news so an official page can
+    never be demoted by also appearing in the recency check."""
     host = (urlparse(url).hostname or "").lower()
     best: Optional[str] = None
     for domain, (tier, _module) in source_tiers.items():
@@ -62,6 +97,8 @@ def _tier_of(url: str, source_tiers: dict[str, tuple[str, str]]) -> str:
         return best
     if host.endswith(".gov") or any(host == d or host.endswith("." + d) for d in _BASE_GOV):
         return "authoritative"
+    if any(host == d.lower() or host.endswith("." + d.lower()) for d in news_tier):
+        return "news"
     return "editorial"
 
 
@@ -70,26 +107,33 @@ def _prefers(url: str, prefer: list[str]) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower()) for d in prefer)
 
 
-def web_search_tools(
-    allowlist: list[str],
-    source_tiers: Optional[dict[str, tuple[str, str]]] = None,
-    search_fn: Optional[SearchFn] = None,
-) -> list[Tool]:
-    search = search_fn or tavily_search
-    source_tiers = source_tiers or {}
+# Per-tier presentation label for a result block (falls back to the bare tier name).
+_TIER_LABELS = {
+    "community": "⚠️ community-posted — confirm before you go",
+    "news": "📰 news — recent/developing, verify against the official source",
+}
 
+
+def _make_handler(
+    search: SearchFn,
+    domains: list[str],
+    source_tiers: dict[str, tuple[str, str]],
+    news_tier: list[str],
+    *,
+    abstain_msg: str,
+) -> Callable:
+    """Build a search handler over `domains`, tagging + ranking results by trust tier."""
     async def _handler(args: dict, ctx: ToolContext) -> str:
         prefer = args.get("prefer") or []
-        results = await search(args["query"], allowlist)
-        # Defense in depth: drop anything outside the allowlist even if the provider slipped it in.
-        results = [r for r in results if r.get("url") and _domain_allowed(r["url"], allowlist)]
+        # `recency` only exists on the recent_developments schema; web_search never sets it (None),
+        # and its untimed backend ignores it regardless.
+        results = await search(args["query"], domains, recency=args.get("recency"))
+        # Defense in depth: drop anything outside this tool's domain set even if the provider slipped it in.
+        results = [r for r in results if r.get("url") and _domain_allowed(r["url"], domains)]
         if not results:
-            return (
-                "No results from trusted NYC sources for that query. "
-                "Tell the user you couldn't find it on official sources rather than guessing."
-            )
-        # Tag with trust tier, then rank: preferred domains first, then authoritative→community.
-        tagged = [(r, _tier_of(r["url"], source_tiers)) for r in results]
+            return abstain_msg
+        # Tag with trust tier, then rank: preferred domains first, then authoritative→…→community.
+        tagged = [(r, _tier_of(r["url"], source_tiers, news_tier)) for r in results]
         tagged.sort(key=lambda rt: (_prefers(rt[0]["url"], prefer), TIER_RANK.get(rt[1], 0)), reverse=True)
 
         blocks = []
@@ -97,12 +141,64 @@ def web_search_tools(
             cite = ctx.citations.register(
                 r["url"], snippet=r.get("snippet", "")[:200], title=r.get("title", ""), kind="WEB"
             )
-            label = "⚠️ community-posted — confirm before you go" if tier == "community" else tier
+            label = _TIER_LABELS.get(tier, tier)
             blocks.append(
                 f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{r.get('snippet','')[:400]}"
             )
         return "\n\n".join(blocks)
 
+    return _handler
+
+
+def web_search_tools(
+    allowlist: list[str],
+    source_tiers: Optional[dict[str, tuple[str, str]]] = None,
+    news_tier: Optional[list[str]] = None,
+    search_fn: Optional[SearchFn] = None,
+) -> list[Tool]:
+    source_tiers = source_tiers or {}
+    news_tier = news_tier or []
+    search = search_fn or tavily_search
+    # Injected fakes (tests) drive both tools; production wires the recency-biased backend in.
+    recent_search = search_fn or tavily_search_recent
+    # The recency check unions the trusted allowlist with the subordinate news tier.
+    recent_domains = sorted(set(allowlist) | {d.lower() for d in news_tier})
+
+    web_search = _make_handler(
+        search, allowlist, source_tiers, [],  # default search never tags/sees news
+        abstain_msg=(
+            "No results from trusted NYC sources for that query. "
+            "Tell the user you couldn't find it on official sources rather than guessing."
+        ),
+    )
+    recent_developments = _make_handler(
+        recent_search, recent_domains, source_tiers, news_tier,
+        abstain_msg=(
+            "No recent developments found in trusted news or official sources for that query. "
+            "Don't invent one — it's fine to say there's nothing new you can confirm."
+        ),
+    )
+
+    prefer_param = {
+        "prefer": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional domains to rank first (e.g. a topic's official sites).",
+        },
+    }
+    # recent_developments ONLY — lets the agent pick the recency window per question.
+    recency_param = {
+        "recency": {
+            "type": "string",
+            "enum": list(_RECENCY_WINDOWS),
+            "description": (
+                "Optional recency window. Narrow to 'day' or 'week' for fast-moving current "
+                "events (a breaking ruling, a just-announced change) so you don't pull stale "
+                "year-old items. Leave it unset (defaults to 'year') for slow-moving rules, "
+                "laws, or rulings where a year-wide window is appropriate."
+            ),
+        },
+    }
     return [
         Tool(
             name="web_search",
@@ -116,17 +212,42 @@ def web_search_tools(
             ),
             parameters={
                 "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The search query."},
-                    "prefer": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional domains to rank first (e.g. a topic's official sites).",
-                    },
-                },
+                "properties": {"query": {"type": "string", "description": "The search query."}, **prefer_param},
                 "required": ["query"],
             },
             open_world=True,  # hits the open web (allowlisted)
-            handler=_handler,
-        )
+            handler=web_search,
+        ),
+        Tool(
+            name="recent_developments",
+            description=(
+                "The CURRENCY CHECK. Use AFTER you've grounded the authoritative answer in official "
+                "sources, for legal / policy / benefits-rules / rights questions whose answer could "
+                "have CHANGED recently (a court ruling, a new or amended law, an eligibility change). "
+                "Build a SPECIFIC, entity-rich `query` from the actual rule/program/parties in the "
+                "question — name the statute, program, or case and add 'ruling'/'law'/the year, e.g. "
+                "'NYC Section 8 source of income discrimination court ruling 2026', NOT a broad "
+                "'Section 8 news'. A broad query returns unrelated trending headlines instead of the "
+                "on-point change. Searches the trusted allowlist PLUS a small curated set of reputable "
+                "news + legal-news sources. News results are tagged '📰 news' and rank BELOW official "
+                "sources — they are DEVELOPING/CONTESTED. RELEVANCE GATE: only surface a result if it "
+                "bears on the SAME rule/law/program the user asked about. If what comes back is merely "
+                "tangential (e.g. unrelated funding cuts when the question was about the discrimination "
+                "law), STAY SILENT — saying nothing beats appending an off-topic caveat. When a result "
+                "IS on point, surface it as a clearly labeled, DATED, CITED heads-up (e.g. 'Heads up, "
+                "this may be changing: <X>, per <source> (<date>)') that NEVER overrides the official "
+                "answer. Cite every result; if nothing on point comes back, don't invent a development."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query."},
+                    **prefer_param,
+                    **recency_param,
+                },
+                "required": ["query"],
+            },
+            open_world=True,  # hits the open web (allowlist + curated news tier)
+            handler=recent_developments,
+        ),
     ]

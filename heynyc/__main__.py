@@ -155,7 +155,7 @@ def _render_capabilities(registry: Registry) -> None:
 
 
 def _cmd_capabilities(markdown: bool, write_readme: bool) -> None:
-    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     if write_readme:
         changed = _write_readme_capabilities(registry.capability_markdown())
         state = "updated" if changed else "already up to date"
@@ -167,7 +167,7 @@ def _cmd_capabilities(markdown: bool, write_readme: bool) -> None:
 
 
 def _cmd_modules() -> None:
-    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     if not registry.modules:
         print("No modules found in heynyc/modules/.")
         return
@@ -182,7 +182,7 @@ async def _cmd_index_build() -> None:
     from heynyc.core.index import default_embedder, open_store
     from heynyc.core.index.corpus import build_index
 
-    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     config.HEYNYC_DATA_DIR.mkdir(parents=True, exist_ok=True)
     store = open_store(_INDEX_PATH)
     print(f"Building index for {len(registry.seeds())} seed URL(s)...")
@@ -203,7 +203,7 @@ def _cmd_index_search(query: str) -> None:
 async def _cmd_chat(question: str) -> None:
     from heynyc.core import telemetry
 
-    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
@@ -264,7 +264,7 @@ async def _cmd_repl() -> None:
     from rich.text import Text
 
     console = Console()
-    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     convo = agent.conversation()
 
@@ -340,7 +340,7 @@ async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None
     from heynyc.core.agent import Agent
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
 
-    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     retriever = _load_retriever(required=False)
     cases = load_cases(registry)
     if module:

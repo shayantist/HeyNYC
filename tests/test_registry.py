@@ -62,6 +62,15 @@ def test_discover_recurses_into_topics(tmp_path: Path):
     assert "https://b.example/y" in registry.seeds()
 
 
+def test_news_tier_kept_separate_from_allowlist():
+    # The currency-layer news domains are injected but MUST NOT leak into the trusted allowlist —
+    # only the recency check unions them in. (Trust discipline: default search stays gov-grounded.)
+    reg = Registry([], base_allowlist=["nyc.gov"], news_tier=["gothamist.com", "nytimes.com"])
+    assert reg.news_tier() == ["gothamist.com", "nytimes.com"]
+    assert "gothamist.com" not in reg.allowlist()
+    assert "nytimes.com" not in reg.allowlist()
+
+
 def test_source_tiers_aggregates_highest_trust_wins():
     from heynyc.core.manifest import ServiceModule
 
