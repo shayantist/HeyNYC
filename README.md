@@ -19,6 +19,24 @@ Thus, I wanted to make HeyNYC as a way to make government services accessible th
 
 If you find any failure modes, please feel free to **make an issue** as we're also making a database of failures to test against and make sure we [fill any and all holes](https://www.instagram.com/p/DWMD6wGD6-O/) as we go. 
 
+## What you can ask
+
+Here's what you can ask me today. Every service is a pluggable module, and this table is generated straight from those module manifests (`uv run python -m heynyc capabilities --markdown`), so it can never drift as modules get added or removed:
+
+<!-- CAPABILITIES:START -->
+
+| Service | What you can ask | Grounded in | Official link |
+| --- | --- | --- | --- |
+| **Emergency advisories** | "Are there any advisories right now?"<br>"Is it safe to be outside today?" | Notify NYC / NYC Emergency Management feed | [nyc.gov](https://www.nyc.gov/notifynyc) |
+| **Benefits & programs** | "I'm struggling to afford groceries, what can I get?"<br>"Am I eligible for SNAP?" | NYC Benefits & Programs dataset + Screening API | [access.nyc.gov](https://access.nyc.gov) |
+| **Cooling centers** | "Where's the nearest cooling center?"<br>"It's too hot, where can I cool off indoors today?" | NYC Emergency Management - Cooling Centers | [finder.nyc.gov](https://finder.nyc.gov/coolingcenters/) |
+| **Events** | "What's happening in NYC this weekend?"<br>"Any free events tonight?" | Ticketmaster + NYC Parks | [nyctourism.com](https://www.nyctourism.com/events/) |
+| **Food pantries** | "Where's the nearest food pantry?"<br>"I need free food today near me" | NYC FoodHelp finder | [finder.nyc.gov](https://finder.nyc.gov/foodhelp/) |
+| **Housing & eviction help** | "I got an eviction notice, where can I get help near me?"<br>"My landlord won't turn on the heat, what do I do?" | NYC DSS/DHS - Homebase (eviction prevention) offices | [access.nyc.gov](https://access.nyc.gov) |
+| **SNAP centers** | "Where's the nearest SNAP center?"<br>"Where do I apply for food stamps in person?" | NYC Open Data (tc6u-8rnp) | [access.nyc.gov](https://access.nyc.gov) |
+
+<!-- CAPABILITIES:END -->
+
 ## How it works
 
 ```
@@ -33,7 +51,7 @@ you ──▶ agent (streaming tool-calling loop)
 
 Services are **pluggable modules**: each is a self-contained folder (manifest + optional tool +
 its own eval), so adding a service is adding a folder and deleting one is deleting the folder.
-Built-in so far: `benefits`, `cooling_centers`, and `events` (with a seasonal `world_cup` topic).
+The built-in modules are the ones listed in **[What you can ask](#what-you-can-ask)** above.
 See the **[module authoring guide](heynyc/modules/README.md)**.
 
 ## Quickstart
@@ -66,4 +84,4 @@ Standalone Python package, fully offline-tested and live-verified against the re
 ## Known limitations
 
 - **Intersections geocode poorly.** NYC GeoSearch sends "116 St and Broadway" to the wrong neighborhood, and its confidence scores don't flag it. HeyNYC echoes back the address it resolved and asks you to confirm before trusting it.
-- **Some datasets are thin.** The cooling-centers data has no street addresses or hours, so HeyNYC won't guess them. It points you to finder.nyc.gov and 311 instead. Future work involves indexing that info into the tools for the agent. 
+- **Some datasets are thin.** A few finders don't publish everything: the SNAP-center list, for instance, has no per-center hours or phone numbers, so HeyNYC won't guess them and points you to ACCESS HRA and 311 instead. 

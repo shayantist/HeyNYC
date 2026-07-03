@@ -6,13 +6,59 @@ index seed set, and the capability blurbs for the system prompt.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from .manifest import DatasetBinding, ServiceModule
 
 # Trust-tier ordering for web_search ranking; higher = more trusted. (§10.4)
 TIER_RANK = {"authoritative": 3, "editorial": 2, "community": 1}
+
+# Friendly, user-facing service names for the capability table. Any module that is
+# not listed falls back to a title-cased version of its folder name, so a newly
+# added module still gets a sensible label without editing this map.
+_SERVICE_NAMES = {
+    "benefits": "Benefits & programs",
+    "food_pantries": "Food pantries",
+    "cooling_centers": "Cooling centers",
+    "snap_centers": "SNAP centers",
+    "housing": "Housing & eviction help",
+    "advisories": "Emergency advisories",
+    "events": "Events",
+}
+
+# Short, honest source labels for modules grounded in a live tool or several sources
+# rather than a single declared dataset binding. Dataset-bound modules derive their
+# label straight from the binding (see _grounded_in), so they are absent here.
+_SOURCE_LABELS = {
+    "benefits": "NYC Benefits & Programs dataset + Screening API",
+    "food_pantries": "NYC FoodHelp finder",
+    "advisories": "Notify NYC / NYC Emergency Management feed",
+    "events": "Ticketmaster + NYC Parks",
+}
+
+
+@dataclass
+class CapabilityRow:
+    """One user-facing row of the capability table (one per top-level module)."""
+
+    service: str          # friendly service name, e.g. "Food pantries"
+    asks: list[str]       # a couple of example questions a user can ask
+    grounded_in: str      # short, honest source label
+    official_link: str    # a primary official URL (may be "")
+
+
+def _md_cell(text: str) -> str:
+    """Escape a value for a markdown table cell (a raw pipe would break the row)."""
+    return text.replace("|", "\\|")
+
+
+def _domain(url: str) -> str:
+    """The bare host of a URL, without a leading 'www.' (a compact link label)."""
+    host = urlparse(url).netloc or url
+    return host[4:] if host.startswith("www.") else host
 
 
 class Registry:
@@ -113,6 +159,64 @@ class Registry:
             if module.examples or module.description:
                 menu.append((module.category, module.description or module.name, list(module.examples)))
         return menu
+
+    def _service_name(self, module: ServiceModule) -> str:
+        return _SERVICE_NAMES.get(module.name) or module.name.replace("_", " ").capitalize()
+
+    def _grounded_in(self, module: ServiceModule) -> str:
+        """A short, honest 'grounded in' label. A dataset binding names itself (ArcGIS
+        by its title, Socrata by its open-data id); everything else uses a curated
+        tool/source label, falling back to a generic one for an unlisted module."""
+        if module.datasets:
+            labels: list[str] = []
+            for binding in module.datasets:
+                if binding.source == "arcgis":
+                    labels.append(binding.title or "NYC ArcGIS layer")
+                else:
+                    labels.append(f"NYC Open Data ({binding.id})")
+            return " + ".join(dict.fromkeys(labels))
+        return _SOURCE_LABELS.get(module.name, "Official NYC sources")
+
+    def _official_link(self, module: ServiceModule) -> str:
+        """A primary official URL: the first index seed if any, else the first
+        allowlisted domain as an https URL, else blank."""
+        if module.seeds:
+            return module.seeds[0]
+        if module.allowlist:
+            return f"https://{module.allowlist[0]}"
+        return ""
+
+    def capability_table(self, max_asks: int = 2) -> list[CapabilityRow]:
+        """The user-facing capability table: one row per top-level module (submodules
+        fold into their parent). A pure function of the installed modules, so it can
+        never drift from what's actually loaded (the README table is generated from it)."""
+        rows: list[CapabilityRow] = []
+        for module in self.modules:
+            if module.parent:                       # submodules fold into their parent
+                continue
+            rows.append(CapabilityRow(
+                service=self._service_name(module),
+                asks=list(module.examples[:max_asks]),
+                grounded_in=self._grounded_in(module),
+                official_link=self._official_link(module),
+            ))
+        return rows
+
+    def capability_markdown(self) -> str:
+        """The capability table as a GitHub-flavored markdown table (the block embedded
+        in the README between the CAPABILITIES markers). Deterministic, so a drift test
+        can assert the committed README still matches this generated output."""
+        lines = [
+            "| Service | What you can ask | Grounded in | Official link |",
+            "| --- | --- | --- | --- |",
+        ]
+        for row in self.capability_table():
+            asks = "<br>".join(f'"{_md_cell(a)}"' for a in row.asks)
+            link = f"[{_domain(row.official_link)}]({row.official_link})" if row.official_link else ""
+            lines.append(
+                f"| **{_md_cell(row.service)}** | {asks} | {_md_cell(row.grounded_in)} | {link} |"
+            )
+        return "\n".join(lines)
 
     def welcome_text(self) -> str:
         """A warm, grounded 'here's what I can do' for first contact / the help intent — generated

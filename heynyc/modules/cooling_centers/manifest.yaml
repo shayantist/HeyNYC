@@ -20,7 +20,7 @@ keywords:
   - older adult center
 examples:
   - "Where's the nearest cooling center?"
-  - "It's too hot — where can I cool off indoors today?"
+  - "It's too hot, where can I cool off indoors today?"
 datasets:
   - source: arcgis
     url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/CoolingCenters_PROD_view/FeatureServer/0

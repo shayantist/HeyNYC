@@ -1,6 +1,9 @@
 """Capability discovery — data-driven from each module's `examples:` (multichannel spec §14)."""
 from __future__ import annotations
 
+import re
+
+from heynyc.__main__ import CAPABILITIES_END, CAPABILITIES_START
 from heynyc.core import config
 from heynyc.core.registry import Registry
 
@@ -41,6 +44,49 @@ def test_welcome_text_discloses_it_is_an_ai_not_a_city_employee():
     low = _reg().welcome_text().lower()
     assert "ai assistant" in low
     assert "not a city employee" in low
+
+
+def test_capability_table_is_one_row_per_top_level_module():
+    reg = _reg()
+    rows = reg.capability_table()
+    top_level = [m for m in reg.modules if not m.parent]
+    assert len(rows) == len(top_level)                 # submodules fold into their parent
+    services = [r.service for r in rows]
+    assert "Events" in services
+    assert "Cooling centers" in services
+    # world_cup is a submodule of events, so it never gets its own row.
+    assert not any("World Cup" in s or "world_cup" in s for s in services)
+
+
+def test_capability_table_derives_source_and_link_from_manifest():
+    rows = {r.service: r for r in _reg().capability_table()}
+    # ArcGIS dataset binding names itself by its title.
+    assert rows["Cooling centers"].grounded_in == "NYC Emergency Management - Cooling Centers"
+    # Socrata binding is labelled by its open-data id.
+    assert rows["SNAP centers"].grounded_in == "NYC Open Data (tc6u-8rnp)"
+    # Official link is the first seed when present, else the first allowlist domain.
+    assert rows["Food pantries"].official_link == "https://finder.nyc.gov/foodhelp/"
+    assert rows["Benefits & programs"].official_link == "https://access.nyc.gov"
+    assert all(r.asks for r in rows.values())          # every row shows at least one example
+
+
+def test_capability_markdown_has_the_four_columns():
+    md = _reg().capability_markdown()
+    assert md.splitlines()[0] == "| Service | What you can ask | Grounded in | Official link |"
+
+
+def test_readme_capabilities_block_matches_generated_table():
+    """Drift guard: the table committed to README must equal the freshly generated one.
+    Add or remove a module without regenerating (`heynyc capabilities --write-readme`)
+    and this fails, so the README single-sources from the manifests, same as the index."""
+    readme = (config.PROJECT_ROOT / "README.md").read_text()
+    match = re.search(
+        re.escape(CAPABILITIES_START) + r"(.*?)" + re.escape(CAPABILITIES_END),
+        readme,
+        re.DOTALL,
+    )
+    assert match, "README is missing the CAPABILITIES markers"
+    assert match.group(1).strip() == _reg().capability_markdown().strip()
 
 
 def test_is_help_detects_greetings_but_not_real_questions():

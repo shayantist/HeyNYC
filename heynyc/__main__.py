@@ -107,6 +107,65 @@ def _cmd_new_module(name: str) -> None:
     print("See heynyc/modules/README.md for the full guide.")
 
 
+CAPABILITIES_START = "<!-- CAPABILITIES:START -->"
+CAPABILITIES_END = "<!-- CAPABILITIES:END -->"
+
+
+def _readme_path() -> Path:
+    return config.PROJECT_ROOT / "README.md"
+
+
+def _write_readme_capabilities(markdown: str) -> bool:
+    """Rewrite just the content between the CAPABILITIES markers in README.md.
+
+    Idempotent: returns True only when the file actually changed. A function
+    replacement is used so backslash escapes in the generated table (e.g. an
+    escaped pipe) are never treated as regex backreferences."""
+    import re
+
+    path = _readme_path()
+    text = path.read_text()
+    block = f"{CAPABILITIES_START}\n\n{markdown}\n\n{CAPABILITIES_END}"
+    pattern = re.compile(
+        re.escape(CAPABILITIES_START) + r".*?" + re.escape(CAPABILITIES_END), re.DOTALL
+    )
+    if not pattern.search(text):
+        raise SystemExit(
+            f"README markers not found. Add {CAPABILITIES_START} / {CAPABILITIES_END} to {path}."
+        )
+    new_text = pattern.sub(lambda _m: block, text)
+    if new_text == text:
+        return False
+    path.write_text(new_text)
+    return True
+
+
+def _render_capabilities(registry: Registry) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title="HeyNYC capabilities")
+    table.add_column("Service", style="bold")
+    table.add_column("What you can ask")
+    table.add_column("Grounded in")
+    table.add_column("Official link")
+    for row in registry.capability_table():
+        table.add_row(row.service, "\n".join(row.asks), row.grounded_in, row.official_link)
+    Console().print(table)
+
+
+def _cmd_capabilities(markdown: bool, write_readme: bool) -> None:
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    if write_readme:
+        changed = _write_readme_capabilities(registry.capability_markdown())
+        state = "updated" if changed else "already up to date"
+        print(f"README capabilities section {state} → {_readme_path()}")
+    elif markdown:
+        print(registry.capability_markdown())
+    else:
+        _render_capabilities(registry)
+
+
 def _cmd_modules() -> None:
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
     if not registry.modules:
@@ -339,7 +398,10 @@ def main() -> None:
     chat = sub.add_parser("chat", help="ask the agent a question (one-shot)")
     chat.add_argument("question")
     sub.add_parser("repl", help="interactive streaming chat (feels like Claude Code)")
-    sub.add_parser("capabilities", help="print the grounded 'what can you do' menu (from module examples)")
+    cap = sub.add_parser("capabilities", help="print the capabilities table (generated from module manifests)")
+    cap.add_argument("--markdown", action="store_true", help="emit a GitHub markdown table")
+    cap.add_argument("--write-readme", dest="write_readme", action="store_true",
+                     help="rewrite the CAPABILITIES section of README.md in place (idempotent)")
     sub.add_parser("stats", help="show cost/usage telemetry from past chat turns")
     ev = sub.add_parser("eval", help="run the no-hallucination eval gate")
     ev.add_argument(
@@ -372,7 +434,7 @@ def main() -> None:
     elif args.command == "repl":
         asyncio.run(_cmd_repl())
     elif args.command == "capabilities":
-        print(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST).welcome_text())
+        _cmd_capabilities(markdown=args.markdown, write_readme=args.write_readme)
     elif args.command == "stats":
         from heynyc.core import telemetry
 
