@@ -1,0 +1,386 @@
+"""clinics module tool: `find_clinic` — the nearest NYC safety-net clinics that will see you
+regardless of insurance or immigration status.
+
+Two source CLASSES, merged and ranked by distance:
+
+  - FQHC (live): HRSA's Primary Health Care service-delivery sites (a public, tokenless ArcGIS
+    MapServer layer), filtered to ACTIVE sites in the five NYC counties (~459). Federally Qualified
+    Health Centers are required by the HRSA Health Center Program to serve everyone on a sliding fee
+    scale regardless of ability to pay.
+  - NYC_CARE (bundled seed): the 11 NYC Health + Hospitals acute-care hospitals + the Gotham Health
+    community health centers, transcribed from nychealthandhospitals.org/locations and geocoded at
+    BUILD time (see build_seed.py). NYC Care guarantees low/no-cost care at H+H and doesn't ask about
+    immigration status.
+
+ANTI-HALLUCINATION CORE: the eligibility / cost / immigration-safety framing NEVER comes from a
+per-row field (per-row cost data is sparse and malformed) and NEVER from the model. It comes ONLY
+from the CLASS -> ProgramGuarantee map below, whose wording is grounded to and cited from the
+program's official page (hrsa.gov for FQHC, access.nyc.gov for NYC Care). Each returned site carries
+a DATA citation (the facility source) AND its class's DOC citation (the program page).
+
+If geocoding fails or nothing is near, the tool abstains and routes to 311 / 646-NYC-CARE — it never
+guesses a clinic.
+"""
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import httpx
+
+from heynyc.core.citations import data_provenance
+from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
+from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.geo import (
+    _clarify_message,
+    _resolution_note,
+    geocode,
+    haversine_m,
+    maps_link,
+    miles,
+)
+
+# --- FQHC spine (live HRSA ArcGIS MapServer layer; behaves like a FeatureServer for /query) ---
+# Recon-verified 2026-07-04: `f=geojson` returns point features; the generic arcgis client accepts
+# this MapServer URL unchanged (it does string ops on the URL, no "FeatureServer" hardcoding).
+HRSA_URL = (
+    "https://gisportal.hrsa.gov/server/rest/services/HealthCareFacilities/"
+    "PrimaryHealthCareFacilities_FS/MapServer/0"
+)
+# Active FQHC service-delivery sites in the five NYC counties. Verified count = 459 (2026-07-04):
+# Bronx 148, Kings 157, New York 92, Queens 46, Richmond 16.
+FQHC_WHERE = ("HCC_STATUS_DESC='Active' AND SITE_STATE_ABBR='NY' "
+              "AND COUNTY_NM IN ('Bronx','Kings','New York','Queens','Richmond')")
+
+SEED_PATH = Path(__file__).resolve().parent / "data" / "nyc_care_sites.tsv"
+NYC_CARE_SOURCE = "https://www.nychealthandhospitals.org/locations/"
+OFFICIAL = "call 311, or 646-NYC-CARE (646-692-2273) for NYC Care enrollment"
+# HRSA county names -> common NYC borough names (Kings=Brooklyn, New York=Manhattan, Richmond=SI).
+_COUNTY_TO_BOROUGH = {
+    "Bronx": "Bronx", "Kings": "Brooklyn", "New York": "Manhattan",
+    "Queens": "Queens", "Richmond": "Staten Island",
+}
+
+CLASS_FQHC = "FQHC"
+CLASS_NYC_CARE = "NYC_CARE"
+
+# The anti-hallucination bar: reviewed + cited on VERIFIED_ON against the official program page.
+# `snippet` is a subset of `body`'s wording (keeps the eval faithfulness overlap high). Re-verify
+# the live pages before editing any fact.
+VERIFIED_ON = "2026-07-04"
+
+
+@dataclass(frozen=True)
+class ProgramGuarantee:
+    """A CLASS's grounded eligibility framing + the citations that back it.
+
+    doc_url/doc_title/snippet/body -> the DOC citation to the official PROGRAM page (the eligibility
+    guarantee). data_title -> the title for each facility's DATA citation (the facility source).
+    """
+    label: str
+    lead: str          # a warm one-line reassurance shown once per class present in the results
+    doc_url: str       # official program page (verified live)
+    doc_title: str
+    snippet: str       # short cite label — subset of `body`
+    body: str          # the grounded eligibility / cost / immigration-safety sentence(s), cited
+    data_title: str    # citation title for the facility (DATA) source
+
+
+CLASS_GUARANTEE: dict[str, ProgramGuarantee] = {
+    CLASS_FQHC: ProgramGuarantee(
+        label="Community Health Center (FQHC)",
+        lead="These are federally funded health centers that see everyone — insured or not.",
+        doc_url="https://www.hrsa.gov/get-health-care",
+        doc_title="Get Health Care — HRSA Health Center Program",
+        snippet=("HRSA-funded health centers see all patients regardless of ability to pay and "
+                 "charge on a sliding fee scale based on your income and family size"),
+        body=("Federally Qualified Health Centers (community health centers) are funded by HRSA's "
+              "Health Center Program to provide primary care in underserved communities. They see "
+              "all patients regardless of ability to pay — whether or not you have insurance — and "
+              "charge on a sliding fee scale (discounts based on your income and family size), so "
+              "cost is not a barrier to care."),
+        data_title="HRSA Primary Health Care service-delivery sites",
+    ),
+    CLASS_NYC_CARE: ProgramGuarantee(
+        label="NYC Health + Hospitals (NYC Care)",
+        lead="These city hospitals and clinics serve everyone and don't ask about immigration status.",
+        doc_url="https://access.nyc.gov/programs/nyc-care/",
+        doc_title="NYC Care — ACCESS NYC",
+        snippet=("NYC Care gives low- or no-cost care at NYC Health + Hospitals, sliding-scale fees "
+                 "starting at $0, and doesn't ask about immigration status; enroll at 646-NYC-CARE "
+                 "(646-692-2273)"),
+        body=("NYC Care is a health-access program that gives you your own doctor and services at "
+              "NYC Health + Hospitals locations citywide, with sliding-scale fees starting at $0 and "
+              "no membership fees, monthly fees, or premiums. NYC Care doesn't ask about immigration "
+              "status — you can seek care regardless of immigration status or ability to pay. To "
+              "enroll, call 646-NYC-CARE (646-692-2273)."),
+        data_title="NYC Health + Hospitals locations (NYC Care sites)",
+    ),
+}
+
+
+def _clean(value) -> str:
+    """None / literal 'NULL' / 'N/A' / blanks -> '' (HRSA uses these as empty markers)."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return "" if text.upper() in ("NULL", "N/A", "NA") else text
+
+
+@dataclass
+class Clinic:
+    name: str
+    lat: float
+    lon: float
+    address: str
+    borough: str
+    phone: str
+    url: str
+    klass: str
+    record_id: str
+    valid_as_of: str
+    raw: dict = field(default_factory=dict)
+
+
+# --- FQHC (live ArcGIS record) ---------------------------------------------
+
+def _fqhc_address(record: dict) -> str:
+    """Assemble 'street, City ZIP5' from the HRSA fields (any may be blank)."""
+    street = _clean(record.get("SITE_ADDRESS"))
+    city = _clean(record.get("SITE_CITY"))
+    zip5 = _clean(record.get("SITE_ZIP_CD"))[:5]
+    tail = " ".join(p for p in (city, zip5) if p)
+    return ", ".join(p for p in (street, tail) if p)
+
+
+def _fqhc_from_record(record: dict) -> Clinic | None:
+    """Map a raw HRSA feature record to an FQHC Clinic; drop records without usable coordinates."""
+    try:
+        lat = float(record["lat"])
+        lon = float(record["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    county = _clean(record.get("COUNTY_NM"))
+    return Clinic(
+        name=_clean(record.get("SITE_NM")) or "Community health center",
+        lat=lat,
+        lon=lon,
+        address=_fqhc_address(record),
+        borough=_COUNTY_TO_BOROUGH.get(county, county),
+        phone=_clean(record.get("SITE_PHONE_NUM")),
+        url=_clean(record.get("SITE_URL")),
+        klass=CLASS_FQHC,
+        record_id=_clean(record.get("OBJECTID")),
+        valid_as_of=VERIFIED_ON,
+        raw=record,
+    )
+
+
+# --- NYC_CARE (bundled, build-time-geocoded seed) --------------------------
+
+def _load_nyc_care_seed(path: Path = SEED_PATH) -> list[Clinic]:
+    """Load the bundled NYC Care / H+H seed (build-time geocoded). Rows without coords are dropped.
+
+    A missing/unreadable seed degrades to [] (the tool still serves live FQHCs) — never crashes.
+    """
+    clinics: list[Clinic] = []
+    try:
+        with path.open(encoding="utf-8") as fh:
+            rows = csv.DictReader((line for line in fh if not line.startswith("#")), delimiter="\t")
+            for row in rows:
+                try:
+                    lat = float(row["lat"])
+                    lon = float(row["lon"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                street = _clean(row.get("street"))
+                zip5 = _clean(row.get("zip"))[:5]
+                borough = _clean(row.get("borough"))
+                address = ", ".join(p for p in (street, " ".join(x for x in (borough, zip5) if x)) if p)
+                clinics.append(Clinic(
+                    name=_clean(row.get("name")) or "NYC Health + Hospitals site",
+                    lat=lat,
+                    lon=lon,
+                    address=address,
+                    borough=borough,
+                    phone=_clean(row.get("phone")),
+                    url=_clean(row.get("url")),
+                    klass=CLASS_NYC_CARE,
+                    record_id=_clean(row.get("name")),
+                    valid_as_of=VERIFIED_ON,
+                    raw=dict(row),
+                ))
+    except OSError:
+        return []
+    return clinics
+
+
+# --- citations -------------------------------------------------------------
+
+def _facility_citation(ctx: ToolContext, clinic: Clinic, *,
+                       origin_lat: float, origin_lon: float, dist_mi: float) -> str:
+    """A DATA citation for the facility source (re-fetchable + provenance + distance derivation).
+
+    FQHC -> the single-feature HRSA ArcGIS permalink (row-addressed by OBJECTID). NYC_CARE -> the
+    H+H locations page the seed row was transcribed from (the seed row snapshot is the provenance).
+    """
+    guarantee = CLASS_GUARANTEE[clinic.klass]
+    if clinic.klass == CLASS_FQHC:
+        url = (feature_query_url(HRSA_URL, clinic.record_id, id_field="OBJECTID")
+               if clinic.record_id else HRSA_URL)
+    else:
+        url = NYC_CARE_SOURCE
+    provenance = data_provenance(
+        clinic.raw,
+        record_id=clinic.record_id,
+        field_pointer="/",
+        derivation={"origin": [origin_lat, origin_lon], "point": [clinic.lat, clinic.lon],
+                    "distance_mi": dist_mi},
+    )
+    return ctx.citations.register(
+        url,
+        snippet=f"{clinic.name} — {clinic.address or clinic.borough or 'NYC'}",
+        title=guarantee.data_title,
+        kind="DATA",
+        valid_as_of=clinic.valid_as_of,
+        provenance=provenance,
+    )
+
+
+def _program_citation(ctx: ToolContext, klass: str) -> str:
+    """A DOC citation for the CLASS's official program page — the grounded eligibility guarantee.
+
+    Deduped by the registry on (kind, url, snippet), so many sites of one class share one program id.
+    """
+    guarantee = CLASS_GUARANTEE[klass]
+    return ctx.citations.register(
+        guarantee.doc_url,
+        snippet=guarantee.snippet,
+        title=guarantee.doc_title,
+        kind="DOC",
+        valid_as_of="",
+    )
+
+
+# --- the tool --------------------------------------------------------------
+
+def _clinic_block(clinic: Clinic, cite: str, dist_mi: float) -> str:
+    guarantee = CLASS_GUARANTEE[clinic.klass]
+    where = clinic.address or clinic.borough or "NYC"
+    parts = [f"- {clinic.name} [{guarantee.label}] ({where}) — "
+             f"{dist_mi:.2f} mi straight-line {{cite:{cite}}}"]
+    if clinic.phone:
+        parts.append(f"  Phone: {clinic.phone}")
+    if clinic.url:
+        parts.append(f"  Website: {clinic.url}")
+    parts.append(f"  Directions: {maps_link(clinic.lat, clinic.lon)}")
+    parts.append(f"  As of: {clinic.valid_as_of}")
+    return "\n".join(parts)
+
+
+async def _handler(args: dict, ctx: ToolContext) -> str:
+    near = (args.get("near") or "").strip()
+    if not near:
+        return ("Ask the user where they are (an NYC address, neighborhood, or ZIP) before searching "
+                "— never guess a clinic location.")
+
+    origin = await geocode(near, client=ctx.http)
+    if origin is None:
+        return (f"I couldn't locate '{near}' in NYC, so I can't find a nearby clinic. Ask the user "
+                f"for a specific NYC address, neighborhood, or ZIP — don't guess a clinic. If they "
+                f"need care now, they can {OFFICIAL}.")
+    if origin.low_confidence:
+        return _clarify_message(near)
+
+    # FQHC spine is live; on any HRSA error we DEGRADE to the bundled NYC Care seed rather than
+    # abstain (the safety-net answer still stands). Only a truly empty merge abstains.
+    fqhcs: list[Clinic] = []
+    degraded = False
+    try:
+        records = await query_feature_service(HRSA_URL, where=FQHC_WHERE, client=ctx.http)
+        fqhcs = [c for c in (_fqhc_from_record(r) for r in records) if c is not None]
+    except httpx.HTTPError:
+        degraded = True
+
+    clinics = fqhcs + _load_nyc_care_seed()
+    if not clinics:
+        return (f"I couldn't pull any NYC safety-net clinics right now — don't invent one. Point the "
+                f"user to {OFFICIAL}, or findahealthcenter.hrsa.gov.")
+
+    k = int(args.get("k") or 5)
+    ordered = sorted(clinics, key=lambda c: haversine_m(origin.lat, origin.lon, c.lat, c.lon))
+    ranked: list[Clinic] = []
+    seen: set[tuple] = set()
+    for clinic in ordered:
+        key = (clinic.name.strip().lower(), round(clinic.lat, 5), round(clinic.lon, 5))
+        if key in seen:
+            continue
+        seen.add(key)
+        ranked.append(clinic)
+        if len(ranked) >= k:
+            break
+
+    lines = [
+        f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
+        _resolution_note(near, origin),
+    ]
+    if degraded:
+        lines.append("(HRSA's live health-center data was unreachable — showing NYC Health + "
+                     "Hospitals / NYC Care sites only. Suggest the user also try findahealthcenter.hrsa.gov.)")
+    lines.append("Nearby clinics that will see you regardless of insurance — report only these, cite "
+                 "each. Lead with the reassurance that these places serve everyone:")
+    classes_present: list[str] = []
+    for clinic in ranked:
+        dist_mi = miles(haversine_m(origin.lat, origin.lon, clinic.lat, clinic.lon))
+        cite = _facility_citation(ctx, clinic, origin_lat=origin.lat, origin_lon=origin.lon,
+                                  dist_mi=dist_mi)
+        lines.append(_clinic_block(clinic, cite, dist_mi))
+        if clinic.klass not in classes_present:
+            classes_present.append(clinic.klass)
+
+    # The eligibility / immigration-safety framing — ONE grounded, cited block per class present.
+    # This is the ONLY source of any cost/eligibility/immigration claim (never a per-row field).
+    for klass in classes_present:
+        guarantee = CLASS_GUARANTEE[klass]
+        prog_cite = _program_citation(ctx, klass)
+        lines.append(f"What {guarantee.label} means for you: {guarantee.body} {{cite:{prog_cite}}}")
+
+    lines.append("Call ahead to confirm hours and the services you need — this is not medical advice, "
+                 "and for a medical emergency call 911. Report only the sites and the grounded "
+                 "eligibility text above; never state a cost, eligibility, or immigration fact that "
+                 "isn't in this result.")
+    return "\n".join(lines)
+
+
+def get_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="find_clinic",
+            description=(
+                "Find the nearest NYC safety-net clinics that will see someone regardless of "
+                "insurance or immigration status, grounded + cited. Merges two sources: live HRSA "
+                "Federally Qualified Health Centers (community health centers, sliding fee scale) and "
+                "NYC Health + Hospitals / NYC Care sites (low/no-cost, doesn't ask immigration "
+                "status). Pass `near` = the user's NYC address, neighborhood, or ZIP; optional `k` "
+                "(default 5). Returns each site's name, address, borough, phone, distance, and CLASS, "
+                "plus a grounded eligibility guarantee cited to the program's official page. Use for "
+                "'doctor without insurance', 'free clinic', 'I'm undocumented and sick'. NEVER guess a "
+                "clinic: if geocoding fails or none are near, it abstains and routes to 311 / "
+                "646-NYC-CARE. The eligibility/immigration-safety text comes only from the program "
+                "citation, never invented per-site."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "near": {"type": "string",
+                             "description": "The NYC address, neighborhood, or ZIP to search near."},
+                    "k": {"type": "integer",
+                          "description": "How many clinics to return (default 5).", "default": 5},
+                },
+                "required": ["near"],
+            },
+            handler=_handler,
+            open_world=True,  # hits the live HRSA ArcGIS service + geocoder (NYC Care seed is bundled)
+        )
+    ]

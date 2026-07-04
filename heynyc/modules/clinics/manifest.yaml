@@ -1,0 +1,85 @@
+name: clinics
+category: health
+description: >-
+  Find a doctor or clinic in NYC when you have no insurance, can't afford care, or are
+  worried about immigration status — the nearest community health centers (FQHCs, sliding
+  fee scale) and NYC Health + Hospitals / NYC Care sites (low- or no-cost, no immigration
+  questions asked), with address, borough, phone, and distance, each grounded and cited.
+keywords:
+  - doctor
+  - clinic
+  - no insurance
+  - uninsured
+  - can't afford a doctor
+  - can't afford to see a doctor
+  - sick
+  - health center
+  - free clinic
+  - low cost clinic
+  - sliding scale
+  - community health center
+  - FQHC
+  - NYC Care
+  - NYC Health and Hospitals
+  - undocumented doctor
+  - immigrant health care
+  - see a doctor without insurance
+examples:
+  - "Where can I see a doctor without insurance?"
+  - "Free clinic near me"
+  - "I'm undocumented and sick, where can I go?"
+datasets:
+  # FQHC spine — HRSA Primary Health Care service-delivery sites (live, tokenless ArcGIS MapServer
+  # layer; behaves like a FeatureServer for /query). The bespoke find_clinic tool queries this
+  # directly (with the NYC-active where-clause) AND merges the bundled NYC Care seed; this binding is
+  # declared so the source is discoverable + citable. record_id_field = OBJECTID (row-addressing).
+  - source: arcgis
+    url: https://gisportal.hrsa.gov/server/rest/services/HealthCareFacilities/PrimaryHealthCareFacilities_FS/MapServer/0
+    category: fqhc_site
+    record_id_field: OBJECTID
+    title: HRSA Primary Health Care service-delivery sites
+    where: "HCC_STATUS_DESC='Active' AND SITE_STATE_ABBR='NY' AND COUNTY_NM IN ('Bronx','Kings','New York','Queens','Richmond')"
+    field_map:
+      name: SITE_NM
+      lat: lat
+      lon: lon
+      address: SITE_ADDRESS
+      borough: COUNTY_NM
+      phone: SITE_PHONE_NUM
+tools: tools.py
+eval: eval.yaml
+seeds:
+  - https://access.nyc.gov/programs/nyc-care/
+allowlist:
+  - hrsa.gov
+  - access.nyc.gov
+  - nyccare.nyc
+  - nychealthandhospitals.org
+prompt: |
+  For "I need to see a doctor" when the person has no insurance, can't afford care, is on a low
+  income, or is worried about immigration status (doctor / clinic / free clinic / community health
+  center / sliding scale / NYC Care / "I'm undocumented and sick"), call
+  find_clinic(near=<the user's NYC address, neighborhood, or ZIP>).
+
+  LEAD WITH REASSURANCE. This is often a scared, uninsured, or undocumented New Yorker. Open by
+  telling them plainly that these places serve everyone — community health centers see all patients
+  regardless of ability to pay, and NYC Health + Hospitals / NYC Care don't ask about immigration
+  status ("seek care without fear"). Be warm and direct.
+
+  Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a name, address,
+  borough, phone, distance, its CLASS (FQHC community health center vs. NYC Health + Hospitals / NYC
+  Care), and a Google Maps directions link — pass these through as given.
+
+  ELIGIBILITY / COST / IMMIGRATION SAFETY IS PER-CLASS AND GROUNDED. State the eligibility, cost, or
+  immigration-safety framing ONLY from the tool's grounded "What ... means for you" text, and carry
+  its {cite:Sn} (hrsa.gov for FQHCs, access.nyc.gov for NYC Care). NEVER state a cost, a fee, an
+  income cutoff, an eligibility rule, or an immigration-safety claim that isn't in the tool result —
+  not from a per-site field, not from your own knowledge. If someone asks for a specific price or an
+  income threshold the tool didn't return, say you don't have that figure and point them to the site
+  or 646-NYC-CARE — don't invent a number.
+
+  If geocoding fails, the location is ambiguous, or no sites come back, DON'T guess a clinic: say so
+  plainly and point the user to 311, 646-NYC-CARE (646-692-2273), or findahealthcenter.hrsa.gov.
+
+  DISCLAIM: tell the user to call ahead to confirm hours and the services they need; this is not
+  medical advice and you can't diagnose; for a medical emergency, that's 911.
