@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
 from . import events
 from .citations import CitationRegistry
+from .grounding import GroundingResult, check_grounding
 from .prompts import build_system_prompt
 from .registry import Registry
 from .tools import Tool, ToolContext, build_toolbox
@@ -33,6 +35,60 @@ EMPTY_ANSWER_FALLBACK = (
     "I can't help with that request. If there's something about NYC services, benefits, or events "
     "I can help you find, tell me in your own words and I'll do my best — or you can call 311."
 )
+
+# --- Deterministic grounding guard (post-generation safety hook) ----------------------------------
+# The single most important safety mechanism for running HeyNYC on a cheaper model: after the agent
+# produces its FINAL answer, we deterministically re-check that every {cite:Sn}'d structured fact
+# actually appears in the source it's attributed to (core.grounding.check_grounding — the SAME logic
+# the eval gate uses). A HARD mismatch (a verbatim phone / dollar amount / address absent from an
+# all-complete-capture source) is a fabrication: we feed the model a SPECIFIC correction and let it
+# regenerate (Tier 3), capped; if it still can't ground it, we strip the offending claim or abstain and
+# route to 311 (Tier 4). SOFT mismatches (name drift, or anything cited to a truncated snippet) never
+# fire — preserving the check's zero-false-fail calibration so a CORRECT answer is never over-blocked.
+GUARD_MAX_RETRIES = 2
+
+# Tier 4 last resort: the model could not ground a load-bearing fact after the retry cap. Rather than
+# ship an unverified number/address, hold off and route to a human / the official source.
+GROUNDING_ABSTAIN_FALLBACK = (
+    "I want to get this right, and I couldn't confirm that detail against an official source — so I'd "
+    "rather not guess and risk sending you the wrong number or address. For the accurate, current "
+    "info, call 311 or check the official NYC page, and they can take it from there."
+)
+
+_CITE_STRIP_RE = re.compile(r"\{cite:S\d+\}")
+
+
+def _grounding_feedback(result: GroundingResult) -> str:
+    """The SPECIFIC correction fed back to the model (Tier 3). Names each ungrounded fact so the model
+    fixes THAT fact rather than blindly rewriting or over-abstaining."""
+    problems = "; ".join(m.message for m in result.hard_failures)
+    return (
+        "<system-reminder>\n"
+        "A grounding check ran on your last answer and found a cited fact your source does not "
+        f"support: {problems}. Each is a structured fact (a phone number, dollar amount, address, or "
+        "the like) you attributed to a {cite:Sn} source whose content does not contain it. Fix it: "
+        "correct the fact to exactly match the cited source, cite a source that actually contains it, "
+        "remove the claim, or — if you can't ground it — abstain on that specific fact and point the "
+        "user to 311 or the official page. Do not repeat the unsupported fact.\n"
+        "</system-reminder>"
+    )
+
+
+def _strip_ungrounded_claims(text: str, result: GroundingResult) -> str:
+    """Tier 4: remove the sentence(s) carrying an ungrounded structured fact; if that guts the answer
+    (nothing substantive left), return the abstention that routes to 311. Otherwise return the answer
+    with the offending claim(s) — and their now-orphaned citations — excised."""
+    stripped = text
+    for claim in {m.claim for m in result.hard_failures}:
+        if claim and claim in stripped:
+            stripped = stripped.replace(claim, " ")
+    stripped = re.sub(r"[ \t]+", " ", stripped)
+    stripped = re.sub(r" *\n *", "\n", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    meaningful = _CITE_STRIP_RE.sub("", stripped).strip()
+    if len(meaningful) < 40:  # the ungrounded fact was load-bearing → the whole answer must abstain
+        return GROUNDING_ABSTAIN_FALLBACK
+    return stripped
 
 # Non-streaming model fn: (messages, tool_schemas) -> assistant message dict.
 CompletionFn = Callable[[list[dict], list[dict]], Awaitable[dict]]
@@ -65,12 +121,18 @@ class Agent:
         stream_fn: Optional[StreamFn] = None,
         approver: Optional[Approver] = None,
         index=None,
+        guard_grounding: bool = True,
+        guard_max_retries: int = GUARD_MAX_RETRIES,
     ):
         self.registry = registry
         self._embedder = getattr(index, "embedder", None)  # shared with retrieval-using module tools
         self.tools = tools if tools is not None else build_toolbox(registry, index=index)
         self.model = model or DEFAULT_MODEL
         self._approver = approver
+        # Deterministic post-generation grounding guard. On by default — it's the safety floor that lets
+        # HeyNYC run on a cheaper model; disable only to observe raw model output (see tests).
+        self.guard_grounding = guard_grounding
+        self.guard_max_retries = guard_max_retries
         if stream_fn is not None:
             self._stream_fn = stream_fn
         elif complete_fn is not None:
@@ -80,6 +142,24 @@ class Agent:
 
     def _tool_schemas(self) -> list[dict]:
         return [tool.schema() for tool in self.tools.values()]
+
+    def _grounding_verdict(self, text: str, citations_map: dict, query: str, retries: int):
+        """Run the deterministic grounding guard on a terminal answer. Returns
+        (action, out_text, result):
+          "pass"    → ship out_text unchanged (nothing to verify, or only SOFT mismatches)
+          "retry"   → feed _grounding_feedback(result) back and let the model regenerate (Tier 3)
+          "abstain" → ship out_text (offending claim stripped, or the abstention fallback) (Tier 4)
+        The guard acts ONLY on a HARD (blocking) mismatch — a verbatim structured fact absent from an
+        all-complete-capture source. Soft mismatches pass through, so a correct answer is never
+        over-blocked."""
+        if not self.guard_grounding:
+            return "pass", text, None
+        result = check_grounding(text, citations_map, query)
+        if result is None or not result.blocking:
+            return "pass", text, result
+        if retries < self.guard_max_retries:
+            return "retry", text, result
+        return "abstain", _strip_ungrounded_claims(text, result), result
 
     def _build_messages(self, user_message: str, history, reminders) -> list[dict]:
         messages: list[dict] = [{"role": "system", "content": build_system_prompt(self.registry)}]
@@ -104,6 +184,7 @@ class Agent:
         ctx = ToolContext(citations=citations, registry=self.registry, embedder=self._embedder,
                           output_dir=output_dir, drafts=drafts)
         tools_made: list[str] = []
+        guard_retries = 0  # how many times the grounding guard has bounced a terminal answer back
         turn_started = time.perf_counter()
         turn_usage = {"input_tokens": 0, "output_tokens": 0}
 
@@ -150,9 +231,26 @@ class Agent:
                 assistant["content"] = text
                 yield events.TextDelta(message_id=message_id, text=text)
             messages.append(assistant)
-            yield events.MessageCompleted(message_id=message_id, text=text, citations=citations.mapping())
 
             if not tool_calls:
+                # DETERMINISTIC GROUNDING GUARD (the post-generation safety hook). Before the final
+                # answer reaches the user, verify every {cite:Sn}'d structured fact is in its source.
+                action, text, gr = self._grounding_verdict(
+                    text, citations.mapping(), user_message, guard_retries)
+                if action == "retry":
+                    # Tier 3: a cited structured fact isn't grounded. Close out the rejected attempt
+                    # for streaming clients, tell the model EXACTLY what's wrong, and regenerate.
+                    guard_retries += 1
+                    yield events.MessageCompleted(message_id=message_id,
+                                                  text=assistant.get("content") or "",
+                                                  citations=citations.mapping())
+                    yield events.Reminder(summary=("grounding guard: unsupported cited fact, retrying "
+                                                   f"({guard_retries}/{self.guard_max_retries})"))
+                    messages.append({"role": "user", "content": _grounding_feedback(gr)})
+                    continue
+                # "pass" (grounded, or only soft mismatches) or "abstain" (Tier 4 rewrote `text`).
+                assistant["content"] = text
+                yield events.MessageCompleted(message_id=message_id, text=text, citations=citations.mapping())
                 result = AgentResult(
                     text=text, citations=citations.mapping(), tool_calls_made=tools_made,
                     iterations=i + 1, status="success", messages=messages, usage=_usage(),
@@ -160,6 +258,7 @@ class Agent:
                 yield events.Done(status="success", num_turns=i + 1, citations=result.citations, result=result)
                 return
 
+            yield events.MessageCompleted(message_id=message_id, text=text, citations=citations.mapping())
             for call in tool_calls:
                 name = call["function"]["name"]
                 call_id = call.get("id") or name
