@@ -30,6 +30,10 @@ prompt: |
   advisory's "in effect until <expires>" as-of. If the tool returns none, say plainly that there
   are no active Notify NYC advisories right now — do NOT imply nothing at all is happening beyond
   what this one feed covers.
+  LANGUAGE: if the user is writing in a language other than English, pass lang=<that language's
+  English name, e.g. "Spanish"> so the tool returns the city's OFFICIAL translation of the advisory
+  where one exists (English fallback otherwise). An official city translation is better than you
+  paraphrasing an emergency alert — prefer and pass through the translated text the tool returns.
 
   TIE-INS (only when the matching advisory is actually active):
     - HEAT advisory → also offer cooling centers via nearest(category="cooling_center",

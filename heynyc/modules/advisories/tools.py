@@ -68,10 +68,13 @@ def _advisory_block(advisory: Advisory, cite: str) -> str:
 
 async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
+    lang = (args.get("lang") or "").strip() or None
     now = datetime.now(timezone.utc)
 
     # active_advisories is resilient (returns [] on any network/parse error) — never crashes.
-    advisories = await active_advisories(ctx.http, now=now)
+    # `lang` surfaces the official city translation of an advisory when the feed carries it
+    # (English fallback) — an official translation beats an LLM paraphrase of an emergency alert.
+    advisories = await active_advisories(ctx.http, now=now, lang=lang)
 
     if not advisories:
         return (
@@ -126,6 +129,13 @@ def get_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Optional NYC address/neighborhood for context (results are "
                         "not geo-filtered — the feed is usually citywide).",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "description": "Optional language NAME for the advisory text (e.g. 'Spanish', "
+                        "'Chinese') — pass the language the user is writing in. The feed carries "
+                        "official city translations for ~12 languages; defaults to English, and "
+                        "falls back to English for any alert with no variant in that language.",
                     },
                 },
             },

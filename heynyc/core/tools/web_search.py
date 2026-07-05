@@ -236,7 +236,15 @@ def web_search_tools(
                 "law), STAY SILENT — saying nothing beats appending an off-topic caveat. When a result "
                 "IS on point, surface it as a clearly labeled, DATED, CITED heads-up (e.g. 'Heads up, "
                 "this may be changing: <X>, per <source> (<date>)') that NEVER overrides the official "
-                "answer. Cite every result; if nothing on point comes back, don't invent a development."
+                "answer. CONTESTED LEGAL MATTER: if the development is a court ruling or a legal "
+                "challenge to a right/benefit/protection, do NOT restate the ruling's court, holding, or "
+                "scope from a news snippet as fact, and NEVER tell the user their protection is 'struck "
+                "down / gone / annulled / no longer applies / may have changed.' LEAD with the protection "
+                "that CURRENTLY STANDS (grounded + cited to the official source), then frame the "
+                "litigation only as 'there is an active legal challenge, this could change — confirm the "
+                "current status with 311 or the official agency.' Never name the court or characterize "
+                "the outcome or scope; never imply a valid right is already gone. This holds in every "
+                "language. Cite every result; if nothing on point comes back, don't invent a development."
             ),
             parameters={
                 "type": "object",

@@ -135,6 +135,68 @@ async def test_fetch_advisories_keeps_english_and_parses():
     assert by_id["NYC-EXPIRED-1"].source_url == f"{FEED_BASE}/cap/expired.xml"
 
 
+# The same alert (identifier NYC-ACTIVE-1) in English and Spanish — the CAP identifier is
+# language-stable, which is what lets the Spanish variant overlay the English one per alert.
+CAP_ACTIVE_ES = _cap("NYC-ACTIVE-1", severity="Severe", event="Calor Extremo",
+                     headline="Aviso de calor en vigor para NYC",
+                     expires="2099-07-02T19:45:28-04:00", language="es-US")
+
+RSS_MULTILANG = _rss(
+    _item("Heat Advisory (English)", "NYCEM [English]", "guid-active-en", "active.xml"),
+    _item("Old Advisory (English)", "NYCEM [English]", "guid-expired-en", "expired.xml"),
+    _item("Aviso de calor (Spanish)", "NYCEM [Spanish]", "guid-active-es", "active-es.xml"),
+)
+CAPS_MULTILANG = {"active.xml": CAP_ACTIVE, "expired.xml": CAP_EXPIRED, "active-es.xml": CAP_ACTIVE_ES}
+
+
+async def test_fetch_advisories_surfaces_requested_language_variant():
+    # Red-team/compliance 4a: a Spanish request returns the city's OFFICIAL Spanish translation of
+    # the alert (not a paraphrase), keeping English as the per-alert fallback.
+    seen: list[str] = []
+    client = _client(RSS_MULTILANG, CAPS_MULTILANG, seen=seen)
+    advisories = await fetch_advisories(client, lang="Spanish")
+    await client.aclose()
+
+    by_id = {a.guid: a for a in advisories}
+    assert by_id["NYC-ACTIVE-1"].headline == "Aviso de calor en vigor para NYC"  # Spanish won
+    assert by_id["NYC-ACTIVE-1"].language == "es-US"
+    # The expired alert has no Spanish variant → English fallback is still fetched + present.
+    assert by_id["NYC-EXPIRED-1"].headline == "Expired advisory"
+    assert any("active-es" in p for p in seen)  # the Spanish CAP WAS fetched this time
+
+
+async def test_fetch_advisories_language_alias_resolves():
+    # A code/alias ("es") resolves to the feed's "[Spanish]" language name.
+    client = _client(RSS_MULTILANG, CAPS_MULTILANG)
+    advisories = await fetch_advisories(client, lang="es")
+    await client.aclose()
+    assert {a.guid: a for a in advisories}["NYC-ACTIVE-1"].headline == "Aviso de calor en vigor para NYC"
+
+
+async def test_fetch_advisories_english_default_ignores_other_languages():
+    # The English path is unchanged: no language requested → only English items fetched, Spanish skipped.
+    seen: list[str] = []
+    client = _client(RSS_MULTILANG, CAPS_MULTILANG, seen=seen)
+    advisories = await fetch_advisories(client)  # default English
+    await client.aclose()
+    assert {a.guid for a in advisories} == {"NYC-ACTIVE-1", "NYC-EXPIRED-1"}
+    assert {a.guid: a for a in advisories}["NYC-ACTIVE-1"].headline == "Heat Advisory in effect for NYC"
+    assert not any("active-es" in p for p in seen)  # Spanish CAP never requested by default
+
+
+async def test_nyc_advisories_tool_passes_language_through():
+    # The module tool threads a `lang` arg to the feed and surfaces the official translation.
+    from datetime import datetime, timezone
+
+    citations = CitationRegistry()
+    client = _client(RSS_MULTILANG, CAPS_MULTILANG)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"lang": "Spanish"}, ctx)
+    await client.aclose()
+    assert "Aviso de calor en vigor para NYC" in out
+    assert "Heat Advisory in effect for NYC" not in out  # English active was replaced by Spanish
+
+
 async def test_active_advisories_excludes_expired():
     now = datetime(2026, 7, 2, 18, 0, tzinfo=timezone.utc)
     client = _client(RSS_MAIN, CAPS_MAIN)

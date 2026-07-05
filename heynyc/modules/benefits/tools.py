@@ -67,6 +67,60 @@ def _first_href(value) -> str:
         url = "https://" + url          # scheme-less domain like "nyc.gov/taxprep"
     return url if url.startswith("http") else ""
 
+# The catalog can carry the same program in several official languages (a `language` column). We
+# surface the row matching the user's language when asked, English by default / fallback — an
+# official city translation beats an LLM paraphrase. ISO codes / native spellings normalize to the
+# English language NAME the dataset uses.
+DEFAULT_LANG = "english"
+_LANG_ALIASES = {
+    "en": "english", "es": "spanish", "español": "spanish", "espanol": "spanish",
+    "zh": "chinese", "zh-cn": "chinese", "ht": "haitian creole", "ko": "korean", "ru": "russian",
+    "bn": "bengali", "ar": "arabic", "ur": "urdu", "fr": "french", "français": "french",
+    "pl": "polish", "yi": "yiddish", "it": "italian",
+}
+
+
+def _norm_lang(lang) -> str:
+    """A requested language hint → the English language NAME the dataset uses (default English)."""
+    key = (lang or "").strip().lower()
+    return _LANG_ALIASES.get(key, key) or DEFAULT_LANG
+
+
+def _row_language(record: dict) -> str:
+    return _clean(record.get("language")).lower()
+
+
+def _program_key(record: dict) -> str:
+    """Per-program identity for collapsing language variants: program_code, else program_name."""
+    return _clean(record.get("program_code")) or _clean(record.get("program_name")).lower()
+
+
+def _prefer_language(catalog: list[dict], lang) -> list[dict]:
+    """Collapse language-variant rows to ONE row per program, preferring the requested language
+    (default English), English fallback, then first-seen. A dataset with no `language` column is
+    unaffected — each program appears once, so this is a no-op. Order preserved."""
+    target = _norm_lang(lang)
+
+    def rank(row: dict) -> int:
+        rl = _row_language(row)
+        if rl == target:
+            return 3
+        if not rl:          # untagged row → acceptable default (English-equivalent)
+            return 1
+        return 2 if rl == DEFAULT_LANG else 0
+
+    best: dict[str, dict] = {}
+    order: list[str] = []
+    for i, row in enumerate(catalog):
+        key = _program_key(row) or f"__row_{i}"
+        if key not in best:
+            order.append(key)
+            best[key] = row
+        elif rank(row) > rank(best[key]):
+            best[key] = row
+    return [best[k] for k in order]
+
+
 DATASET_ID = "kvhd-5fmu"
 FRESHNESS_DAYS = 365  # §12 staleness guard: benefits eligibility rules re-check annually
 SOURCE_URL = (
@@ -186,6 +240,7 @@ def _block(record: dict, cite: str, as_of: str, today: str) -> str:
 async def _handler(args: dict, ctx: ToolContext) -> str:
     query = (args.get("query") or "").strip()
     category = (args.get("category") or "").strip()
+    lang = (args.get("lang") or "").strip() or None
     limit = int(args.get("limit") or 8)
 
     # Allowlist the category before it reaches the SoQL $where clause. The JSON-schema enum
@@ -206,6 +261,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"Don't guess — tell the user to try {OFFICIAL}."
         )
 
+    # Collapse any language-variant rows to one per program, preferring the user's language
+    # (English by default / fallback) so the official translation surfaces, then rank.
+    catalog = _prefer_language(catalog, lang)
     records = _retrieve(catalog, query, limit, ctx.embedder)
     if not records:
         return (
@@ -244,6 +302,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     household = dict(args.get("household") or {})
     persons = list(args.get("persons") or [])
     interested = args.get("interested_programs") or None
+    lang = (args.get("lang") or "").strip() or None
     base, user, pw = config.screening_creds()
     if not (user and pw):
         return ("ERROR: eligibility screening isn't configured. Use benefits_search and tell the "
@@ -281,11 +340,12 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             await client.aclose()
 
     today = date.today().isoformat()
+    # Collapse language-variant rows to one per program, preferring the user's language (English by
+    # default / fallback), then index by program_code for the verdict lookup below.
     by_code: dict[str, dict] = {}
-    for row in catalog:
+    for row in _prefer_language(catalog, lang):
         code = _clean(row.get("program_code"))
-        # prefer the English row if the dataset carries language variants
-        if code and (code not in by_code or _clean(row.get("language")).lower() == "english"):
+        if code and code not in by_code:
             by_code[code] = row
 
     verdict = ctx.citations.register(
@@ -355,6 +415,9 @@ def screen_eligibility_tool() -> Tool:
                         "required": ["age", "householdMemberType"]}},
                 "interested_programs": {"type": "array", "items": {"type": "string"},
                     "description": "Optional program-code filter."},
+                "lang": {"type": "string", "description": "Optional language NAME (e.g. 'Spanish') — "
+                    "the user's language; returns the matching-language program row where the dataset "
+                    "carries a translation, English by default and as the fallback."},
             },
             "required": ["persons"],
         },
@@ -469,6 +532,13 @@ def get_tools() -> list[Tool]:
                     "limit": {
                         "type": "integer",
                         "description": "Max programs to return (default 8).",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "description": "Optional language NAME (e.g. 'Spanish') — pass the language "
+                        "the user is writing in. When the dataset carries an official translation of "
+                        "a program, the matching-language row is returned; English by default and as "
+                        "the fallback. Program names, apply links, and 'as of' dates stay as given.",
                     },
                 },
                 "required": ["query"],

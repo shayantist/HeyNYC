@@ -66,6 +66,30 @@ async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
     assert cite["valid_as_of"] == "2026-03-21"
 
 
+async def test_benefits_search_surfaces_requested_language_variant():
+    # Compliance 4b/4c: when the dataset carries language variants of a program, the tool returns the
+    # user's-language row (the city's official translation) when asked, English by default / fallback.
+    en = dict(_FAKE_ROW, language="English",
+              plain_language_program_name="Help buying food (SNAP / food stamps)")
+    es = dict(_FAKE_ROW, language="Spanish",
+              plain_language_program_name="Ayuda para comprar alimentos (SNAP)")
+    tool, registry = _benefits_tool()
+
+    client, _ = _client_returning([en, es])
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client, embedder=_EMBEDDER)
+    default_out = await tool.handler({"query": "food stamps"}, ctx)          # no lang → English
+    await client.aclose()
+    assert "Help buying food" in default_out
+    assert "Ayuda para comprar" not in default_out
+
+    client2, _ = _client_returning([en, es])
+    ctx2 = ToolContext(citations=CitationRegistry(), registry=registry, http=client2, embedder=_EMBEDDER)
+    es_out = await tool.handler({"query": "food stamps", "lang": "Spanish"}, ctx2)
+    await client2.aclose()
+    assert "Ayuda para comprar alimentos" in es_out                          # Spanish variant surfaced
+    assert "Help buying food" not in es_out
+
+
 async def test_benefits_search_category_filters_via_where():
     tool, registry = _benefits_tool()
     client, seen = _client_returning([_FAKE_ROW])

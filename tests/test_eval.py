@@ -379,6 +379,63 @@ async def test_nonblocking_semantic_checks_dont_fail_gate():
     assert report.passed                   # ...but the gate still passes (non-blocking)
 
 
+# --- readability (soft plain-language warning) ----------------------------
+
+def test_flesch_kincaid_grade_scores_simple_vs_dense():
+    from heynyc.eval.checks import flesch_kincaid_grade
+
+    simple = ("You can get free food today. Go to the food pantry near you. "
+              "It is open now. You do not need to bring any papers. Just show up and ask for help. "
+              "They will give you a bag of food to take home right away.")
+    dense = ("Notwithstanding the aforementioned eligibility determinations, the administrative "
+             "adjudication of supplemental nutritional assistance necessitates comprehensive "
+             "documentation substantiating household compositional characteristics and corresponding "
+             "income verification methodologies prior to authorization of any subsequent benefit "
+             "disbursement to the applicant household.")
+    g_simple = flesch_kincaid_grade(simple)
+    g_dense = flesch_kincaid_grade(dense)
+    assert g_simple is not None and g_dense is not None
+    assert g_simple < g_dense
+    assert g_simple < 9.0        # the plain version reads at the target level
+
+
+def test_flesch_kincaid_skips_short_text():
+    from heynyc.eval.checks import flesch_kincaid_grade
+    assert flesch_kincaid_grade("I can't help with that. Call 311.") is None  # too short to score
+
+
+def test_check_readability_is_soft_and_flags_dense_text():
+    from heynyc.eval.checks import check_readability
+
+    dense = ("Notwithstanding the aforementioned eligibility determinations, the administrative "
+             "adjudication of supplemental nutritional assistance necessitates comprehensive "
+             "documentation substantiating household compositional characteristics and corresponding "
+             "income verification methodologies prior to authorization of any subsequent benefit "
+             "disbursement to the applicant household.")
+    res = check_readability(_result(_case(), text=dense))
+    assert res is not None
+    assert not res.passed          # flagged as too dense
+    assert res.blocking is False   # ...but SOFT — never gates the run
+
+
+async def test_readability_warning_does_not_fail_gate():
+    # A dense but otherwise-valid answer: the readability check warns but must not block the gate.
+    dense = ("Notwithstanding the aforementioned determinations, the administrative adjudication of "
+             "supplemental assistance necessitates comprehensive documentation substantiating the "
+             "compositional characteristics and corresponding income verification methodologies of "
+             "the applicant household prior to any subsequent benefit disbursement henceforth.")
+    agent = _FakeAgent(dense, [], {})
+
+    async def no_links(url):
+        return 200
+
+    results = await run_all(lambda: agent, [_case(id="rd")])
+    report = await evaluate(results, link_checker=no_links)
+    flagged = {c.name for c in report.reports[0].checks if not c.passed}
+    assert "readability" in flagged
+    assert report.passed
+
+
 # --- data grounding (Part C: row-addressed DATA citations) ----------------
 
 def _data_citation(distance_mi, snapshot=None, hash_override=None):

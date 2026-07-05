@@ -26,6 +26,14 @@ logger = logging.getLogger("heynyc.agent")
 # the core does NOT read a domain config module, so it stays reusable across projects.
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
+# Safe fallback for a terminal turn (no tool calls) that comes back empty/whitespace. Some inputs —
+# notably an encoded-instruction injection the model refuses by going silent — yield a blank final
+# turn; the user must NEVER see an empty response, so we substitute an explicit safe refusal.
+EMPTY_ANSWER_FALLBACK = (
+    "I can't help with that request. If there's something about NYC services, benefits, or events "
+    "I can help you find, tell me in your own words and I'll do my best — or you can call 311."
+)
+
 # Non-streaming model fn: (messages, tool_schemas) -> assistant message dict.
 CompletionFn = Callable[[list[dict], list[dict]], Awaitable[dict]]
 # Streaming model fn: yields {"type":"text","text":...} deltas then a terminal
@@ -132,10 +140,17 @@ class Agent:
 
             if assistant is None:
                 assistant = {"role": "assistant", "content": "".join(parts) or None, "tool_calls": None}
+            tool_calls = assistant.get("tool_calls") or []
             text = assistant.get("content") or "".join(parts)
+            # EMPTY-ANSWER GUARD: a terminal turn (no tool calls) must never reach the user blank.
+            # Substitute an explicit safe refusal and stream it, so both the streaming UI and the
+            # drained result get non-empty, safe text.
+            if not tool_calls and not (text or "").strip():
+                text = EMPTY_ANSWER_FALLBACK
+                assistant["content"] = text
+                yield events.TextDelta(message_id=message_id, text=text)
             messages.append(assistant)
             yield events.MessageCompleted(message_id=message_id, text=text, citations=citations.mapping())
-            tool_calls = assistant.get("tool_calls") or []
 
             if not tool_calls:
                 result = AgentResult(
@@ -163,7 +178,8 @@ class Agent:
                     )
 
         result = AgentResult(
-            text=messages[-1].get("content") or "", citations=citations.mapping(),
+            text=(messages[-1].get("content") or "").strip() or EMPTY_ANSWER_FALLBACK,
+            citations=citations.mapping(),
             tool_calls_made=tools_made, iterations=max_iters, hit_max_iters=True,
             status="max_turns", messages=messages, usage=_usage(),
         )

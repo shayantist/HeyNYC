@@ -78,7 +78,7 @@ and the **[module authoring guide](heynyc/modules/README.md)**. You can also
 
 ## Status
 
-Standalone Python package, fully offline-tested and live-verified against the real NYC APIs. Built and working: the agent core, the geo / RAG / web-search tools, the service modules above, and the [no-hallucination eval gate](heynyc/eval/README.md) (currently green). It answers in the user's language and flags data that's gone stale. Full history is in **[CHANGELOG.md](CHANGELOG.md)**.
+Standalone Python package, fully offline-tested and live-verified against the real NYC APIs. Built and working: the agent core, the geo / RAG / web-search tools, the service modules above, and the [no-hallucination eval gate](heynyc/eval/README.md) (currently green). It replies in the user's language on a best-effort basis — surfacing the city's own official translation where one exists (Notify NYC advisories, benefit programs) and translating the rest itself — and it flags data that's gone stale. Full history is in **[CHANGELOG.md](CHANGELOG.md)**.
 
 **Next:** a WhatsApp on-ramp — meet people where they already are — then a web chat UI with a map.
 

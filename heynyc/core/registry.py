@@ -252,7 +252,8 @@ class Registry:
             lines.append(f"  • {example}")
         lines += [
             "",
-            "Just tell me what you need — in any language.",
+            "Just tell me what you need — I'll reply in your language, using the city's official "
+            "translation where there is one and translating the rest as best I can.",
             "",
             "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
             "double-check anything important against the official source.",

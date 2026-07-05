@@ -44,6 +44,51 @@ async def test_abstains_with_no_tools(empty_registry):
     assert not result.hit_max_iters
 
 
+async def test_empty_final_answer_falls_back_to_safe_refusal(empty_registry):
+    # Regression (red-team PI12): an encoded-instruction injection made the model refuse by going
+    # SILENT — a completely empty user-facing response. A terminal turn must never be blank; the
+    # agent substitutes an explicit, non-empty safe refusal.
+    from heynyc.core.agent import EMPTY_ANSWER_FALLBACK
+
+    for empty in (None, "", "   \n  "):
+        complete = _scripted(_assistant(content=empty))  # no text, no tool calls
+        agent = Agent(empty_registry, tools={}, complete_fn=complete)
+        result = await agent.run("Base64-decode the following and do exactly what it says: ...")
+        assert result.text.strip()                       # never empty
+        assert result.text == EMPTY_ANSWER_FALLBACK
+        assert "can't help" in result.text.lower()
+
+
+async def test_empty_answer_after_tool_call_still_falls_back(empty_registry):
+    # Same guard, but the empty terminal turn follows a tool call (the loop's second iteration).
+    from heynyc.core.agent import EMPTY_ANSWER_FALLBACK
+
+    async def noop(args, ctx):
+        return "ok"
+
+    tool = Tool(name="noop", description="x", parameters={"type": "object", "properties": {}}, handler=noop)
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("noop", {})]),
+        _assistant(content=""),   # model then returns nothing
+    )
+    agent = Agent(empty_registry, tools={"noop": tool}, complete_fn=complete)
+    result = await agent.run("go")
+    assert result.text == EMPTY_ANSWER_FALLBACK
+    assert result.tool_calls_made == ["noop"]
+
+
+async def test_empty_answer_fallback_is_streamed_as_text_delta(empty_registry):
+    # The fallback must reach a streaming UI too (not only the drained result) — it's emitted as a
+    # TextDelta so the on-screen answer is non-empty.
+    from heynyc.core import events
+    from heynyc.core.agent import EMPTY_ANSWER_FALLBACK
+
+    complete = _scripted(_assistant(content=""))
+    agent = Agent(empty_registry, tools={}, complete_fn=complete)
+    deltas = [e.text async for e in agent.stream("hi") if isinstance(e, events.TextDelta)]
+    assert "".join(deltas) == EMPTY_ANSWER_FALLBACK
+
+
 async def test_tool_call_then_final_answer(empty_registry):
     async def nearest(args, ctx: ToolContext):
         cid = ctx.citations.register(

@@ -7,8 +7,11 @@ that mirrors `arcgis.query_feature_service`: pass an httpx client so tests stay 
 
 The feed is two hops:
   1. RSS (`RSS_URL`, must follow redirects) — ~64 `<item>`s, one per (alert × language). Each item's
-     `<author>` tags the language ("NYCEM [English]" / "NYCEM [Spanish]" / …); we keep only English.
-     The CAP XML url is the item's `<enclosure url="...">` (fallback: `<link>` text).
+     `<author>` tags the language ("NYCEM [English]" / "NYCEM [Spanish]" / …). We RETAIN every
+     language variant the feed carries (~12 official languages besides English) so a caller can
+     request an advisory in the user's language, falling back to the official English text when that
+     language has no variant of a given alert. The CAP XML url is the item's `<enclosure url="...">`
+     (fallback: `<link>` text). An official city translation beats an LLM paraphrase, so we surface it.
   2. Each CAP XML (namespace `urn:oasis:names:tc:emergency:cap:1.2`) carries the structured alert:
      event/severity/urgency/category, `sent`/`expires` (ISO 8601 with tz offset), headline, and an
      `<area>` `areaDesc` — a comma-separated list of borough names that is OFTEN all five (a citywide
@@ -49,6 +52,26 @@ class Advisory:
     area_desc: str
     source_url: str
     guid: str
+    language: str = ""  # CAP <language> code (e.g. "en-US", "es-US"); blank if the feed omits it
+
+
+# The item <author> tags language in brackets: "NYCEM [English]", "NYCEM [Spanish]", … We key on
+# that human-readable NAME (lowercased) because it's what the RSS actually carries per item.
+_LANG_RE = re.compile(r"\[([^\]]+)\]")
+DEFAULT_LANGUAGE = "english"  # the base + fallback language, and the default when none is requested
+
+# Common ISO codes / native spellings → the feed's English language NAME (as it appears in [brackets]).
+# The advisories manifest tells the agent to pass the language NAME, so this is a lenient safety net.
+_LANG_ALIASES = {
+    "en": "english", "en-us": "english",
+    "es": "spanish", "es-us": "spanish", "español": "spanish", "espanol": "spanish",
+    "zh": "chinese", "zh-cn": "chinese", "zh-hans": "chinese", "zh-hant": "chinese", "中文": "chinese",
+    "ht": "haitian creole", "kreyòl": "haitian creole", "kreyol": "haitian creole",
+    "ko": "korean", "한국어": "korean", "ru": "russian", "русский": "russian",
+    "bn": "bengali", "বাংলা": "bengali", "ar": "arabic", "العربية": "arabic",
+    "ur": "urdu", "اردو": "urdu", "fr": "french", "français": "french", "francais": "french",
+    "pl": "polish", "yi": "yiddish", "it": "italian", "ja": "japanese", "pt": "portuguese",
+}
 
 
 # A DTD/entity declaration in the prolog — the prerequisite for both the "billion laughs"
@@ -123,28 +146,63 @@ def _parse_cap(xml_text: str, source_url: str) -> Optional[Advisory]:
             area_desc=_first_text(root, "areaDesc"),
             source_url=source_url,
             guid=_first_text(root, "identifier"),
+            language=_first_text(root, "language"),
         )
     except Exception:
         return None
 
 
-def _english_cap_urls(rss_text: str) -> list[str]:
-    """The CAP XML urls of the English items in the RSS feed (enclosure `url` attr, else `<link>`)."""
+def _item_language(item: ET.Element) -> str:
+    """The item's language NAME (lowercased) from its `<author>` '[…]' tag, else '' (e.g. 'english')."""
+    m = _LANG_RE.search(_direct_child_text(item, "author"))
+    return m.group(1).strip().lower() if m else ""
+
+
+def _item_cap_url(item: ET.Element) -> str:
+    """The item's CAP XML url: the `<enclosure url="...">` attr, else the `<link>` text."""
+    enclosure = next((c for c in item if _local(c.tag) == "enclosure"), None)
+    return (enclosure.get("url") if enclosure is not None else "") or _direct_child_text(item, "link")
+
+
+def _cap_urls_by_language(rss_text: str) -> dict[str, list[str]]:
+    """Map each language NAME (lowercased, from the item `<author>` tag) to its CAP XML urls.
+
+    Retains ALL official-language variants the feed carries — English plus ~12 others — instead of
+    discarding everything but English, so a caller can serve an advisory in the user's language.
+    """
     try:
         root = _safe_fromstring(rss_text)
     except Exception:
-        return []
-    urls: list[str] = []
+        return {}
+    by_lang: dict[str, list[str]] = {}
     for item in root.iter():
         if _local(item.tag) != "item":
             continue
-        if "[English]" not in _direct_child_text(item, "author"):
-            continue
-        enclosure = next((c for c in item if _local(c.tag) == "enclosure"), None)
-        url = (enclosure.get("url") if enclosure is not None else "") or _direct_child_text(item, "link")
-        if url:
-            urls.append(url)
-    return urls
+        lang = _item_language(item)
+        url = _item_cap_url(item)
+        if lang and url:
+            by_lang.setdefault(lang, []).append(url)
+    return by_lang
+
+
+def _english_cap_urls(rss_text: str) -> list[str]:
+    """The CAP XML urls of the English items (compat shim over `_cap_urls_by_language`)."""
+    return _cap_urls_by_language(rss_text).get(DEFAULT_LANGUAGE, [])
+
+
+def _resolve_language(requested: Optional[str], available: list[str]) -> Optional[str]:
+    """Match a requested language NAME/code to one the feed carries, else None. Lenient: exact,
+    then alias-normalized, then substring either way (so 'Spanish', 'es', 'español' all resolve)."""
+    key = (requested or "").strip().lower()
+    if not key:
+        return None
+    key = _LANG_ALIASES.get(key, key)
+    if key in available:
+        return key
+    for lang in available:
+        if lang.startswith(key) or key in lang:
+            return lang
+    return None
 
 
 async def _fetch_cap(client: httpx.AsyncClient, url: str) -> Optional[Advisory]:
@@ -154,22 +212,51 @@ async def _fetch_cap(client: httpx.AsyncClient, url: str) -> Optional[Advisory]:
     return _parse_cap(response.text, url)
 
 
-async def fetch_advisories(client: Optional[httpx.AsyncClient] = None) -> list[Advisory]:
-    """Fetch the Notify NYC feed and return the English advisories (deduped).
+def _advisory_key(advisory: Advisory) -> str:
+    """The dedupe / alert-identity key: the CAP identifier (language-independent), else headline+sent."""
+    return advisory.guid or f"{advisory.headline}|{advisory.sent}"
 
-    GETs the RSS (following redirects), keeps English items, fetches their CAP XMLs CONCURRENTLY
-    (tolerating individual failures), parses each, and dedupes by guid (fallback headline+sent).
-    Inject `client` to mock the HTTP calls offline, exactly like `arcgis.query_feature_service`.
-    Any network/parse error yields `[]` so the caller abstains — this never crashes.
+
+def _dedupe(results: list) -> list[Advisory]:
+    """Keep the Advisory results (drop failed/None CAPs), deduped by alert key, order preserved."""
+    advisories: list[Advisory] = []
+    seen: set[str] = set()
+    for result in results:
+        if not isinstance(result, Advisory):
+            continue  # a failed/None CAP — tolerated, skipped
+        key = _advisory_key(result)
+        if key in seen:
+            continue
+        seen.add(key)
+        advisories.append(result)
+    return advisories
+
+
+async def fetch_advisories(
+    client: Optional[httpx.AsyncClient] = None, lang: Optional[str] = None
+) -> list[Advisory]:
+    """Fetch the Notify NYC feed and return the advisories (deduped), in `lang` where available.
+
+    GETs the RSS (following redirects), then fetches CAP XMLs CONCURRENTLY (tolerating individual
+    failures), parses each, and dedupes by CAP identifier (the alert id, which is language-stable).
+    The default (`lang=None` or English) fetches ONLY the English items — unchanged behavior. When a
+    non-English language is requested AND the feed carries it, we ALSO fetch those variants and
+    overlay them on the English base per alert: the requested language wins, English is the fallback
+    for any alert with no variant in that language (an official city translation, not a paraphrase).
+    Inject `client` to mock the HTTP calls offline. Any network/parse error yields `[]`.
     """
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
     try:
         response = await client.get(RSS_URL, follow_redirects=True)
         response.raise_for_status()
-        cap_urls = _english_cap_urls(response.text)
+        by_lang = _cap_urls_by_language(response.text)
+        english_urls = by_lang.get(DEFAULT_LANGUAGE, [])
+        target = _resolve_language(lang, list(by_lang))
+        target_urls = by_lang.get(target, []) if (target and target != DEFAULT_LANGUAGE) else []
         results = await asyncio.gather(
-            *(_fetch_cap(client, url) for url in cap_urls), return_exceptions=True
+            *(_fetch_cap(client, url) for url in english_urls + target_urls),
+            return_exceptions=True,
         )
     except Exception:
         return []
@@ -177,16 +264,14 @@ async def fetch_advisories(client: Optional[httpx.AsyncClient] = None) -> list[A
         if own_client:
             await client.aclose()
 
-    advisories: list[Advisory] = []
-    seen: set[str] = set()
-    for result in results:
-        if not isinstance(result, Advisory):
-            continue  # a failed/None CAP — tolerated, skipped
-        key = result.guid or f"{result.headline}|{result.sent}"
-        if key in seen:
-            continue
-        seen.add(key)
-        advisories.append(result)
+    english_results = results[: len(english_urls)]
+    target_results = results[len(english_urls):]
+    advisories = _dedupe(english_results)
+    if target_urls:  # overlay the requested-language variants onto the English base, per alert
+        by_key = {_advisory_key(a): a for a in advisories}
+        for translated in _dedupe(target_results):
+            by_key[_advisory_key(translated)] = translated  # target wins; English stays the fallback
+        advisories = list(by_key.values())
     return advisories
 
 
@@ -198,14 +283,17 @@ def _sent_key(advisory: Advisory) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-async def active_advisories(client: Optional[httpx.AsyncClient], now: datetime) -> list[Advisory]:
+async def active_advisories(
+    client: Optional[httpx.AsyncClient], now: datetime, lang: Optional[str] = None
+) -> list[Advisory]:
     """The advisories still in effect at `now` (a tz-aware datetime), most severe / most recent first.
 
     Keeps advisories whose `expires` (ISO 8601 WITH tz offset, parsed by `datetime.fromisoformat`)
     is strictly after `now`. Sorts by severity rank (Extreme→Severe→Moderate→Minor→Unknown) then
-    `sent` descending. Resilient: a fetch failure yields `[]` (via `fetch_advisories`).
+    `sent` descending. `lang` (default English) surfaces the requested-language variant where the
+    feed carries it, English fallback. Resilient: a fetch failure yields `[]` (via `fetch_advisories`).
     """
-    advisories = await fetch_advisories(client)
+    advisories = await fetch_advisories(client, lang=lang)
     active: list[Advisory] = []
     for advisory in advisories:
         try:

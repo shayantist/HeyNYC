@@ -541,6 +541,55 @@ def check_cited_claim_grounding(cr: CaseResult) -> Optional[CheckResult]:
                        blocking=blocking, locations=locations)
 
 
+# --- readability (soft) ---------------------------------------------------------------------------
+# Plain-language target: NYC GenAI guidance + civic best practice aim for a ~6th-8th grade reading
+# level (people are on a phone, stressed, often reading in a second language). This is a SOFT,
+# NON-BLOCKING warning — like the abstention keyword fallback, it never gates the run; it just flags
+# answers that read harder than they should. Short answers (refusals/abstentions) are skipped: FK is
+# too noisy on a couple of sentences. No external dependency — a small self-contained FK estimator.
+_READABILITY_MAX_GRADE = 9.0        # target ~6-8; a little headroom for unavoidable proper nouns
+_READABILITY_MIN_WORDS = 30         # below this, FK grade is too noisy to be meaningful
+_URL_RE = re.compile(r"https?://\S+")
+_SENTENCE_RE = re.compile(r"[.!?]+")
+_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+_VOWEL_GROUP_RE = re.compile(r"[aeiouy]+")
+
+
+def _count_syllables(word: str) -> int:
+    """Heuristic syllable count: vowel groups, minus a typical silent trailing 'e', floor of 1."""
+    w = word.lower()
+    n = len(_VOWEL_GROUP_RE.findall(w))
+    if n > 1 and w.endswith("e") and not w.endswith(("le", "ee", "ie")):
+        n -= 1
+    return max(1, n)
+
+
+def flesch_kincaid_grade(text: str) -> Optional[float]:
+    """The Flesch-Kincaid grade level of `text`, or None if it's too short to score meaningfully.
+    Strips URLs and {cite:Sn} markers first so links/citations don't skew the estimate. Self-contained
+    (no textstat dependency): 0.39·(words/sentence) + 11.8·(syllables/word) − 15.59."""
+    clean = _URL_RE.sub(" ", _CITE_REF_RE.sub(" ", text or ""))
+    words = _WORD_RE.findall(clean)
+    if len(words) < _READABILITY_MIN_WORDS:
+        return None
+    sentences = max(1, len([s for s in _SENTENCE_RE.split(clean) if s.strip()]))
+    syllables = sum(_count_syllables(w) for w in words)
+    return 0.39 * (len(words) / sentences) + 11.8 * (syllables / len(words)) - 15.59
+
+
+def check_readability(cr: CaseResult) -> Optional[CheckResult]:
+    """SOFT (non-blocking) plain-language warning: flag an answer that reads above ~8th grade so the
+    voice can be tightened. Never gates the run — informational, like the abstention keyword fallback.
+    Skips answers too short to score (None → not reported)."""
+    grade = flesch_kincaid_grade(cr.text or "")
+    if grade is None:
+        return None
+    ok = grade <= _READABILITY_MAX_GRADE
+    detail = "" if ok else (f"reads at grade {grade:.1f} (target <= {_READABILITY_MAX_GRADE:.0f}, aim "
+                            f"6th-8th); use shorter sentences and plainer words")
+    return CheckResult("readability", passed=ok, detail=detail, blocking=False)
+
+
 async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None) -> list[CheckResult]:
     if cr.error:
         return [CheckResult("run", passed=False, detail=f"agent error: {cr.error}")]
@@ -550,6 +599,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
         check_cite_kinds(cr),
         check_contains(cr),
         check_abstention(cr),
+        check_readability(cr),
         await check_link_liveness(cr, link_checker),
     ]
     checks.extend(fn(cr) for fn in _EXTRA_CHECKS)  # domain verifiers (e.g. check_data_grounding)

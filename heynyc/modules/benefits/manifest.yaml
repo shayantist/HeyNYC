@@ -38,6 +38,11 @@ prompt: |
   "help paying for X", "what am I eligible for"), call
   benefits_search(query=<the user's need in plain words>, category=<optional>).
   Report ONLY the programs the tool returns and cite each {cite:Sn} with its apply link.
+  LANGUAGE: if the user is writing in a language other than English, pass lang=<that language's
+  English name, e.g. "Spanish"> to benefits_search (and to screen_eligibility) so the tool returns
+  the city's OFFICIAL translation of a program where the dataset has one — English by default and as
+  the fallback. Prefer the tool's translated text over paraphrasing it yourself; keep program names,
+  apply links, and "as of" dates exactly as returned.
   BROAD / "what am I eligible for" QUERIES: do NOT just ask the user to narrow it down — most
   New Yorkers miss benefits because they don't know they exist. Call benefits_search to surface a
   few common programs across major needs (food, rent/utilities, cash, child care, transit), present

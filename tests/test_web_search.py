@@ -199,3 +199,14 @@ async def test_recent_developments_out_of_enum_recency_falls_back_to_year(monkey
     tools = _real_backend_tools()
     await tools["recent_developments"].handler({"query": "q", "recency": "decade"}, _ctx())
     assert calls[0]["time_range"] == "year"
+
+
+def test_recent_developments_description_warns_on_contested_legal_matter():
+    """Red-team MC03/MC04/FP02/ES03 fix: the recency-tool description tells the agent not to restate a
+    ruling's court/holding/scope from a news snippet, and to lead with the standing protection instead."""
+    tools = {t.name: t for t in web_search_tools(["nyc.gov"], news_tier=["gothamist.com"])}
+    desc = tools["recent_developments"].description.lower()
+    assert "contested legal matter" in desc
+    assert "struck down" in desc and "annulled" in desc
+    assert "currently stands" in desc
+    assert "never name the court" in desc
