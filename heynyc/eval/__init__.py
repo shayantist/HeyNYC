@@ -9,6 +9,7 @@ Foundry / RAGAS / ALCE citation metrics).
 """
 from __future__ import annotations
 
+from .bench import BenchRow, bench_summary, render_bench, run_bench
 from .cases import EvalCase, load_cases
 from .checks import CheckResult, run_checks
 from .report import GateReport, evaluate, write_run
@@ -29,4 +30,8 @@ __all__ = [
     "write_run",
     "Trace",
     "build_trace",
+    "BenchRow",
+    "bench_summary",
+    "render_bench",
+    "run_bench",
 ]

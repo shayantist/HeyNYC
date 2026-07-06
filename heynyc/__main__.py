@@ -386,6 +386,36 @@ async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None
     raise SystemExit(0 if report.passed else 1)
 
 
+async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool, out: str | None) -> None:
+    """Run the golden eval cases across several candidate models and print a per-model comparison."""
+    from heynyc.eval import load_cases, render_bench, run_bench
+
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
+    retriever = _load_retriever(required=False)
+    cases = load_cases(registry)
+    if module:
+        cases = [c for c in cases if c.module == module]
+    if not cases:
+        scope = f" for module '{module}'" if module else ""
+        print(f"No eval cases found{scope} (modules need an eval.yaml).")
+        return
+    safety_ids = {c.id for c in cases if c.safety_critical}
+    print(f"Benching {len(models)} model(s) on {len(cases)} case(s): {', '.join(models)}")
+
+    judge = None
+    if use_api_judge:
+        # The PAID, opt-in API judge — same one `eval` uses. Thread today's date so live/future-dated
+        # tool data reads as current, not "outdated".
+        from heynyc.eval.judges import make_api_judge
+
+        judge = make_api_judge(config.HEYNYC_JUDGE_MODEL, now=datetime.now())
+
+    rows = await run_bench(
+        models, registry, retriever, cases, reminders=_default_reminders(), judge=judge, out_dir=out,
+    )
+    print("\n" + render_bench(rows, safety_ids))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="heynyc")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -415,6 +445,13 @@ def main() -> None:
     ev.add_argument("--repeat", type=int, default=1, help="run the safety subset K times and report pass^K")
     ev.add_argument("--out", default=None, help="run directory to write traces + report into")
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
+    bench = sub.add_parser("bench", help="run the eval cases across several candidate models and compare")
+    bench.add_argument("--models", required=True,
+                       help="comma-separated model ids to bench, e.g. gpt-5,claude-sonnet-4,gemini-2")
+    bench.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
+    bench.add_argument("--api-judge", dest="api_judge", action="store_true",
+                       help="also run the PAID API groundedness judge for each model (see `eval --api-judge`)")
+    bench.add_argument("--out", default=None, help="directory to write each model's traces + report into (one subdir per model)")
     serve = sub.add_parser("serve", help="run the messaging webhook server (WhatsApp/SMS)")
     serve.add_argument("--provider", default=None, help="meta | twilio | both (default: env WHATSAPP_PROVIDER)")
     serve.add_argument("--host", default="0.0.0.0")
@@ -441,6 +478,9 @@ def main() -> None:
         _render_stats(telemetry.default_path(config.HEYNYC_DATA_DIR))
     elif args.command == "eval":
         asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out, module=args.module))
+    elif args.command == "bench":
+        models = [m.strip() for m in args.models.split(",") if m.strip()]
+        asyncio.run(_cmd_bench(models=models, module=args.module, use_api_judge=args.api_judge, out=args.out))
     elif args.command == "serve":
         import uvicorn
 
