@@ -244,3 +244,93 @@ def test_completion_kwargs_attaches_tools_only_when_present():
     schema = [{"type": "function", "function": {"name": "nearest"}}]
     assert _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=schema)["tools"] == schema
     assert "tools" not in _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=[])
+
+
+def test_completion_kwargs_sets_num_ctx_for_ollama():
+    # Ollama's default context window (~2-4K tokens) silently truncates HeyNYC's ~7.5K-token system
+    # prompt, which breaks tool-calling; a self-hosted ollama model must get a large num_ctx so the
+    # full prompt + tool schemas fit.
+    from heynyc.core.agent import _completion_kwargs
+
+    kw = _completion_kwargs("ollama_chat/qwen3.5:9b", messages=[], tool_schemas=[])
+    assert kw.get("num_ctx", 0) >= 8192
+
+
+def test_completion_kwargs_no_num_ctx_for_hosted_models():
+    # Hosted APIs manage their own context window; num_ctx is an ollama-only knob.
+    from heynyc.core.agent import _completion_kwargs
+
+    assert "num_ctx" not in _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=[])
+    assert "num_ctx" not in _completion_kwargs("openai/gpt-5-mini", messages=[], tool_schemas=[])
+
+
+# --- Change 2: prompt caching on the hosted (Anthropic) path --------------------------------------
+
+def _real_agent(model: str) -> Agent:
+    from heynyc.core import config
+
+    reg = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    return Agent(reg, tools={}, model=model)
+
+
+def test_is_anthropic_detects_provider_from_model_string():
+    from heynyc.core.agent import _is_anthropic
+
+    assert _is_anthropic("anthropic/claude-sonnet-4-6")
+    assert _is_anthropic("bedrock/anthropic.claude-3-5-sonnet")   # Bedrock Claude id
+    assert not _is_anthropic("openai/gpt-4o-mini")
+    assert not _is_anthropic("ollama_chat/qwen3.5:9b")
+
+
+def test_system_message_is_cached_content_blocks_for_anthropic():
+    # For an Anthropic model the system message is a list of content blocks, and the STABLE prefix
+    # block (safety rules + capability menu) carries cache_control so repeat calls read it from cache.
+    agent = _real_agent("anthropic/claude-sonnet-4-6")
+    sysmsg = agent._system_message("where's the nearest food pantry?")
+
+    assert sysmsg["role"] == "system"
+    content = sysmsg["content"]
+    assert isinstance(content, list)
+    stable = content[0]
+    assert stable["cache_control"] == {"type": "ephemeral"}
+    assert "GROUND EVERYTHING" in stable["text"]
+    # the volatile block follows the cached prefix and carries NO cache_control
+    volatile = content[1]
+    assert "cache_control" not in volatile
+
+
+def test_cached_stable_block_excludes_volatile_date_and_selected_blurbs():
+    # The cache never hits if volatile content is inside the cached block: the date and the
+    # query-selected blurbs must live in the SECOND (uncached) block, not the first.
+    agent = _real_agent("anthropic/claude-sonnet-4-6")
+    content = agent._system_message("where's the nearest food pantry?")["content"]
+    stable_text, volatile_text = content[0]["text"], content[1]["text"]
+
+    assert "Current date & time" not in stable_text
+    assert "Current date & time" in volatile_text
+    assert "nearest_food_pantry(near=" not in stable_text
+    assert "nearest_food_pantry(near=" in volatile_text
+
+
+def test_system_message_is_plain_string_for_non_anthropic():
+    # Every other provider (openai, ollama, ...) keeps the system message as a plain string, with no
+    # content blocks and no cache_control, so behavior there is unchanged.
+    agent = _real_agent("openai/gpt-4o-mini")
+    sysmsg = agent._system_message("where's the nearest food pantry?")
+
+    content = sysmsg["content"]
+    assert isinstance(content, str)
+    assert "GROUND EVERYTHING" in content              # rules present
+    assert "Current date & time" in content            # date present inline (nothing cached)
+    assert "nearest_food_pantry(near=" in content      # routed blurb present
+
+
+def test_build_messages_routes_blurbs_by_query():
+    # Progressive disclosure flows through the agent path: a food query loads the food blurb but not
+    # the cooling blurb, while the menu + rules are always present.
+    agent = _real_agent("openai/gpt-4o-mini")
+    system = agent._build_messages("where's the nearest food pantry?", None, None)[0]["content"]
+
+    assert "nearest_food_pantry(near=" in system
+    assert "NOT outdoor misting stations" not in system     # cooling blurb not loaded
+    assert "Services you can help with (quick menu)" in system

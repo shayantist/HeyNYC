@@ -15,10 +15,10 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
-from . import events
+from . import config, events
 from .citations import CitationRegistry
 from .grounding import GroundingResult, check_grounding
-from .prompts import build_system_prompt
+from .prompts import build_system_prompt_tiers
 from .registry import Registry
 from .tools import Tool, ToolContext, build_toolbox
 
@@ -161,8 +161,25 @@ class Agent:
             return "retry", text, result
         return "abstain", _strip_ungrounded_claims(text, result), result
 
+    def _system_message(self, query: str) -> dict:
+        """The system message for THIS turn. The stable tier (safety rules + capability menu) is a
+        cacheable prefix; the volatile tier (query-selected blurbs + the date) follows it.
+
+        For an Anthropic model we emit `content` as two text blocks and mark the STABLE block with
+        cache_control so repeat calls read that prefix from cache (~90% cheaper). Every other provider
+        (openai, ollama, ...) gets a plain-string `content`, unchanged. This is purely a transport /
+        caching choice: it never changes which safety rules or tools ship. Routing selects the
+        detailed blurbs identically for both shapes, and a routing miss can only drop a blurb."""
+        stable, volatile = build_system_prompt_tiers(self.registry, query=query)
+        if _is_anthropic(self.model):
+            return {"role": "system", "content": [
+                {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": volatile},
+            ]}
+        return {"role": "system", "content": stable + volatile}
+
     def _build_messages(self, user_message: str, history, reminders) -> list[dict]:
-        messages: list[dict] = [{"role": "system", "content": build_system_prompt(self.registry)}]
+        messages: list[dict] = [self._system_message(user_message)]
         messages.extend(history or [])
         for reminder in reminders or []:
             messages.append({"role": "user", "content": f"<system-reminder>\n{reminder}\n</system-reminder>"})
@@ -372,6 +389,14 @@ class Agent:
         yield {"type": "message", "message": {"role": "assistant", "content": "".join(content_parts) or None, "tool_calls": tool_calls}}
 
 
+def _is_anthropic(model: str) -> bool:
+    """Anthropic-family model? Only these accept prompt-cache content blocks (cache_control on a
+    system block); every other provider must get a plain-string system message. Detected from the
+    model string so it also covers Bedrock / Vertex Claude ids (e.g. 'bedrock/anthropic.claude-...')."""
+    m = model.lower()
+    return m.startswith("anthropic/") or "claude" in m
+
+
 def _completion_kwargs(model: str, messages: list[dict], tool_schemas: list[dict]) -> dict:
     """Build the kwargs for litellm.acompletion.
 
@@ -387,6 +412,8 @@ def _completion_kwargs(model: str, messages: list[dict], tool_schemas: list[dict
         kwargs["temperature"] = 0.0
     if tool_schemas:
         kwargs["tools"] = tool_schemas
+    if "ollama" in model:
+        kwargs["num_ctx"] = config.OLLAMA_NUM_CTX
     return kwargs
 
 

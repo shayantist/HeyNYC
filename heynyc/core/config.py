@@ -11,6 +11,9 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 
 # LLM
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
+# Context window for self-hosted Ollama models. Ollama defaults to ~2-4K tokens, which silently
+# truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
+OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))
 
 # Judge model — deliberately a DIFFERENT family than the agent to avoid
 # self-enhancement bias in LLM-as-judge (judges prefer their own outputs).

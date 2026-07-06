@@ -150,10 +150,16 @@ class Registry:
                         tiers[key] = (tier, module.name)
         return tiers
 
-    def capability_blurbs(self) -> str:
-        """Capability blurbs for the system prompt, one section per module."""
+    def capability_blurbs(self, only: Optional[set[str]] = None) -> str:
+        """Capability blurbs for the system prompt, one section per module.
+
+        `only` selects a subset by module name (progressive disclosure: the prompt router injects
+        just the blurbs relevant to the current query). When it is None, every module's blurb is
+        returned (the always-on default, preserving backward-compatible behavior)."""
         sections = []
         for module in self.modules:
+            if only is not None and module.name not in only:
+                continue
             if module.prompt.strip():
                 sections.append(f"## {module.name} ({module.category})\n{module.prompt.strip()}")
         return "\n\n".join(sections)

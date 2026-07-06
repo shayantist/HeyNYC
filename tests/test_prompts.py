@@ -3,8 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from heynyc.core import config
 from heynyc.core.prompts import build_system_prompt
 from heynyc.core.registry import Registry
+
+
+def _real_registry() -> Registry:
+    """The live, module-discovered registry (real keywords, examples, and blurbs). The router and
+    progressive-disclosure tests need real manifests, not the empty registry."""
+    return Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
 
 
 def test_system_prompt_injects_current_nyc_datetime():
@@ -115,3 +122,96 @@ def test_system_prompt_same_discipline_in_every_language():
     assert "law number" in low  # never invent a law number in any language
     # cites the concrete correct statute the Spanish ES13 failure fabricated ("Local Law 68")
     assert "local law 34" in low or "20-840" in low
+
+
+# --- Change 1: progressive disclosure of the per-module detailed blurbs ---------------------------
+
+def test_router_matches_module_on_curated_keyword():
+    from heynyc.core.prompts import route_modules
+
+    assert "food_pantries" in route_modules("where's the nearest food pantry?", _real_registry())
+
+
+def test_router_returns_empty_set_on_unrelated_query():
+    from heynyc.core.prompts import route_modules
+
+    assert route_modules("what's the capital of France?", _real_registry()) == set()
+
+
+def test_router_short_keyword_is_not_substring_matched():
+    # cooling_centers has the 2-letter keyword "ac"; it must NOT match inside "beach". A beach-closure
+    # question routes to advisories (which owns "beach closure"), never to cooling via a substring hit.
+    from heynyc.core.prompts import route_modules
+
+    matched = route_modules("is the beach closed today?", _real_registry())
+    assert "cooling_centers" not in matched
+    assert "advisories" in matched
+
+
+def test_query_loads_only_matching_blurbs_but_keeps_menu_and_all_rules():
+    prompt = build_system_prompt(_real_registry(), query="where's the nearest food pantry?")
+    # the matched module's DETAILED blurb loads
+    assert "nearest_food_pantry(near=" in prompt
+    # clearly-unrelated modules' DETAILED blurbs do NOT load
+    assert "NOT outdoor misting stations" not in prompt   # cooling blurb text
+    assert "nyc_advisories" not in prompt                 # advisories blurb text
+    assert "PROGRAM INFO" not in prompt                   # housing blurb text
+    # the always-on capability menu + every safety rule stay present (a routing miss drops neither)
+    assert "Services you can help with (quick menu)" in prompt
+    assert "GROUND EVERYTHING" in prompt
+    assert "911" in prompt                                # rule 13 (emergencies)
+    assert "PUBLIC CHARGE" in prompt                      # rule 14 (SNAP / public charge)
+
+
+def test_no_match_query_keeps_menu_and_rules_but_loads_no_detailed_blurbs():
+    prompt = build_system_prompt(_real_registry(), query="what's the capital of France?")
+    # fail-open on a routing miss: NO detailed blurbs at all...
+    assert "nearest_food_pantry(near=" not in prompt
+    assert "benefits_search(query=" not in prompt
+    assert "nyc_advisories" not in prompt
+    # ...but the menu + safety rules are never dropped
+    assert "Services you can help with (quick menu)" in prompt
+    assert "GROUND EVERYTHING" in prompt
+    assert "911" in prompt
+
+
+def test_query_none_includes_every_blurb_backward_compat():
+    prompt = build_system_prompt(_real_registry())  # query defaults to None -> today's behavior
+    assert "nearest_food_pantry(near=" in prompt      # food blurb
+    assert "benefits_search(query=" in prompt         # benefits blurb
+    assert "NOT outdoor misting stations" in prompt   # cooling blurb
+    assert "nyc_advisories" in prompt                 # advisories blurb
+
+
+def test_capability_menu_names_every_service_regardless_of_routing():
+    # The cheap always-on menu names capabilities the current query didn't select, so a routing miss
+    # never hides a service from the model. Holds for query=None, a matched query, and a no-match query.
+    for query in (None, "where's the nearest food pantry?", "what's the capital of France?"):
+        low = build_system_prompt(_real_registry(), query=query).lower()
+        assert "cooling" in low
+        assert "eviction" in low or "housing" in low
+        assert "benefit" in low
+
+
+def test_tiers_keep_date_and_selected_blurbs_out_of_the_stable_prefix():
+    from heynyc.core.prompts import build_system_prompt_tiers
+
+    stable, volatile = build_system_prompt_tiers(
+        _real_registry(), query="where's the nearest food pantry?")
+    # stable = safety rules + menu, query- and time-independent (the cacheable prefix)
+    assert "GROUND EVERYTHING" in stable
+    assert "Services you can help with (quick menu)" in stable
+    assert "Current date & time" not in stable          # the date must NOT sit inside the cached prefix
+    assert "nearest_food_pantry(near=" not in stable     # selected blurbs are volatile, not cached
+    # volatile = the selected blurbs + the date line
+    assert "Current date & time" in volatile
+    assert "nearest_food_pantry(near=" in volatile
+
+
+def test_capability_blurbs_only_filters_to_named_modules():
+    reg = _real_registry()
+    only = reg.capability_blurbs(only={"food_pantries"})
+    assert "## food_pantries" in only
+    assert "## benefits" not in only
+    # the default (no filter) still returns every module's blurb (backward-compat)
+    assert "## benefits" in reg.capability_blurbs()
