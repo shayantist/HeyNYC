@@ -3,14 +3,18 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import DatasetBinding, ServiceModule
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
+    _borough_rect,
+    _detect_borough,
     _distance_handler,
     _geosearch_geocode,
+    _geosearch_params,
     _in_nyc,
     _looks_like_intersection,
     _nearest_handler,
@@ -29,6 +33,65 @@ def test_looks_like_intersection():
     # No street numbers → treat as a place name, not an intersection
     assert not _looks_like_intersection("Union Square")
     assert not _looks_like_intersection("Fordham Road, the Bronx")
+
+
+# --- Borough-bias fix: the "125th Street Manhattan → College Point, Queens" bug is a
+# QUERY bug. A borough named in the query must produce a borough-aware boundary.rect;
+# a plain address with no borough must still get the citywide NYC rect as a floor.
+# (Verified live 2026-07-05; see docs/strategy/2026-07-05-geocoder-upgrade.md.) --------
+
+def test_detect_borough_from_full_names():
+    # The exact live-verified failing query, plus the doc's stated cases.
+    assert _detect_borough("125th Street Manhattan") == "manhattan"
+    assert _detect_borough("123 Main St, the Bronx") == "bronx"
+    assert _detect_borough("350 5th Ave") is None
+    assert _detect_borough("67 Atlantic Avenue, Brooklyn") == "brooklyn"
+    assert _detect_borough("29-00 Northern Boulevard, Queens") == "queens"
+    assert _detect_borough("457 Victory Boulevard, Staten Island") == "staten island"
+
+
+def test_detect_borough_from_aliases_and_abbreviations():
+    assert _detect_borough("125 W 125 St MN") == "manhattan"
+    assert _detect_borough("1299 Grand Concourse BX") == "bronx"
+    assert _detect_borough("67 Atlantic Ave BK") == "brooklyn"
+    assert _detect_borough("29-00 Northern Blvd QN") == "queens"
+    assert _detect_borough("457 Victory Blvd SI") == "staten island"
+    assert _detect_borough("457 Victory Blvd, Staten Is") == "staten island"
+
+
+def test_detect_borough_treats_citywide_words_as_no_borough():
+    # "NYC" / "New York" are not a borough → return None so the citywide floor applies.
+    assert _detect_borough("350 5th Ave, New York, NY") is None
+    assert _detect_borough("City Hall NYC") is None
+
+
+def test_detect_borough_does_not_false_positive_on_street_names():
+    # Abbreviations must match as whole tokens, never as substrings inside a word.
+    assert _detect_borough("123 Business Park Road") is None   # 'si' inside 'Business'
+    assert _detect_borough("40 Simone Street") is None         # 'si' inside 'Simone'
+
+
+def test_geosearch_params_attaches_borough_rect_when_borough_named():
+    # A detected borough → the borough's hard boundary.rect (min/max lon/lat) is attached.
+    rect = _borough_rect("125th Street Manhattan")
+    params = _geosearch_params("125th Street Manhattan", rect)
+    assert params["text"] == "125th Street Manhattan"  # borough word stays in text (helps scoring)
+    assert params["boundary.rect.min_lon"] == -74.0479
+    assert params["boundary.rect.max_lon"] == -73.9067
+    assert params["boundary.rect.min_lat"] == 40.6829
+    assert params["boundary.rect.max_lat"] == 40.8820
+
+
+def test_geosearch_params_uses_citywide_floor_when_no_borough():
+    # No borough named → the citywide NYC rect (config.NYC_BBOX, W,S,E,N) is the floor.
+    rect = _borough_rect("350 5th Ave")
+    assert rect is None
+    params = _geosearch_params("350 5th Ave", rect)
+    w, s, e, n = (float(x) for x in config.NYC_BBOX.split(","))
+    assert params["boundary.rect.min_lon"] == w
+    assert params["boundary.rect.min_lat"] == s
+    assert params["boundary.rect.max_lon"] == e
+    assert params["boundary.rect.max_lat"] == n
 
 # --- BUG-1: bare NYC ZIP must resolve via the bundled ZCTA centroids, never
 # GeoSearch (which has no postalcode layer and misparses "10453" as a house

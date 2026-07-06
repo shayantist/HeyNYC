@@ -111,9 +111,84 @@ def maps_link(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={lat:.5f},{lon:.5f}"
 
 
-async def _geosearch_geocode(text: str, client: httpx.AsyncClient) -> Optional[GeoPoint]:
-    """NYC GeoSearch (authoritative PAD data). Strict: no intersections/POIs."""
-    response = await client.get(f"{GEOSEARCH_BASE}/search", params={"text": text, "size": 1})
+# --- Borough-aware query biasing -----------------------------------------------------------------
+# NYC GeoSearch does not infer a borough from a borough WORD sitting in a plain /search query, so a
+# raw "125th Street Manhattan" resolves to a same-named "125 Street" in College Point, Queens. The
+# fix is a QUERY change, not a geocoder swap: attach a hard boundary.rect for the named borough, and
+# ALWAYS attach a citywide NYC rect as the floor so a plain no-borough address still stays inside the
+# five boroughs. Verified live 2026-07-05 (docs/strategy/2026-07-05-geocoder-upgrade.md). We do NOT
+# use focus.point: it is only a soft re-rank, it did not fix this case in testing, and GeoSearch only
+# documents it on /autocomplete, not /search.
+
+# Borough bounding boxes as (min_lon, min_lat, max_lon, max_lat), the same W,S,E,N order as config.NYC_BBOX.
+# These are the envelope values verified live on 2026-07-05 to disambiguate the borough class of error.
+# TODO(prod): regenerate these envelopes from the official NYC DCP Borough Boundaries file so each rect matches its borough polygon exactly, instead of these hand-verified approximations.
+_BOROUGH_RECT: dict[str, tuple[float, float, float, float]] = {
+    "manhattan": (-74.0479, 40.6829, -73.9067, 40.8820),
+    "bronx": (-73.9339, 40.7855, -73.7654, 40.9176),
+    "brooklyn": (-74.0421, 40.5707, -73.8331, 40.7395),
+    "queens": (-73.9626, 40.5416, -73.7004, 40.8007),
+    "staten island": (-74.2591, 40.4774, -74.0492, 40.6518),
+}
+
+# Borough detection patterns: a full name plus common aliases/abbreviations, each matched as a WHOLE
+# token (\b...\b) so a short abbreviation never fires on a substring inside a street name (e.g. "si"
+# inside "Business" or "Simone", "bk" inside a word). "the Bronx" is already covered by the plain
+# "bronx" token. "NYC" and "New York" are intentionally absent, so a citywide query returns None and
+# the citywide floor applies rather than a single borough.
+_BOROUGH_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("staten island", re.compile(r"\bstaten\s+is(?:land)?\b|\bsi\b", re.IGNORECASE)),
+    ("manhattan", re.compile(r"\bmanhattan\b|\bmn\b", re.IGNORECASE)),
+    ("bronx", re.compile(r"\bbronx\b|\bbx\b", re.IGNORECASE)),
+    ("brooklyn", re.compile(r"\bbrooklyn\b|\bbklyn\b|\bbk\b", re.IGNORECASE)),
+    ("queens", re.compile(r"\bqueens\b|\bqn\b", re.IGNORECASE)),
+)
+
+
+def _detect_borough(text: str) -> Optional[str]:
+    """Return the NYC borough key named in the query text, or None. When more than one borough word appears the LAST mention wins, because the borough is conventionally a suffix ("125th Street Manhattan"). Pure and offline: this only reads the string, it never calls a geocoder."""
+    best_key: Optional[str] = None
+    best_pos = -1
+    for key, pattern in _BOROUGH_PATTERNS:
+        pos = -1
+        for match in pattern.finditer(text):
+            pos = match.start()  # keep the last match position for this borough
+        if pos > best_pos:
+            best_pos = pos
+            best_key = key
+    return best_key
+
+
+def _nyc_floor() -> tuple[float, float, float, float]:
+    """The citywide NYC rect (min_lon, min_lat, max_lon, max_lat) parsed from config.NYC_BBOX (W,S,E,N)."""
+    w, s, e, n = (float(x) for x in config.NYC_BBOX.split(","))
+    return w, s, e, n
+
+
+def _borough_rect(text: str) -> Optional[tuple[float, float, float, float]]:
+    """The bounding box for a borough named in the query, or None when no borough is named (the floor then applies)."""
+    key = _detect_borough(text)
+    return _BOROUGH_RECT.get(key) if key else None
+
+
+def _geosearch_params(text: str, rect: Optional[tuple[float, float, float, float]]) -> dict:
+    """Build the GeoSearch /search params: the query text, size, and a hard boundary.rect. Uses the passed borough rect when present, otherwise the citywide NYC floor, so a result can never leave NYC."""
+    w, s, e, n = rect or _nyc_floor()
+    return {
+        "text": text,
+        "size": 1,
+        "boundary.rect.min_lon": w,
+        "boundary.rect.min_lat": s,
+        "boundary.rect.max_lon": e,
+        "boundary.rect.max_lat": n,
+    }
+
+
+async def _geosearch_geocode(
+    text: str, client: httpx.AsyncClient, *, rect: Optional[tuple[float, float, float, float]] = None
+) -> Optional[GeoPoint]:
+    """NYC GeoSearch (authoritative PAD data). Strict: no intersections/POIs. A borough-aware boundary.rect (or the citywide floor when rect is None) hard-filters results to the right borough."""
+    response = await client.get(f"{GEOSEARCH_BASE}/search", params=_geosearch_params(text, rect))
     response.raise_for_status()
     features = (response.json() or {}).get("features") or []
     if not features:
@@ -184,10 +259,14 @@ async def geocode(text: str, *, client: Optional[httpx.AsyncClient] = None, forg
                 return GeoPoint(lat=lat, lon=lon, label=f"ZIP {m.group()} area",
                                 confidence=1.0, match_type="zcta")
             return None  # unknown or non-NYC ZIP → don't fall through to GeoSearch
+        # Borough-aware bias: a borough named in the query gives that borough's hard boundary.rect;
+        # otherwise rect is None and _geosearch_geocode applies the citywide NYC floor. This is what
+        # fixes "125th Street Manhattan" resolving to College Point, Queens.
+        rect = _borough_rect(text)
         if _looks_like_intersection(text):
-            point = await forgiving(text) or await _geosearch_geocode(text, client)
+            point = await forgiving(text) or await _geosearch_geocode(text, client, rect=rect)
         else:
-            point = await _geosearch_geocode(text, client) or await forgiving(text)
+            point = await _geosearch_geocode(text, client, rect=rect) or await forgiving(text)
         if point is not None and _gate_low_confidence(point):
             point.low_confidence = True
         return point
