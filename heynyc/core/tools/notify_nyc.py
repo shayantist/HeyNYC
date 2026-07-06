@@ -24,16 +24,33 @@ fabricating — this feed never invents an advisory. Verified live 2026-07-02.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree as ET
+from zoneinfo import ZoneInfo
 
 import httpx
 
-# The Notify NYC Everbridge RSS feed. It 302-redirects, so callers must follow redirects.
+# The Notify NYC Everbridge RSS feed of CAP alerts (structured: severity/expiry/area). It
+# 302-redirects, so callers must follow redirects. NOTE (verified 2026-07-06): the city has been
+# publishing this feed EMPTY (HTTP 200, ~443 bytes, zero <item>s) even mid-emergency, so it can no
+# longer be trusted as the sole source; see RECENT_MESSAGES_URL for the live fallback and the
+# fail-safe contract on `AdvisoryFeed`/`RecentFeed`.
 RSS_URL = "https://feeds.everbridge.net/feeds/453003085617722/rss/rss.xml"
+
+# The live Notify NYC endpoint the city's OWN portal (a858-nycnotify.nyc.gov/notifynyc) fetches to
+# render its "recent messages" panel. Verified live 2026-07-06: while RSS_URL sat empty during a NYC
+# flood emergency, THIS endpoint returned the day's actual alerts (Flood Advisory, Safe Overnight
+# Locations: Flooding, MTA suspensions). Plain GET, JSON array of {pubDate, title, description}, no
+# auth, no redirects. Thinner than CAP (no machine-readable severity/expiry), so we surface it as a
+# real-time FALLBACK when the CAP feed is degraded, with each note's issue time shown for currency.
+RECENT_MESSAGES_URL = "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages"
+
+# pubDate arrives as "MM/DD/YYYY HH:MM:SS" in NYC local time (no offset); interpret it in this zone.
+_NYC_TZ = ZoneInfo("America/New_York")
 
 # CAP severity → sort rank (most severe first). Unknown / anything else sorts last.
 _SEVERITY_RANK = {"Extreme": 0, "Severe": 1, "Moderate": 2, "Minor": 3}
@@ -53,6 +70,22 @@ class Advisory:
     source_url: str
     guid: str
     language: str = ""  # CAP <language> code (e.g. "en-US", "es-US"); blank if the feed omits it
+
+
+@dataclass
+class AdvisoryFeed:
+    """The advisories PLUS whether the feed can be trusted as an all-clear when the list is empty.
+
+    This is the fail-safe seam. `confirmed` is True ONLY when the RSS was fetched, parsed, and
+    yielded at least one readable advisory (so an empty `advisories` list is a genuine "nothing
+    active right now"). It is False whenever the feed was unreachable, errored, returned an empty
+    body, or carried nothing we could parse: in that DEGRADED state an empty list means we COULD NOT
+    confirm the current advisories, NOT that the city is clear, so the caller must fail safe and route
+    to the official live source rather than announce "no advisories". Conflating these two states is
+    exactly the bug that let a confident false "no advisories" ship during a live weather emergency.
+    """
+    confirmed: bool
+    advisories: list[Advisory]
 
 
 # The item <author> tags language in brackets: "NYCEM [English]", "NYCEM [Spanish]", … We key on
@@ -234,8 +267,8 @@ def _dedupe(results: list) -> list[Advisory]:
 
 async def fetch_advisories(
     client: Optional[httpx.AsyncClient] = None, lang: Optional[str] = None
-) -> list[Advisory]:
-    """Fetch the Notify NYC feed and return the advisories (deduped), in `lang` where available.
+) -> AdvisoryFeed:
+    """Fetch the Notify NYC feed and return an `AdvisoryFeed` (deduped), in `lang` where available.
 
     GETs the RSS (following redirects), then fetches CAP XMLs CONCURRENTLY (tolerating individual
     failures), parses each, and dedupes by CAP identifier (the alert id, which is language-stable).
@@ -243,7 +276,12 @@ async def fetch_advisories(
     non-English language is requested AND the feed carries it, we ALSO fetch those variants and
     overlay them on the English base per alert: the requested language wins, English is the fallback
     for any alert with no variant in that language (an official city translation, not a paraphrase).
-    Inject `client` to mock the HTTP calls offline. Any network/parse error yields `[]`.
+    Inject `client` to mock the HTTP calls offline.
+
+    FAIL-SAFE: on any network/parse error, an empty body, or a feed we could not read a single
+    advisory from, this returns `AdvisoryFeed(confirmed=False, advisories=[])`. `confirmed` is True
+    only when we actually parsed at least one advisory, so the caller can tell a real all-clear apart
+    from a degraded feed and NEVER announce "no advisories" off a feed it could not read.
     """
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
@@ -259,7 +297,7 @@ async def fetch_advisories(
             return_exceptions=True,
         )
     except Exception:
-        return []
+        return AdvisoryFeed(confirmed=False, advisories=[])
     finally:
         if own_client:
             await client.aclose()
@@ -272,7 +310,9 @@ async def fetch_advisories(
         for translated in _dedupe(target_results):
             by_key[_advisory_key(translated)] = translated  # target wins; English stays the fallback
         advisories = list(by_key.values())
-    return advisories
+    # confirmed iff we read at least one real advisory: an empty body / all-failed CAPs / zero
+    # parseable items all collapse to []  → confirmed=False → the caller fails safe.
+    return AdvisoryFeed(confirmed=bool(advisories), advisories=advisories)
 
 
 def _sent_key(advisory: Advisory) -> datetime:
@@ -285,17 +325,22 @@ def _sent_key(advisory: Advisory) -> datetime:
 
 async def active_advisories(
     client: Optional[httpx.AsyncClient], now: datetime, lang: Optional[str] = None
-) -> list[Advisory]:
+) -> AdvisoryFeed:
     """The advisories still in effect at `now` (a tz-aware datetime), most severe / most recent first.
 
     Keeps advisories whose `expires` (ISO 8601 WITH tz offset, parsed by `datetime.fromisoformat`)
     is strictly after `now`. Sorts by severity rank (Extreme→Severe→Moderate→Minor→Unknown) then
     `sent` descending. `lang` (default English) surfaces the requested-language variant where the
-    feed carries it, English fallback. Resilient: a fetch failure yields `[]` (via `fetch_advisories`).
+    feed carries it, English fallback.
+
+    Returns an `AdvisoryFeed` and PROPAGATES its `confirmed` flag: an empty `advisories` with
+    `confirmed=True` is a real all-clear (feed read, nothing currently in effect), while
+    `confirmed=False` means the feed was unreachable/empty/unreadable and the emptiness proves
+    nothing. The caller must fail safe on the latter and never report "no advisories".
     """
-    advisories = await fetch_advisories(client, lang=lang)
+    feed = await fetch_advisories(client, lang=lang)
     active: list[Advisory] = []
-    for advisory in advisories:
+    for advisory in feed.advisories:
         try:
             expires = datetime.fromisoformat(advisory.expires)
         except (ValueError, TypeError):
@@ -306,4 +351,104 @@ async def active_advisories(
     # Two-pass stable sort: sent-descending first, then severity rank ascending.
     active.sort(key=_sent_key, reverse=True)
     active.sort(key=lambda a: _SEVERITY_RANK.get(a.severity, _UNKNOWN_RANK))
-    return active
+    return AdvisoryFeed(confirmed=feed.confirmed, advisories=active)
+
+
+# --- real-time fallback: the live Notify NYC "recent messages" endpoint ------
+# The CAP feed above is the STRUCTURED source, but the city has been publishing it empty even during
+# emergencies. This endpoint is what the city's own Notify NYC portal renders, and it carries the
+# real alerts in real time. It is thinner (no severity/expiry), so callers use it as a fallback when
+# the CAP feed is degraded and show each note's issue time rather than an invented "in effect until".
+
+
+@dataclass
+class RecentNote:
+    """One live Notify NYC notification from RECENT_MESSAGES_URL (the city portal's own source).
+
+    Thinner than a CAP `Advisory`: the endpoint gives no machine-readable severity/expiry/area, so we
+    keep the title, the cleaned body text, and BOTH the parsed ISO issue time (`issued`, for sorting
+    and citation `valid_as_of`) and the raw feed string (`issued_raw`, for honest display).
+    """
+    title: str
+    body: str
+    issued: str        # ISO 8601 with ET offset, or "" if pubDate was unparseable
+    issued_raw: str    # the feed's verbatim pubDate string
+    source_url: str
+    guid: str
+
+
+@dataclass
+class RecentFeed:
+    """RecentNotes PLUS the same fail-safe `confirmed` flag as `AdvisoryFeed`.
+
+    `confirmed` is True only when the endpoint was fetched, parsed, and yielded at least one note.
+    False (unreachable, HTTP error, non-array body, empty array, unparseable) means we COULD NOT
+    confirm the current notifications, NOT that there are none: the caller must fail safe and never
+    announce an all-clear off it.
+    """
+    confirmed: bool
+    notes: list[RecentNote]
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    """Drop HTML tags (the feed wraps its translation link in an <a> element), keeping the visible
+    text (including the plain URL) and collapsing the whitespace the tags leave behind."""
+    return re.sub(r"[ \t]+", " ", _TAG_RE.sub("", text or "")).strip()
+
+
+def _parse_pubdate(pubdate: str) -> str:
+    """"MM/DD/YYYY HH:MM:SS" (NYC local time) to ISO 8601 with the correct ET offset, or "" if unparseable."""
+    try:
+        dt = datetime.strptime((pubdate or "").strip(), "%m/%d/%Y %H:%M:%S")
+    except (ValueError, TypeError):
+        return ""
+    return dt.replace(tzinfo=_NYC_TZ).isoformat()
+
+
+def _parse_recent_note(record: dict) -> Optional[RecentNote]:
+    """One JSON record to a RecentNote. Returns None if it carries neither a title nor a body."""
+    title = (record.get("title") or "").strip()
+    body = _strip_html(record.get("description") or "")
+    if not title and not body:
+        return None
+    issued_raw = (record.get("pubDate") or "").strip()
+    return RecentNote(
+        title=title,
+        body=body,
+        issued=_parse_pubdate(issued_raw),
+        issued_raw=issued_raw,
+        source_url=RECENT_MESSAGES_URL,
+        guid=f"recent:{issued_raw}:{title}",
+    )
+
+
+async def fetch_recent_advisories(client: Optional[httpx.AsyncClient] = None) -> RecentFeed:
+    """Fetch the live Notify NYC "recent messages" endpoint (the city portal's own real-time source).
+
+    GETs RECENT_MESSAGES_URL, parses the JSON array of {pubDate, title, description}, cleans each into
+    a RecentNote, and returns them NEWEST FIRST. Inject `client` to mock the HTTP call offline.
+
+    FAIL-SAFE (mirrors `fetch_advisories`): any network/JSON error, a non-array body, or an empty
+    array yields `RecentFeed(confirmed=False, notes=[])`. An empty result is NEVER a confirmed
+    all-clear, so the caller routes to the official live source instead of announcing "no advisories".
+    """
+    own_client = client is None
+    client = client or httpx.AsyncClient(timeout=20.0)
+    try:
+        response = await client.get(RECENT_MESSAGES_URL, follow_redirects=True)
+        response.raise_for_status()
+        records = response.json()
+    except Exception:
+        return RecentFeed(confirmed=False, notes=[])
+    finally:
+        if own_client:
+            await client.aclose()
+
+    if not isinstance(records, list):
+        return RecentFeed(confirmed=False, notes=[])
+    notes = [n for n in (_parse_recent_note(r) for r in records if isinstance(r, dict)) if n]
+    notes.sort(key=lambda n: n.issued, reverse=True)  # newest first; unparseable ("") sorts last
+    return RecentFeed(confirmed=bool(notes), notes=notes)

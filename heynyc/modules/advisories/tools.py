@@ -1,14 +1,22 @@
 """advisories module tool: `nyc_advisories`, grounded in the live Notify NYC feed.
 
-Data source: the public Notify NYC / NYC Emergency Management Everbridge RSS feed of CAP alerts
-(see heynyc/core/tools/notify_nyc.py). On demand, we fetch the feed, keep the advisories still in
-effect at `now`, and report each one — headline, severity, event, "in effect until <expires>", and
-areaDesc — with a DATA citation registered to the advisory's resolvable CAP XML url. When nothing
-is active we abstain cleanly rather than manufacture an alert.
+Sourcing is TIERED and fail-safe (see heynyc/core/tools/notify_nyc.py):
+  1. The Everbridge RSS feed of CAP alerts is the STRUCTURED source (severity + "in effect until" +
+     areaDesc), each reported with a DATA citation to its resolvable CAP XML url. Used WHEN it works.
+  2. The city's own live "recent messages" endpoint (what the Notify NYC portal itself renders) is
+     the REAL-TIME fallback used when the CAP feed is empty or unreachable, which has been the actual
+     failure mode: the CAP feed was publishing empty even mid-emergency. It is thinner (no
+     machine-readable severity/expiry), so we surface each notification's ISSUE time and its body,
+     cited to the resolvable endpoint.
+  3. FAIL-SAFE: if NEITHER source can be confirmed, we NEVER say "no advisories". We say we could not
+     confirm and route to the official live source (nyc.gov/notifynyc) + 311, and 911 for a
+     life-threatening emergency. A confident false all-clear off an empty/down feed is the bug this
+     module exists to prevent.
 
-Honest limitations (enforced in the manifest prompt too): the feed's geography is often citywide
-even for a local event, so we do NOT filter out citywide alerts on a `near` hint; and the feed can
-lag the SMS/email alerts by minutes. We never invent an advisory, severity, or expiry.
+Honest limitations: the CAP feed's geography is often citywide even for a local event, so we do NOT
+filter out citywide alerts on a `near` hint; either source can lag the SMS/email alerts by minutes;
+and the fallback has no structured expiry, so we show the issue time and never invent one. We never
+invent an advisory, a severity, or an expiry.
 """
 from __future__ import annotations
 
@@ -16,9 +24,35 @@ from datetime import datetime, timezone
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.notify_nyc import Advisory, active_advisories
+from heynyc.core.tools.notify_nyc import (
+    Advisory,
+    RecentNote,
+    active_advisories,
+    fetch_recent_advisories,
+)
 
 OFFICIAL = "Notify NYC (nyc.gov/notifynyc) or call 311"
+
+# CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
+# state may tell the user there are no active advisories.
+NO_ACTIVE = (
+    "The Notify NYC feed was reached and read, and it shows no advisories active right now. Tell the "
+    "user there are no active Notify NYC advisories at the moment (this is the public Notify NYC feed, "
+    f"not the whole picture) and point them to {OFFICIAL}. Do NOT invent an advisory. Offer to check "
+    "again."
+)
+
+# DEGRADED / FAIL-SAFE: the feed was unreachable, errored, empty, or unreadable. We could NOT confirm
+# the current advisories, so we must NEVER announce that there are none. This is the safety-critical
+# branch: a false "no advisories" during a live weather emergency could get someone hurt.
+COULD_NOT_CONFIRM = (
+    "We could not reach or read the Notify NYC feed just now, so we could NOT confirm the current "
+    "advisories. Do NOT tell the user the city is clear or that nothing is active, and do NOT state "
+    "an all-clear. Tell them plainly that we could not confirm active advisories at the moment and "
+    "that an emergency may still be in effect, then send them to the official live source, Notify NYC "
+    "at nyc.gov/notifynyc, and to 311 for current advisories. For a life-threatening emergency, tell "
+    "them to call 911 right away. Offer to check again."
+)
 
 
 def _advisory_snapshot(advisory: Advisory) -> dict:
@@ -66,24 +100,31 @@ def _advisory_block(advisory: Advisory, cite: str) -> str:
     return "\n".join(parts)
 
 
-async def _handler(args: dict, ctx: ToolContext) -> str:
-    near = (args.get("near") or "").strip()
-    lang = (args.get("lang") or "").strip() or None
-    now = datetime.now(timezone.utc)
+def _recent_citation(ctx: ToolContext, note: RecentNote) -> str:
+    """DATA citation for a live "recent messages" note, grounded in the resolvable Notify NYC endpoint.
+    `valid_as_of` is the notification's own ISSUE time (temporal provenance), never fetch time."""
+    snapshot = {"title": note.title, "body": note.body, "pubDate": note.issued_raw}
+    provenance = data_provenance(snapshot, record_id=note.guid, field_pointer="/")
+    return ctx.citations.register(
+        note.source_url,
+        snippet=f"{note.title} (issued {note.issued_raw})",
+        title="Notify NYC (live recent messages)",
+        kind="DATA",
+        valid_as_of=note.issued or note.issued_raw,
+        provenance=provenance,
+    )
 
-    # active_advisories is resilient (returns [] on any network/parse error) — never crashes.
-    # `lang` surfaces the official city translation of an advisory when the feed carries it
-    # (English fallback) — an official translation beats an LLM paraphrase of an emergency alert.
-    advisories = await active_advisories(ctx.http, now=now, lang=lang)
 
-    if not advisories:
-        return (
-            "No active Notify NYC advisories came back from the feed right now. Do NOT invent one — "
-            "tell the user there are no active Notify NYC advisories at the moment (this is the "
-            f"public Notify NYC feed, not the whole picture) and point them to {OFFICIAL}. "
-            "Offer to check again."
-        )
+def _recent_block(note: RecentNote, cite: str) -> str:
+    parts = [f"- {note.title or 'Notify NYC notification'} (issued {note.issued_raw or 'unknown'}) "
+             f"{{cite:{cite}}}"]
+    if note.body:
+        parts.append(f"  {note.body}")
+    return "\n".join(parts)
 
+
+def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
+    """The structured CAP report: each active advisory with severity + 'in effect until', cited."""
     lines = [
         "Active NYC advisories from the Notify NYC feed (NYC Emergency Management) — report ONLY "
         "these, cite each, and state each one's 'in effect until' time:",
@@ -104,6 +145,62 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "advisory, point to transit."
     )
     return "\n".join(lines)
+
+
+def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
+    """The real-time FALLBACK report used when the CAP feed is empty/degraded: the city's own live
+    Notify NYC notifications, newest first, cited to the resolvable endpoint. Thinner than CAP (no
+    machine-readable severity/expiry), so we show each note's ISSUE time instead of an invented one."""
+    lines = [
+        "The Notify NYC CAP feed was empty or unreachable, so these are the CITY'S OWN live Notify "
+        "NYC notifications (newest first) from the nyc.gov/notifynyc source. This live source gives "
+        "an ISSUE TIME, not a machine-readable 'in effect until', so state each notification's issue "
+        "time and let the user judge how current it is. Report ONLY these, cite each, and do NOT "
+        "invent a severity or an expiry:",
+    ]
+    if near:
+        lines.append(
+            f"(User asked about '{near}'. Notify NYC is usually citywide, so list these as-is and do "
+            f"not filter them out for a specific location.)"
+        )
+    for note in notes:
+        cite = _recent_citation(ctx, note)
+        lines.append(_recent_block(note, cite))
+    lines.append(
+        "Limits: this live fallback lists recent notifications without a structured expiry, so "
+        "confirm currency by the issue time, and for the fullest picture also point the user to "
+        "nyc.gov/notifynyc and 311. If a HEAT notification is active, also offer cooling centers; for "
+        "FLOODING, pass along any safe-location or road-safety guidance in the notification text. For "
+        "a life-threatening emergency, tell the user to call 911 right away."
+    )
+    return "\n".join(lines)
+
+
+async def _handler(args: dict, ctx: ToolContext) -> str:
+    near = (args.get("near") or "").strip()
+    lang = (args.get("lang") or "").strip() or None
+    now = datetime.now(timezone.utc)
+
+    # TIERED, fail-safe sourcing (neither call ever crashes; both carry a `confirmed` flag):
+    #   1. CAP/Everbridge feed (structured: severity + 'in effect until'). Primary WHEN it works.
+    #   2. The city's own live "recent messages" endpoint. Real-time fallback WHEN CAP is degraded
+    #      (which is the current reality: the CAP feed has been publishing empty during emergencies).
+    #   3. Fail safe: if NEITHER source can be confirmed, we NEVER say "no advisories"; we say we
+    #      could not confirm and route to the official live source + 311 (+ 911 for a life-threat).
+    # `lang` surfaces the official city translation of a CAP advisory where the feed carries it.
+    feed = await active_advisories(ctx.http, now=now, lang=lang)
+
+    if feed.confirmed and feed.advisories:
+        return _render_cap(ctx, feed.advisories, near)          # best case: structured + active
+    if feed.confirmed:
+        return NO_ACTIVE                                        # working CAP feed, genuinely nothing active
+
+    # CAP feed DEGRADED (unreachable / empty body / unreadable), so do NOT trust its emptiness as an
+    # all-clear. Consult the city's live notifications before ever telling the user there are none.
+    recent = await fetch_recent_advisories(ctx.http)
+    if recent.confirmed and recent.notes:
+        return _render_recent(ctx, recent.notes, near)          # real-time fallback (today's alerts)
+    return COULD_NOT_CONFIRM                                    # both sources degraded -> fail safe
 
 
 def get_tools() -> list[Tool]:
