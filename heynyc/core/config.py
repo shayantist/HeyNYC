@@ -92,6 +92,9 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")  # e.g. whatsapp:+14155238886
+# Generic Twilio sender. A plain +E.164 number (e.g. +12125550123) sends SMS; a whatsapp:+… value
+# sends WhatsApp. Falls back to TWILIO_WHATSAPP_FROM so existing WhatsApp setups keep working.
+TWILIO_FROM = os.getenv("TWILIO_FROM", "") or TWILIO_WHATSAPP_FROM
 
 # Channel runtime knobs
 CHANNEL_RATE_LIMIT = int(os.getenv("HEYNYC_CHANNEL_RATE_LIMIT", "20"))          # msgs / window / user

@@ -77,7 +77,7 @@ def make_twilio_router(deps: Deps):
         if not validator.validate(public_url(request), params, signature):
             return Response(status_code=403)
         inbound = to_inbound(params)
-        replier = TwilioReplier(client, from_=config.TWILIO_WHATSAPP_FROM, to=inbound.sender)
+        replier = TwilioReplier(client, from_=config.TWILIO_FROM, to=inbound.sender)
         dispatch(handle(inbound, replier, deps))   # 200 returns fast; agent runs out-of-band
         return Response(status_code=200)
 
