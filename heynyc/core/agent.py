@@ -333,12 +333,7 @@ class Agent:
     async def _litellm_stream(self, messages: list[dict], tool_schemas: list[dict]) -> AsyncIterator[dict]:
         import litellm
 
-        kwargs: dict = {
-            "model": self.model, "messages": messages, "temperature": 0.0,
-            "stream": True, "stream_options": {"include_usage": True},
-        }
-        if tool_schemas:
-            kwargs["tools"] = tool_schemas
+        kwargs = _completion_kwargs(self.model, messages, tool_schemas)
 
         async def _open():
             return await litellm.acompletion(**kwargs)
@@ -375,6 +370,24 @@ class Agent:
                 for i, s in sorted(calls.items())
             ]
         yield {"type": "message", "message": {"role": "assistant", "content": "".join(content_parts) or None, "tool_calls": tool_calls}}
+
+
+def _completion_kwargs(model: str, messages: list[dict], tool_schemas: list[dict]) -> dict:
+    """Build the kwargs for litellm.acompletion.
+
+    GPT-5 models reject temperature != 1 (litellm raises UnsupportedParamsError), so we omit
+    temperature for them and let it default; every other model pins temperature=0 for
+    deterministic, grounded output. Tool schemas are attached only when present.
+    """
+    kwargs: dict = {
+        "model": model, "messages": messages,
+        "stream": True, "stream_options": {"include_usage": True},
+    }
+    if "gpt-5" not in model:
+        kwargs["temperature"] = 0.0
+    if tool_schemas:
+        kwargs["tools"] = tool_schemas
+    return kwargs
 
 
 def _wrap_complete(fn: CompletionFn) -> StreamFn:

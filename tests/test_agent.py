@@ -218,3 +218,29 @@ async def test_agent_captures_token_usage_from_stream():
     assert result.usage["input_tokens"] == 42
     assert result.usage["output_tokens"] == 7
     assert result.usage["latency_ms"] >= 0.0
+
+
+def test_completion_kwargs_omits_temperature_for_gpt5_models():
+    # GPT-5 models reject temperature != 1 (litellm raises UnsupportedParamsError), so the agent must
+    # NOT send temperature=0 for them. Regression guard for the gpt-5-mini backend migration.
+    from heynyc.core.agent import _completion_kwargs
+
+    kw = _completion_kwargs("openai/gpt-5-mini", messages=[], tool_schemas=[])
+    assert "temperature" not in kw
+
+
+def test_completion_kwargs_pins_temperature_zero_for_non_gpt5():
+    # Every other model pins temperature=0 for deterministic, grounded output.
+    from heynyc.core.agent import _completion_kwargs
+
+    kw = _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=[])
+    assert kw["temperature"] == 0.0
+
+
+def test_completion_kwargs_attaches_tools_only_when_present():
+    # Tool schemas are passed through when present, omitted when empty (matches prior behavior).
+    from heynyc.core.agent import _completion_kwargs
+
+    schema = [{"type": "function", "function": {"name": "nearest"}}]
+    assert _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=schema)["tools"] == schema
+    assert "tools" not in _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=[])
