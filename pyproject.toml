@@ -33,6 +33,14 @@ whatsapp = [
     "twilio>=9.0",
     "python-multipart>=0.0.9",
 ]
+# Tier-2 runtime-guard NLI checker (heynyc/core/nli.py::MiniCheckNLI). Self-hosted MiniCheck-Flan-T5
+# via the minicheck package; heavy, so it stays an OPT-IN extra and its imports are lazy. The base
+# install and the offline test suite never need it (they use MockNLI / an injected completion).
+nli = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "minicheck @ git+https://github.com/Liyan06/MiniCheck.git@main",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -40,6 +48,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["heynyc"]
+
+# The [nli] extra pulls minicheck from git (not on PyPI), a direct reference; hatchling rejects
+# those during metadata validation unless this is set, which breaks even a plain offline test run.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

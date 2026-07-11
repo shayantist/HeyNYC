@@ -64,3 +64,26 @@ def test_query_restatement_is_grounded():
         query="Where's the closest food pantry to 2920 Broadway, Manhattan?",
     )
     assert res is not None and res.passed, res.detail
+
+
+def test_nli_none_is_byte_identical_to_tier1_only():
+    """Regression guard for the Tier-2 hook: passing nli=None (today's every caller) must leave the
+    Tier-1 result untouched and the two new fields at their empty defaults. Pinned across a grounded
+    fixture and a hard-failing one."""
+    snap = {"name": "New York Common Pantry", "phone": "(917) 720-9700"}
+
+    grounded = check_grounding("Call (917) 720-9700 {cite:S1}.", {"S1": _data_cite(snap)}, nli=None)
+    assert grounded is not None
+    assert grounded.passed and grounded.blocking is False and not grounded.hard_failures
+    assert grounded.nli_failures == [] and grounded.nli_checked == 0
+
+    bad = check_grounding("Call them at (212) 555-0100 {cite:S1}.", {"S1": _data_cite(snap)}, nli=None)
+    assert bad is not None and bad.blocking is True and bad.hard_failures
+    assert bad.nli_failures == [] and bad.nli_checked == 0
+
+    # Omitting the kwarg entirely is identical to nli=None across every pre-existing field.
+    omitted = check_grounding("Call (917) 720-9700 {cite:S1}.", {"S1": _data_cite(snap)})
+    assert (omitted.passed, omitted.detail, omitted.blocking, omitted.checked,
+            omitted.locations, omitted.hard_failures, omitted.soft_failures) == (
+            grounded.passed, grounded.detail, grounded.blocking, grounded.checked,
+            grounded.locations, grounded.hard_failures, grounded.soft_failures)

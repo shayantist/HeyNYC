@@ -151,6 +151,24 @@ def _split_claims(text: str) -> list[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def _cited_sentences(text: str) -> list[tuple[str, list[str]]]:
+    """Tier-2's unit: each sentence that carries a citation, paired with the {cite:Sn} ids it cites,
+    with the markers stripped from the text. A segment that is ONLY citation markers annotates the
+    sentence BEFORE it — agents routinely trail '{cite:Sn}' after the closing period, which
+    _split_claims separates into its own segment — so it is merged back onto that sentence rather than
+    checked as an empty claim. (Tier-1 is unaffected: it keeps its per-segment loop.)"""
+    out: list[tuple[str, list[str]]] = []
+    for seg in _split_claims(text):
+        cited = _CITE_REF_RE.findall(seg)
+        bare = _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", seg)).strip()
+        if cited and not bare and out:  # a marker-only segment: attach its ids to the prior sentence
+            prev_text, prev_cited = out[-1]
+            out[-1] = (prev_text, prev_cited + [c for c in cited if c not in prev_cited])
+        elif bare:  # a real sentence (with or without its own marker); a later trailing marker may join
+            out.append((bare, cited))
+    return [(t, c) for t, c in out if c]
+
+
 def _salient_tokens(claim: str) -> list[dict]:
     """High-signal, specific facts only. Each token carries how to match it (digit-run / phrase /
     all-significant-words). Common words, lone lowercase words, and the cite marker are never tokens."""
@@ -257,6 +275,17 @@ class Mismatch:
 
 
 @dataclass
+class NLIMismatch:
+    """Tier-2: a cited PROSE sentence a faithfulness/NLI checker judged UNSUPPORTED by the source it
+    cites. Distinct from Mismatch (a Tier-1 structured-token absence): this is a per-sentence entailment
+    miss, the class Tier-1 is structurally silent on (a fabricated statute cited to a soft source)."""
+    claim: str          # the sentence checked, with {cite:Sn} markers stripped
+    cited: list[str]    # the {cite:Sn} ids that segment cited
+    score: float        # the backend's support probability, 0..1 (below threshold → recorded)
+    reason: str = ""    # optional backend note (the prompted backend fills this)
+
+
+@dataclass
 class GroundingResult:
     """The verdict over one answer. `blocking` is True only when a HARD (verbatim-structured) fact is
     absent from an all-complete-capture claim — the ONLY condition the runtime guard acts on."""
@@ -267,13 +296,33 @@ class GroundingResult:
     locations: list = field(default_factory=list)
     hard_failures: list = field(default_factory=list)  # list[Mismatch] — blocking, drives retry/strip
     soft_failures: list = field(default_factory=list)   # list[Mismatch] — informational only
+    # Tier-2 (opt-in): populated only when a checker is passed to check_grounding. Empty / zero on the
+    # default (nli=None) path, so today's every caller sees a byte-identical result.
+    nli_failures: list = field(default_factory=list)    # list[NLIMismatch] — per-sentence entailment misses
+    nli_checked: int = 0                                 # how many cited sentences the NLI checker ran on
 
 
-def check_grounding(text: str, citations: dict, query: str = "") -> Optional[GroundingResult]:
+def check_grounding(
+    text: str,
+    citations: dict,
+    query: str = "",
+    *,
+    nli=None,
+    nli_blocking: bool = False,
+    nli_threshold: float = 0.5,
+) -> Optional[GroundingResult]:
     """Verify every {cite:Sn}'d salient fact against its source (or the user's query).
 
     Returns a GroundingResult, or None when there is nothing to verify (no citation markers, or no
-    salient facts sit next to any citation). Pure, in-memory, deterministic — no LLM, no network."""
+    salient facts sit next to any citation). Pure, in-memory, deterministic — no LLM, no network.
+
+    Tier-2 (opt-in, off by default): pass ``nli`` (an object with ``check(claim, source) -> NLIVerdict``,
+    see core.nli) to also run a per-sentence faithfulness check on every cited sentence, scoring it
+    against the same source text Tier-1 assembled. A sentence whose support score is below
+    ``nli_threshold`` is recorded in ``nli_failures``. When ``nli is None`` (today's every caller) this
+    function behaves BYTE-IDENTICALLY to before — the Tier-2 fields stay empty and nothing else changes.
+    ``nli_blocking`` (used only when the follow-on flips Tier-2 on live) lets an NLI failure also drive
+    ``blocking``; by default blocking stays governed solely by Tier-1's hard_failures."""
     text = text or ""
     if "{cite:" not in text:
         return None
@@ -281,8 +330,10 @@ def check_grounding(text: str, citations: dict, query: str = "") -> Optional[Gro
     query_digits = _digits(query) if query else ""
     hard_failures: list[Mismatch] = []
     soft_failures: list[Mismatch] = []
+    nli_failures: list[NLIMismatch] = []
     locations: list[dict] = []
     checked = 0
+    nli_checked = 0
     for claim in _split_claims(text):
         cited = _CITE_REF_RE.findall(claim)
         if not cited:
@@ -336,13 +387,38 @@ def check_grounding(text: str, citations: dict, query: str = "") -> Optional[Gro
             mismatch = Mismatch(claim=claim, cited=cited, kind=tok["kind"], text=tok["text"], message=msg)
             hard = all_complete and tok["kind"] != "proper_noun"
             (hard_failures if hard else soft_failures).append(mismatch)
-    if checked == 0:
-        return None  # nothing to verify (no salient facts next to any citation)
+    # Tier-2 (opt-in): per-sentence faithfulness/NLI. A SEPARATE pass so Tier-1 above is byte-for-byte
+    # untouched. Fully gated on `nli` — skipped entirely when nli is None. For each cited sentence, run
+    # the checker against the SAME captured source text Tier-1 assembles (snapshot / snippet / title).
+    # It earns its keep on the excerpt-cited prose Tier-1 deliberately passes; complete-source claims
+    # get a cheap second look too.
+    if nli is not None:
+        for claim_text, cited in _cited_sentences(text):
+            blobs = {cid: _citation_blob(citations[cid]) for cid in cited
+                     if citations.get(cid) and _citation_blob(citations[cid]) is not None}
+            if not blobs:
+                continue  # every cited source is an empty capture — nothing to check against
+            verdict = nli.check(claim_text, " ".join(blobs.values()))
+            nli_checked += 1
+            if verdict.score < nli_threshold:
+                nli_failures.append(NLIMismatch(
+                    claim=claim_text, cited=cited, score=verdict.score, reason=verdict.reason))
+    if checked == 0 and nli_checked == 0:
+        return None  # nothing to verify (no salient facts, and no cited sentence for Tier-2 either)
     failures = hard_failures + soft_failures
-    # Only a HARD (verbatim-fact) mismatch blocks; a proper-noun-only mismatch is informational.
-    blocking = _CITED_CLAIM_GROUNDING_BLOCKING and bool(hard_failures)
-    detail = "" if not failures else "; ".join(m.message for m in failures)
+    # Only a HARD (verbatim-fact) Tier-1 mismatch blocks; a proper-noun-only mismatch is informational.
+    # Tier-2 blocks only when explicitly enabled (nli_blocking) — the live default leaves blocking to
+    # Tier-1, so turning a checker on for telemetry never changes what ships.
+    blocking = (_CITED_CLAIM_GROUNDING_BLOCKING and bool(hard_failures)) or (nli_blocking and bool(nli_failures))
+    detail_parts = [m.message for m in failures]
+    detail_parts += [
+        f"{'/'.join(f.cited)}: NLI unsupported (score {f.score:.2f})"
+        + (f": {f.reason}" if f.reason else "")
+        for f in nli_failures
+    ]
+    detail = "; ".join(detail_parts)
     return GroundingResult(
-        passed=not failures, detail=detail, blocking=blocking, checked=checked,
+        passed=not failures and not nli_failures, detail=detail, blocking=blocking, checked=checked,
         locations=locations, hard_failures=hard_failures, soft_failures=soft_failures,
+        nli_failures=nli_failures, nli_checked=nli_checked,
     )
