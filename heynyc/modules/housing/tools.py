@@ -29,7 +29,15 @@ from heynyc.core.tools.geo import geocode
 
 COMPLAINTS_ID = "ygpa-z7cr"   # HPD Housing Maintenance Code Complaints
 VIOLATIONS_ID = "wvxf-dwi5"   # HPD Housing Maintenance Code Violations
+LITIGATIONS_ID = "59kj-x8nc"  # HPD Housing Litigations (housing-court cases, keyed by BBL)
 OFFICIAL = "NYC311 (call 311 or nyc.gov/311)"
+
+# ygpa-z7cr codes OPEN heat complaints under TWO major_category values: 'HEAT/HOT WATER' and the
+# separate 'HEATING' (minor categories HEAT RELATED / RADIATOR / HEAT-PLANT / SPACE HEATER, all
+# genuinely heat). Counting only 'HEAT/HOT WATER' undercounts heat, so the call-out spans both.
+HEAT_CATEGORIES = ("HEAT/HOT WATER", "HEATING")
+HEAT_CASETYPE = "Heat and Hot Water"   # the 59kj-x8nc casetype for a housing-court heat case
+HARASSMENT_FINDINGS = ("AFTER INQUEST", "AFTER TRIAL")  # findingofharassment values = a positive finding
 
 
 def _filtered_url(dataset_id: str, where: str) -> str:
@@ -105,7 +113,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 f"has complaints or violations. Point the user to {OFFICIAL} and hpdonline.nyc.gov.")
 
     cat_counts = _counts(complaints, "major_category")
-    heat_complaints = cat_counts.get("HEAT/HOT WATER", 0)
+    heat_complaints = sum(cat_counts.get(c, 0) for c in HEAT_CATEGORIES)
     complaints_recent = _most_recent(complaints, "received_date")
 
     class_counts = _counts(violations, "class")
@@ -150,7 +158,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     lines = [f"Building: {origin.label} (BBL {bbl})", "Grounded in NYC HPD open data — report only these:"]
 
     lines.append(f"- Open HPD complaints: {len(complaints)} total"
-                 + (f", including {heat_complaints} HEAT/HOT WATER" if heat_complaints else "")
+                 + (f", including {heat_complaints} heat/hot-water" if heat_complaints else "")
                  + f" {{cite:{cite_c}}}")
     if complaints:
         lines.append(f"  By category: {_summary_line(cat_counts)}")
@@ -171,6 +179,90 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f"Tell the tenant these are the building's OPEN records only (issues already reported/cited). "
         f"To report a NEW no-heat / no-hot-water or repair problem, they file through {OFFICIAL}. "
         f"Don't invent counts, dates, or outcomes beyond what's cited above."
+    )
+    return "\n".join(lines)
+
+
+async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
+    """A building's HPD Housing Litigations (59kj-x8nc): whether HPD or a tenant has taken the
+    landlord to Housing Court, keyed by BBL. Calls out 'Heat and Hot Water' cases (and how many are
+    still pending) plus any finding of harassment. Empty is stated plainly, never spun into
+    'the landlord is clean'. Filing a NEW no-heat complaint is still routed to 311."""
+    address = (args.get("address") or "").strip()
+    if not address:
+        return ("Ask the user for a specific NYC street address (building number + street) before "
+                "looking up a building; never guess a building.")
+
+    origin = await geocode(address, client=ctx.http)
+    if origin is None or not origin.bbl:
+        return (f"I couldn't tie '{address}' to a specific NYC building, so I can't pull its HPD "
+                f"housing-court record. Ask the user for a specific NYC street address (building "
+                f"number + street); a ZIP or neighborhood alone doesn't identify a building. Don't "
+                f"guess a building.")
+
+    bbl = origin.bbl
+    # 59kj-x8nc carries a zero-padded 10-char `bbl` text column (same shape the geocoder returns),
+    # so key on it directly; no boro/block/lot split needed.
+    where = f"bbl='{bbl}'"
+    try:
+        cases = await query_dataset(LITIGATIONS_ID, where=where, limit=1000, client=ctx.http)
+    except httpx.HTTPError:
+        return (f"I couldn't reach the city's HPD housing-court data right now, so don't guess whether "
+                f"the landlord has been taken to court. Point the user to {OFFICIAL} and "
+                f"hpdonline.nyc.gov.")
+
+    if not cases:
+        # Say so plainly; DON'T imply the landlord is trouble-free beyond what the data covers.
+        cite = _register(ctx, LITIGATIONS_ID, where,
+                         title="HPD Housing Litigations (housing-court cases)",
+                         snippet=f"BBL {bbl}: 0 HPD housing-court cases",
+                         snapshot={"bbl": bbl, "cases": 0}, valid_as_of="")
+        return (
+            f"Building: {origin.label} (BBL {bbl})\n"
+            f"No HPD housing-court (Housing Litigation) cases are on record for this building right "
+            f"now {{cite:{cite}}}. That only reflects HPD's housing-court litigation data; it doesn't "
+            f"mean the building has no issues. If the user has a heat, hot-water, or repair problem, "
+            f"they can still file a complaint through {OFFICIAL}."
+        )
+
+    # Case-preserving count (unlike _counts, which uppercases) so HPD's real casetype strings
+    # ('Heat and Hot Water', 'Tenant Action/Harrassment') stay readable and exact in the breakdown.
+    casetype_counts = collections.Counter(str(c.get("casetype") or "?").strip() for c in cases)
+    heat_cases = [c for c in cases if str(c.get("casetype") or "").strip() == HEAT_CASETYPE]
+    heat_pending = sum(1 for c in heat_cases
+                       if str(c.get("casestatus") or "").strip().upper().startswith("PENDING"))
+    harassment = sum(1 for c in cases
+                     if str(c.get("findingofharassment") or "").strip().upper() in HARASSMENT_FINDINGS)
+    recent = _most_recent(cases, "caseopendate")
+
+    cite = _register(
+        ctx, LITIGATIONS_ID, where,
+        title="HPD Housing Litigations (housing-court cases)",
+        snippet=f"BBL {bbl}: {len(cases)} HPD housing-court cases ({len(heat_cases)} Heat and Hot Water)",
+        snapshot={"bbl": bbl, "cases": len(cases), "heat_and_hot_water": len(heat_cases),
+                  "heat_pending": heat_pending, "harassment_findings": harassment,
+                  "by_casetype": dict(casetype_counts)},
+        valid_as_of=recent,
+    )
+
+    heat_note = ""
+    if heat_cases:
+        pending_note = (f"{heat_pending} currently pending" if heat_pending else "none currently pending")
+        heat_note = f", including {len(heat_cases)} Heat and Hot Water ({pending_note})"
+
+    lines = [f"Building: {origin.label} (BBL {bbl})",
+             "Grounded in NYC HPD Housing Litigations (housing-court cases), report only these:"]
+    lines.append(f"- HPD housing-court cases on record: {len(cases)} total{heat_note} {{cite:{cite}}}")
+    lines.append(f"  By case type: {_summary_line(casetype_counts)}")
+    if harassment:
+        lines.append(f"  Findings of harassment: {harassment} (an HPD/court finding the landlord harassed tenants)")
+    if recent:
+        lines.append(f"  Most recent case opened: {recent}")
+    lines.append(
+        f"These are HPD's housing-court cases on record for the building (whether the landlord has "
+        f"been taken to court), not every dispute or the outcome of any case. To report a NEW "
+        f"no-heat / no-hot-water or repair problem, the tenant files through {OFFICIAL}. Don't invent "
+        f"case counts, statuses, dates, or outcomes beyond what's cited above."
     )
     return "\n".join(lines)
 
@@ -218,20 +310,39 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
         ),
     ),
     "no_heat": (
-        "No heat / no hot water — the standard and how to file:",
+        "No heat / no hot water, the standard, the law, and how to escalate:",
         (
             _Fact(
                 url="https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page",
                 title="Heat and Hot Water Information — NYC HPD",
                 snippet=("Heat season October 1 through May 31: indoor at least 68 when below 55 outside "
                          "between 6am and 10pm, at least 62 between 10pm and 6am; hot water year-round at "
-                         "120; file a complaint by calling 311"),
+                         "120; file a complaint by calling 311; HPD inspects, a no-heat condition in "
+                         "season is an immediately hazardous class C violation, and HPD can take the "
+                         "landlord to Housing Court"),
                 body=("Heat season runs October 1 through May 31. During heat season, when it is below 55 "
                       "degrees outside between 6am and 10pm the indoor temperature must be at least 68 "
                       "degrees; between 10pm and 6am it must be at least 62 degrees regardless of the "
                       "outdoor temperature. Landlords must provide hot water year-round at a minimum of "
                       "120 degrees. If your landlord will not restore service, file a complaint by calling "
-                      "311 (or use 311 online or the app)."),
+                      "311 (or use 311 online or the app). Here is how it escalates: HPD contacts the "
+                      "landlord and can send an inspector, and a no-heat or no-hot-water condition during "
+                      "heat season is an immediately hazardous (class C) violation; if the landlord still "
+                      "does not fix it, HPD can take the landlord to Housing Court over heat and hot "
+                      "water and can seek civil penalties. To see whether your building already has a "
+                      "Heat and Hot Water court case, check its housing-court record."),
+            ),
+            _Fact(
+                url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-60410",
+                title="NYC Housing Maintenance Code section 27-2029 (Heat and Hot Water), American Legal Publishing",
+                snippet=("these standards are set in the NYC Housing Maintenance Code: the minimum indoor "
+                         "temperature rule is section 27-2029 and the hot water minimum is section 27-2031, "
+                         "both in Article 8 (Heat and Hot Water)"),
+                body=("These standards are set in New York City's Housing Maintenance Code (Administrative "
+                      "Code Title 27, Chapter 2): the minimum indoor temperature rule is section 27-2029 "
+                      "and the hot water minimum is section 27-2031, both in Article 8 (Heat and Hot "
+                      "Water). So the temperature and hot-water minimums are the landlord's legal "
+                      "obligation under the code, not just a guideline."),
             ),
         ),
     ),
@@ -335,6 +446,35 @@ def get_tools() -> list[Tool]:
             },
             handler=_handler,
             open_world=True,  # hits the live Socrata HPD datasets + geocoder
+        ),
+        Tool(
+            name="hpd_litigation_lookup",
+            description=(
+                "Look up a specific NYC building's HPD Housing Litigation record: whether HPD or a "
+                "tenant has taken the landlord to Housing Court, grounded in NYC Open Data (dataset "
+                "59kj-x8nc) and cited. Pass `address` = a specific NYC STREET address (building number "
+                "+ street). Returns the count of housing-court cases by case type, calling out 'Heat "
+                "and Hot Water' cases (and how many are still pending) and any finding of harassment, "
+                "plus the most recent case-open date. If the address is only a ZIP or a neighborhood "
+                "(no building BBL), the tool abstains and asks for a street address; it never guesses a "
+                "building. Empty results are reported as 'no cases on record', never 'the landlord is "
+                "clean'. Use for 'has my landlord been taken to court, does my building have an open "
+                "heat/hot-water court case or a harassment finding'. Complements hpd_building_lookup "
+                "(open complaints + violations); to FILE a new complaint, route the user to 311."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "A specific NYC street address (building number + street), "
+                                       "e.g. '617 Courtlandt Ave, Bronx'.",
+                    },
+                },
+                "required": ["address"],
+            },
+            handler=_litigation_handler,
+            open_world=True,  # hits the live Socrata HPD Housing Litigations dataset + geocoder
         ),
         Tool(
             name="housing_guidance",

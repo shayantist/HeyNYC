@@ -24,7 +24,7 @@ from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.housing import tools as housing
-from heynyc.modules.housing.tools import COMPLAINTS_ID, VIOLATIONS_ID, get_tools
+from heynyc.modules.housing.tools import COMPLAINTS_ID, LITIGATIONS_ID, VIOLATIONS_ID, get_tools
 
 # 617 Courtlandt Ave, Bronx — a real building (verified live): BBL 2024110048,
 # which decomposes to boro 2, block 2411, lot 48.
@@ -96,7 +96,7 @@ async def test_hpd_building_lookup_grounds_counts_callouts_and_cites(monkeypatch
 
     # Totals + the specific call-outs the tool must not swallow
     assert "Open HPD complaints: 4 total" in out
-    assert "2 HEAT/HOT WATER" in out
+    assert "2 heat/hot-water" in out
     assert "Open HPD violations: 6 total" in out
     assert "2 class C" in out
 
@@ -173,6 +173,130 @@ async def test_bbl_decomposes_into_boro_block_lot_in_violations_url(monkeypatch)
     assert "boroid" in violations_url        # boro digit 2 keyed as boroid
 
 
+# --- 3b. HEATING coverage: open heat complaints coded 'HEATING', not just 'HEAT/HOT WATER' ---
+#
+# ygpa-z7cr codes some OPEN heat complaints under a separate major_category 'HEATING'
+# (minor categories HEAT RELATED / RADIATOR / HEAT-PLANT / SPACE HEATER, all genuinely heat),
+# alongside 'HEAT/HOT WATER'. Verified live: citywide OPEN complaints split 2,634 HEAT/HOT WATER +
+# 422 HEATING. Counting only HEAT/HOT WATER undercounts heat, so the call-out folds both in.
+
+async def test_hpd_lookup_counts_heating_category_as_heat(monkeypatch):
+    complaints = [
+        {"major_category": "HEAT/HOT WATER", "complaint_status": "OPEN", "received_date": "2026-06-01T06:50:52.000"},
+        {"major_category": "HEATING", "complaint_status": "OPEN", "received_date": "2026-06-10T06:50:52.000"},
+        {"major_category": "HEATING", "complaint_status": "OPEN", "received_date": "2026-06-12T06:50:52.000"},
+        {"major_category": "PLUMBING", "complaint_status": "OPEN", "received_date": "2026-05-20T11:00:00.000"},
+    ]
+    origin = GeoPoint(lat=40.8195, lon=-73.9160, label=LABEL, bbl=BBL)
+    out, citations = await _run_lookup(monkeypatch, geopoint=origin, complaints=complaints, violations=[])
+    # 3 of the 4 open complaints are heat-related (1 HEAT/HOT WATER + 2 HEATING), folded together
+    assert "3 heat/hot-water" in out
+    # both categories stay visible in the grounded per-category breakdown, not silently merged
+    assert "HEAT/HOT WATER: 1" in out
+    assert "HEATING: 2" in out
+    # the citation snapshot reflects the combined heat count (not just HEAT/HOT WATER)
+    assert citations.mapping()["S1"]["provenance"]["snapshot"]["heat_hot_water"] == 3
+
+
+# --- 3c. hpd_litigation_lookup: a building's HPD housing-court cases (59kj-x8nc) --------------
+#
+# Sibling to hpd_building_lookup: whether HPD has taken the landlord to Housing Court, keyed by the
+# same BBL. Calls out 'Heat and Hot Water' cases (and which are still pending) plus any finding of
+# harassment. Empty is stated plainly ("no cases on record"), never "the landlord is clean".
+
+def _litigation_client(cases: list[dict]) -> httpx.AsyncClient:
+    """MockTransport serving the litigations dataset query by its 4x4 id in the path."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if LITIGATIONS_ID in request.url.path:
+            return httpx.Response(200, json=cases)
+        return httpx.Response(404)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _litigation_tool():
+    return next(t for t in get_tools() if t.name == "hpd_litigation_lookup")
+
+
+async def _run_litigation(monkeypatch, *, geopoint, cases):
+    monkeypatch.setattr(housing, "geocode", _fixed_geocode(geopoint))
+    citations = CitationRegistry()
+    client = _litigation_client(cases)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await _litigation_tool().handler({"address": "617 Courtlandt Ave, Bronx"}, ctx)
+    await client.aclose()
+    return out, citations
+
+
+# 617 Courtlandt Ave litigation rows (shape verified live): 4 cases, 2 Heat and Hot Water (1 still
+# PENDING), 1 Tenant Action/Harrassment with an 'After Trial' finding of harassment.
+_LITIGATIONS = [
+    {"bbl": BBL, "boroid": "2", "block": "2411", "lot": "48", "casetype": "Heat and Hot Water",
+     "caseopendate": "2026-03-11T00:00:00.000", "casestatus": "PENDING",
+     "findingofharassment": "", "respondent": "617 PARTNERS LLC"},
+    {"bbl": BBL, "casetype": "Heat and Hot Water", "caseopendate": "2015-03-09T00:00:00.000",
+     "casestatus": "CLOSED", "findingofharassment": "", "respondent": "617 COURTLAND AVE CORP"},
+    {"bbl": BBL, "casetype": "Tenant Action", "caseopendate": "2026-03-05T00:00:00.000",
+     "casestatus": "PENDING", "findingofharassment": "", "respondent": "ALILAH MANAGEMENT"},
+    {"bbl": BBL, "casetype": "Tenant Action/Harrassment", "caseopendate": "2009-08-13T00:00:00.000",
+     "casestatus": "CLOSED", "findingofharassment": "After Trial", "respondent": "LUIS B FABRE"},
+]
+
+
+async def test_hpd_litigation_lookup_grounds_cases_callouts_and_cites(monkeypatch):
+    origin = GeoPoint(lat=40.8195, lon=-73.9160, label=LABEL, bbl=BBL)
+    out, citations = await _run_litigation(monkeypatch, geopoint=origin, cases=_LITIGATIONS)
+
+    assert LABEL in out and BBL in out
+    # 4 cases total; 2 are Heat and Hot Water, 1 of them still pending
+    assert "4 total" in out
+    assert "2 Heat and Hot Water" in out
+    assert "1 currently pending" in out
+    # a positive finding of harassment (After Trial) is surfaced, not swallowed
+    assert "Findings of harassment: 1" in out
+    # case-type breakdown preserves HPD's real (mixed-case) casetype strings, not uppercased
+    assert "Heat and Hot Water: 2" in out
+    assert "Tenant Action: 1" in out
+    # most recent case-open date comes from the rows, never invented
+    assert "2026-03-11" in out
+    # exactly one DATA citation, addressed to the filtered BBL query on the litigations dataset
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    cite = mapping["S1"]
+    assert cite["kind"] == "DATA"
+    assert LITIGATIONS_ID in cite["url"] and BBL in cite["url"]
+    assert "{cite:S1}" in out
+    # provenance grounded in the actual rows
+    assert cite["provenance"]["record_id"] == BBL
+    assert cite["provenance"]["snapshot"]["cases"] == 4
+    assert cite["provenance"]["snapshot"]["heat_and_hot_water"] == 2
+    assert cite["valid_as_of"] == "2026-03-11"
+
+
+async def test_hpd_litigation_lookup_empty_states_no_cases_not_clean(monkeypatch):
+    origin = GeoPoint(lat=40.8195, lon=-73.9160, label=LABEL, bbl=BBL)
+    out, citations = await _run_litigation(monkeypatch, geopoint=origin, cases=[])
+    low = out.lower()
+    assert "no hpd housing-court" in low          # states the absence plainly
+    # never spun into "the landlord is clean / problem-free"
+    assert "problem-free" not in low and "clean" not in low
+    # still grounded: a DATA citation to the (empty) filtered query
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    assert mapping["S1"]["kind"] == "DATA"
+    assert LITIGATIONS_ID in mapping["S1"]["url"]
+    assert "{cite:S1}" in out
+
+
+async def test_hpd_litigation_lookup_abstains_without_bbl(monkeypatch):
+    no_bbl = GeoPoint(lat=40.8195, lon=-73.9160, label="ZIP 10451 area", bbl="")
+    out, citations = await _run_litigation(monkeypatch, geopoint=no_bbl, cases=_LITIGATIONS)
+    low = out.lower()
+    assert "couldn't" in low or "could not" in low
+    assert "street address" in low               # asks for a specific street address
+    assert "{cite:" not in out
+    assert len(citations) == 0
+
+
 # --- 4. housing_guidance: static-but-official facts, each cited to nyc.gov ---
 #
 # These are offline (no network): the tool bakes the facts + source URLs in and only touches the
@@ -207,16 +331,25 @@ async def test_guidance_right_to_counsel_grounds_free_lawyer_and_cites():
     assert "{cite:S1}" in out             # the fact carries its citation inline
 
 
-async def test_guidance_no_heat_grounds_standard_and_cites():
+async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
     out, citations = await _run_guidance("no_heat")
     low = out.lower()
     assert "october 1" in low and "may 31" in low   # heat season, from the HPD page
     assert "68" in out and "62" in out and "55" in out and "120" in out
     assert "311" in out                              # how to file
+    # the exact Housing Maintenance Code sections, grounded in the statute, not just the explainer
+    assert "27-2029" in out and "27-2031" in out
+    # the escalation ladder rungs are stated (immediately hazardous violation → Housing Court)
+    assert "class C" in out or "immediately hazardous" in out
+    assert "housing court" in low
+    # two DOC citations now: S1 the HPD page (temps/season/ladder), S2 amlegal (the code sections)
     mapping = citations.mapping()
-    assert len(mapping) == 1
+    assert len(mapping) == 2
     assert mapping["S1"]["kind"] == "DOC"
     assert mapping["S1"]["url"].endswith("heat-and-hot-water-information.page")
+    assert mapping["S2"]["kind"] == "DOC"
+    assert "amlegal" in mapping["S2"]["url"]
+    assert "{cite:S1}" in out and "{cite:S2}" in out
 
 
 async def test_guidance_shelter_grounds_both_intakes_and_cites_each():
@@ -272,6 +405,7 @@ def test_housing_module_loads_with_tool_and_eval():
     assert module.category == "housing"
     tool_names = {t.name for t in registry.load_module_tools()}
     assert "hpd_building_lookup" in tool_names
+    assert "hpd_litigation_lookup" in tool_names
     assert "housing_guidance" in tool_names
 
     from heynyc.eval.cases import load_cases

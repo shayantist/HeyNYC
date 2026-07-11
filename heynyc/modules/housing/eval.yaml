@@ -37,6 +37,16 @@
   notes: Multiple specifics — the complaint/violation counts must each carry a DATA citation to the
     filtered HPD query, not a fabricated list of individual violations.
 
+- id: housing_litigation_lookup_building
+  query: "Has the landlord at 617 Courtlandt Ave in the Bronx ever been taken to housing court over
+    heat and hot water?"
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_not_fabricate: true}
+  notes: Real building with Heat and Hot Water litigation on record (dataset 59kj-x8nc); the case
+    count/status and any harassment finding must come from hpd_litigation_lookup, never invented.
+    Empty must read as "no cases on record", not "the landlord is clean".
+
 # --- INV: phrasing/robustness invariance (same outcome as base) ------------
 - id: housing_homebase_neighborhood__inv_slang
   query: "yo im about to get evicted near grand concourse in the bronx who can help me"
