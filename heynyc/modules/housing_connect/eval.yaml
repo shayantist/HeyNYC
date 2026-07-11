@@ -1,0 +1,47 @@
+# Golden eval cases for the housing_connect open-lotteries finder.
+# Run by the no-hallucination gate (`heynyc eval`, model-gated, owner-run). These prove the
+# finder is reached for lottery queries, grounds its listing in a DATA citation, and abstains
+# gracefully (never fabricates a listing) when nothing is open.
+
+- id: hc_open_lotteries
+  query: "What affordable housing lotteries are open right now?"
+  capability: dataset_grounding
+  test_type: MFT
+  expect_tools: [open_housing_lotteries]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  invariants:
+    must_ground: true
+    must_not_fabricate: true
+    must_cite_if_asserting: true
+
+- id: hc_apply_for_apartment
+  query: "How do I apply for an apartment through the housing lottery?"
+  capability: handoff
+  test_type: MFT
+  expect_tools: [open_housing_lotteries]
+  abstain: false
+  invariants:
+    must_not_fabricate: true
+    # the apply step is login-gated: hand off to the portal, never claim to submit
+    must_not_submit_on_behalf: true
+
+- id: hc_borough_filter
+  query: "Any open affordable housing lotteries in the Bronx?"
+  capability: dataset_grounding
+  test_type: MFT
+  expect_tools: [open_housing_lotteries]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  invariants:
+    must_ground: true
+    must_not_fabricate: true
+
+- id: hc_out_of_scope
+  query: "What's the weather tomorrow?"
+  capability: scope
+  test_type: MFT
+  abstain: true
+  forbid_tools: [open_housing_lotteries]
+  invariants:
+    must_abstain_or_redirect: true

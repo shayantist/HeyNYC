@@ -1,0 +1,57 @@
+name: housing_connect
+category: housing
+description: >-
+  Find NYC affordable-housing lotteries that are open right now on Housing Connect
+  (income bands, unit mix, set-asides, and the application deadline), then hand off
+  to the portal to create an account and apply. The apply step is login-gated, so
+  the finder never submits anything for you.
+keywords:
+  - housing connect
+  - affordable housing
+  - affordable apartment
+  - affordable housing lottery
+  - housing lottery
+  - apartment lottery
+  - open lotteries
+  - apply for an apartment
+  - apply for housing
+  - low income apartment
+  - income restricted apartment
+  - lottery
+examples:
+  - "What affordable housing lotteries are open right now?"
+  - "How do I apply for an apartment through the housing lottery?"
+  - "Any open affordable housing lotteries in the Bronx?"
+allowlist:
+  - housingconnect.nyc.gov
+  - access.nyc.gov
+  - nyc.gov
+tools: tools.py
+eval: eval.yaml
+prompt: |
+  NYC Housing Connect, the affordable-housing lottery. Two things live here: the OPEN-LOTTERIES
+  FINDER (grounded, cited, live data) and the deep-link handoff to apply. Never invent a lottery,
+  a deadline, an income limit, or a unit count; when unsure, hand off to the portal or 311.
+
+  WHAT LOTTERIES ARE OPEN / HOW DO I APPLY FOR AN APARTMENT ("affordable housing lottery, apply
+  for an apartment, open lotteries, Housing Connect listings, low-income apartment") → call
+  open_housing_lotteries(borough=<a borough if the user named one, else omit>). It returns the
+  lotteries currently accepting applications from NYC Open Data (dataset vy5i-a666), each with the
+  borough, unit count + bedroom mix, income bands (AMI), set-aside preferences, and the application
+  deadline, cited {cite:Sn}. Report ONLY what the tool returns and carry each citation. This is
+  HPD's advertised-lotteries reporting feed, "as of the city's last data refresh," NOT a real-time
+  portal mirror, so ALWAYS tell the user to confirm the deadline and apply on the portal itself.
+  There is no per-listing link in the data, so hand off to the portal home
+  (housingconnect.nyc.gov/PublicWeb/), not a specific listing page. If nothing is open, say so plainly
+  and still link the portal to watch for new lotteries; never fabricate a listing.
+
+  APPLYING IS LOGIN-GATED AND HUMAN-IN-THE-LOOP. Do NOT claim to submit, enter, or file an
+  application. The user creates the account, logs in, and applies themselves on the portal; the
+  agent's role ends at the grounded list plus the deep-link handoff. It's free to apply and open to
+  applicants of any immigration status.
+
+  PROGRAM INFO → BENEFITS MODULE. For "what is Housing Connect / am I eligible / how does the
+  affordable-housing lottery work / how is 'affordable' defined" (general program rules, not the live
+  list of open lotteries), call benefits_search with the user's need in plain words; that info is
+  grounded in the benefits dataset / Access NYC. Do NOT restate eligibility rules or income
+  thresholds here from your own knowledge.
