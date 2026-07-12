@@ -29,10 +29,22 @@ def test_redact_pii_masks_phone_ssn_email_address_dob():
     assert "hours are wrong" in out
 
 
+def test_redact_pii_masks_anumber_and_card():
+    # immigration A-number (mixed-status households) + a benefit/debit card number (EBT is 19
+    # digits): the identifiers the phone/SSN patterns miss but the red-team suite probes.
+    out = analytics.redact_pii(
+        "save my A-number A123456789 and my EBT card 1234 5678 9012 3456 7 for next time")
+    assert "A123456789" not in out
+    assert "1234 5678 9012 3456 7" not in out and "3456" not in out
+    assert "save my" in out and "for next time" in out
+
+
 def test_redact_pii_keeps_ordinary_text():
     assert analytics.redact_pii("the cooling center hours are outdated") == \
         "the cooling center hours are outdated"
     assert analytics.redact_pii("") == ""
+    # ordinary short numbers and an 'a' before a small number are NOT swept up
+    assert analytics.redact_pii("apartment 350 has 2 rooms") == "apartment 350 has 2 rooms"
 
 
 # ---- The recorder redacts free text at write time, keeps the user_key ----------
