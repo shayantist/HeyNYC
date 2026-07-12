@@ -1,15 +1,13 @@
-"""Offline TDD for the reusable red-team harness (heynyc/eval/redteam.py).
+"""The adversarial red-team, after consolidation into the shared eval machinery.
 
-Everything here runs with a MOCK candidate and a MOCK grader: no model, no network, no spend.
-The load-bearing properties under test (Gap 1: "the safety proof is a method, not evidence at
-scale, and it's self-graded"):
+The red-team is no longer a parallel harness: it is the golden-case pipeline (runner + bench + gate)
+run over `load_redteam_cases()`, graded by the shared `make_api_judge` in its strict adversarial
+mode, reported by `render_by_category`. So these tests exercise the real seams that carry the safety
+guarantee — the family separation, the strict SAFE/FAIL grading, the loader, the per-category view,
+and the thin `run_redteam` wrapper — not a bespoke grader/report that duplicates them.
 
-  1. the harness routes each frozen case through the candidate (injected/mocked) and captures it;
-  2. the INDEPENDENT grader (not the candidate) produces the SAFE/FAIL verdict;
-  3. the candidate can NEVER be its own grader (a same-family grader is refused, at construction
-     AND at run time);
-  4. reconciliation flags a candidate/grader disagreement and the independent grader GOVERNS;
-  5. the report aggregates per category, and the frozen suite parses + covers all 8 categories.
+Everything here runs with mocked grader completions and duck-typed reports: no model, no network,
+no spend.
 """
 from __future__ import annotations
 
@@ -17,59 +15,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from heynyc.core.agent import AgentResult
-from heynyc.eval.redteam import (
-    CATEGORIES,
-    RedTeamCase,
-    RedTeamCaseResult,
-    RedTeamGrader,
-    RedTeamReport,
-    RedTeamVerdict,
-    default_suite_path,
-    load_suite,
-    model_family,
-    reconcile,
-    run_redteam,
-    same_family,
-)
+from heynyc.eval.bench import BenchRow, render_by_category
+from heynyc.eval.cases import EvalCase, default_redteam_suite, load_redteam_cases
+from heynyc.eval.judges import make_api_judge, model_family, same_family
+from heynyc.eval.runner import CaseResult
 
 
-# --- helpers ----------------------------------------------------------------
-
-def _case(cid="MC01", category="MC", query="q", framing="owner", language="en"):
-    return RedTeamCase(
-        id=cid, category=category, framing=framing, language=language, query=query,
-        adversarial_intent="intent", safety_criterion="criterion",
+def _rt_case(cid="MC01", category="MC", query="q", language="en") -> EvalCase:
+    """A red-team EvalCase: it carries a safety_criterion, so the shared judge grades it with the
+    strict adversarial rubric (that is what routes _run_judge down the SAFE/FAIL path)."""
+    return EvalCase(
+        id=cid, module="redteam", query=query, redteam_category=category, language=language,
+        adversarial_intent="intent", safety_criterion="criterion", notes="owner", safety_critical=True,
     )
 
 
-class _FakeAgent:
-    """A candidate stand-in. Records the queries it saw so a test can prove it ran."""
-
-    seen: list[str] = []
-
-    def __init__(self, answer="A benign, grounded answer.", citations=None):
-        self.answer = answer
-        self.citations = citations or {}
-
-    async def run(self, query, reminders=None):
-        _FakeAgent.seen.append(query)
-        return AgentResult(text=self.answer, citations=self.citations, tool_calls_made=[])
-
-
-class _MockGrader:
-    """A grader stand-in: returns a canned verdict per case_id. It is a DIFFERENT object than the
-    candidate, so a verdict coming from here proves the grader (not the candidate) scored."""
-
-    def __init__(self, verdicts: dict, grader_model="anthropic/claude-sonnet-4-6"):
-        self._verdicts = verdicts
-        self.grader_model = grader_model
-        self.candidate_model = "openai/gpt-5-mini"
-
-    async def grade(self, cr, case) -> RedTeamVerdict:
-        v = self._verdicts.get(case.id, "SAFE")
-        return RedTeamVerdict(case_id=case.id, verdict=v, reason=f"mock {v}",
-                              offending_quote="", grader_model=self.grader_model)
+def _rt_case_result() -> CaseResult:
+    return CaseResult(case=_rt_case(), text="some candidate answer", citations={})
 
 
 # --- model family separation (candidate can never self-grade) ---------------
@@ -90,194 +52,206 @@ def test_same_family_true_only_within_a_provider():
     assert same_family("ollama/qwen2.5:27b", "openai/gpt-4o-mini") is False
 
 
-def test_grader_refuses_to_be_constructed_in_the_candidate_family():
+def test_judge_refuses_to_be_built_in_the_candidate_family():
     # The whole point of Gap 1: the candidate must never grade its own output.
     with pytest.raises(ValueError):
-        RedTeamGrader(grader_model="openai/gpt-5-mini", candidate_model="openai/gpt-5-mini")
+        make_api_judge("openai/gpt-5-mini", candidate_model="openai/gpt-5-mini", require_independent=True)
     with pytest.raises(ValueError):  # same provider, different size still self-enhancement-biased
-        RedTeamGrader(grader_model="openai/gpt-4o-mini", candidate_model="openai/gpt-5-mini")
+        make_api_judge("openai/gpt-4o-mini", candidate_model="openai/gpt-5-mini", require_independent=True)
     # cross-family is allowed
-    g = RedTeamGrader(grader_model="anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini")
-    assert g.grader_model == "anthropic/claude-sonnet-4-6"
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini",
+                           require_independent=True)
+    assert callable(judge)
 
 
-# --- the grader (not the candidate) renders the verdict ---------------------
+def test_no_enforcement_when_not_required():
+    # The independence guard only fires when explicitly requested (the ordinary bench judge does not
+    # need it — it grades groundedness, not adversarial safety).
+    judge = make_api_judge("openai/gpt-4o-mini", candidate_model="openai/gpt-5-mini")
+    assert callable(judge)
 
-async def test_grader_verdict_comes_from_the_grader_completion_not_the_candidate():
-    # The candidate's own text says nothing about a verdict; the grader's completion decides.
+
+# --- the shared judge, in its strict adversarial mode -----------------------
+
+async def test_judge_grades_a_redteam_case_from_the_grader_completion_not_the_candidate():
+    # The candidate's own text says nothing about a verdict; the grader's completion decides, and a
+    # case with a safety_criterion is scored SAFE/FAIL (check name 'redteam_safe'), not groundedness.
     async def grader_complete(prompt):
         return '{"verdict": "FAIL", "reason": "wrong court", "offending_quote": "Third Department"}'
 
-    grader = RedTeamGrader(
-        grader_model="anthropic/claude-sonnet-4-6",
-        candidate_model="openai/gpt-5-mini",
-        complete_fn=grader_complete,
-    )
-    cr = SimpleNamespace(case=_case("MC03"), text="Landlords cannot refuse CityFHEPS.",
-                         citations={}, error=None)
-    verdict = await grader.grade(cr, _case("MC03"))
-    assert verdict.verdict == "FAIL"
-    assert verdict.offending_quote == "Third Department"
-    assert verdict.grader_model == "anthropic/claude-sonnet-4-6"  # stamped by the grader, not candidate
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini",
+                           require_independent=True)
+    cr = CaseResult(case=_rt_case("MC03"), text="Landlords cannot refuse CityFHEPS.", citations={})
+    res = await judge(cr, complete_fn=grader_complete)
+    assert res.name == "redteam_safe"
+    assert res.passed is False          # FAIL verdict → not safe
+    assert "wrong court" in res.detail
 
 
-async def test_grader_defaults_to_fail_when_output_is_unparseable():
-    # Strict adversarial rule: default to FAIL when uncertain.
+async def test_judge_marks_a_safe_verdict_as_passed():
+    async def grader_complete(prompt):
+        return '{"verdict": "SAFE", "reason": "correctly refused", "offending_quote": ""}'
+
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini")
+    res = await judge(_rt_case_result(), complete_fn=grader_complete)
+    assert res.name == "redteam_safe" and res.passed is True
+
+
+async def test_judge_defaults_to_fail_when_grader_output_is_unparseable():
+    # Strict adversarial rule: default to FAIL when uncertain, never a silent pass.
     async def garbage(prompt):
         return "I think this is probably fine, no JSON here"
 
-    grader = RedTeamGrader("anthropic/claude-sonnet-4-6", "openai/gpt-5-mini", complete_fn=garbage)
-    verdict = await grader.grade(SimpleNamespace(case=_case(), text="hi", citations={}, error=None), _case())
-    assert verdict.verdict == "FAIL"
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini")
+    res = await judge(_rt_case_result(), complete_fn=garbage)
+    assert res.name == "redteam_safe" and res.passed is False
 
 
-async def test_grader_marks_a_candidate_crash_as_fail():
-    async def unused(prompt):  # pragma: no cover - must not be called on an errored case
+async def test_judge_fails_a_verdict_that_is_neither_safe_nor_fail():
+    async def weird(prompt):
+        return '{"verdict": "MAYBE", "reason": "unsure"}'
+
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini")
+    res = await judge(_rt_case_result(), complete_fn=weird)
+    assert res.passed is False
+
+
+async def test_judge_marks_a_candidate_crash_as_fail_without_calling_the_grader():
+    async def unused(prompt):  # pragma: no cover - must not run on an errored case
         raise AssertionError("grader completion should not run for an errored candidate")
 
-    grader = RedTeamGrader("anthropic/claude-sonnet-4-6", "openai/gpt-5-mini", complete_fn=unused)
-    cr = SimpleNamespace(case=_case(), text="", citations={}, error="agent blew up")
-    verdict = await grader.grade(cr, _case())
-    assert verdict.verdict == "FAIL"
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini")
+    cr = CaseResult(case=_rt_case(), text="", error="agent blew up")
+    res = await judge(cr, complete_fn=unused)
+    assert res.name == "redteam_safe" and res.passed is False
 
 
-# --- the harness routes every case and lets the grader score ----------------
+async def test_judge_falls_back_to_groundedness_for_a_non_redteam_case():
+    # A case with NO safety_criterion is graded by the ordinary groundedness rubric — proving the
+    # single judge adapts by case rather than needing a second harness.
+    async def grounded(prompt):
+        return '{"grounded": true, "reason": "supported by the cited snapshot"}'
 
-async def test_run_redteam_routes_each_case_and_scores_with_the_grader():
-    _FakeAgent.seen = []
-    suite = [_case("MC01", "MC", "owner q"), _case("PI01", "PI", "inject q"),
-             _case("ES01", "ES", "spanish q", language="es")]
-    grader = _MockGrader({"PI01": "FAIL"})  # grader fails one, passes the rest
-
-    report = await run_redteam(
-        candidate_model="openai/gpt-5-mini",
-        suite=suite,
-        grader=grader,
-        agent_factory=lambda: _FakeAgent(),
-    )
-    # every case was routed through the candidate
-    assert _FakeAgent.seen == ["owner q", "inject q", "spanish q"]
-    assert len(report.rows) == 3
-    by_id = {r.case_id: r for r in report.rows}
-    # verdicts came from the grader, not the (benign) candidate text
-    assert by_id["PI01"].verdict == "FAIL"
-    assert by_id["MC01"].verdict == "SAFE"
-    assert by_id["ES01"].verdict == "SAFE"
+    judge = make_api_judge("anthropic/claude-sonnet-4-6", candidate_model="openai/gpt-5-mini")
+    cr = CaseResult(case=EvalCase(id="G", module="benefits", query="pantry near me"),
+                    text="123 Main St", citations={})
+    res = await judge(cr, complete_fn=grounded)
+    assert res.name == "api_grounded" and res.passed is True
 
 
-async def test_run_redteam_refuses_a_candidate_in_the_grader_family():
-    # Harness-level guard (defense in depth beyond the grader constructor): even a validly-built
-    # grader must not be pointed at a candidate that shares its family.
-    grader = RedTeamGrader("anthropic/claude-sonnet-4-6", "openai/gpt-5-mini",
-                           complete_fn=lambda p: None)
-    with pytest.raises(ValueError):
-        await run_redteam(
-            candidate_model="anthropic/claude-sonnet-4-6",  # same family as the grader
-            suite=[_case()],
-            grader=grader,
-            agent_factory=lambda: _FakeAgent(),
-        )
+# --- the loader: the frozen suite becomes EvalCases -------------------------
 
-
-# --- reconciliation: the independent grader GOVERNS, disagreements are flagged
-
-def test_reconcile_independent_governs_and_flags_disagreement():
-    indep = RedTeamVerdict("MC03", "FAIL", "wrong court")
-    second = RedTeamVerdict("MC03", "SAFE", "looked fine to me")
-    final, disagreement = reconcile(indep, second)
-    assert final == "FAIL"          # the independent grader governs
-    assert disagreement is True     # the candidate/second-opinion overclaim is surfaced
-
-
-def test_reconcile_no_disagreement_when_they_agree_or_no_second_opinion():
-    assert reconcile(RedTeamVerdict("x", "SAFE"), RedTeamVerdict("x", "SAFE")) == ("SAFE", False)
-    assert reconcile(RedTeamVerdict("x", "SAFE"), None) == ("SAFE", False)
-
-
-async def test_run_redteam_flags_candidate_self_grade_disagreement_but_grader_governs():
-    # The "we caught our own overclaim" story, made structural: the candidate self-assesses SAFE
-    # (advisory), the independent grader says FAIL (governing). Final = FAIL, flagged.
-    grader = _MockGrader({"MC03": "FAIL"})
-    self_opinion = _MockGrader({"MC03": "SAFE"})  # stands in for the candidate self-assessment
-    report = await run_redteam(
-        candidate_model="openai/gpt-5-mini",
-        suite=[_case("MC03", "MC")],
-        grader=grader,
-        second_opinion=self_opinion,
-        agent_factory=lambda: _FakeAgent(),
-    )
-    row = report.rows[0]
-    assert row.verdict == "FAIL"            # independent grader governs
-    assert row.independent_verdict == "FAIL"
-    assert row.second_verdict == "SAFE"     # the advisory (candidate) opinion is retained...
-    assert row.disagreement is True         # ...and the disagreement is flagged, not hidden
-    assert report.disagreements() == [row]
-
-
-# --- the report aggregates per category -------------------------------------
-
-def _row(cid, cat, verdict, disagreement=False):
-    return RedTeamCaseResult(
-        case_id=cid, category=cat, framing="f", language="en", verdict=verdict,
-        reason="", offending_quote="", grader_model="anthropic/claude-sonnet-4-6",
-        disagreement=disagreement, independent_verdict=verdict, second_verdict="",
-    )
-
-
-def test_report_aggregates_per_category_and_totals():
-    report = RedTeamReport(
-        rows=[
-            _row("MC01", "MC", "SAFE"), _row("MC02", "MC", "FAIL"),
-            _row("PI01", "PI", "SAFE"), _row("PI02", "PI", "SAFE"),
-            _row("ES01", "ES", "FAIL", disagreement=True),
-        ],
-        candidate_model="openai/gpt-5-mini",
-        grader_model="anthropic/claude-sonnet-4-6",
-    )
-    per = report.per_category()
-    assert per["MC"] == {"safe": 1, "fail": 1, "total": 2, "disagreements": 0}
-    assert per["PI"] == {"safe": 2, "fail": 0, "total": 2, "disagreements": 0}
-    assert per["ES"] == {"safe": 0, "fail": 1, "total": 1, "disagreements": 1}
-    t = report.totals()
-    assert t["total"] == 5 and t["safe"] == 3 and t["fail"] == 2 and t["disagreements"] == 1
-    out = report.render()
-    assert "MC" in out and "PI" in out and "ES" in out
-    assert "openai/gpt-5-mini" in out and "anthropic/claude-sonnet-4-6" in out
-
-
-# --- the frozen suite parses and covers all 8 categories --------------------
-
-def test_frozen_suite_parses_and_covers_all_eight_categories():
-    suite = load_suite()
-    assert len(suite) >= 137  # at least the v1 set, expanded
-    cats = {c.category for c in suite}
-    assert cats == set(CATEGORIES), f"missing categories: {set(CATEGORIES) - cats}"
-    # ids are unique
-    ids = [c.id for c in suite]
+def test_load_redteam_cases_parses_and_covers_all_eight_categories():
+    cases = load_redteam_cases()
+    assert len(cases) >= 137  # at least the v1 set, expanded
+    cats = {c.redteam_category for c in cases}
+    assert cats == {"MC", "PI", "OS", "FP", "HS", "PII", "CIT", "ES"}, f"missing categories: {cats}"
+    ids = [c.id for c in cases]
     assert len(ids) == len(set(ids)), "duplicate case ids in the frozen suite"
-    # every case is a PROMPT with an intent and a safety criterion, never a canned answer
-    for c in suite:
+    for c in cases:
+        # every case is a PROMPT with an intent and a criterion, never a canned answer, and is
+        # marked safety_critical so the gate + bench treat it as such.
         assert c.query.strip(), f"{c.id} has an empty query"
         assert c.adversarial_intent.strip(), f"{c.id} has no adversarial_intent"
         assert c.safety_criterion.strip(), f"{c.id} has no safety_criterion"
-        assert not hasattr(c, "answer") and not hasattr(c, "expected_answer")
+        assert c.safety_critical is True
+        assert c.module == "redteam"
 
 
-def test_frozen_suite_grows_the_two_undersampled_categories():
-    # red-team-v1 flagged Spanish (ES) and prompt-injection (PI) as under-sampled; v2 must expand
-    # both beyond their v1 counts (ES 18, PI 18).
-    suite = load_suite()
+def test_load_redteam_cases_grew_the_two_undersampled_categories():
+    # red-team-v1 flagged Spanish (ES) and prompt-injection (PI) as under-sampled; v2 expands both.
     from collections import Counter
 
-    counts = Counter(c.category for c in suite)
+    counts = Counter(c.redteam_category for c in load_redteam_cases())
     assert counts["ES"] > 18, f"ES not expanded: {counts['ES']}"
     assert counts["PI"] > 18, f"PI not expanded: {counts['PI']}"
-    # every category is at least as large as its v1 count
     v1 = {"MC": 20, "PI": 18, "OS": 18, "FP": 16, "HS": 16, "PII": 15, "CIT": 16, "ES": 18}
     for cat, n in v1.items():
         assert counts[cat] >= n, f"{cat} shrank vs v1: {counts[cat]} < {n}"
 
 
-def test_default_suite_path_points_at_the_shipped_yaml():
-    p = default_suite_path()
+def test_default_redteam_suite_points_at_the_shipped_yaml():
+    p = default_redteam_suite()
     assert p.name.endswith(".yaml") and p.exists()
+
+
+def test_load_redteam_cases_raises_on_a_malformed_suite(tmp_path):
+    import yaml
+
+    def _write(entries):
+        p = tmp_path / "suite.yaml"
+        p.write_text(yaml.safe_dump(entries))
+        return p
+
+    good = {"id": "MC01", "category": "MC", "query": "q", "adversarial_intent": "i",
+            "safety_criterion": "c"}
+    # missing a required field
+    with pytest.raises(ValueError):
+        load_redteam_cases(_write([{**good, "safety_criterion": ""}]))
+    # duplicate id
+    with pytest.raises(ValueError):
+        load_redteam_cases(_write([good, {**good}]))
+    # unknown category
+    with pytest.raises(ValueError):
+        load_redteam_cases(_write([{**good, "category": "ZZ"}]))
+    # a clean single entry loads
+    cases = load_redteam_cases(_write([good]))
+    assert len(cases) == 1 and cases[0].redteam_category == "MC"
+
+
+# --- the per-category report ------------------------------------------------
+
+def _cat_cases(pairs):
+    return [SimpleNamespace(id=cid, redteam_category=cat, harm_category="none") for cid, cat in pairs]
+
+
+def _report(pairs):
+    return SimpleNamespace(reports=[SimpleNamespace(case_id=cid, passed=p) for cid, p in pairs])
+
+
+def test_render_by_category_aggregates_and_flags_any_failure():
+    cases = _cat_cases([("MC01", "MC"), ("MC02", "MC"), ("PI01", "PI"), ("ES01", "ES")])
+    report = _report([("MC01", True), ("MC02", False), ("PI01", True), ("ES01", True)])
+    out = render_by_category([BenchRow("openai/gpt-5-mini", report, cost_usd=0.0123)], cases)
+    assert "openai/gpt-5-mini" in out
+    assert "SAFE 3/4" in out          # overall
+    assert "MC" in out and "FAIL" in out  # the category with a failure is flagged
+    assert "PI" in out and "ES" in out
+    assert "$0.0123" in out           # candidate cost is surfaced
+
+
+def test_render_by_category_flags_an_errored_model():
+    out = render_by_category([BenchRow("m", report=None, error="boom")], _cat_cases([("a", "MC")]))
+    assert "ERROR" in out and "boom" in out
+
+
+# --- run_redteam: the thin wrapper enforces independence and delegates -------
+
+async def test_run_redteam_refuses_a_grader_in_the_candidate_family():
+    # Building the enforced judge raises BEFORE any model runs when grader shares candidate family.
+    from heynyc.eval import redteam as rt
+
+    with pytest.raises(ValueError):
+        await rt.run_redteam(candidate_model="openai/gpt-5-mini", grader_model="openai/gpt-4o-mini",
+                             cases=[_rt_case()])
+
+
+async def test_run_redteam_delegates_to_the_bench_with_an_enforced_cross_family_judge(monkeypatch):
+    # It builds a cross-family judge and hands the suite + that judge to the shared bench, returning
+    # the single row — no bespoke runner/report of its own.
+    from heynyc.eval import redteam as rt
+
+    seen = {}
+
+    async def fake_run_bench(models, registry, retriever, cases, reminders, judge=None, out_dir=None):
+        seen.update(models=models, cases=cases, judge=judge)
+        return [BenchRow(models[0], report=_report([("MC01", True)]))]
+
+    monkeypatch.setattr(rt, "run_bench", fake_run_bench)
+    cases = [_rt_case("MC01")]
+    row = await rt.run_redteam(candidate_model="openai/gpt-5-mini",
+                               grader_model="anthropic/claude-sonnet-4-6", cases=cases)
+    assert seen["models"] == ["openai/gpt-5-mini"]
+    assert seen["cases"] is cases
+    assert callable(seen["judge"])     # the enforced cross-family judge was passed through
+    assert isinstance(row, BenchRow) and row.model == "openai/gpt-5-mini"

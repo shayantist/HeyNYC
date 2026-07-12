@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -34,12 +35,21 @@ class EvalCase:
     # (see check_metamorphic_programs). Peripheral personalization is allowed; the program set is not.
     expect_same_programs_as_base: bool = False
     safety_critical: bool = False
+    # --- adversarial red-team fields (additive; empty for ordinary golden cases) ---
+    # A case carrying a safety_criterion is graded by the strict adversarial rubric against that
+    # criterion instead of the generic groundedness rubric (see judges._run_judge). redteam_category
+    # is the 8-way red-team taxonomy (MC/PI/OS/FP/HS/PII/CIT/ES) used only for the per-category report.
+    safety_criterion: str = ""
+    adversarial_intent: str = ""
+    redteam_category: str = ""
+    language: str = "en"
 
     def __post_init__(self) -> None:
         if not self.safety_critical:
             self.safety_critical = (
                 self.harm_category != "none"
                 or bool(self.invariants.get("must_not_fabricate"))
+                or bool(self.safety_criterion)
             )
 
 
@@ -75,4 +85,58 @@ def load_cases(registry: Registry) -> list[EvalCase]:
                     safety_critical=entry.get("safety_critical", False),
                 )
             )
+    return cases
+
+
+# The 8-way adversarial taxonomy (canonical here so both the loader's validation and the judge's
+# rubric label read one source; frozen from red-team-v1, docs/eval/red-team-v1.md).
+CATEGORY_NAMES = {
+    "MC": "MyCity-replay + expansion", "PI": "Prompt injection / jailbreak",
+    "OS": "Out-of-scope harmful", "FP": "False-premise / leading",
+    "HS": "Over-reliance / high-stakes", "PII": "PII / privacy",
+    "CIT": "Adversarial grounding / citation", "ES": "Non-English (Spanish) safety",
+}
+
+
+def default_redteam_suite() -> Path:
+    """The shipped, frozen adversarial suite that travels with the package."""
+    return Path(__file__).resolve().parent / "redteam_suite.yaml"
+
+
+def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
+    """Load the frozen adversarial red-team suite as EvalCases, so the 205 attack prompts run through
+    the SAME runner, gate, and judge as the golden cases (they also pick up the deterministic grounding
+    floor + invariants that a standalone red-team would skip). Each carries a safety_criterion (the
+    grading anchor, so the judge uses the strict adversarial rubric) and redteam_category for the
+    per-category report. Prompts only, never a canned answer. Raises on a malformed suite."""
+    path = Path(path) if path is not None else default_redteam_suite()
+    raw = yaml.safe_load(path.read_text()) or []
+    cases: list[EvalCase] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        for req in ("id", "category", "query", "adversarial_intent", "safety_criterion"):
+            if not str(entry.get(req, "")).strip():
+                raise ValueError(f"redteam suite entry {i} missing '{req}': {entry.get('id', '?')}")
+        cid = entry["id"]
+        if cid in seen:
+            raise ValueError(f"duplicate red-team case id: {cid}")
+        seen.add(cid)
+        if entry["category"] not in CATEGORY_NAMES:
+            raise ValueError(
+                f"{cid}: unknown category '{entry['category']}' (expected one of {sorted(CATEGORY_NAMES)})"
+            )
+        cases.append(
+            EvalCase(
+                id=cid,
+                module="redteam",
+                query=entry["query"],
+                notes=entry.get("framing", "") or entry["adversarial_intent"],
+                harm_category=entry.get("harm_category", "none"),
+                safety_criterion=entry["safety_criterion"],
+                adversarial_intent=entry["adversarial_intent"],
+                redteam_category=entry["category"],
+                language=entry.get("language", "en"),
+                safety_critical=True,
+            )
+        )
     return cases

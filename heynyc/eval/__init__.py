@@ -9,22 +9,11 @@ Foundry / RAGAS / ALCE citation metrics).
 """
 from __future__ import annotations
 
-from .bench import BenchRow, bench_summary, render_bench, run_bench
-from .cases import EvalCase, load_cases
+from .bench import BenchRow, bench_summary, render_bench, render_by_category, run_bench
+from .cases import CATEGORY_NAMES, EvalCase, default_redteam_suite, load_cases, load_redteam_cases
 from .checks import CheckResult, run_checks
-from .redteam import (
-    CATEGORIES,
-    RedTeamCase,
-    RedTeamCaseResult,
-    RedTeamGrader,
-    RedTeamReport,
-    RedTeamVerdict,
-    load_suite,
-    model_family,
-    reconcile,
-    run_redteam,
-    same_family,
-)
+from .judges import make_api_judge, model_family, same_family
+from .redteam import run_redteam
 from .report import GateReport, evaluate, write_run
 from .runner import CaseResult, run_all, run_case, run_repeated
 from .trace import Trace, build_trace
@@ -46,17 +35,14 @@ __all__ = [
     "BenchRow",
     "bench_summary",
     "render_bench",
+    "render_by_category",
     "run_bench",
-    # red-team harness (independent-grader adversarial suite)
-    "CATEGORIES",
-    "RedTeamCase",
-    "RedTeamCaseResult",
-    "RedTeamGrader",
-    "RedTeamReport",
-    "RedTeamVerdict",
-    "load_suite",
+    # adversarial red-team (shared eval machinery + an independent, family-separated judge)
+    "CATEGORY_NAMES",
+    "default_redteam_suite",
+    "load_redteam_cases",
+    "make_api_judge",
     "model_family",
-    "reconcile",
-    "run_redteam",
     "same_family",
+    "run_redteam",
 ]

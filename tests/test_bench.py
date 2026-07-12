@@ -71,3 +71,35 @@ async def test_run_bench_isolates_a_failing_model(monkeypatch):
     assert "RuntimeError" in bad.error
     for good in (r for r in rows if r.model != "bad-model"):
         assert good.report is not None and good.error is None
+
+
+# --- candidate cost tracking ----------------------------------------------
+
+def test_candidate_cost_sums_usage_across_cases():
+    from heynyc.eval.bench import _candidate_cost
+    from heynyc.eval.runner import CaseResult
+
+    results = [
+        CaseResult(case=EvalCase(id="a", module="m", query="q"), usage={"input_tokens": 1000, "output_tokens": 500}),
+        CaseResult(case=EvalCase(id="b", module="m", query="q"), usage={"input_tokens": 2000, "output_tokens": 800}),
+        CaseResult(case=EvalCase(id="c", module="m", query="q"), usage={}),  # a case the agent never billed
+    ]
+    cost, in_tok, out_tok = _candidate_cost("gpt-4o-mini", results)
+    assert in_tok == 3000 and out_tok == 1300   # summed across cases, missing usage counts as 0
+    assert cost > 0                              # a litellm-priced model yields a real cost floor
+
+
+def test_candidate_cost_is_zero_for_an_unpriceable_model():
+    from heynyc.eval.bench import _candidate_cost
+    from heynyc.eval.runner import CaseResult
+
+    r = [CaseResult(case=EvalCase(id="a", module="m", query="q"), usage={"input_tokens": 10, "output_tokens": 5})]
+    cost, in_tok, out_tok = _candidate_cost("some/model-litellm-cannot-price", r)
+    assert (in_tok, out_tok) == (10, 5)
+    assert cost == 0.0                           # never a fabricated number when pricing is unknown
+
+
+def test_render_bench_surfaces_candidate_cost():
+    rows = [BenchRow(model="gpt-5", report=_report([("a", True)]), cost_usd=0.0123)]
+    out = render_bench(rows, safety_case_ids=set())
+    assert "$0.0123" in out

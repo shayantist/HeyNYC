@@ -14,6 +14,7 @@ class CaseResult:
     tool_calls_made: list[str] = field(default_factory=list)
     citations: dict = field(default_factory=dict)
     messages: list[dict] = field(default_factory=list)
+    usage: dict = field(default_factory=dict)  # {input_tokens, output_tokens, ...} for cost tracking
     error: Optional[str] = None
 
 
@@ -28,6 +29,7 @@ async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None)
         tool_calls_made=result.tool_calls_made,
         citations=result.citations,
         messages=result.messages,
+        usage=getattr(result, "usage", {}) or {},
     )
 
 
