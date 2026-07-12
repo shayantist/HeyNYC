@@ -16,21 +16,44 @@ A module is **one folder with a YAML manifest** at its root:
 
 ```
 heynyc/modules/<name>/
-  manifest.yaml     # required — declares the module (pure YAML)
-  eval.yaml         # recommended — test questions
-  tools.py          # optional — only for custom logic
-  data/             # optional — curated data files
-  topics/<topic>/   # optional — a submodule (reuses the parent's tool; own sources + eval)
+  manifest.yaml     # required: declares the module (pure YAML)
+  eval.yaml         # recommended: test questions
+  tools.py          # optional: only for custom logic
+  data/             # optional: curated data files
+  topics/<topic>/   # optional: a submodule (reuses the parent's tool; own sources + eval)
 ```
 
-To not reinvent the wheel, we use the same **"one descriptor file per unit, in its own folder"** convention as [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: the manifest carries `name` + `description` + keywords for routing, and adding a unit means dropping in a folder — **convention over configuration**. (A HeyNYC module is a plain MCP-style tool + a schema-validated manifest; we deliberately do **not** use Anthropic Agent Skills — those are for reusable techniques, not project-specific data + config.)
+To not reinvent the wheel, we use the same **"one descriptor file per unit, in its own folder"** convention as [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: the manifest carries `name` + `description` + keywords for routing, and adding a unit means dropping in a folder: **convention over configuration**. (A HeyNYC module is a plain MCP-style tool + a schema-validated manifest; we deliberately do **not** use Anthropic Agent Skills, which are for reusable techniques, not project-specific data + config.)
 
 **Shallow by default.** A module is a folder with the manifest at its root; the only nesting is an
-optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder for a **submodule** —
+optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder for a **submodule**:
 a light sub-service that reuses the parent's tool and owns its own sources + eval (e.g.
 `events/topics/world_cup/`). Most modules are a single `manifest.yaml`.
 
 Full field-by-field reference and worked examples: the **[modules README](heynyc/modules/README.md)**.
+
+---
+
+## How your module plugs in
+
+You drop in a folder. The registry discovers it at startup and fans it out into the prompt, the shared grounded tools, and the test gate. At query time every fact your module returns still has to pass the grounding guard before a New Yorker sees it, so the "grounded or it abstains" contract holds no matter which module answered.
+
+```mermaid
+flowchart TD
+    M["Your folder<br/>manifest.yaml (+ optional tools.py, data/, eval.yaml)"]
+    M --> REG["Registry auto-discovers the folder at startup"]
+    REG --> PR["Adds your keywords + blurb to the agent's prompt"]
+    REG --> TL["Wires your datasets/seeds into the shared grounded tools"]
+    REG --> EV["Adds your eval.yaml cases to the no-hallucination gate"]
+    Q["A New Yorker asks a question"] --> AGENT["Agent routes to your module, calls the grounded tools"]
+    PR --> AGENT
+    TL --> AGENT
+    AGENT --> GUARD{"Grounding guard:<br/>is every cited fact in the source it cited?"}
+    GUARD -->|yes| OUT["Cited answer"]
+    GUARD -->|no| ABS["Abstain or hedge, route to 311 or a human"]
+```
+
+The upshot for you as an author: you never have to build the safety machinery. Point the manifest at a real dataset or official page, tell the agent when to abstain, and the shared tools + guard + eval gate carry the rest.
 
 ---
 
@@ -42,7 +65,7 @@ fill in:
 - the official NYC page(s) for it,
 - a NYC Open Data dataset id if it's a "find nearest X" service (search
   <https://data.cityofnewyork.us>),
-- 2–3 real questions a person would ask.
+- 2-3 real questions a person would ask.
 
 A maintainer (or you!) can turn that into a module.
 
@@ -58,7 +81,7 @@ cd heynyc && uv sync --extra dev
 uv run python -m heynyc new-module <name>
 
 # 3. Edit heynyc/modules/<name>/manifest.yaml  (see heynyc/modules/README.md)
-#    Add a few eval cases in eval.yaml — include at least one `abstain: true` case.
+#    Add a few eval cases in eval.yaml, include at least one `abstain: true` case.
 
 # 4. Confirm it loads and tests pass
 uv run python -m heynyc modules

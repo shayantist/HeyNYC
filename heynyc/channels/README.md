@@ -57,7 +57,7 @@ in memory during a request, held by the `Replier` to send the reply. Set `HEYNYC
 5. **Expose localhost:** `ngrok http 8000` (or `cloudflared tunnel --url http://localhost:8000`).
 6. **Run it:** `uv run python -m heynyc serve --provider both` (or `meta` / `twilio`).
 
-Install the deps with `uv sync --extra whatsapp` (already covered by `--extra dev` in CI).
+Install the deps with `uv sync --extra whatsapp` (the messaging deps live in their own extra; the base `--extra dev` install does not pull them).
 
 ## Flagging a bad answer
 

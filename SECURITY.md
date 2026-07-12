@@ -2,7 +2,7 @@
 
 HeyNYC is a civic project that helps New Yorkers find, understand, and apply for
 government services. As it grows toward handling resident personal information
-(PII) — for example, when assisting with a benefits application — we take
+(PII), for example when assisting with a benefits application, we take
 security and privacy seriously and welcome responsible disclosure.
 
 ## Reporting a vulnerability
@@ -24,7 +24,7 @@ When you report, please include (as much as you can):
 
 We will acknowledge your report, investigate, and keep you updated on
 remediation. Please give us a reasonable window to release a fix before any
-public disclosure, and act in good faith — avoid privacy violations, data
+public disclosure, and act in good faith: avoid privacy violations, data
 destruction, or service disruption while testing.
 
 ## Scope
@@ -43,7 +43,7 @@ Especially valuable:
   injection or arbitrary-file-access issues.
 
 Out of scope: third-party services HeyNYC integrates with (e.g. NYC Open Data,
-the NYC Benefits Screening API, Ticketmaster, messaging providers) — report
+the NYC Benefits Screening API, Ticketmaster, messaging providers). Report
 those to the respective owners. Missing hardening on a purely local dev setup is
 lower priority; note it, but it is not treated as an active vulnerability.
 
