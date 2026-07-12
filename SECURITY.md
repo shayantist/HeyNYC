@@ -11,7 +11,7 @@ security and privacy seriously and welcome responsible disclosure.
 tips off attackers before a fix is available and, for a tool that touches
 resident data, could put real people at risk.
 
-Instead, report vulnerabilities **privately** to `<maintainer email>`. If
+Instead, report vulnerabilities **privately** to **shayan@reach4help.org**. If
 GitHub private vulnerability reporting is enabled on this repository, you may
 also use **Security → Report a vulnerability**.
 
