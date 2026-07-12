@@ -30,19 +30,69 @@ async def get_token(client: httpx.AsyncClient, base: str, username: str, passwor
 
 _PII_KEYS = {"name", "firstname", "lastname", "fullname", "dob", "dateofbirth", "birthdate",
              "ssn", "social", "socialsecurity", "address", "street", "email", "phone"}
+# Value-level identifier classes. These MIRROR the redaction patterns in
+# heynyc/channels/analytics.py's redact_pii (SSN / DOB / phone / email / street / A-number /
+# card) so the screener guard rejects exactly the classes the feedback log masks and the
+# red-team suite probes. Ordered card/A-number first, like redact_pii, so the longest runs are
+# classified before a phone/SSN pattern can nibble a fragment out of them.
 _SSN_RE = re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b")
 _DOB_RE = re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)")
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+_ANUMBER_RE = re.compile(r"\bA[#\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{2,3}\b", re.IGNORECASE)
+_CARD_RE = re.compile(r"\b\d(?:[\s-]?\d){14,18}\b")
+_STREET_RE = re.compile(
+    r"\b\d{1,5}\s+(?:[A-Za-z0-9.'#-]+\s+){0,3}"
+    r"(?:street|st|avenue|ave|av|boulevard|blvd|road|rd|place|pl|drive|dr|lane|ln|court|ct|"
+    r"parkway|pkwy|plaza|terrace|ter|way|broadway|highway|hwy)\b\.?",
+    re.IGNORECASE,
+)
+_PII_VALUE_PATTERNS = (
+    ("a card/EBT number", _CARD_RE),
+    ("an immigration A-number", _ANUMBER_RE),
+    ("an email address", _EMAIL_RE),
+    ("an SSN", _SSN_RE),
+    ("a phone number", _PHONE_RE),
+    ("a date of birth", _DOB_RE),
+    ("a street address", _STREET_RE),
+)
+
+
+def _pii_value_kind(value: str) -> Optional[str]:
+    """Name the PII identifier class a string value looks like, or None if it is clean.
+    Only strings are scanned: bare numbers (income amounts, household counts, ages, a zip) are
+    legitimate profile values and must never be rejected, so numeric fields are left alone."""
+    for label, pattern in _PII_VALUE_PATTERNS:
+        if pattern.search(value):
+            return label
+    return None
+
+
+def _assert_pii_free(node: object, path: str) -> None:
+    """Walk a profile node recursively (dicts and lists), rejecting a PII key name at any depth
+    and any string value that matches a PII identifier class. The path names where it slipped in."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key.lower().replace("_", "") in _PII_KEYS:
+                raise ValueError(f"PII field '{path}.{key}' is not allowed in a screening profile.")
+            _assert_pii_free(value, f"{path}.{key}")
+    elif isinstance(node, (list, tuple)):
+        for i, item in enumerate(node):
+            _assert_pii_free(item, f"{path}[{i}]")
+    elif isinstance(node, str):
+        kind = _pii_value_kind(node)
+        if kind is not None:
+            raise ValueError(f"a profile value at '{path}' looks like {kind}: PII must not be sent.")
 
 
 def assert_pii_free(household: dict, persons: list[dict]) -> None:
     """Reject any PII before it can leave the box (the API forbids it AND it's our rule).
-    The screener takes age / household-type / income only — never names, DOB, SSN, or address."""
-    for blob in [household, *persons]:
-        for key, value in blob.items():
-            if key.lower().replace("_", "") in _PII_KEYS:
-                raise ValueError(f"PII field '{key}' is not allowed in a screening profile.")
-            if isinstance(value, str) and (_SSN_RE.search(value) or _DOB_RE.search(value)):
-                raise ValueError("a profile value looks like an SSN/DOB — PII must not be sent.")
+    The screener takes age / household-type / income only, never names, DOB, SSN, or address.
+    Walks nested dicts and lists (persons[].incomes) so PII cannot hide below the top level, and
+    scans string values for SSN / DOB / phone / email / street / A-number / EBT-card, the same
+    classes redact_pii masks. Bare numbers stay legitimate and pass."""
+    _assert_pii_free(household, "household")
+    _assert_pii_free(persons, "persons")
 
 
 async def screen(client: httpx.AsyncClient, base: str, token: str,

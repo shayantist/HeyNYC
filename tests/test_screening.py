@@ -39,6 +39,52 @@ def test_pii_guard_rejects_name_key_and_ssn_value():
         assert_pii_free({"note": "123-45-6789"}, [{"age": 30}])
 
 
+def test_pii_guard_recurses_into_nested_income_value():
+    # A phone number buried in a nested persons[].incomes[].* field must be caught, and the
+    # error must name the offending field path so the handler can report where it slipped in.
+    with pytest.raises(ValueError, match=r"persons\[0\]\.incomes\[0\]"):
+        assert_pii_free(
+            {},
+            [{"age": 30, "householdMemberType": "HeadOfHousehold",
+              "incomes": [{"amount": "1200", "type": "call 555-123-4567", "frequency": "Monthly"}]}],
+        )
+
+
+def test_pii_guard_recurses_into_nested_key_name():
+    # A PII key name nested below the top level must still be rejected.
+    with pytest.raises(ValueError, match=r"ssn"):
+        assert_pii_free({}, [{"age": 30, "incomes": [{"amount": "1200", "ssn": "x"}]}])
+
+
+@pytest.mark.parametrize("value", [
+    "555-123-4567",              # phone (dashed)
+    "(212) 555-0199",            # phone (parenthesized)
+    "jane.doe@example.com",      # email
+    "123 Main Street",           # street address
+    "A123456789",                # immigration A-number
+    "1234567890123456789",       # EBT card (19 digits)
+    "123-45-6789",               # SSN
+    "01/15/1990",                # DOB
+])
+def test_pii_guard_catches_each_identifier_class(value):
+    with pytest.raises(ValueError):
+        assert_pii_free({}, [{"age": 30, "householdMemberType": "HeadOfHousehold", "note": value}])
+
+
+def test_pii_guard_allows_legit_numeric_fields():
+    # income amounts, household size / counts, ages, a bare zip are legitimate and MUST pass,
+    # including string-typed values nested in incomes.
+    assert_pii_free(
+        {"livingRenting": True, "householdSize": 3, "cashOnHand": 500, "zip": "10001"},
+        [
+            {"age": 45, "householdMemberType": "HeadOfHousehold",
+             "incomes": [{"amount": "1200", "type": "Wages", "frequency": "Monthly"},
+                         {"amount": "200000", "type": "SelfEmployment", "frequency": "Annual"}]},
+            {"age": 7, "householdMemberType": "Child"},
+        ],
+    )
+
+
 async def test_screen_posts_body_and_returns_programs():
     seen = {}
 
