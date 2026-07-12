@@ -1,0 +1,59 @@
+name: childcare
+category: family
+description: >-
+  Find nearby NYC regulated child care (day care and preschool) - the closest programs with their
+  name, address, phone, ages served, and licensed capacity - grounded in the Health Department's
+  regulated child care list (the data behind NYC Child Care Connect).
+keywords:
+  - child care
+  - childcare
+  - day care
+  - daycare
+  - preschool
+  - pre-school
+  - nursery
+  - infant care
+  - toddler care
+  - child care center
+  - childcare near me
+  - who can watch my kid
+  - care for my baby
+  - care for my toddler
+examples:
+  - "Where's the nearest day care?"
+  - "I need child care for my 2-year-old near Fordham, the Bronx"
+tools: tools.py
+eval: eval.yaml
+seeds:
+  - https://www.nyc.gov/site/doh/services/child-care.page
+allowlist:
+  - nyc.gov
+  - access.nyc.gov
+  - myschools.nyc
+prompt: |
+  For child care questions (day care / daycare, preschool, nursery, infant or toddler care, "where
+  can I find child care / who can watch my kid near me"), call
+  nearest_child_care(near=<the user's NYC address or neighborhood>). Report ONLY the programs the
+  tool returns and cite each {cite:Sn}. Each program carries a name, full address, phone, the age
+  range served, the maximum licensed capacity, and the facility/program type (group vs. school-based
+  child care, infant/toddler vs. preschool) - pass these through as given.
+  HONEST LIMITS - do not fabricate beyond the data:
+    - Capacity is the program's MAXIMUM licensed size (from room square footage, toilets and sinks),
+      NOT the number of open spots. Never say a program "has spots" or state availability - a program
+      may be full. Tell the user to call to check openings.
+    - The source has NO hours, NO cost/tuition, and NO current-openings field. Never state hours, a
+      price, or availability - tell the user to call the program's phone.
+    - These programs are permitted and inspected by the NYC Health Department, but a permit is NOT an
+      endorsement or a quality rating (the Health Department itself does not endorse). Don't assert a
+      program is "good", "safe", or "recommended" - only that it is DOHMH-permitted.
+    - This list is center-based care regulated by the city (Health Code Articles 47 and 43). It does
+      NOT include home-based / family child care or after-school (those are NY State OCFS), and it
+      does NOT show free 3-K/Pre-K seats or child care vouchers. For free 3-K/Pre-K point to
+      MySchools (myschools.nyc); for a child care voucher/subsidy point to ACCESS NYC. Never assert a
+      child qualifies for a free seat or a voucher from this data.
+  If geocoding fails, the location is ambiguous, the data source is down, or no programs come back,
+  DON'T guess a program: say so plainly and point the user to NYC Child Care Connect
+  (nyc.gov/site/doh/services/child-care.page) or 311. This is often a stressed working parent - be
+  warm and direct, lead with the closest program, and keep it practical.
+  For free 3-K/Pre-K enrollment that's MySchools; for a child care voucher that's the benefits/ACCESS
+  NYC path - this module is the finder for regulated programs, not the enrollment or subsidy system.

@@ -31,6 +31,7 @@ _SERVICE_NAMES = {
     "events": "Events",
     "housing_connect": "Housing Connect",
     "wic": "WIC",
+    "childcare": "Child care",
 }
 
 # Short, honest source labels for modules grounded in a live tool or several sources
@@ -43,6 +44,7 @@ _SOURCE_LABELS = {
     "events": "Ticketmaster + NYC Parks",
     "housing_connect": "NYC Open Data (vy5i-a666)",
     "wic": "NY State WIC directory (Health Data NY)",
+    "childcare": "NYC Open Data (gy3q-4tzp)",
 }
 
 
