@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
 
+from heynyc.core import pii_crypto
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
-from heynyc.core.session import Session
+from heynyc.core.session import Session, purge_expired_sessions
 
 
 def _const_complete(text: str):
@@ -60,3 +63,61 @@ async def test_session_no_path_is_memory_only():
     s = Session(agent=agent, id="mem")
     await s.send("q")
     assert len(s.turns) == 2  # works, just not persisted
+
+
+# --- Encryption at rest (security-audit F1) ---------------------------------
+
+
+async def test_transcript_round_trips_and_hides_pii_when_key_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    path = tmp_path / "enc.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("noted"))
+    s = Session(agent=agent, id="enc", path=path)
+    await s.send("my SSN is 123-45-6789")
+
+    raw = path.read_bytes()
+    assert b"123-45-6789" not in raw  # the typed PII is not on disk in the clear
+
+    # a fresh load with the key transparently decrypts the multi-turn context
+    resumed = Session.load(agent, "enc", path)
+    assert [t["content"] for t in resumed.turns] == ["my SSN is 123-45-6789", "noted"]
+
+
+async def test_multi_turn_context_survives_encryption(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    path = tmp_path / "multi.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("ok"))
+    s = Session(agent=agent, id="multi", path=path)
+    await s.send("turn one")
+    await s.send("turn two")
+    resumed = Session.load(agent, "multi", path)
+    assert [t["content"] for t in resumed.turns] == ["turn one", "ok", "turn two", "ok"]
+
+
+async def test_transcript_stays_cleartext_when_no_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("HEYNYC_PII_KEY", raising=False)  # the dev path
+    path = tmp_path / "plain.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("ok"))
+    s = Session(agent=agent, id="plain", path=path)
+    await s.send("hello")
+    assert "hello" in path.read_text()  # unchanged dev behavior
+
+
+# --- Retention / TTL sweep (irreversible; GDPR Art 5(1)(e)) -----------------
+
+
+def _age_file(path, days: float) -> None:
+    old = time.time() - days * 86400
+    os.utime(path, (old, old))
+
+
+async def test_purge_expired_sessions_deletes_old_keeps_recent(tmp_path):
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("ok"))
+    for name in ("old", "new"):
+        s = Session(agent=agent, id=name, path=tmp_path / f"{name}.jsonl")
+        await s.send("hi")
+    _age_file(tmp_path / "old.jsonl", days=45)
+    deleted = purge_expired_sessions(tmp_path, max_age_days=30)
+    assert not (tmp_path / "old.jsonl").exists()  # irreversibly gone
+    assert (tmp_path / "new.jsonl").exists()
+    assert any("old.jsonl" in p for p in deleted)

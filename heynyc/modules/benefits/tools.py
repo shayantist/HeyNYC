@@ -460,6 +460,10 @@ async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
     out_dir = Path(ctx.output_dir) if getattr(ctx, "output_dir", None) else Path(tempfile.mkdtemp())
     out_path = out_dir / f"snap-ldss4826-{uuid.uuid4().hex[:8]}.pdf"
     out_path.write_bytes(pdf)
+    # Completion: the filled PDF exists, so the accumulated PII draft has served its purpose. Clear it
+    # now (retention / data-minimization, security finding F1) instead of waiting for the TTL sweep.
+    if getattr(ctx, "drafts", None) is not None:
+        ctx.drafts.clear("snap")
     # The PDF is delivered out-of-band by the channel from the request's artifacts dir; we do NOT
     # put the filesystem path in the text the model sees (defense-in-depth against a path leak).
     return appmod.application_summary(clean, missing) + "\n(Your filled draft is attached as a document.)"
