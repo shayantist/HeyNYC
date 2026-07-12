@@ -1,0 +1,157 @@
+"""User error-feedback loop (OTI Gap 6): a resident flags the last answer as wrong,
+it lands in a PII-redacted, append-only log keyed off the salted user_key, and the owner
+can aggregate the flags to spot a systematic error. All offline: no model, no network."""
+import asyncio
+import json
+
+from heynyc.channels import analytics
+from heynyc.channels.base import InboundMessage, KeyedLocks
+from heynyc.channels.identity import user_key
+from heynyc.channels.orchestrator import Deps, flag_note, handle, is_flag
+from heynyc.channels.store import ChannelStore
+from heynyc.core import config
+from heynyc.core.agent import Agent
+from heynyc.core.registry import Registry
+
+
+# ---- PII redaction (write-time) ------------------------------------------------
+
+def test_redact_pii_masks_phone_ssn_email_address_dob():
+    note = ("the hours are wrong, call me at 212-555-1234 or "
+            "reach me@example.com, ssn 123-45-6789, I live at 350 Jay Street, dob 03/04/1990")
+    out = analytics.redact_pii(note)
+    assert "212-555-1234" not in out
+    assert "123-45-6789" not in out
+    assert "me@example.com" not in out
+    assert "350 Jay Street" not in out
+    assert "03/04/1990" not in out
+    # the actual complaint survives so the owner can still act on it
+    assert "hours are wrong" in out
+
+
+def test_redact_pii_keeps_ordinary_text():
+    assert analytics.redact_pii("the cooling center hours are outdated") == \
+        "the cooling center hours are outdated"
+    assert analytics.redact_pii("") == ""
+
+
+# ---- The recorder redacts free text at write time, keeps the user_key ----------
+
+def test_record_feedback_redacts_note_and_query_and_keeps_user_key(tmp_path):
+    path = tmp_path / "fb.jsonl"
+    rec = analytics.record_feedback(
+        path, user_key="abc123", channel="whatsapp_meta", message_id="m1", flag="/wrong",
+        note="you're wrong, my number is 212-555-1234",
+        user_query="is 350 Jay Street rent stabilized?",
+        agent_text="Call 311 at 212-639-9675 for that. {cite:S1}",
+    )
+    written = json.loads(path.read_text().splitlines()[0])
+    assert written["user_key"] == "abc123"
+    assert written["flag"] == "/wrong"
+    # resident-authored free text is redacted at write time
+    assert "212-555-1234" not in written["note"]
+    assert "350 Jay Street" not in written["user_query"]
+    # the grounded agent answer is kept verbatim (its phone is a civic line, needed to debug)
+    assert "212-639-9675" in written["agent_text"]
+    assert rec["note"] == written["note"]
+
+
+# ---- Aggregation report --------------------------------------------------------
+
+def test_summarize_feedback_aggregates(tmp_path):
+    path = tmp_path / "fb.jsonl"
+    for i, (uk, flag, q) in enumerate([
+        ("u1", "/wrong", "cooling center hours"),
+        ("u2", "wrong", "cooling center hours"),
+        ("u1", "report", "snap income limit"),
+    ]):
+        analytics.record_feedback(
+            path, user_key=uk, channel="whatsapp_meta", message_id=f"m{i}",
+            flag=flag, note="", user_query=q, agent_text="an answer",
+        )
+    summary = analytics.summarize_feedback(analytics.load_feedback(path))
+    assert summary["total"] == 3
+    assert summary["users"] == 2
+    assert summary["by_flag"]["/wrong"] == 1 and summary["by_flag"]["wrong"] == 1
+    # the repeat-flagged query is surfaced so the owner can spot the systematic error
+    top = dict(summary["top_queries"])
+    assert top["cooling center hours"] == 2
+
+
+def test_summarize_feedback_empty():
+    s = analytics.summarize_feedback([])
+    assert s["total"] == 0 and s["users"] == 0 and s["top_queries"] == []
+
+
+# ---- Orchestrator: recognize the command + parse the optional note -------------
+
+def test_is_flag_recognizes_slash_command_and_bare_tokens():
+    assert is_flag("/wrong") and is_flag("/wrong the hours are outdated")
+    assert is_flag("wrong") and is_flag("  Report ") and is_flag("👎")
+    assert not is_flag("what's wrong with my application?")
+
+
+def test_flag_note_extracts_optional_note():
+    assert flag_note("/wrong the hours are outdated") == "the hours are outdated"
+    assert flag_note("/wrong") == ""
+    assert flag_note("wrong") == ""      # bare token carries no note
+    assert flag_note("👎") == ""
+
+
+# ---- Orchestrator end-to-end: short-circuit, fixed ack, redacted log -----------
+
+class FakeReplier:
+    def __init__(self):
+        self.sent, self.typed = [], 0
+
+    async def send_text(self, text):
+        self.sent.append(text)
+
+    async def indicate_typing(self):
+        self.typed += 1
+
+
+def _agent(reply="Here you go."):
+    async def complete_fn(messages, tool_schemas):
+        return {"role": "assistant", "content": reply, "tool_calls": None}
+    return Agent(Registry.discover(config.MODULES_DIR), tools={}, complete_fn=complete_fn, model="fake")
+
+
+def _deps(tmp_path):
+    store = ChannelStore(tmp_path / "ch.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600)
+    return Deps(agent=_agent(), store=store, sessions_dir=tmp_path / "sessions", salt="s",
+                telemetry_path=tmp_path / "t.jsonl", feedback_path=tmp_path / "fb.jsonl",
+                locks=KeyedLocks(), semaphore=asyncio.Semaphore(8))
+
+
+def _msg(text, mid):
+    return InboundMessage(channel="whatsapp_meta", sender="+1555", text=text, message_id=mid)
+
+
+async def test_slash_wrong_with_note_flags_without_agent_and_redacts(tmp_path):
+    deps = _deps(tmp_path)
+    # 1) a normal turn so there's a last answer to flag
+    await handle(_msg("when do cooling centers open?", "q1"), FakeReplier(), deps)
+    # 2) the resident flags it, with a PII-bearing free-text reason
+    flagger = FakeReplier()
+    await handle(_msg("/wrong the hours are stale, call me at 212-555-1234", "f1"), flagger, deps)
+
+    assert flagger.typed == 0                       # no agent run, short-circuit like is_help
+    assert flagger.sent and "flag" in flagger.sent[0].lower()   # fixed acknowledgment
+
+    raw = (tmp_path / "fb.jsonl").read_text()
+    rec = json.loads(raw.splitlines()[0])
+    # keyed off the salted user_key, never the raw phone number
+    assert rec["user_key"] == user_key("whatsapp_meta", "+1555", "s")
+    assert "+1555" not in raw and "212-555-1234" not in raw
+    assert "hours are stale" in rec["note"]         # the actionable complaint is preserved
+    assert rec["user_query"] == "when do cooling centers open?"
+
+
+async def test_flag_with_nothing_to_flag_yet(tmp_path):
+    deps = _deps(tmp_path)
+    r = FakeReplier()
+    await handle(_msg("/wrong", "f0"), r, deps)     # no prior turn
+    assert r.typed == 0
+    assert not (tmp_path / "fb.jsonl").exists()
+    assert "ask me something" in r.sent[0].lower()

@@ -239,8 +239,82 @@ def _render_stats(path) -> None:
     table.add_row("tokens in / out", f"{summary['input_tokens']} / {summary['output_tokens']}")
     table.add_row("latency p50 / p95", f"{summary['latency_p50_ms']:.0f} / {summary['latency_p95_ms']:.0f} ms")
     table.add_row("error rate", f"{summary['error_rate'] * 100:.0f}%")
-    table.add_row("tool mix", ", ".join(f"{k}×{v}" for k, v in summary["tool_mix"].items()) or "—")
+    table.add_row("tool mix", ", ".join(f"{k}×{v}" for k, v in summary["tool_mix"].items()) or "-")
     console.print(table)
+
+
+def _render_outcomes(telemetry_path, outcomes_path) -> None:
+    """The find -> understand -> apply outcomes funnel: who reached the APPLY step, with
+    drop-off. `turns` / `screened` / `apply started` come from telemetry `tool_names`; the
+    two outcome stages come from the PII-free outcomes sidecar (see core/outcomes.py)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from heynyc.core import outcomes, telemetry
+
+    data = outcomes.funnel(telemetry.load(telemetry_path), outcomes.load(outcomes_path))
+    counts = data["counts"]
+    console = Console()
+    if not counts["turns"]:
+        console.print(f"No telemetry yet at {telemetry_path}. Run some turns first.")
+        return
+    labels = {
+        "turns": "turns",
+        "screened": "screened (screen_eligibility)",
+        "eligible_shown": "eligible programs shown",
+        "apply_started": "apply started (prepare_snap_application)",
+        "form_ready": "filled form ready",
+    }
+    table = Table(title=f"HeyNYC outcomes funnel: {counts['turns']} turn(s)")
+    table.add_column("stage")
+    table.add_column("reached", justify="right")
+    table.add_column("drop-off from prev", justify="right")
+    for stage in outcomes.STAGES:
+        drop = data["dropoff"].get(stage)
+        drop_txt = "n/a" if drop is None else f"-{drop['lost']} ({drop['rate'] * 100:.0f}%)"
+        table.add_row(labels[stage], str(counts[stage]), drop_txt)
+    console.print(table)
+
+
+def _feedback_path() -> Path:
+    """Same log the channel orchestrator writes user-flagged turns into (build_deps)."""
+    return config.HEYNYC_DATA_DIR / "feedback.jsonl"
+
+
+def _render_feedback(path) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    from heynyc.channels import analytics
+
+    summary = analytics.summarize_feedback(analytics.load_feedback(path))
+    console = Console()
+    if not summary["total"]:
+        console.print(f"No feedback yet at {path}. Residents flag a wrong answer with `wrong` / `/wrong <note>`.")
+        return
+    console.print(f"[bold]HeyNYC feedback[/]: {summary['total']} flag(s) from {summary['users']} user(s)")
+    console.print("flags: " + (", ".join(f"{k}×{v}" for k, v in summary["by_flag"].items()) or "-"))
+    console.print("channels: " + (", ".join(f"{k}×{v}" for k, v in summary["by_channel"].items()) or "-"))
+
+    if summary["top_queries"]:
+        repeats = Table(title="repeat-flagged queries (a systematic error signal)")
+        repeats.add_column("times", justify="right")
+        repeats.add_column("flagged query")
+        for query, count in summary["top_queries"]:
+            if count > 1:
+                repeats.add_row(str(count), query)
+        if repeats.row_count:
+            console.print(repeats)
+
+    recent = Table(title="most recent flags")
+    recent.add_column("when", style="dim")
+    recent.add_column("flag")
+    recent.add_column("flagged query")
+    recent.add_column("reason (redacted)")
+    for rec in summary["recent"]:
+        recent.add_row(rec.get("ts", "")[:19], rec.get("flag", ""),
+                       rec.get("user_query", "") or "-", rec.get("note", "") or "-")
+    console.print(recent)
 
 
 def _append_segment(segments: list, kind: str, text: str) -> None:
@@ -433,6 +507,8 @@ def main() -> None:
     cap.add_argument("--write-readme", dest="write_readme", action="store_true",
                      help="rewrite the CAPABILITIES section of README.md in place (idempotent)")
     sub.add_parser("stats", help="show cost/usage telemetry from past chat turns")
+    sub.add_parser("outcomes", help="show the find->understand->apply funnel (who reached APPLY)")
+    sub.add_parser("feedback", help="review user-flagged wrong answers (the error-feedback loop)")
     ev = sub.add_parser("eval", help="run the no-hallucination eval gate")
     ev.add_argument(
         "--api-judge", dest="api_judge", action="store_true",
@@ -476,6 +552,13 @@ def main() -> None:
         from heynyc.core import telemetry
 
         _render_stats(telemetry.default_path(config.HEYNYC_DATA_DIR))
+    elif args.command == "outcomes":
+        from heynyc.core import outcomes, telemetry
+
+        _render_outcomes(telemetry.default_path(config.HEYNYC_DATA_DIR),
+                         outcomes.default_path(config.HEYNYC_DATA_DIR))
+    elif args.command == "feedback":
+        _render_feedback(_feedback_path())
     elif args.command == "eval":
         asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out, module=args.module))
     elif args.command == "bench":

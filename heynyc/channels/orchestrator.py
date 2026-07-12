@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from heynyc.core.drafts import DraftStore
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
+from heynyc.core import outcomes
 from heynyc.core.agent import Agent
 from heynyc.core.session import Session
 
@@ -23,6 +24,9 @@ from .identity import user_key
 from .store import ChannelStore
 
 _FLAG_TOKENS = {"wrong", "report", "incorrect", "bad answer", "👎"}
+# Slash forms may carry a free-text reason: `/wrong the hours are outdated`. The note is redacted
+# at write time (analytics.record_feedback) since it is user free text and can hold a phone/address.
+_FLAG_COMMANDS = ("/wrong", "/report")
 _HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
 _RATE_LIMIT_MSG = "You're sending a lot at once — give me a moment and try again shortly. 🙏"
@@ -42,7 +46,22 @@ class Deps:
 
 
 def is_flag(text: str) -> bool:
-    return text.strip().lower() in _FLAG_TOKENS
+    """The user is flagging the last answer as wrong: a bare token (`wrong`, `👎`) or a slash
+    command (`/wrong`, `/report`) that may carry an optional free-text reason. Routed to the
+    feedback log, never the agent. A sentence that merely contains 'wrong' is NOT a flag."""
+    t = text.strip().lower()
+    return t in _FLAG_TOKENS or any(t == cmd or t.startswith(cmd + " ") for cmd in _FLAG_COMMANDS)
+
+
+def flag_note(text: str) -> str:
+    """The free-text reason after a `/wrong` / `/report` command, else '' (bare tokens carry none).
+    Returned raw; PII is redacted at write time in analytics.record_feedback."""
+    t = text.strip()
+    low = t.lower()
+    for cmd in _FLAG_COMMANDS:
+        if low.startswith(cmd + " "):
+            return t[len(cmd):].strip()
+    return ""
 
 
 def is_help(text: str) -> bool:
@@ -93,11 +112,20 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                                             output_dir=art_dir, drafts=user_drafts)
                 for chunk in render(result):
                     await replier.send_text(chunk)
-                for path in _artifacts_in(art_dir):   # only files the tool wrote into OUR dir
+                artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
+                for path in artifacts:
                     await replier.send_document(path, caption="Your draft SNAP application (LDSS-4826)")
                 analytics.record_interaction(
                     telemetry_path=deps.telemetry_path, model=deps.agent.model,
                     user_key=key, channel=msg.channel, result=result,
+                )
+                # --- OUTCOMES FUNNEL HOOK (OTI Gap 5) ---------------------------------
+                # telemetry already carries which tools fired (screened / apply-started).
+                # These two milestones need the tool RESULT, which telemetry lacks, so
+                # record them here, PII-free (user_key + two booleans), into the sidecar.
+                outcomes.record_milestone(
+                    outcomes.default_path(deps.telemetry_path.parent), user_key=key,
+                    **outcomes.milestones_from_result(result, produced_artifact=bool(artifacts)),
                 )
             finally:
                 shutil.rmtree(art_dir, ignore_errors=True)
@@ -108,13 +136,14 @@ async def _handle_flag(msg, key, session, replier, deps) -> None:
     if not agent_text:
         await replier.send_text("Nothing to flag yet — ask me something first.")
         return
-    analytics.feedback_log(deps.feedback_path, {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "user_key": key,
-        "channel": msg.channel,
-        "message_id": msg.message_id,
-        "flag": msg.text.strip(),
-        "user_query": _last(session.turns, "user"),
-        "agent_text": agent_text,
-    })
+    # The flag TOKEN (bare word or the slash command) is bounded and safe to store verbatim; the
+    # optional NOTE and the flagged query are resident free text and are redacted at write time.
+    note = flag_note(msg.text)
+    flag = msg.text.strip() if not note else next(
+        (c for c in _FLAG_COMMANDS if msg.text.strip().lower().startswith(c)), msg.text.strip()
+    )
+    analytics.record_feedback(
+        deps.feedback_path, user_key=key, channel=msg.channel, message_id=msg.message_id,
+        flag=flag, note=note, user_query=_last(session.turns, "user"), agent_text=agent_text,
+    )
     await replier.send_text("Thanks — I've flagged that answer for a human to review. 🙏")
