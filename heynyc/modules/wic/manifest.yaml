@@ -1,0 +1,50 @@
+name: wic
+category: health
+description: >-
+  Find nearby NYC WIC (Women, Infants, and Children) sites - the closest offices with their
+  agency name, address, phone, and website - grounded in the NY State WIC Program Site directory.
+keywords:
+  - wic
+  - women infants children
+  - wic office
+  - wic center
+  - wic clinic
+  - wic site
+  - wic appointment
+  - wic benefits
+  - wic food
+  - baby formula
+  - breastfeeding support
+  - pregnant nutrition
+  - nutrition assistance
+examples:
+  - "Where's the nearest WIC office?"
+  - "I'm pregnant and need WIC near Jackson Heights, Queens"
+tools: tools.py
+eval: eval.yaml
+seeds:
+  - https://www.health.ny.gov/prevention/nutrition/wic/
+allowlist:
+  - health.ny.gov
+  - health.data.ny.gov
+  - nyc.gov
+prompt: |
+  For WIC questions (WIC office/clinic/center, "where do I sign up for WIC", "I'm pregnant / have
+  a baby and need WIC food or formula", breastfeeding support through WIC), call
+  nearest_wic_site(near=<the user's NYC address or neighborhood>). Report ONLY the sites the tool
+  returns and cite each {cite:Sn}. Each site carries an agency name, full address, phone, a website
+  when listed, and a site type (Permanent, or a Temporary/rotating site the tool flags) - pass
+  these through as given.
+  HONEST LIMITS - do not fabricate beyond the data:
+    - The source has NO hours and NO appointment info. Never state hours or an appointment time -
+      tell the user to call the site's phone for hours and to book.
+    - A site flagged "Temporary" rotates and may not always be open - pass the tool's call-ahead note through.
+    - The source carries NO eligibility detail. WIC serves pregnant and postpartum people, infants,
+      and children under 5, with income rules - but do NOT assert whether a given person qualifies
+      from this data. Point to health.ny.gov/prevention/nutrition/wic to apply and check eligibility.
+  If geocoding fails, the location is ambiguous, the data source is down, or no sites come back,
+  DON'T guess a WIC site: say so plainly and point the user to the NY State WIC info
+  (health.ny.gov/prevention/nutrition/wic) or 311. This is often a new or expecting parent - be
+  warm and direct, lead with the closest site, and keep it practical.
+  For SNAP / food stamps, that's the benefits module; for a food pantry right now, that's the
+  food_pantries module - not this one.
