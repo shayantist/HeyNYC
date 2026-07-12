@@ -15,6 +15,12 @@ HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
 # truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
 OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))
 
+# Multilingual translate-at-edge pipeline (heynyc/core/multilingual.py) — reason in English, translate
+# only the verified answer at the edge (OTI Gap 2, Local Law 30 language access). OFF by default and
+# DEFINED-BUT-NOT-CONSUMED here: the agent loop does not read this yet, mirroring the Tier-2 NLI guard.
+# Wiring it into agent.py is a deliberate follow-on.
+HEYNYC_MULTILINGUAL = os.getenv("HEYNYC_MULTILINGUAL", "").strip().lower() in ("1", "true", "yes", "on")
+
 # Judge model — deliberately a DIFFERENT family than the agent to avoid
 # self-enhancement bias in LLM-as-judge (judges prefer their own outputs).
 # Falls back to the agent model if no alternate provider key is configured.
