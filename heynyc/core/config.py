@@ -15,6 +15,20 @@ HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
 # truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
 OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))
 
+# Optional hard USD spend ceiling for one agent session (security-audit F2b, OWASP LLM10). Default
+# OFF: unset, blank, 0, or a non-positive/garbage value all mean disabled (None) and behavior is
+# unchanged. When set, the spend guard (heynyc/core/spend.py) halts further model calls once the
+# cumulative LiteLLM-priced cost meets or exceeds this ceiling, rather than silently spending past it.
+def _parse_spend_cap(raw: str) -> float | None:
+    try:
+        cap = float(raw.strip())
+    except ValueError:
+        return None
+    return cap if cap > 0 else None
+
+
+HEYNYC_SPEND_CAP = _parse_spend_cap(os.getenv("HEYNYC_SPEND_CAP", ""))
+
 # Multilingual translate-at-edge pipeline (heynyc/core/multilingual.py) — reason in English, translate
 # only the verified answer at the edge (OTI Gap 2, Local Law 30 language access). OFF by default and
 # DEFINED-BUT-NOT-CONSUMED here: the agent loop does not read this yet, mirroring the Tier-2 NLI guard.

@@ -20,6 +20,7 @@ from .citations import CitationRegistry
 from .grounding import GroundingResult, check_grounding
 from .prompts import build_system_prompt_tiers
 from .registry import Registry
+from .spend import SpendGuard
 from .tools import Tool, ToolContext, build_toolbox
 
 logger = logging.getLogger("heynyc.agent")
@@ -56,6 +57,14 @@ GROUNDING_ABSTAIN_FALLBACK = (
 )
 
 _CITE_STRIP_RE = re.compile(r"\{cite:S\d+\}")
+
+# Spend-cap halt (OWASP LLM10 Unbounded Consumption). When a configured HEYNYC_SPEND_CAP is reached,
+# the loop stops making model calls at the next turn boundary and returns this instead of silently
+# spending past the ceiling. OFF by default (no cap), so it never fires unless the owner sets one.
+SPEND_CAPPED_FALLBACK = (
+    "I've reached the usage limit set for this session and can't take another step right now. "
+    "For urgent NYC help you can call 311, or 911 in an emergency, and please try again a bit later."
+)
 
 
 def _grounding_feedback(result: GroundingResult) -> str:
@@ -123,12 +132,17 @@ class Agent:
         index=None,
         guard_grounding: bool = True,
         guard_max_retries: int = GUARD_MAX_RETRIES,
+        spend_cap: Optional[float] = None,
     ):
         self.registry = registry
         self._embedder = getattr(index, "embedder", None)  # shared with retrieval-using module tools
         self.tools = tools if tools is not None else build_toolbox(registry, index=index)
         self.model = model or DEFAULT_MODEL
         self._approver = approver
+        # Session spend cap (OWASP LLM10). Defaults to the env-configured ceiling; None keeps it OFF
+        # so behavior is unchanged unless HEYNYC_SPEND_CAP is set. Accumulates cost across this
+        # instance's turns, so a Conversation caps the whole conversation.
+        self._spend = SpendGuard(config.HEYNYC_SPEND_CAP if spend_cap is None else spend_cap)
         # Deterministic post-generation grounding guard. On by default — it's the safety floor that lets
         # HeyNYC run on a cheaper model; disable only to observe raw model output (see tests).
         self.guard_grounding = guard_grounding
@@ -212,6 +226,21 @@ class Agent:
             yield events.Reminder(summary=reminder)
 
         for i in range(max_iters):
+            # SPEND-CAP GUARD (turn boundary). Before each model call, halt if this session's
+            # cumulative cost has reached the configured ceiling, never spend past it silently.
+            # No-op when no cap is set, so the default path is unchanged.
+            halt = self._spend.halt_reason()
+            if halt:
+                logger.warning("spend cap halted the agent: %s", halt)
+                yield events.ErrorEvent(scope="spend", message=halt, retryable=False)
+                result = AgentResult(
+                    text=SPEND_CAPPED_FALLBACK, citations=citations.mapping(),
+                    tool_calls_made=tools_made, iterations=i, status="max_budget",
+                    messages=messages, usage=_usage(),
+                )
+                yield events.Done(status="max_budget", num_turns=i,
+                                  citations=result.citations, result=result)
+                return
             message_id = f"m{i}"
             yield events.MessageStart(message_id=message_id)
             parts: list[str] = []
@@ -222,8 +251,11 @@ class Agent:
                         parts.append(chunk["text"])
                         yield events.TextDelta(message_id=message_id, text=chunk["text"])
                     elif chunk["type"] == "usage":
-                        turn_usage["input_tokens"] += int(chunk.get("input_tokens", 0) or 0)
-                        turn_usage["output_tokens"] += int(chunk.get("output_tokens", 0) or 0)
+                        call_in = int(chunk.get("input_tokens", 0) or 0)
+                        call_out = int(chunk.get("output_tokens", 0) or 0)
+                        turn_usage["input_tokens"] += call_in
+                        turn_usage["output_tokens"] += call_out
+                        self._spend.record(self.model, call_in, call_out)  # accrue toward the cap
                     elif chunk["type"] == "message":
                         assistant = chunk["message"]
             except Exception as exc:  # model call failed after retries
