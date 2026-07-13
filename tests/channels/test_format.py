@@ -28,6 +28,22 @@ def test_no_citations_no_footer():
     assert out == ["Just a plain reply."]
 
 
+def test_sources_footer_uses_text_fragment_for_web_citation():
+    r = FakeResult(
+        "Help is available {cite:S1}.",
+        {
+            "S1": {
+                "url": "https://nyc.gov/help",
+                "title": "Help",
+                "snippet": "The city-run service offers help to New Yorkers today.",
+                "kind": "WEB",
+            },
+        },
+    )
+
+    assert "https://nyc.gov/help#:~:text=The%20city%2Drun%20service%20offers%20help%20to%20New" in render(r)[0]
+
+
 def test_splits_long_text_on_paragraph_boundaries_footer_last():
     para = "x" * 3000
     r = FakeResult(f"{para}\n\n{para} {{cite:S1}}", {"S1": {"url": "https://nyc.gov", "title": "T"}})

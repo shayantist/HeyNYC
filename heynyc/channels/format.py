@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from heynyc.core.citations import used_citations
+from heynyc.core.citations import text_fragment_url, used_citations
 
 WA_LIMIT = 4096
 _CITE = re.compile(r"\s*\{cite:S\d+\}")
@@ -21,7 +21,8 @@ def _sources_footer(citations: dict) -> str:
     lines = ["Sources:"]
     for c in citations.values():
         title = c.get("title") or c.get("url", "")
-        lines.append(f"• {title} — {c['url']}")
+        url = text_fragment_url(c["url"], c.get("snippet", ""), c.get("kind", ""))
+        lines.append(f"• {title} - {url}")
     return "\n".join(lines)
 
 

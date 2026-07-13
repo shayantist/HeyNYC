@@ -11,11 +11,22 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Literal
+from urllib.parse import quote
 
 CiteKind = Literal["DATA", "DOC", "WEB"]
 
 
 _USED_RE = re.compile(r"\{cite:(S\d+)\}")
+
+
+def text_fragment_url(url: str, snippet: str, kind: str) -> str:
+    """Return a Chrome Text Fragment URL for a cited DOC or WEB source snippet."""
+    normalized_snippet = " ".join(snippet.split())
+    if kind not in {"DOC", "WEB"} or not normalized_snippet or "#" in url:
+        return url
+    phrase = normalized_snippet.split(" ")[:8]
+    encoded = quote(" ".join(phrase)[:240], safe="").replace("-", "%2D")
+    return f"{url}#:~:text={encoded}"
 
 
 def used_citations(text: str, citations: dict) -> dict:

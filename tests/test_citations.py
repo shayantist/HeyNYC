@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from heynyc.core.citations import CitationRegistry, api_provenance, content_hash, data_provenance
+from heynyc.core import citations
+from heynyc.core.citations import (
+    Citation,
+    CitationRegistry,
+    api_provenance,
+    content_hash,
+    data_provenance,
+)
+
+
+def test_highlight_url_is_available():
+    assert hasattr(citations, "text_fragment_url")
 
 
 def test_register_returns_sequential_ids():
@@ -93,3 +104,55 @@ def test_api_provenance_records_exchange_and_hashes_it():
         "request_summary": {"persons": 3, "has_income": True},
         "response": {"eligiblePrograms": [{"code": "S2R007", "name": "SNAP"}]},
     })
+
+
+def test_highlight_url_adds_encoded_text_fragment_for_doc_citation():
+    citation = Citation(
+        id="S1",
+        url="https://nyc.gov/program",
+        title="Program",
+        snippet="The city-run program offers free legal advice today",
+        kind="DOC",
+    )
+
+    assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind) == (
+        "https://nyc.gov/program#:~:text=The%20city%2Drun%20program%20offers%20free%20legal%20advice%20today"
+    )
+
+
+def test_highlight_url_adds_text_fragment_for_web_citation():
+    citation = Citation(
+        id="S1",
+        url="https://nyc.gov/program",
+        title="Program",
+        snippet="Official assistance is available through the city today.",
+        kind="WEB",
+    )
+
+    assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind).startswith(
+        "https://nyc.gov/program#:~:text="
+    )
+
+
+def test_highlight_url_keeps_base_url_for_empty_snippet():
+    citation = Citation("S1", "https://nyc.gov/program", "Program", "", "DOC")
+
+    assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind) == "https://nyc.gov/program"
+
+
+def test_highlight_url_keeps_base_url_for_whitespace_only_snippet():
+    citation = Citation("S1", "https://nyc.gov/program", "Program", " \n\t ", "DOC")
+
+    assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind) == "https://nyc.gov/program"
+
+
+def test_highlight_url_keeps_data_citation_url_unchanged():
+    citation = Citation("S1", "https://data.cityofnewyork.us/row/1", "Row", "A matching row.", "DATA")
+
+    assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind) == "https://data.cityofnewyork.us/row/1"
+
+
+def test_highlight_url_keeps_existing_fragment_unchanged():
+    citation = Citation("S1", "https://nyc.gov/program#details", "Program", "Helpful text.", "WEB")
+
+    assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind) == "https://nyc.gov/program#details"
