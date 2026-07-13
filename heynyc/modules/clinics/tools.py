@@ -259,7 +259,7 @@ def _program_citation(ctx: ToolContext, klass: str) -> str:
         snippet=guarantee.snippet,
         title=guarantee.doc_title,
         kind="DOC",
-        valid_as_of="",
+        valid_as_of=VERIFIED_ON,
     )
 
 
@@ -421,17 +421,15 @@ _COVERAGE: dict[str, _Fact] = {
     "public_charge": _Fact(
         url="https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page",
         title="Public Charge Rule, NYC Mayor's Office of Immigrant Affairs (MOIA)",
-        snippet=("Under the public charge rule currently in effect (the 2022 rule), using health "
-                 "coverage does not count against you: only cash assistance for income support and "
-                 "long-term government-funded institutional care are weighed, while Medicaid, "
-                 "Emergency Medicaid, NYC Care, SNAP, WIC, and housing help are not; a stricter "
-                 "change was proposed in late 2025 but is not in effect; confirm with free advice "
-                 "through ActionNYC (call 311 and ask for ActionNYC) or the MOIA immigration hotline "
-                 "at 800-354-0365"),
+        snippet=("Under the public charge rule currently in effect (the 2022 rule), using health coverage "
+                 "does not count against you: only cash assistance for income support (like SSI or "
+                 "Temporary Assistance) and long-term government-funded institutional care are weighed, "
+                 "while Medicaid other than long-term institutional care, Emergency Medicaid, NYC Care, "
+                 "SNAP, WIC, and housing help are not."),
         body=("Under the public charge rule currently in effect (the 2022 rule), using health coverage "
               "does not count against you: only cash assistance for income support (like SSI or "
               "Temporary Assistance) and long-term government-funded institutional care are weighed, "
-              "while Medicaid, Emergency Medicaid, NYC Care, SNAP, WIC, and housing help are not. A "
+              "while Medicaid other than long-term institutional care, Emergency Medicaid, NYC Care, SNAP, WIC, and housing help are not. A "
               "stricter change was proposed in late 2025 but is not in effect, so as of this guidance "
               "nothing has changed. Public charge also does not apply to every immigration situation. "
               "Because your own case can be specific and these rules can change, confirm with free, "
@@ -475,7 +473,7 @@ async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
                 "point the user to 311 or 646-NYC-CARE (646-692-2273).")
     fact = _COVERAGE[topic]
     cite = ctx.citations.register(fact.url, snippet=fact.snippet, title=fact.title, kind="DOC",
-                                  valid_as_of="")
+                                  valid_as_of=COVERAGE_VERIFIED_ON)
     return "\n".join([
         COVERAGE_INTRO,
         f"- {fact.body} {{cite:{cite}}}",

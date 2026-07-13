@@ -455,7 +455,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     lines = [intro]
     for fact in facts:
         cite = ctx.citations.register(
-            fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of="",
+            fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of=VERIFIED_ON,
         )
         lines.append(f"- {fact.body} {{cite:{cite}}}")
     lines.append("Report ONLY these grounded facts, each with its {cite:Sn}. Do not add or change an "
