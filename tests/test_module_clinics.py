@@ -214,6 +214,73 @@ async def test_find_clinic_degrades_to_seed_when_hrsa_down(monkeypatch):
     assert "unreachable" in out.lower()                  # honest degraded note
 
 
+# --- health_coverage_guidance: static-but-official coverage facts, each cited (no network) -----
+
+def _coverage_tool():
+    return next(t for t in get_tools() if t.name == "health_coverage_guidance")
+
+
+async def _run_coverage(topic: str):
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    out = await _coverage_tool().handler({"topic": topic}, ctx)
+    return out, citations
+
+
+async def test_health_coverage_emergency_medicaid_grounds_body_and_cites():
+    out, citations = await _run_coverage("emergency_medicaid")
+    assert "Emergency Medicaid" in out
+    assert "regardless of immigration status" in out
+    assert "emergency labor and delivery and kidney dialysis" in out
+    # exactly one DOC citation, to the NY DOH emergency-Medicaid page, cited inline
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    cite = mapping["S1"]
+    assert cite["kind"] == "DOC"
+    assert "health.ny.gov" in cite["url"]
+    assert "{cite:S1}" in out
+    # the shared public-charge / ActionNYC closing routing line is appended once
+    assert "public charge" in out.lower()
+    assert "ActionNYC" in out
+
+
+async def test_health_coverage_nyc_care_grounds_body_and_cites():
+    out, citations = await _run_coverage("nyc_care")
+    assert "NYC Care" in out
+    assert "646-NYC-CARE (646-692-2273)" in out
+    assert "doesn't ask about immigration status" in out
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    assert mapping["S1"]["kind"] == "DOC"
+    assert mapping["S1"]["url"] == "https://access.nyc.gov/programs/nyc-care/"
+    assert "{cite:S1}" in out
+    # the shared public-charge / ActionNYC closing routing line is present
+    assert "ActionNYC" in out and "public charge" in out.lower()
+
+
+async def test_health_coverage_public_charge_grounds_body_and_cites():
+    out, citations = await _run_coverage("public_charge")
+    assert "does not count against you" in out
+    assert "not in effect" in out
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    assert mapping["S1"]["kind"] == "DOC"
+    assert "nyc.gov/site/immigrants" in mapping["S1"]["url"]
+    assert "{cite:S1}" in out
+
+
+async def test_health_coverage_free_text_maps_to_topic():
+    out, _ = await _run_coverage("I'm undocumented and pregnant, how do I pay for the delivery")
+    assert "Emergency Medicaid" in out               # resolved to emergency_medicaid
+
+
+async def test_health_coverage_unknown_topic_abstains_without_citation():
+    out, citations = await _run_coverage("how much is a dental cleaning")
+    assert len(citations) == 0
+    assert "{cite:" not in out
+    assert "646-NYC-CARE" in out or "311" in out     # routes the user onward
+
+
 # --- the shipped module stays valid ---------------------------------------
 
 def test_clinics_module_loads_with_tool_and_eval():
@@ -223,6 +290,7 @@ def test_clinics_module_loads_with_tool_and_eval():
     assert module.category == "health"
     tool_names = {t.name for t in registry.load_module_tools()}
     assert "find_clinic" in tool_names
+    assert "health_coverage_guidance" in tool_names
     # the FQHC dataset binding is declared + discoverable
     assert "fqhc_site" in registry.dataset_bindings()
 

@@ -28,10 +28,15 @@ keywords:
   - shelter
   - nowhere to stay
   - homeless
+  - voucher
+  - source of income
+  - won't take my voucher
+  - no vouchers
 examples:
   - "I got an eviction notice, where can I get help near me?"
   - "My landlord won't turn on the heat, what do I do?"
   - "Does my building have open HPD violations?"
+  - "My landlord says they don't take CityFHEPS vouchers, is that legal?"
 datasets:
   - source: arcgis
     url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Homebase_Locations_PROD_view/FeatureServer/0
@@ -108,6 +113,16 @@ prompt: |
   with children / a pregnant person (PATH) from single adults (a different intake site). This is
   urgent and sensitive — be warm and direct, lead with the right intake site the tool returns. Do not
   state an intake address or phone number of your own. If someone is in immediate danger, that's 911.
+
+  SOURCE OF INCOME / VOUCHER REFUSED (a landlord, broker, or their agent won't take a housing voucher,
+  says "no vouchers" or "no programs", or treats a voucher-holder differently for using Section 8,
+  CityFHEPS, SSI, HASA, or another voucher) → call housing_guidance(topic="source_of_income") and
+  report ONLY what it returns, cited:
+  that in NYC this refusal is illegal source-of-income discrimination under the City Human Rights Law,
+  and how to file a complaint with the NYC Commission on Human Rights. Do NOT state the phone number,
+  the law, or the year from your own memory, and do NOT hedge that the protection "may have changed":
+  affirm what the tool returns and carry its {cite:Sn}. Whether a specific voucher program is funded
+  or how to apply for one is a benefits question; the source-of-income protection itself is answered here.
 
   Eviction and shelter are high-stakes and stressful. Be warm and plain, lead with the one next step,
   and never fabricate a form, deadline, amount, or eligibility outcome — route to 311 when unsure.

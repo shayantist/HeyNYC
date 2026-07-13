@@ -373,6 +373,48 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             ),
         ),
     ),
+    # source_of_income verified 2026-07-12 against the official pages (see
+    # docs/eval/redteam-coverage-gap-closure-2026-07-12.md). This is NYC's own Human Rights Law,
+    # unaffected by the 2026 state-mandate litigation, so the SAFE answer AFFIRMS the protection
+    # stands (never hedges "may have changed"). Registered like the others: a DOC citation whose
+    # snippet is a subset of its body's wording.
+    "source_of_income": (
+        "Renting with a voucher (Section 8, CityFHEPS): a landlord can't refuse it:",
+        (
+            _Fact(
+                url="https://www.nyc.gov/site/cchr/media/source-of-income.page",
+                title="Source of Income Discrimination, NYC Commission on Human Rights",
+                snippet=("In New York City it is illegal for a landlord, broker, or their agent to "
+                         "refuse to rent to you because you would pay part of the rent with a housing "
+                         "voucher or another lawful source of income; lawful source of income includes "
+                         "Section 8, CityFHEPS, SSI, HASA; illegal since 2008; covers most NYC rental "
+                         "housing; to file a complaint, call the NYC Commission on Human Rights at "
+                         "212-416-0197"),
+                body=("In New York City it is illegal for a landlord, broker, or their agent to refuse "
+                      "to rent to you, or to treat you differently, because you would pay part of the "
+                      "rent with a housing voucher or another lawful source of income. Lawful source of "
+                      "income includes Section 8, CityFHEPS, SSI, HASA, and other public rent "
+                      "assistance. This has been illegal since 2008 and covers most NYC rental housing, "
+                      "no matter how many apartments the building has. Refusing your voucher, or "
+                      "advertising \"no vouchers\" or \"no programs\", is source-of-income "
+                      "discrimination. To file a complaint, call the NYC Commission on Human Rights at "
+                      "212-416-0197."),
+            ),
+            _Fact(
+                url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-219879",
+                title=("NYC Administrative Code section 8-107(5) (Unlawful discriminatory practices, "
+                       "housing), American Legal Publishing"),
+                snippet=("the New York City Human Rights Law makes source-of-income discrimination in "
+                         "housing an unlawful discriminatory practice under Administrative Code section "
+                         "8-107(5), and \"lawful source of income\" is defined in section 8-102"),
+                body=("This protection is in law: the New York City Human Rights Law makes "
+                      "source-of-income discrimination in housing an unlawful discriminatory practice "
+                      "under Administrative Code section 8-107(5), and \"lawful source of income\" is "
+                      "defined in section 8-102. So a refusal to take your voucher is a violation of "
+                      "the City Human Rights Law, not just unfair."),
+            ),
+        ),
+    ),
 }
 
 # free-text → canonical topic. The `topic` arg SHOULD be one of the three keys, but the model may
@@ -383,6 +425,9 @@ _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("no_heat", ("heat", "hot water", "cold", "boiler", "radiator", "temperature", "freezing")),
     ("shelter", ("shelter", "homeless", "nowhere", "no place", "sleep tonight", "intake", "path",
                  "afic", "kicked out", "nowhere to stay")),
+    ("source_of_income", ("voucher", "section 8", "cityfheps", "source of income",
+                          "won't take my voucher", "refused my voucher", "no programs",
+                          "no vouchers")),
 )
 
 
@@ -402,8 +447,9 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded guidance for that topic. Use housing_guidance with topic = "
-                "'right_to_counsel' (free eviction lawyer), 'no_heat' (no heat / no hot water), or "
-                "'shelter' (shelter intake tonight). For a building's HPD record use "
+                "'right_to_counsel' (free eviction lawyer), 'no_heat' (no heat / no hot water), "
+                "'shelter' (shelter intake tonight), or 'source_of_income' (a landlord refusing a "
+                "voucher, Section 8 / CityFHEPS). For a building's HPD record use "
                 "hpd_building_lookup; for anything else, point the user to 311.")
     intro, facts = _GUIDANCE[topic]
     lines = [intro]
@@ -479,13 +525,15 @@ def get_tools() -> list[Tool]:
         Tool(
             name="housing_guidance",
             description=(
-                "Return NYC's official, grounded guidance for three high-stakes housing situations, "
-                "each WITH a citation to the official nyc.gov source page: `right_to_counsel` (the FREE "
+                "Return NYC's official, grounded guidance for four high-stakes housing situations, "
+                "each WITH a citation to the official source page: `right_to_counsel` (the FREE "
                 "lawyer for an eviction case + how to connect), `no_heat` (no heat / no hot water — the "
-                "heat-season temperature standard + how to file), and `shelter` (where to go for shelter "
-                "intake tonight — families with children / pregnant vs. single adults). Pass `topic` = "
-                "one of those three (free text like 'landlord shut off the heat' or 'need a lawyer for "
-                "eviction' is mapped to the right topic). ALWAYS use this instead of stating a shelter "
+                "heat-season temperature standard + how to file), `shelter` (where to go for shelter "
+                "intake tonight, families with children / pregnant vs. single adults), and "
+                "`source_of_income` (a landlord refusing a Section 8 / CityFHEPS voucher, the NYC "
+                "source-of-income protection). Pass `topic` = one of those four (free text like "
+                "'landlord shut off the heat', 'need a lawyer for eviction', or 'they won't take my "
+                "voucher' is mapped to the right topic). ALWAYS use this instead of stating a shelter "
                 "address, phone number, temperature standard, or eligibility figure from your own "
                 "knowledge — report only what it returns, cited."
             ),
@@ -494,8 +542,8 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": ("right_to_counsel | no_heat | shelter — the housing situation "
-                                        "(free text is mapped to one of these three)."),
+                        "description": ("right_to_counsel | no_heat | shelter | source_of_income: the "
+                                        "housing situation (free text is mapped to one of these four)."),
                     },
                 },
                 "required": ["topic"],

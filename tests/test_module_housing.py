@@ -377,6 +377,32 @@ async def test_guidance_maps_free_text_to_topic():
     assert "PATH" in shelter_out
 
 
+async def test_guidance_source_of_income_grounds_protection_and_cites():
+    out, citations = await _run_guidance("source_of_income")
+    low = out.lower()
+    # the NYC protection is AFFIRMED (never hedged), with the complaint phone + the statute section
+    assert "source-of-income" in low or "source of income" in low
+    assert "illegal" in low
+    assert "212-416-0197" in out                     # NYC Commission on Human Rights
+    assert "8-107(5)" in out                          # the NYC Human Rights Law section
+    assert "Section 8" in out and "CityFHEPS" in out
+    # two DOC citations: the CCHR explainer (S1) + the amlegal statute (S2), each cited inline
+    mapping = citations.mapping()
+    assert len(mapping) == 2
+    assert {c["kind"] for c in mapping.values()} == {"DOC"}
+    urls = {c["url"] for c in mapping.values()}
+    assert any("cchr" in u for u in urls)
+    assert any("amlegal" in u for u in urls)
+    assert "{cite:S1}" in out and "{cite:S2}" in out
+
+
+async def test_guidance_maps_voucher_refusal_free_text_to_source_of_income():
+    # "won't take my voucher"-style free text resolves to the source_of_income topic
+    out, _ = await _run_guidance("my landlord won't take my voucher")
+    assert "212-416-0197" in out                      # resolved to source_of_income
+    assert "illegal" in out.lower()
+
+
 async def test_guidance_unknown_topic_abstains_without_citation():
     out, citations = await _run_guidance("rent freeze eligibility")
     assert len(citations) == 0             # nothing grounded → nothing cited
@@ -387,7 +413,7 @@ async def test_guidance_unknown_topic_abstains_without_citation():
 async def test_guidance_citation_snippets_are_backed_by_the_returned_facts():
     """Mirror the eval's faithfulness check offline: every citation snippet's tokens are ≥60%
     covered by the tool's own output, so a DOC citation can never outrun the fact it cites."""
-    for topic in ("right_to_counsel", "no_heat", "shelter"):
+    for topic in ("right_to_counsel", "no_heat", "shelter", "source_of_income"):
         out, citations = await _run_guidance(topic)
         haystack = set(_TOKEN_RE.findall(out.lower()))
         for cid, c in citations.mapping().items():

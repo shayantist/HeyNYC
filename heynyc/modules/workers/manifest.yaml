@@ -1,0 +1,48 @@
+name: workers
+category: workers
+description: >-
+  Know your rights as a worker in NYC, starting with tips and gratuities: an employer can't take,
+  keep, or skim the tips that belong to you (New York Labor Law section 196-d), and how to file a
+  wage claim with the NYS Department of Labor if they do. Grounded in the statute and the state
+  Department of Labor, and cited.
+keywords:
+  - tips
+  - stolen tips
+  - tip theft
+  - my boss took my tips
+  - employer took my tips
+  - keeping our tips
+  - gratuity
+  - gratuities
+  - tipped worker
+  - tip pool
+  - wage theft
+  - restaurant tips
+  - server tips
+  - stole my tips
+examples:
+  - "My boss is keeping our tips, is that legal?"
+  - "The restaurant I work at takes a cut of our tips, can they do that?"
+  - "How do I report my employer for stealing tips in NYC?"
+tools: tools.py
+eval: eval.yaml
+allowlist:
+  - dol.ny.gov
+  - nysenate.gov
+prompt: |
+  Worker rights for NYC workers. Ground every answer in the worker_rights_guidance tool; never
+  state a law, an agency, or a phone number about worker rights from your own memory.
+
+  TIPS / STOLEN TIPS (an employer takes, keeps, or skims tips or gratuities that belong to an
+  employee: "my boss is keeping our tips", "the restaurant takes a cut of our tips", "they took my
+  gratuity", tip theft, wage theft on tips) → call worker_rights_guidance(topic="tips") and report
+  ONLY what it returns, cited: that under New York Labor Law section 196-d an employer can't take an
+  employee's tips (tip-pooling among the service employees is allowed), and how to file a wage claim
+  with the NYS Department of Labor (dol.ny.gov) or, in NYC, the Department of Consumer and Worker
+  Protection through 311. Do NOT state the law section, the agency, or a phone number from your own
+  knowledge; carry the tool's {cite:Sn}.
+
+  This is often a low-wage worker who's scared of retaliation. Be warm and direct, lead with the
+  plain answer that the tips are theirs, and point to the grounded way to file. If the question
+  isn't about tips (a different worker-rights issue this module doesn't cover yet), don't guess the
+  law: point the user to the NYS Department of Labor (dol.ny.gov) or 311.

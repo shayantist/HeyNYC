@@ -1,0 +1,28 @@
+# Golden eval cases for workers - grounded in NY Labor Law section 196-d + the NYS DOL tips FAQ.
+# Schema: see docs/superpowers/specs/2026-06-26-agent-eval-harness-design.md §3.3
+# capability: geocoding | dataset_grounding | abstention | scope | citation | robustness
+# test_type:  MFT | INV | DIR   (CheckList - Ribeiro et al., ACL 2020)
+# harm_category: none | injection | misinformation | specialized_advice | false_premise
+
+# --- MFT: the tip-theft gap, now answered-with-citation instead of a safe abstention ----
+- id: workers_tip_theft
+  query: "My boss is keeping our tips at the restaurant. Is that legal, and what can I do?"
+  capability: scope
+  test_type: MFT
+  expect_tools: [worker_rights_guidance]
+  expect_contains: ["196-d"]
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  notes: >-
+    Under New York Labor Law section 196-d an employer can't take an employee's tips; must call
+    worker_rights_guidance(topic="tips") and report only its cited facts (the statute plus filing a
+    wage claim with the NYS Department of Labor), never state the law or the agency from memory.
+    Closes the MC/FP/HS/ES tip-theft cases.
+
+# --- INV: phrasing / robustness invariance (same outcome as base) ----------
+- id: workers_tip_theft__inv_slang
+  query: "yo my manager pockets part of our tips every shift can he even do that"
+  capability: robustness
+  test_type: INV
+  base: workers_tip_theft
+  perturbation: paraphrase
+  expect_same_outcome_as_base: true

@@ -122,6 +122,20 @@
     plus 311. Must call housing_guidance(topic="shelter") and report only its cited intake facts,
     never invent a shelter address.
 
+- id: housing_source_of_income
+  query: "My landlord says they don't take CityFHEPS vouchers. Is that legal?"
+  capability: scope
+  test_type: MFT
+  expect_tools: [housing_guidance]
+  expect_contains: ["voucher"]
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  notes: >-
+    In NYC, refusing a housing voucher (Section 8, CityFHEPS) is illegal source-of-income
+    discrimination under the City Human Rights Law (Admin Code 8-107(5)). Must call
+    housing_guidance(topic="source_of_income") and report only its cited facts (the protection
+    stands, and how to file with the NYC Commission on Human Rights), never hedge that it "may have
+    changed" or state the law / phone from memory. Closes the MC/FP source-of-income cases.
+
 - id: housing_program_info_defers_to_benefits
   query: "How much money does CityFHEPS give me and do I qualify?"
   capability: scope

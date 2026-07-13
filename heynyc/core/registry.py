@@ -32,6 +32,7 @@ _SERVICE_NAMES = {
     "housing_connect": "Housing Connect",
     "wic": "WIC",
     "childcare": "Child care",
+    "workers": "Worker rights",
 }
 
 # Short, honest source labels for modules grounded in a live tool or several sources
@@ -45,6 +46,7 @@ _SOURCE_LABELS = {
     "housing_connect": "NYC Open Data (vy5i-a666)",
     "wic": "NY State WIC directory (Health Data NY)",
     "childcare": "NYC Open Data (gy3q-4tzp)",
+    "workers": "NY Labor Law + NYC DCWP",
 }
 
 

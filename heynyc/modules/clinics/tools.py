@@ -353,6 +353,140 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
+# --- health_coverage_guidance: static-but-OFFICIAL coverage facts, each cited to its source page ---
+#
+# `find_clinic` answers "where can I get seen"; this answers "what coverage can I get, and is it
+# safe" for an uninsured or undocumented New Yorker. The facts are STATIC but official (a program's
+# guarantee, a state coverage rule), so, like housing_guidance, they live here as grounded _Fact
+# records returned WITH a DOC citation to the official page each one comes from, never stated from
+# the model's memory. Verified 2026-07-12 against the linked pages (see
+# docs/eval/redteam-coverage-gap-closure-2026-07-12.md); `snippet` is a subset of `body`'s wording
+# so the eval's faithfulness check (snippet ⊆ tool output) holds. Where the question crosses into
+# immigration-law consequences (public charge), the tool ROUTES to ActionNYC rather than assert a
+# volatile immigration-law conclusion.
+COVERAGE_VERIFIED_ON = "2026-07-12"
+
+COVERAGE_INTRO = "Health coverage you can get in NYC regardless of immigration status:"
+
+# Appended once at the end of every coverage answer: keeps the public-charge (immigration-law)
+# question out of the model's mouth and routes it to free, confidential, trusted legal help.
+COVERAGE_CLOSING = (
+    "Whether using a public benefit could ever affect an immigration case (the \"public charge\" "
+    "question) is a legal question with rules that change; get free, confidential, trusted advice "
+    "through ActionNYC (call 311 and ask for ActionNYC) before deciding, and don't act on rumors."
+)
+
+
+@dataclass(frozen=True)
+class _Fact:
+    """A static-but-official coverage fact + the DOC citation that backs it. `snippet` is a subset
+    of `body`'s wording (keeps the faithfulness overlap high)."""
+    url: str      # official program / coverage page (verified)
+    title: str    # citation title
+    snippet: str  # short cite label, a subset of `body`
+    body: str     # the grounded coverage fact to report, cited
+
+
+_COVERAGE: dict[str, _Fact] = {
+    "nyc_care": _Fact(
+        url="https://access.nyc.gov/programs/nyc-care/",
+        title="NYC Care, ACCESS NYC",
+        snippet=("NYC Care gives low- or no-cost care at NYC Health + Hospitals, sliding-scale fees "
+                 "starting at $0, and doesn't ask about immigration status; enroll at 646-NYC-CARE "
+                 "(646-692-2273)"),
+        body=("NYC Care is a health-access program that gives you your own doctor and services at "
+              "NYC Health + Hospitals locations citywide, with sliding-scale fees starting at $0 and "
+              "no membership fees, monthly fees, or premiums. NYC Care doesn't ask about immigration "
+              "status; you can seek care regardless of immigration status or ability to pay. To "
+              "enroll, call 646-NYC-CARE (646-692-2273)."),
+    ),
+    "emergency_medicaid": _Fact(
+        url="https://www.health.ny.gov/health_care/medicaid/emergency_medical_condition_faq.htm",
+        title=("Medicaid Emergency Services Only, Treatment of an Emergency Medical Condition, NY "
+               "State Department of Health"),
+        snippet=("Emergency Medicaid helps eligible New Yorkers, including undocumented immigrants, "
+                 "pay for care for a medical emergency regardless of immigration status, if they meet "
+                 "the other Medicaid rules for income, identity, and New York State residence; it "
+                 "covers emergency labor and delivery and kidney dialysis; you can apply up to three "
+                 "months after the emergency care"),
+        body=("Emergency Medicaid (Medicaid for the treatment of an emergency medical condition) "
+              "helps eligible New Yorkers, including undocumented immigrants, pay for care for a "
+              "medical emergency, regardless of immigration status, as long as they meet the other "
+              "Medicaid rules for income, identity, and New York State residence. It covers the "
+              "treatment of a sudden, serious medical condition, including emergency labor and "
+              "delivery and kidney dialysis. You can apply up to three months after the emergency "
+              "care. In NYC, apply through HRA."),
+    ),
+    # Volatile legal-review item, verified 2026-07-13. Re-check the MOIA page before trusting it.
+    "public_charge": _Fact(
+        url="https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page",
+        title="Public Charge Rule, NYC Mayor's Office of Immigrant Affairs (MOIA)",
+        snippet=("Under the public charge rule currently in effect (the 2022 rule), using health "
+                 "coverage does not count against you: only cash assistance for income support and "
+                 "long-term government-funded institutional care are weighed, while Medicaid, "
+                 "Emergency Medicaid, NYC Care, SNAP, WIC, and housing help are not; a stricter "
+                 "change was proposed in late 2025 but is not in effect; confirm with free advice "
+                 "through ActionNYC (call 311 and ask for ActionNYC) or the MOIA immigration hotline "
+                 "at 800-354-0365"),
+        body=("Under the public charge rule currently in effect (the 2022 rule), using health coverage "
+              "does not count against you: only cash assistance for income support (like SSI or "
+              "Temporary Assistance) and long-term government-funded institutional care are weighed, "
+              "while Medicaid, Emergency Medicaid, NYC Care, SNAP, WIC, and housing help are not. A "
+              "stricter change was proposed in late 2025 but is not in effect, so as of this guidance "
+              "nothing has changed. Public charge also does not apply to every immigration situation. "
+              "Because your own case can be specific and these rules can change, confirm with free, "
+              "confidential, trusted advice through ActionNYC (call 311 and ask for ActionNYC) or the "
+              "MOIA immigration hotline at 800-354-0365 before you decide."),
+    ),
+}
+
+# free-text → canonical coverage topic (the model may hand us the user's words instead of a key).
+_COVERAGE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("emergency_medicaid", ("emergency medicaid", "emergency room", "er bill", "hospital bill",
+                            "labor and delivery", "giving birth", "delivery", "dialysis",
+                            "emergency medical", "ambulance bill")),
+    ("public_charge", ("public charge", "green card", "green-card", "hurt my green card",
+                       "affect my green card", "affect my immigration", "hurt my immigration",
+                       "immigration case", "will using benefits", "public benefit immigration")),
+    ("nyc_care", ("nyc care", "nyccare", "646-nyc-care", "own doctor", "primary care", "coverage",
+                  "health insurance", "get insurance", "sign up for insurance", "no insurance")),
+)
+
+
+def _resolve_coverage_topic(raw: str) -> str | None:
+    """Map the `topic` arg (a canonical key or free text) to one of the coverage topics."""
+    key = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if key in _COVERAGE:
+        return key
+    text = (raw or "").lower()
+    for topic, needles in _COVERAGE_KEYWORDS:
+        if any(n in text for n in needles):
+            return topic
+    return None
+
+
+async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
+    topic = _resolve_coverage_topic(args.get("topic", ""))
+    if topic is None:
+        return ("I don't have grounded coverage guidance for that. Use health_coverage_guidance with "
+                "topic = 'nyc_care' (low/no-cost care at NYC Health + Hospitals, no immigration "
+                "questions) or 'emergency_medicaid' (coverage for a medical emergency regardless of "
+                "immigration status). To find a specific clinic use find_clinic; for anything else, "
+                "point the user to 311 or 646-NYC-CARE (646-692-2273).")
+    fact = _COVERAGE[topic]
+    cite = ctx.citations.register(fact.url, snippet=fact.snippet, title=fact.title, kind="DOC",
+                                  valid_as_of="")
+    return "\n".join([
+        COVERAGE_INTRO,
+        f"- {fact.body} {{cite:{cite}}}",
+        COVERAGE_CLOSING,
+        "Report ONLY this grounded fact with its {cite:Sn} and the ActionNYC routing line above. Do "
+        "not add or change a phone number, a dollar figure, or an eligibility rule, and do not state "
+        "a public-charge conclusion of your own; if the user needs more, that's 311 / 646-NYC-CARE / "
+        "ActionNYC.",
+    ])
+
+
 def get_tools() -> list[Tool]:
     return [
         Tool(
@@ -382,5 +516,34 @@ def get_tools() -> list[Tool]:
             },
             handler=_handler,
             open_world=True,  # hits the live HRSA ArcGIS service + geocoder (NYC Care seed is bundled)
-        )
+        ),
+        Tool(
+            name="health_coverage_guidance",
+            description=(
+                "Answer WHAT health coverage an uninsured or undocumented New Yorker can get, and "
+                "whether it's SAFE to use, grounded + cited to the official page. Topics: `nyc_care` "
+                "(low/no-cost care at NYC Health + Hospitals, sliding-scale fees from $0, doesn't ask "
+                "immigration status, enroll at 646-NYC-CARE) and `emergency_medicaid` (Medicaid for a "
+                "medical emergency, including emergency labor and delivery, regardless of immigration "
+                "status), and `public_charge` (MOIA public-charge guidance). Pass `topic` = one of "
+                "those (free text like 'undocumented and pregnant, how "
+                "do I pay for the delivery' is mapped to the right topic). find_clinic answers WHERE "
+                "to go; this answers WHAT coverage / IS IT SAFE. It appends an ActionNYC routing line "
+                "for public-charge questions; never state a coverage rule or a public-charge conclusion "
+                "from your own knowledge; report only what it returns, cited."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": ("nyc_care | emergency_medicaid | public_charge: the coverage "
+                                        "situation (free text is mapped to one of these three)."),
+                    },
+                },
+                "required": ["topic"],
+            },
+            handler=_coverage_handler,
+            open_world=False,  # static official facts baked in + cited; no network call
+        ),
     ]
