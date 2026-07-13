@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from heynyc.eval.drift import SourceBaseline, check_drift, normalized_text_hash
+from heynyc.eval.drift import (
+    SourceBaseline,
+    baseline_from_citation,
+    check_drift,
+    normalized_text_hash,
+)
 
 
 def _response(status_code: int, text: str = "", headers: dict[str, str] | None = None):
@@ -83,6 +88,81 @@ async def test_fetch_error_is_unreachable():
     result = await check_drift(baseline, fetch)
 
     assert result.status == "unreachable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [404, 500])
+async def test_non_success_response_is_unreachable(status_code: int):
+    baseline = SourceBaseline(url="https://www.nyc.gov/page", etag='"v1"')
+
+    async def fetch(url: str, headers: dict[str, str]):
+        return _response(status_code, "An error page", {"ETag": '"v1"'})
+
+    result = await check_drift(baseline, fetch)
+
+    assert result.status == "unreachable"
+    assert str(status_code) in result.detail
+
+
+@pytest.mark.asyncio
+async def test_no_comparable_baseline_is_unknown():
+    baseline = SourceBaseline(url="https://www.nyc.gov/page")
+
+    async def fetch(url: str, headers: dict[str, str]):
+        return _response(200, "Programs are available today.")
+
+    result = await check_drift(baseline, fetch)
+
+    assert result.status == "unknown"
+    assert "could not be determined" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_citation_snippet_probe_present_in_body_is_unchanged():
+    baseline = baseline_from_citation({
+        "url": "https://www.nyc.gov/page",
+        "snippet": "Programs are available today.",
+    })
+
+    async def fetch(url: str, headers: dict[str, str]):
+        return _response(200, "The city confirms: Programs   are available\n today.")
+
+    result = await check_drift(baseline, fetch)
+
+    assert result.status == "unchanged"
+    assert "probe" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_citation_snippet_probe_absent_from_body_is_changed():
+    baseline = baseline_from_citation({
+        "url": "https://www.nyc.gov/page",
+        "snippet": "Programs are available today.",
+    })
+
+    async def fetch(url: str, headers: dict[str, str]):
+        return _response(200, "Programs are closed today.")
+
+    result = await check_drift(baseline, fetch)
+
+    assert result.status == "changed"
+    assert "probe" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_direct_content_probe_ignores_whitespace_reflow():
+    baseline = SourceBaseline(
+        url="https://www.nyc.gov/page",
+        content_probe="Programs   are available\n today.",
+    )
+
+    async def fetch(url: str, headers: dict[str, str]):
+        return _response(200, "The city confirms: Programs are available today.")
+
+    result = await check_drift(baseline, fetch)
+
+    assert result.status == "unchanged"
+    assert "probe" in result.detail
 
 
 def test_normalized_text_hash_ignores_whitespace_reflow():

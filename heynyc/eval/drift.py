@@ -3,6 +3,9 @@
 This module is intentionally not registered with the eval gate or imported by the
 live agent. Callers supply the async fetch function so this module performs no
 network activity unless an explicit consumer chooses to provide it.
+
+Drift results are one of four states: ``changed``, ``unchanged``, ``unreachable``,
+or ``unknown`` when a successful response has no usable comparison baseline.
 """
 from __future__ import annotations
 
@@ -10,7 +13,7 @@ import hashlib
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -21,6 +24,7 @@ class SourceBaseline:
     etag: str = ""
     last_modified: str = ""
     content_hash: str = ""
+    content_probe: str = ""
 
 
 @dataclass
@@ -28,7 +32,7 @@ class DriftResult:
     """The result of comparing a fetched source page to its captured baseline."""
 
     url: str
-    status: str
+    status: Literal["changed", "unchanged", "unreachable", "unknown"]
     detail: str = ""
 
 
@@ -38,8 +42,13 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 def normalized_text_hash(text: str) -> str:
     """Return a SHA-256 hash after stripping and collapsing whitespace in *text*."""
-    normalized = _WHITESPACE_RE.sub(" ", text.strip())
+    normalized = _normalized_text(text)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _normalized_text(text: str) -> str:
+    """Strip and collapse whitespace for stable textual comparisons."""
+    return _WHITESPACE_RE.sub(" ", text.strip())
 
 
 def _header(headers: object, name: str) -> str:
@@ -57,7 +66,7 @@ async def check_drift(baseline: SourceBaseline, fetch: Fetch) -> DriftResult:
 
     The supplied fetcher receives the source URL and conditional headers, then
     returns an object with ``status_code``, ``headers``, and ``text`` attributes.
-    Exceptions, missing responses, and explicit error responses are unreachable.
+    Exceptions, missing responses, and non-success HTTP responses are unreachable.
     """
     headers: dict[str, str] = {}
     if baseline.etag:
@@ -77,11 +86,21 @@ async def check_drift(baseline: SourceBaseline, fetch: Fetch) -> DriftResult:
     if status_code == 304:
         return DriftResult(baseline.url, "unchanged", "validator: HTTP 304 Not Modified")
 
+    if not 200 <= status_code <= 299:
+        return DriftResult(baseline.url, "unreachable", f"fetch returned HTTP {status_code}")
+
     response_etag = _header(getattr(response, "headers", {}), "ETag")
     if baseline.etag and response_etag:
         if response_etag == baseline.etag:
             return DriftResult(baseline.url, "unchanged", "validator: ETag matched")
         return DriftResult(baseline.url, "changed", "validator: ETag changed")
+
+    if baseline.content_probe:
+        body = _normalized_text(str(getattr(response, "text", "")))
+        probe = _normalized_text(baseline.content_probe)
+        if probe in body:
+            return DriftResult(baseline.url, "unchanged", "probe: captured citation text present")
+        return DriftResult(baseline.url, "changed", "probe: captured citation text absent")
 
     if baseline.content_hash:
         current_hash = normalized_text_hash(str(getattr(response, "text", "")))
@@ -91,8 +110,8 @@ async def check_drift(baseline: SourceBaseline, fetch: Fetch) -> DriftResult:
 
     return DriftResult(
         baseline.url,
-        "unchanged",
-        "could not determine drift: no comparable baseline hash or validator",
+        "unknown",
+        "drift could not be determined: no comparable baseline hash, probe, or validator",
     )
 
 
@@ -103,5 +122,5 @@ def baseline_from_citation(citation: dict[str, Any]) -> SourceBaseline:
         url=str(citation.get("url", "")),
         etag=str(citation.get("etag", "")),
         last_modified=str(citation.get("last_modified", "")),
-        content_hash=normalized_text_hash(snippet),
+        content_probe=_normalized_text(snippet),
     )
