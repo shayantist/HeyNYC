@@ -5,6 +5,8 @@ government services. As it grows toward handling resident personal information
 (PII), for example when assisting with a benefits application, we take
 security and privacy seriously and welcome responsible disclosure.
 
+This is the security policy, how to report a vulnerability. For how the assistant itself stays grounded and safe (guardrails, red-team, abstention), see [SAFETY.md](SAFETY.md).
+
 ## Reporting a vulnerability
 
 **Please do not open a public GitHub issue for security bugs.** A public report

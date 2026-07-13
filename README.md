@@ -1,28 +1,20 @@
 # HeyNYC
 
-Talk to the city in plain English: *"Hey NYC, where's the nearest cooling center?"* or *"what can I do this weekend?"* and HeyNYC answers from real city data and shows you exactly where every fact came from. When nothing in the data backs an answer, it tells you it doesn't know instead of guessing.
+**HeyNYC** helps New Yorkers find, understand, and apply for New York City government services, grounded in real city data, in your language, over the channels you already use (SMS, WhatsApp, web).
 
-**A grounded, no-hallucination assistant for NYC.gov services & events.**
+It answers questions about benefits, housing, food, health, immigration, and events. Every fact has an official citation, or HeyNYC abstains and points you to 311.
 
-That last part is the whole point. Every specific it gives you (an address, a dollar amount, an eligibility rule, a deadline) has to trace to a real grounded source (NYC Open Data, the city's own Benefits Screening API, geocoding, or a scoped search over trusted NYC domains) and it ships with an inline citation you can click and check yourself. When nothing grounds the answer, it abstains and points you to 311 or the right agency. This is deliberate: HeyNYC is built for the questions where a confident wrong answer costs someone money, their home, or their immigration status, so "grounded or it says it doesn't know" isn't a nice-to-have, it's the contract.
-
-Right now (summer 2026, with heat advisories and the World Cup both live) you can ask it things like *"where's the nearest cooling center?"* or *"where can I watch the World Cup this weekend?"* and it answers from live city data, walks you through it, and cites every source. It covers a growing subset of the city's services today, around ten so far, not the whole catalogue yet (see [What you can ask](#what-you-can-ask)).
-
-Goal is to build this up into a conversational front door for NYC.gov's rich catalogue of services.
-
-> Open-source passion project. Not affiliated with the City of New York.
-
-## Why
-
-The city's data is rich but scattered across dozens of sites and portals. [MyCity](https://mycity.nyc.gov/) was meant to be the official push to centralize it, but ended up a [skeleton of links](https://nysfocus.com/2025/03/19/mycity-eric-adams-child-care) that's not the easiest to navigate, plus a chatbot that [confidently told business owners they could break the law](https://themarkup.org/artificial-intelligence/2024/03/29/nycs-ai-chatbot-tells-businesses-to-break-the-law) (take workers' tips, refuse Section 8 tenants, go cash-free).
-
-Thus, I wanted to make HeyNYC as a way to make government services accessible through natural language by leveraging LLMs while making sure to **minimize hallucinations** and cite its sources. A key underpinning of the agent is deterministically enforcing that every fact comes from a specific grounded tool (NYC Open Data, geocoding, scoped web search) and ships with a citation. When nothing grounds an answer, it HAS to abstain.
-
-If you find any failure modes, please feel free to **make an issue** as we're also making a database of failures to test against and make sure we [fill any and all holes](https://www.instagram.com/p/DWMD6wGD6-O/) as we go.
+> Open-source civic project. Not affiliated with the City of New York.
 
 ## What you can ask
 
-Here's what you can ask me today, one row per service module. This table is generated straight from the module manifests, so it can't drift as modules are added or removed; if it ever looks stale, `uv run python -m heynyc capabilities --write-readme` regenerates it in place. It's a growing subset of the city's services, not the whole catalogue yet:
+- "Where's the nearest cooling center to the Bronx 10453?"
+- "My landlord won't take my CityFHEPS voucher, is that legal?"
+- "I'm undocumented and my boss keeps our tips, what can I do?"
+- "Where can I watch the World Cup final, and how do I get a ticket?"
+- "Am I eligible for SNAP?" HeyNYC uses the city's real, PII-free benefits screener.
+
+The table below is the full, generated list of current service modules.
 
 <!-- CAPABILITIES:START -->
 
@@ -39,26 +31,16 @@ Here's what you can ask me today, one row per service module. This table is gene
 | **Housing Connect** | "What affordable housing lotteries are open right now?"<br>"How do I apply for an apartment through the housing lottery?" | NYC Open Data (vy5i-a666) | [housingconnect.nyc.gov](https://housingconnect.nyc.gov) |
 | **SNAP centers** | "Where's the nearest SNAP center?"<br>"Where do I apply for food stamps in person?" | NYC Open Data (tc6u-8rnp) | [access.nyc.gov](https://access.nyc.gov) |
 | **WIC** | "Where's the nearest WIC office?"<br>"I'm pregnant and need WIC near Jackson Heights, Queens" | NY State WIC directory (Health Data NY) | [health.ny.gov](https://www.health.ny.gov/prevention/nutrition/wic/) |
+| **Worker rights** | "My boss is keeping our tips, is that legal?"<br>"The restaurant I work at takes a cut of our tips, can they do that?" | NY Labor Law + NYC DCWP | [dol.ny.gov](https://dol.ny.gov) |
 
 <!-- CAPABILITIES:END -->
 
-## How it works
+## What makes it different
 
-```
-you ──▶ agent (streaming tool-calling loop)
-            ├─ nearest()       NYC Open Data + geocoding + distance   (never guessed)
-            ├─ index_search()  curated official pages (hybrid RAG)
-            ├─ web_search()    trusted NYC domains, ranked by source trust
-            └─ module tools    e.g. benefits_search, whats_on_events (live city data)
-            ▼
-        grounded answer with {cite:S1} sources + links out
-```
-
-Services are **pluggable modules**: each is a self-contained folder (manifest + optional tool + its own eval), so adding a service is adding a folder and deleting one is deleting the folder. The built-in modules are the ones listed in **[What you can ask](#what-you-can-ask)** above. See the **[module authoring guide](heynyc/modules/README.md)**.
-
-## Safety
-
-HeyNYC answers questions where a confident wrong answer can cost someone money, their home, or their immigration status, so safety is the point, not a footnote. Here's how we keep it honest: every fact is grounded in an official source and cited, or it abstains. On top of that, a **runtime grounding guard** re-checks each answer before it reaches you. Phase 1 (shipped) verifies that every cited fact (a dollar amount, a law or section number, an address, a date) actually appears in the source it's cited to, and drops, hedges, or abstains on anything that doesn't; a Phase 2 NLI faithfulness checker for looser prose claims the deterministic check can't parse is built as an off-by-default prototype, offline-tested and not yet wired into the live loop. It never decides eligibility (the city's own screener does) and never acts as your lawyer or doctor; it routes those to a human. And we adversarially red-team it and publish the failures, including the seven real grounding slips we found and fixed. Because that guard is architectural, the safety guarantee doesn't rest on any one model. The full write-up (the grounded design, the no-hallucination eval, the MyCity safety subset, and a 137-query red-team with independent grading, honest results and all) is in **[SAFETY.md](SAFETY.md)**, with the underlying eval docs (including the [model comparison](docs/eval/model-comparison.md)) in [`docs/eval/`](docs/eval/).
+- **Cite or abstain:** Every fact needs a citation or an abstention. A deterministic guard rechecks cited claims before an answer ships. See [SAFETY.md](SAFETY.md).
+- **Does, not just tells:** It uses the city's benefits screener and can prepare the real application for review, without deciding eligibility itself.
+- **Reachable:** SMS, WhatsApp, and web, in the user's language and without an account.
+- **Open and self-hostable:** A deployment can keep resident data inside city infrastructure instead of sending it to a model vendor. See the [model comparison](docs/eval/model-comparison.md).
 
 ## Quickstart
 
@@ -70,21 +52,41 @@ uv run python -m heynyc index-build      # build the RAG index from module seeds
 uv run python -m heynyc repl             # interactive, streaming chat
 ```
 
-Other commands: `modules` (list), `new-module <name>` (scaffold), `chat "..."` (one-shot), `index-search "..."` (query the index), `capabilities --write-readme` (regenerate the table above), `eval` (run the no-hallucination gate).
+Other commands: `modules`, `new-module <name>`, `chat "..."`, `index-search "..."`, `capabilities --write-readme`, and `eval`. For SMS or WhatsApp, run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
 
-- **Messaging on-ramp (WhatsApp/SMS):** `uv run python -m heynyc serve` runs the server so you can text the agent from WhatsApp or SMS. Setup and design in the **[channels guide](heynyc/channels/README.md)**.
+## How it works
 
-## Contributing
+HeyNYC routes a question to a service module, then uses grounded tools such as city datasets, the benefits screener, geocoding, and scoped official-source search. It returns inline citations for supported facts and sends the answer through a deterministic grounding guard before delivery. If the evidence does not support a claim, it hedges or abstains and routes people to 311 or the right agency. The [safety guide](SAFETY.md) and [system specs](docs/superpowers/specs/) cover the guard, evaluations, and module design.
 
-On top of contributing to the code, one great way to contribute is adding service modules. See **[CONTRIBUTING.md](CONTRIBUTING.md)** and the **[module authoring guide](heynyc/modules/README.md)**. You can also [request a module](.github/ISSUE_TEMPLATE/new_service_module.yml)!
+## Repo layout
 
-## Status
+```text
+.
+├── heynyc/              Python package and CLI
+│   ├── core/            Agent loop, grounding, citations, RAG, and shared tools
+│   ├── modules/         Service modules, their manifests, data, and evals
+│   ├── eval/            Evaluation runner, checks, and trace reporting
+│   └── channels/        SMS and WhatsApp adapters
+├── docs/                Product, safety, evaluation, and design docs
+├── tests/               Offline test suite
+├── scripts/             Development and demo scripts
+└── .github/             Issue and pull-request templates
+```
 
-Standalone Python package, fully offline-tested and live-verified against the real NYC APIs. Built and working: the agent core, the geo / RAG / web-search tools, the service modules above, the [no-hallucination eval gate](heynyc/eval/README.md) (currently green), the runtime grounding guard (Phase 1), and a WhatsApp/SMS on-ramp (the [channels guide](heynyc/channels/README.md) has setup). It replies in the user's language on a best-effort basis, surfacing the city's own official translation where one exists (Notify NYC advisories, benefit programs) and translating the rest itself, and it flags data that's gone stale. Full history is in **[CHANGELOG.md](CHANGELOG.md)**.
+## Docs map
 
-**Next:** a web chat UI with a map, the Phase 2 faithfulness checker, and a fair self-hosted / open-weight model behind the guard for data sovereignty (the [model comparison](docs/eval/model-comparison.md) lays out where that stands).
+| Doc | What it covers |
+| --- | --- |
+| [SAFETY.md](SAFETY.md) | How the AI stays grounded and safe: guardrails, red-team results, abstention, and data freshness. |
+| [SECURITY.md](SECURITY.md) | How to report a security vulnerability through the private disclosure policy. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to add a module or contribute. |
+| [CHANGELOG.md](CHANGELOG.md) | The running day-to-day log of what shipped. |
 
-## Known limitations
+## Status and known limitations
 
-- **Intersections geocode poorly.** NYC GeoSearch sends "116 St and Broadway" to the wrong neighborhood, and its confidence scores don't flag it. HeyNYC echoes back the address it resolved and asks you to confirm before trusting it.
-- **Some datasets are thin.** A few finders don't publish everything: the SNAP-center list, for instance, has no per-center hours or phone numbers, so HeyNYC won't guess them and points you to ACCESS HRA and 311 instead.
+The standalone Python package has offline tests and prior live verification against the real NYC APIs. It includes the agent core, geo, RAG, and web-search tools, the modules above, the Phase 1 runtime grounding guard, and the SMS/WhatsApp on-ramp. Replies are best-effort multilingual, preserve official translations where available, and flag stale data. Next: a web chat UI with a map, wiring the Phase 2 faithfulness checker into the live loop, and an open-weight model behind the guard.
+
+- **Intersection geocoding can be wrong.** NYC GeoSearch can misplace an intersection, so HeyNYC echoes the resolved address and asks for confirmation.
+- **Some datasets are thin.** For example, the SNAP-center list lacks per-center hours and phone numbers. HeyNYC does not guess and instead points people to ACCESS HRA or 311.
+
+_Last updated: 2026-07-13_
