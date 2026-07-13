@@ -4,6 +4,15 @@ Notable changes to HeyNYC, newest first. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); dates are milestones, not yet tagged
 releases (this is pre-1.0 and not publicly released).
 
+## 0.7 - 2026-07-13
+
+- **Retrieval before abstention.** The agent now tries the RAG index, then a scoped web search over the trusted city allowlist, before routing or abstaining on a non-emergency NYC question it can ground and cite. This closes the pattern where it punted questions it could have answered. Safety boundaries are unchanged: a medical emergency still gets 911, an eligibility determination still routes to the agency, and an active legal case still routes to a lawyer.
+- **Worker rights, a new `workers` module.** Grounds tip theft in [New York Labor Law 196-d](https://www.nysenate.gov/legislation/laws/LAB/196-D), which protects workers' tips, plus the protection that the NYS Department of Labor does not report workers or witnesses to immigration authorities on a wage claim, from the [NYS Attorney General](https://ag.ny.gov/immigrants-rights/immigrant-workers-rights).
+- **Immigration-safe health coverage, in the `clinics` module.** [NYC Care](https://access.nyc.gov/programs/nyc-care/) and Emergency Medicaid are available regardless of immigration status, plus a grounded, dated public-charge answer: the 2022 rule is in effect, health coverage is excluded, and the late-2025 proposal is not in effect, from [NYC MOIA](https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page). Individual cases route to ActionNYC.
+- **Source-of-income voucher protection, in the `housing` module.** A landlord cannot refuse a Section 8 or CityFHEPS voucher under NYC Administrative Code 8-107(5), cited to the [NYC Commission on Human Rights](https://www.nyc.gov/site/cchr/media/source-of-income.page).
+- **Citations that highlight the exact text.** Every citation link now uses a Chrome Text Fragment (`#:~:text=`), so clicking it scrolls to and highlights the exact quoted phrase in the source page, not just the page.
+- **Content-drift detector (prototype, off by default).** An offline-tested check flags when a cited page has materially changed since capture, using HTTP conditional requests and content hashing. Built and tested, not yet wired into the live loop.
+
 ## 0.6 - 2026-07-11
 
 - **Heat and hot water, in the `housing` module.** No-heat / no-hot-water is a code emergency, so the module now grounds the tenant's actual rights instead of the bare complaint form: the heat-season dates and indoor-temperature standard, the Housing Maintenance Code sections (§27-2029 heat, §27-2031 hot water), and the escalation ladder (311 complaint → HPD inspection → immediately-hazardous class C violation → Housing Court). A new `hpd_litigation_lookup(address)` pulls a building's HPD housing-court record and flags open Heat and Hot Water cases and any harassment finding, from [NYC Open Data (59kj-x8nc)](https://data.cityofnewyork.us/Housing-Development/Housing-Litigations/59kj-x8nc). Every fact comes from the tool with its citation; nothing is stated from memory.
