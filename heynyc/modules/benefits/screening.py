@@ -108,6 +108,6 @@ async def screen(client: httpx.AsyncClient, base: str, token: str,
 
 
 def request_summary(household: dict, persons: list[dict]) -> dict:
-    """A REDACTED structural summary for the provenance snapshot — counts/flags, never amounts."""
+    """A REDACTED structural summary for the provenance snapshot, counts/flags, never amounts."""
     has_income = any(p.get("incomes") for p in persons)
     return {"persons": len(persons), "household_keys": sorted(household.keys()), "has_income": has_income}

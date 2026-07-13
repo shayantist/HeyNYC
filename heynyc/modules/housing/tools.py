@@ -1,14 +1,14 @@
-"""housing module tool: `hpd_building_lookup` — a building's OPEN HPD complaints + violations.
+"""housing module tool: `hpd_building_lookup`, a building's OPEN HPD complaints + violations.
 
 Grounded in two NYC Open Data (Socrata) datasets, addressed by the building's tax-lot (BBL):
 
-  - Housing Maintenance Code Complaints  (ygpa-z7cr) — filtered to complaint_status='OPEN',
+  - Housing Maintenance Code Complaints  (ygpa-z7cr), filtered to complaint_status='OPEN',
     summarized by major_category (HEAT/HOT WATER called out).
-  - Housing Maintenance Code Violations  (wvxf-dwi5) — filtered to violationstatus='Open',
+  - Housing Maintenance Code Violations  (wvxf-dwi5), filtered to violationstatus='Open',
     summarized by class (class C = immediately hazardous, e.g. no-heat-in-season, called out).
 
 Flow: geocode the address (reusing the shared geocoder, which now carries the PAD `bbl`), then
-query both datasets by BBL. A specific street address is REQUIRED — a bare ZIP or a neighborhood
+query both datasets by BBL. A specific street address is REQUIRED, a bare ZIP or a neighborhood
 has no building BBL, so the tool abstains and asks for a street address rather than guess a
 building. Each dataset query is a resolvable, filtered DATA citation (re-fetch → verify). We only
 report what the data shows; empty results are stated plainly (no open records), never spun into
@@ -85,15 +85,15 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     address = (args.get("address") or "").strip()
     if not address:
         return ("Ask the user for a specific NYC street address (building number + street) before "
-                "looking up a building — never guess a building.")
+                "looking up a building, never guess a building.")
 
     origin = await geocode(address, client=ctx.http)
     if origin is None or not origin.bbl:
-        # A bare ZIP, a neighborhood, or a non-NYC place has no building BBL — the lookup is
+        # A bare ZIP, a neighborhood, or a non-NYC place has no building BBL, the lookup is
         # building-level, so abstain and ask for a street address rather than guess a building.
         return (f"I couldn't tie '{address}' to a specific NYC building, so I can't pull its HPD "
                 f"record. Ask the user for a specific NYC street address (building number + street) "
-                f"— a ZIP or neighborhood alone doesn't identify a building. Don't guess a building.")
+                f", a ZIP or neighborhood alone doesn't identify a building. Don't guess a building.")
 
     bbl = origin.bbl
     # BBL is 10 chars: 1 borough digit, 5 block digits, 4 lot digits. The complaints dataset keys on
@@ -109,7 +109,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         violations = await query_dataset(VIOLATIONS_ID, where=violations_where, limit=1000,
                                          client=ctx.http)
     except httpx.HTTPError:
-        return (f"I couldn't reach the city's HPD data right now — don't guess whether the building "
+        return (f"I couldn't reach the city's HPD data right now, don't guess whether the building "
                 f"has complaints or violations. Point the user to {OFFICIAL} and hpdonline.nyc.gov.")
 
     cat_counts = _counts(complaints, "major_category")
@@ -121,7 +121,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     violations_recent = _most_recent(violations, "novissueddate")
 
     if not complaints and not violations:
-        # Say so plainly — DON'T imply the building is trouble-free beyond what the data covers.
+        # Say so plainly, DON'T imply the building is trouble-free beyond what the data covers.
         cite_c = _register(ctx, COMPLAINTS_ID, complaints_where,
                            title="HPD Housing Maintenance Code Complaints (open)",
                            snippet=f"BBL {bbl}: 0 open HPD complaints",
@@ -134,7 +134,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"Building: {origin.label} (BBL {bbl})\n"
             f"No OPEN HPD complaints {{cite:{cite_c}}} or OPEN HPD violations {{cite:{cite_v}}} are on "
             f"record for this building right now. That only reflects what tenants have reported to HPD "
-            f"and what HPD has cited — it doesn't guarantee there are no problems. If the user has a "
+            f"and what HPD has cited, it doesn't guarantee there are no problems. If the user has a "
             f"heat, hot-water, or repair issue, they can still file a complaint through {OFFICIAL}."
         )
 
@@ -155,7 +155,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         valid_as_of=violations_recent,
     )
 
-    lines = [f"Building: {origin.label} (BBL {bbl})", "Grounded in NYC HPD open data — report only these:"]
+    lines = [f"Building: {origin.label} (BBL {bbl})", "Grounded in NYC HPD open data, report only these:"]
 
     lines.append(f"- Open HPD complaints: {len(complaints)} total"
                  + (f", including {heat_complaints} heat/hot-water" if heat_complaints else "")
@@ -166,7 +166,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         lines.append(f"  Most recent complaint received: {complaints_recent}")
 
     lines.append(f"- Open HPD violations: {len(violations)} total"
-                 + (f", including {class_c} class C (immediately hazardous — includes no-heat in season)"
+                 + (f", including {class_c} class C (immediately hazardous, includes no-heat in season)"
                     if class_c else "")
                  + f" {{cite:{cite_v}}}")
     if violations:
@@ -270,11 +270,11 @@ async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
 # --- housing_guidance: static-but-OFFICIAL routing facts, each cited to its source page ----
 #
 # The Right-to-Counsel free-lawyer facts, the no-heat temperature standard, and the shelter-intake
-# sites are STATIC, but they are official facts — not the model's memory. Stating them from the
+# sites are STATIC, but they are official facts, not the model's memory. Stating them from the
 # manifest prompt with no citation is exactly what the cite-or-abstain contract forbids (the eval's
 # tool_sanity check caught it). So they live here as grounded facts and are returned WITH a DOC
 # citation to the official nyc.gov page each one comes from. A DOC citation (an official document/
-# page, like index_search's) — not DATA (there is no queried dataset row) and not WEB (this is an
+# page, like index_search's), not DATA (there is no queried dataset row) and not WEB (this is an
 # authoritative city page, not a web-search hit).
 #
 # Every URL + fact below was verified LIVE against the page (HTTP 200, page supports the fact) on
@@ -287,22 +287,22 @@ VERIFIED_ON = "2026-07-02"
 class _Fact:
     url: str      # official nyc.gov source page (verified HTTP 200)
     title: str    # citation title
-    snippet: str  # short cite label — subset of `body` wording (keeps faithfulness overlap high)
+    snippet: str  # short cite label, subset of `body` wording (keeps faithfulness overlap high)
     body: str     # the grounded fact text to report, cited
 
 
 _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
     "right_to_counsel": (
-        "Right to Counsel — a FREE lawyer for an eviction case:",
+        "Right to Counsel, a FREE lawyer for an eviction case:",
         (
             _Fact(
                 url="https://www.nyc.gov/site/hra/help/legal-services-for-tenants.page",
-                title="Legal Services for Tenants Facing Eviction — NYC's Right to Counsel (HRA / Office of Civil Justice)",
+                title="Legal Services for Tenants Facing Eviction, NYC's Right to Counsel (HRA / Office of Civil Justice)",
                 snippet=("NYC Right to Counsel gives tenants free legal help for an eviction case, in "
                          "every ZIP code, regardless of immigration status; call Housing Court Answers "
                          "718-557-1379 or 311 and ask for the Tenant Helpline"),
                 body=("NYC's Right-to-Counsel (Universal Access) law gives tenants free legal help for "
-                      "an eviction case in Housing Court or a NYCHA proceeding — available in every ZIP "
+                      "an eviction case in Housing Court or a NYCHA proceeding, available in every ZIP "
                       "code, regardless of immigration status. To connect: call Housing Court Answers at "
                       "718-557-1379 (Monday to Friday, 9am to 5pm), or call 311 and ask for the Tenant "
                       "Helpline."),
@@ -314,7 +314,7 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
         (
             _Fact(
                 url="https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page",
-                title="Heat and Hot Water Information — NYC HPD",
+                title="Heat and Hot Water Information, NYC HPD",
                 snippet=("Heat season October 1 through May 31: indoor at least 68 when below 55 outside "
                          "between 6am and 10pm, at least 62 between 10pm and 6am; hot water year-round at "
                          "120; file a complaint by calling 311; HPD inspects, a no-heat condition in "
@@ -347,11 +347,11 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
         ),
     ),
     "shelter": (
-        "Shelter intake tonight — where to go:",
+        "Shelter intake tonight, where to go:",
         (
             _Fact(
                 url="https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
-                title="Families with Children: Applying for Temporary Housing Assistance — NYC DHS (PATH)",
+                title="Families with Children: Applying for Temporary Housing Assistance, NYC DHS (PATH)",
                 snippet=("Families with children or a pregnant person apply at PATH intake: 151 East 151st "
                          "Street, the Bronx, open 24 hours a day, 718-503-6400"),
                 body=("Families with children or a pregnant person apply for shelter at DHS' PATH intake "
@@ -361,7 +361,7 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             ),
             _Fact(
                 url="https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-applying.page",
-                title="Single Adults: Applying for Temporary Housing Assistance — NYC DHS",
+                title="Single Adults: Applying for Temporary Housing Assistance, NYC DHS",
                 snippet=("Single adults apply at a DHS intake center: men at the 30th Street Intake Center, "
                          "400-430 East 30th Street, Manhattan; women at the Franklin Shelter, 1122 Franklin "
                          "Avenue, the Bronx; you can also call 311"),
@@ -459,7 +459,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
         )
         lines.append(f"- {fact.body} {{cite:{cite}}}")
     lines.append("Report ONLY these grounded facts, each with its {cite:Sn}. Do not add or change an "
-                 "address, phone number, temperature, date, or eligibility figure — if the user needs "
+                 "address, phone number, temperature, date, or eligibility figure, if the user needs "
                  "more, send them to 311.")
     return "\n".join(lines)
 
@@ -472,12 +472,12 @@ def get_tools() -> list[Tool]:
                 "Look up a specific NYC building's OPEN HPD complaints and violations (heat/hot-water, "
                 "safety, unsanitary conditions, etc.), grounded in NYC Open Data and cited. Pass "
                 "`address` = a specific NYC STREET address (building number + street). Returns counts "
-                "by category/class — calling out HEAT/HOT WATER complaints and class C (immediately "
-                "hazardous) violations — plus the most recent dates. If the address is only a ZIP or a "
+                "by category/class, calling out HEAT/HOT WATER complaints and class C (immediately "
+                "hazardous) violations, plus the most recent dates. If the address is only a ZIP or a "
                 "neighborhood (no building BBL), the tool abstains and asks for a street address; it "
                 "never guesses a building. Empty results are reported as 'no open records', not "
                 "'problem-free'. Use for 'does my building have heat/violations, is my landlord in "
-                "trouble' — to FILE a new complaint, route the user to 311."
+                "trouble', to FILE a new complaint, route the user to 311."
             ),
             parameters={
                 "type": "object",
@@ -527,7 +527,7 @@ def get_tools() -> list[Tool]:
             description=(
                 "Return NYC's official, grounded guidance for four high-stakes housing situations, "
                 "each WITH a citation to the official source page: `right_to_counsel` (the FREE "
-                "lawyer for an eviction case + how to connect), `no_heat` (no heat / no hot water — the "
+                "lawyer for an eviction case + how to connect), `no_heat` (no heat / no hot water, the "
                 "heat-season temperature standard + how to file), `shelter` (where to go for shelter "
                 "intake tonight, families with children / pregnant vs. single adults), and "
                 "`source_of_income` (a landlord refusing a Section 8 / CityFHEPS voucher, the NYC "
@@ -535,7 +535,7 @@ def get_tools() -> list[Tool]:
                 "'landlord shut off the heat', 'need a lawyer for eviction', or 'they won't take my "
                 "voucher' is mapped to the right topic). ALWAYS use this instead of stating a shelter "
                 "address, phone number, temperature standard, or eligibility figure from your own "
-                "knowledge — report only what it returns, cited."
+                "knowledge, report only what it returns, cited."
             ),
             parameters={
                 "type": "object",

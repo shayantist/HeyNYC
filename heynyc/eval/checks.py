@@ -1,4 +1,4 @@
-"""Deterministic checks over a CaseResult — no LLM needed.
+"""Deterministic checks over a CaseResult, no LLM needed.
 
 These are the load-bearing safety assertions: did the agent use the right tools,
 cite the right kinds of sources, abstain when it should, and do its citations
@@ -16,7 +16,7 @@ import httpx
 
 from ..core.citations import content_hash
 # The cited-claim grounding logic lives in core.grounding, shared VERBATIM with the runtime guard
-# (core/agent.py) — one implementation, no drift. _CITED_CLAIM_GROUNDING_BLOCKING is re-exported here
+# (core/agent.py), one implementation, no drift. _CITED_CLAIM_GROUNDING_BLOCKING is re-exported here
 # because test_checks.py imports it from this module.
 from ..core.grounding import _CITED_CLAIM_GROUNDING_BLOCKING, check_grounding  # noqa: F401
 from .runner import CaseResult
@@ -33,7 +33,7 @@ def register_check(fn):
     _EXTRA_CHECKS.append(fn)
     return fn
 
-# Coarse keyword fallback for the abstain/refusal signal — a known-brittle approximation
+# Coarse keyword fallback for the abstain/refusal signal, a known-brittle approximation
 # (false positives + false negatives) kept ONLY for unattended runs with no judge; it never
 # blocks the gate. The authoritative semantic call is the agent-as-judge (2026-06-29 amendment §A).
 _ABSTAIN_MARKERS = [
@@ -72,7 +72,7 @@ class CheckResult:
     passed: bool
     detail: str = ""
     # Structural-fact checks block the gate; semantic refusal/abstention checks are the
-    # coarse keyword fallback — informational only, the agent-as-judge is authoritative
+    # coarse keyword fallback, informational only, the agent-as-judge is authoritative
     # for them (2026-06-29 amendment §A.1).
     blocking: bool = True
     # Optional: where each matched cited claim was grounded (see check_cited_claim_grounding).
@@ -132,12 +132,12 @@ def check_contains(cr: CaseResult) -> Optional[CheckResult]:
 
 
 def check_abstention(cr: CaseResult) -> Optional[CheckResult]:
-    """Coarse keyword fallback for abstain cases — NON-BLOCKING; the agent-as-judge is
+    """Coarse keyword fallback for abstain cases, NON-BLOCKING; the agent-as-judge is
     authoritative (2026-06-29 amendment §A).
 
     A correct abstention shows refusal/redirect language. It MAY also offer a grounded
     *alternative* (refusing a private party but linking real events is ideal), so grounded
-    citations no longer disqualify it — fabrication of the *missing* fact is caught
+    citations no longer disqualify it, fabrication of the *missing* fact is caught
     separately by the faithfulness / must_not_fabricate invariants (§A.3)."""
     if not cr.case.abstain:
         return None
@@ -175,8 +175,8 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
         return None
     checker = checker or _default_link_checker
     # A link is "dead" only if the server definitively says it's gone: 404/410. A 0
-    # (DNS/timeout/connection reset) or 403/405/429 means we *couldn't verify* — common on
-    # slow or bot-blocking civic portals (NYCHA's Siebel eservice, a throttled Socrata) — and
+    # (DNS/timeout/connection reset) or 403/405/429 means we *couldn't verify*, common on
+    # slow or bot-blocking civic portals (NYCHA's Siebel eservice, a throttled Socrata), and
     # is NOT counted as dead: doing so makes the gate flaky and non-reproducible. 2xx/3xx/5xx
     # mean the page exists. (Unreachable links are surfaced by the agent-judge, not the gate.)
     _DEAD = {404, 410}
@@ -197,7 +197,7 @@ def check_data_grounding(cr: CaseResult) -> Optional[CheckResult]:
     """Deterministic floor for structured (DATA) citations: the cited row's snapshot is intact
     (hash matches) and any value WE computed (distance) re-derives from that row. Re-derivation,
     not the {cite:Sn} marker, is the evidence. (Answer-text claim matching against the snapshot is
-    the complementary layer — check_cited_claim_grounding, Part C, below.)"""
+    the complementary layer, check_cited_claim_grounding, Part C, below.)"""
     failures: list[str] = []
     checked = 0
     for cid, c in cr.citations.items():
@@ -229,19 +229,19 @@ def check_data_grounding(cr: CaseResult) -> Optional[CheckResult]:
 # --- Part C: cited-claim grounding ----------------------------------------------------------------
 # check_data_grounding (above) proves the cited ROW is intact (hash) and any value WE computed
 # re-derives. This is the COMPLEMENTARY layer: it proves the SPECIFIC FACTS the answer states right
-# next to a {cite:Sn} marker — a phone, a dollar amount, a street address, a proper-noun name — actually
+# next to a {cite:Sn} marker, a phone, a dollar amount, a street address, a proper-noun name, actually
 # occur in the source that marker points at. The token-extraction + normalization rules and the
 # (conservative) severity model that make this never false-fail a grounded answer now live in
 # heynyc/core/grounding.py, shared VERBATIM with the RUNTIME guard (core/agent.py) so the eval gate and
 # the runtime hook can never drift. This is the thin CaseResult adapter over that pure function.
 
 
-@register_check  # generic verifier (in-memory, no network) — registered like check_data_grounding
+@register_check  # generic verifier (in-memory, no network), registered like check_data_grounding
 def check_cited_claim_grounding(cr: CaseResult) -> Optional[CheckResult]:
     """For every {cite:Sn} marker, verify the SALIENT FACTS in its sentence occur in the cited source
     (or in the user's query). Aggregates to one CheckResult; records where each fact matched.
 
-    Delegates to core.grounding.check_grounding — see that module for the token rules and why this is
+    Delegates to core.grounding.check_grounding, see that module for the token rules and why this is
     distinct from check_data_grounding (row integrity + distance re-derivation) and inv_faithfulness
     (snippet<->tool-output token overlap)."""
     res = check_grounding(cr.text or "", cr.citations, cr.case.query if cr.case else "")
@@ -254,9 +254,9 @@ def check_cited_claim_grounding(cr: CaseResult) -> Optional[CheckResult]:
 # --- readability (soft) ---------------------------------------------------------------------------
 # Plain-language target: NYC GenAI guidance + civic best practice aim for a ~6th-8th grade reading
 # level (people are on a phone, stressed, often reading in a second language). This is a SOFT,
-# NON-BLOCKING warning — like the abstention keyword fallback, it never gates the run; it just flags
+# NON-BLOCKING warning, like the abstention keyword fallback, it never gates the run; it just flags
 # answers that read harder than they should. Short answers (refusals/abstentions) are skipped: FK is
-# too noisy on a couple of sentences. No external dependency — a small self-contained FK estimator.
+# too noisy on a couple of sentences. No external dependency, a small self-contained FK estimator.
 _READABILITY_MAX_GRADE = 9.0        # target ~6-8; a little headroom for unavoidable proper nouns
 _READABILITY_MIN_WORDS = 30         # below this, FK grade is too noisy to be meaningful
 _URL_RE = re.compile(r"https?://\S+")
@@ -289,7 +289,7 @@ def flesch_kincaid_grade(text: str) -> Optional[float]:
 
 def check_readability(cr: CaseResult) -> Optional[CheckResult]:
     """SOFT (non-blocking) plain-language warning: flag an answer that reads above ~8th grade so the
-    voice can be tightened. Never gates the run — informational, like the abstention keyword fallback.
+    voice can be tightened. Never gates the run, informational, like the abstention keyword fallback.
     Skips answers too short to score (None → not reported)."""
     grade = flesch_kincaid_grade(cr.text or "")
     if grade is None:

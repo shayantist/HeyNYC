@@ -1,9 +1,9 @@
-"""Deterministic cited-claim grounding — shared by the eval gate (Part C) and the runtime guard.
+"""Deterministic cited-claim grounding, shared by the eval gate (Part C) and the runtime guard.
 
 For every ``{cite:Sn}`` marker in an answer, verify the SALIENT STRUCTURED facts in that sentence
 (law/section numbers via addresses & unit numbers, phone numbers, dollar amounts, verbatim
 unit-bearing numbers, street addresses, proper-noun names) actually occur in the source that marker
-points at — or in the user's own query. Pure in-memory string/token matching: DATA snapshots and
+points at, or in the user's own query. Pure in-memory string/token matching: DATA snapshots and
 DOC/WEB snippets were captured at query time, so this is a string match, never a re-fetch (near-free,
 no latency, no LLM, no API).
 
@@ -13,18 +13,18 @@ This module is the single implementation used by BOTH:
 
 THE #1 RULE: never false-fail a grounded answer. So we (a) extract only HIGH-SIGNAL, specific tokens;
 (b) normalize aggressively before matching; (c) count the user's own QUERY as a legitimate source (the
-agent restating the location the user gave — an origin address, a neighborhood — is not a
+agent restating the location the user gave, an origin address, a neighborhood, is not a
 hallucination); (d) match leniently (digit-runs, substring, allow-one-word-miss) so we err toward a
-false PASS; and (e) only BLOCK on a fact whose absence is CONCLUSIVE — see the severity model below.
-Derived values (distances, counts) are deliberately NOT extracted — check_data_grounding re-derives
+false PASS; and (e) only BLOCK on a fact whose absence is CONCLUSIVE, see the severity model below.
+Derived values (distances, counts) are deliberately NOT extracted, check_data_grounding re-derives
 distances; counts are the model's own tally across rows.
 
 Two things determine severity, tuned against real module-eval traces (validation in test_checks.py):
-  • TOKEN KIND — a verbatim structured fact (phone / dollar amount / street address / unit number) is
+  • TOKEN KIND, a verbatim structured fact (phone / dollar amount / street address / unit number) is
     copied literally from a source; a multi-word PROPER-NOUN name drifts too much to trust (acronyms
     vs the spelled-out program, a correct neighborhood the row omits, plural/typo, aggregated DOC
     snippets), so a name mismatch is only ever SOFT (informational).
-  • SOURCE COMPLETENESS — a DATA `snapshot` / API `response` is the WHOLE captured source, so a fact's
+  • SOURCE COMPLETENESS, a DATA `snapshot` / API `response` is the WHOLE captured source, so a fact's
     absence is conclusive; a DOC/WEB snippet or a label-only catalog row is a TRUNCATED excerpt, so the
     fact may live in the un-captured remainder → absence proves nothing.
 A mismatch BLOCKS only when the token is a structured fact AND every cited source is a complete
@@ -47,7 +47,7 @@ _WS_RE = re.compile(r"\s+")
 # fragment of a longer digit run.
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)")
 _MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
-# A number carrying a VERBATIM unit (temperature / percent) — a fact quoted from source text, not a
+# A number carrying a VERBATIM unit (temperature / percent), a fact quoted from source text, not a
 # computed/rounded value. Distances/times/counts are intentionally excluded (reformatting → false-fail).
 _UNIT_NUM_RE = re.compile(r"(\d{1,4})\s*(?:°\s*[fc]?|degrees?\b|%|percent\b)", re.IGNORECASE)
 _STREET_TYPES = {
@@ -55,7 +55,7 @@ _STREET_TYPES = {
     "drive", "dr", "lane", "ln", "court", "ct", "parkway", "pkwy", "plaza", "terrace", "ter",
     "way", "concourse", "broadway", "expressway", "turnpike", "square", "highway", "hwy",
 }
-# Compass directions in addresses — the source abbreviates ("E"/"W"), the agent often spells them out
+# Compass directions in addresses, the source abbreviates ("E"/"W"), the agent often spells them out
 # ("East"/"West"), so they must never be a required match word.
 _DIRECTIONS = {"north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest"}
 # A street address: a house number, then street-name words that must each be Capitalized or a
@@ -83,13 +83,13 @@ _GENERIC_PN_WORDS = {
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     "january", "february", "march", "april", "may", "june", "july", "august", "september",
     "october", "november", "december", "today", "tonight", "tomorrow",
-    # day/month ABBREVIATIONS — an answer's "Fri Jul 3" is a date, not a source-specific fact.
+    # day/month ABBREVIATIONS, an answer's "Fri Jul 3" is a date, not a source-specific fact.
     "mon", "tue", "tues", "wed", "weds", "thu", "thur", "thurs", "fri", "sat", "sun",
     "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
 }
 # Common English words that are routinely Capitalized at a sentence/clause start (imperatives the agent
 # opens with, plus function words) but are NOT source-specific facts. Stripping them from a proper
-# noun's significant words prevents the #1 failure mode — a leading verb like "Reach" or "Under"
+# noun's significant words prevents the #1 failure mode, a leading verb like "Reach" or "Under"
 # getting swept into "Reach Sedgwick Library" and then not found in the row. Stripping only ever makes
 # the check MORE lenient; a real place/program name always keeps a distinctive word.
 _COMMON_WORDS = {
@@ -111,7 +111,7 @@ _COMMON_WORDS = {
 
 
 def _norm(s) -> str:
-    """Lowercase, punctuation→space, whitespace collapsed — the shared match space."""
+    """Lowercase, punctuation→space, whitespace collapsed, the shared match space."""
     return _WS_RE.sub(" ", re.sub(r"[^\w\s]", " ", str(s).lower())).strip()
 
 
@@ -130,8 +130,8 @@ def _stringify(obj) -> str:
 
 def _citation_blob(c: dict) -> Optional[str]:
     """The captured source content for a citation: the DATA `snapshot` (or, for an auditable API
-    exchange, the captured `response` — never the redacted request_summary), plus snippet + title
-    (DOC/WEB carry only snippet + title). None if the source has none — then it cannot be verified."""
+    exchange, the captured `response`, never the redacted request_summary), plus snippet + title
+    (DOC/WEB carry only snippet + title). None if the source has none, then it cannot be verified."""
     parts: list[str] = []
     prov = c.get("provenance") or {}
     for key in ("snapshot", "response"):
@@ -154,8 +154,8 @@ def _split_claims(text: str) -> list[str]:
 def _cited_sentences(text: str) -> list[tuple[str, list[str]]]:
     """Tier-2's unit: each sentence that carries a citation, paired with the {cite:Sn} ids it cites,
     with the markers stripped from the text. A segment that is ONLY citation markers annotates the
-    sentence BEFORE it — agents routinely trail '{cite:Sn}' after the closing period, which
-    _split_claims separates into its own segment — so it is merged back onto that sentence rather than
+    sentence BEFORE it, agents routinely trail '{cite:Sn}' after the closing period, which
+    _split_claims separates into its own segment, so it is merged back onto that sentence rather than
     checked as an empty claim. (Tier-1 is unaffected: it keeps its per-segment loop.)"""
     out: list[tuple[str, list[str]]] = []
     for seg in _split_claims(text):
@@ -181,7 +181,7 @@ def _salient_tokens(claim: str) -> list[dict]:
             tokens.append({"kind": "phone", "text": m.group().strip(), "digits": d})
     for m in _MONEY_RE.finditer(claim):
         d = _digits(m.group())
-        if len(d) >= 2:  # skip "$5" — too small, a coincidental match is likely
+        if len(d) >= 2:  # skip "$5", too small, a coincidental match is likely
             tokens.append({"kind": "money", "text": m.group().strip(), "digits": d})
     for m in _UNIT_NUM_RE.finditer(claim):
         tokens.append({"kind": "unit_number", "text": m.group().strip(), "digits": m.group(1)})
@@ -189,7 +189,7 @@ def _salient_tokens(claim: str) -> list[dict]:
         full = m.group().strip()
         # Numeric parts (house number AND numbered streets like "107th") match as digit-runs, so
         # "221 W 107th St" grounds against a source that stores "221 W 107 St". Ordinal suffixes,
-        # compass directions, and the street type are dropped — they drift between source and answer.
+        # compass directions, and the street type are dropped, they drift between source and answer.
         nums = re.findall(r"\d+", full)
         raw = re.findall(r"[A-Za-z]+", f"{m.group(2)} {m.group(3)}")
         words = [w.lower() for w in raw
@@ -214,7 +214,7 @@ def _word_in(w: str, blob_norm: str) -> bool:
 
 def _mostly_present(words: list[str], blob_norm: str) -> bool:
     """A multi-word name is grounded if (nearly) all its significant words appear. We allow ONE miss
-    (for names of 2+ words) so lexical drift doesn't false-fail — a normalized source typo (the
+    (for names of 2+ words) so lexical drift doesn't false-fail, a normalized source typo (the
     FoodHelp row stores "…FOOD PANTY", the agent writes "…Food Pantry"), an added neighborhood word
     ("Far Rockaway" where the row's name is "Rockaway SNAP Center"). A genuine fabrication misses
     most/all words, so it still fails."""
@@ -288,17 +288,17 @@ class NLIMismatch:
 @dataclass
 class GroundingResult:
     """The verdict over one answer. `blocking` is True only when a HARD (verbatim-structured) fact is
-    absent from an all-complete-capture claim — the ONLY condition the runtime guard acts on."""
+    absent from an all-complete-capture claim, the ONLY condition the runtime guard acts on."""
     passed: bool
     detail: str
     blocking: bool
     checked: int
     locations: list = field(default_factory=list)
-    hard_failures: list = field(default_factory=list)  # list[Mismatch] — blocking, drives retry/strip
-    soft_failures: list = field(default_factory=list)   # list[Mismatch] — informational only
+    hard_failures: list = field(default_factory=list)  # list[Mismatch], blocking, drives retry/strip
+    soft_failures: list = field(default_factory=list)   # list[Mismatch], informational only
     # Tier-2 (opt-in): populated only when a checker is passed to check_grounding. Empty / zero on the
     # default (nli=None) path, so today's every caller sees a byte-identical result.
-    nli_failures: list = field(default_factory=list)    # list[NLIMismatch] — per-sentence entailment misses
+    nli_failures: list = field(default_factory=list)    # list[NLIMismatch], per-sentence entailment misses
     nli_checked: int = 0                                 # how many cited sentences the NLI checker ran on
 
 
@@ -314,13 +314,13 @@ def check_grounding(
     """Verify every {cite:Sn}'d salient fact against its source (or the user's query).
 
     Returns a GroundingResult, or None when there is nothing to verify (no citation markers, or no
-    salient facts sit next to any citation). Pure, in-memory, deterministic — no LLM, no network.
+    salient facts sit next to any citation). Pure, in-memory, deterministic, no LLM, no network.
 
     Tier-2 (opt-in, off by default): pass ``nli`` (an object with ``check(claim, source) -> NLIVerdict``,
     see core.nli) to also run a per-sentence faithfulness check on every cited sentence, scoring it
     against the same source text Tier-1 assembled. A sentence whose support score is below
     ``nli_threshold`` is recorded in ``nli_failures``. When ``nli is None`` (today's every caller) this
-    function behaves BYTE-IDENTICALLY to before — the Tier-2 fields stay empty and nothing else changes.
+    function behaves BYTE-IDENTICALLY to before, the Tier-2 fields stay empty and nothing else changes.
     ``nli_blocking`` (used only when the follow-on flips Tier-2 on live) lets an NLI failure also drive
     ``blocking``; by default blocking stays governed solely by Tier-1's hard_failures."""
     text = text or ""
@@ -340,7 +340,7 @@ def check_grounding(
             continue
         # Classify each cited source. COMPLETE = we captured the whole source (a DATA snapshot or an
         # API response), so a fact's ABSENCE is conclusive. EXCERPT = only a truncated snippet/title
-        # (DOC, WEB, or a label-only catalog row) — the fact may live in the un-captured remainder of
+        # (DOC, WEB, or a label-only catalog row), the fact may live in the un-captured remainder of
         # the page, so absence there is NOT proof of fabrication. EMPTY = nothing captured. We only
         # BLOCK when every cited source is COMPLETE; excerpt/empty mismatches are informational.
         blobs: dict[str, str] = {}
@@ -388,7 +388,7 @@ def check_grounding(
             hard = all_complete and tok["kind"] != "proper_noun"
             (hard_failures if hard else soft_failures).append(mismatch)
     # Tier-2 (opt-in): per-sentence faithfulness/NLI. A SEPARATE pass so Tier-1 above is byte-for-byte
-    # untouched. Fully gated on `nli` — skipped entirely when nli is None. For each cited sentence, run
+    # untouched. Fully gated on `nli`, skipped entirely when nli is None. For each cited sentence, run
     # the checker against the SAME captured source text Tier-1 assembles (snapshot / snippet / title).
     # It earns its keep on the excerpt-cited prose Tier-1 deliberately passes; complete-source claims
     # get a cheap second look too.
@@ -397,7 +397,7 @@ def check_grounding(
             blobs = {cid: _citation_blob(citations[cid]) for cid in cited
                      if citations.get(cid) and _citation_blob(citations[cid]) is not None}
             if not blobs:
-                continue  # every cited source is an empty capture — nothing to check against
+                continue  # every cited source is an empty capture, nothing to check against
             verdict = nli.check(claim_text, " ".join(blobs.values()))
             nli_checked += 1
             if verdict.score < nli_threshold:
@@ -407,7 +407,7 @@ def check_grounding(
         return None  # nothing to verify (no salient facts, and no cited sentence for Tier-2 either)
     failures = hard_failures + soft_failures
     # Only a HARD (verbatim-fact) Tier-1 mismatch blocks; a proper-noun-only mismatch is informational.
-    # Tier-2 blocks only when explicitly enabled (nli_blocking) — the live default leaves blocking to
+    # Tier-2 blocks only when explicitly enabled (nli_blocking), the live default leaves blocking to
     # Tier-1, so turning a checker on for telemetry never changes what ships.
     blocking = (_CITED_CLAIM_GROUNDING_BLOCKING and bool(hard_failures)) or (nli_blocking and bool(nli_failures))
     detail_parts = [m.message for m in failures]

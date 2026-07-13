@@ -1,4 +1,4 @@
-"""Thin Ticketmaster Discovery API client — the structured events backbone (§16).
+"""Thin Ticketmaster Discovery API client, the structured events backbone (§16).
 
 Verified live (2026-06-28): dmaId=345 (NYC metro) + startDateTime=<now Z> returns
 date-sorted upcoming events; keyword=world cup surfaces the FIFA Final watch party.

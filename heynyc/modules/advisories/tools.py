@@ -72,13 +72,13 @@ def _advisory_snapshot(advisory: Advisory) -> dict:
 
 def _advisory_citation(ctx: ToolContext, advisory: Advisory) -> str:
     """Register a DATA citation grounded in the advisory's resolvable CAP XML (re-fetchable + hashed).
-    `valid_as_of` is the advisory's own `sent` time — temporal provenance, never fetch time."""
+    `valid_as_of` is the advisory's own `sent` time, temporal provenance, never fetch time."""
     provenance = data_provenance(
         _advisory_snapshot(advisory), record_id=advisory.guid, field_pointer="/"
     )
     return ctx.citations.register(
         advisory.source_url,
-        snippet=f"{advisory.headline or advisory.event} — in effect until {advisory.expires}",
+        snippet=f"{advisory.headline or advisory.event}, in effect until {advisory.expires}",
         title="Notify NYC / NYC Emergency Management",
         kind="DATA",
         valid_as_of=advisory.sent,
@@ -90,7 +90,7 @@ def _advisory_block(advisory: Advisory, cite: str) -> str:
     headline = advisory.headline or advisory.event or "NYC advisory"
     severity = advisory.severity or "Unknown"
     parts = [
-        f"- {headline} [{severity}] — {advisory.event or 'advisory'}, "
+        f"- {headline} [{severity}], {advisory.event or 'advisory'}, "
         f"in effect until {advisory.expires} {{cite:{cite}}}"
     ]
     parts.append(f"  Area (per feed): {advisory.area_desc or 'NYC'}")
@@ -126,13 +126,13 @@ def _recent_block(note: RecentNote, cite: str) -> str:
 def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
     """The structured CAP report: each active advisory with severity + 'in effect until', cited."""
     lines = [
-        "Active NYC advisories from the Notify NYC feed (NYC Emergency Management) — report ONLY "
+        "Active NYC advisories from the Notify NYC feed (NYC Emergency Management), report ONLY "
         "these, cite each, and state each one's 'in effect until' time:",
     ]
     if near:
         lines.append(
             f"(User asked about '{near}'. The feed's geography is usually citywide, so these are "
-            f"listed as-is — do not filter them out for a specific location.)"
+            f"listed as-is, do not filter them out for a specific location.)"
         )
     for advisory in advisories:
         cite = _advisory_citation(ctx, advisory)
@@ -216,7 +216,7 @@ def get_tools() -> list[Tool]:
                 "NYC address/neighborhood (the feed's geography is usually citywide, so results are "
                 "NOT filtered by it). Returns each active advisory with its headline, severity, "
                 "event, 'in effect until <expires>', and area, every one carrying a DATA citation. "
-                "If none are active it says so plainly — it NEVER invents an advisory, severity, or "
+                "If none are active it says so plainly, it NEVER invents an advisory, severity, or "
                 "expiry."
             ),
             parameters={
@@ -225,12 +225,12 @@ def get_tools() -> list[Tool]:
                     "near": {
                         "type": "string",
                         "description": "Optional NYC address/neighborhood for context (results are "
-                        "not geo-filtered — the feed is usually citywide).",
+                        "not geo-filtered, the feed is usually citywide).",
                     },
                     "lang": {
                         "type": "string",
                         "description": "Optional language NAME for the advisory text (e.g. 'Spanish', "
-                        "'Chinese') — pass the language the user is writing in. The feed carries "
+                        "'Chinese'), pass the language the user is writing in. The feed carries "
                         "official city translations for ~12 languages; defaults to English, and "
                         "falls back to English for any alert with no variant in that language.",
                     },

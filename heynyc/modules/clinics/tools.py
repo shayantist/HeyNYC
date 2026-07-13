@@ -1,4 +1,4 @@
-"""clinics module tool: `find_clinic` — the nearest NYC safety-net clinics that will see you
+"""clinics module tool: `find_clinic`, the nearest NYC safety-net clinics that will see you
 regardless of insurance or immigration status.
 
 Two source CLASSES, merged and ranked by distance:
@@ -18,7 +18,7 @@ from the CLASS -> ProgramGuarantee map below, whose wording is grounded to and c
 program's official page (hrsa.gov for FQHC, access.nyc.gov for NYC Care). Each returned site carries
 a DATA citation (the facility source) AND its class's DOC citation (the program page).
 
-If geocoding fails or nothing is near, the tool abstains and routes to 311 / 646-NYC-CARE — it never
+If geocoding fails or nothing is near, the tool abstains and routes to 311 / 646-NYC-CARE, it never
 guesses a clinic.
 """
 from __future__ import annotations
@@ -82,7 +82,7 @@ class ProgramGuarantee:
     lead: str          # a warm one-line reassurance shown once per class present in the results
     doc_url: str       # official program page (verified live)
     doc_title: str
-    snippet: str       # short cite label — subset of `body`
+    snippet: str       # short cite label, subset of `body`
     body: str          # the grounded eligibility / cost / immigration-safety sentence(s), cited
     data_title: str    # citation title for the facility (DATA) source
 
@@ -90,14 +90,14 @@ class ProgramGuarantee:
 CLASS_GUARANTEE: dict[str, ProgramGuarantee] = {
     CLASS_FQHC: ProgramGuarantee(
         label="Community Health Center (FQHC)",
-        lead="These are federally funded health centers that see everyone — insured or not.",
+        lead="These are federally funded health centers that see everyone, insured or not.",
         doc_url="https://www.hrsa.gov/get-health-care",
-        doc_title="Get Health Care — HRSA Health Center Program",
+        doc_title="Get Health Care, HRSA Health Center Program",
         snippet=("HRSA-funded health centers see all patients regardless of ability to pay and "
                  "charge on a sliding fee scale based on your income and family size"),
         body=("Federally Qualified Health Centers (community health centers) are funded by HRSA's "
               "Health Center Program to provide primary care in underserved communities. They see "
-              "all patients regardless of ability to pay — whether or not you have insurance — and "
+              "all patients regardless of ability to pay, whether or not you have insurance, and "
               "charge on a sliding fee scale (discounts based on your income and family size), so "
               "cost is not a barrier to care."),
         data_title="HRSA Primary Health Care service-delivery sites",
@@ -106,14 +106,14 @@ CLASS_GUARANTEE: dict[str, ProgramGuarantee] = {
         label="NYC Health + Hospitals (NYC Care)",
         lead="These city hospitals and clinics serve everyone and don't ask about immigration status.",
         doc_url="https://access.nyc.gov/programs/nyc-care/",
-        doc_title="NYC Care — ACCESS NYC",
+        doc_title="NYC Care, ACCESS NYC",
         snippet=("NYC Care gives low- or no-cost care at NYC Health + Hospitals, sliding-scale fees "
                  "starting at $0, and doesn't ask about immigration status; enroll at 646-NYC-CARE "
                  "(646-692-2273)"),
         body=("NYC Care is a health-access program that gives you your own doctor and services at "
               "NYC Health + Hospitals locations citywide, with sliding-scale fees starting at $0 and "
               "no membership fees, monthly fees, or premiums. NYC Care doesn't ask about immigration "
-              "status — you can seek care regardless of immigration status or ability to pay. To "
+              "status, you can seek care regardless of immigration status or ability to pay. To "
               "enroll, call 646-NYC-CARE (646-692-2273)."),
         data_title="NYC Health + Hospitals locations (NYC Care sites)",
     ),
@@ -182,7 +182,7 @@ def _fqhc_from_record(record: dict) -> Clinic | None:
 def _load_nyc_care_seed(path: Path = SEED_PATH) -> list[Clinic]:
     """Load the bundled NYC Care / H+H seed (build-time geocoded). Rows without coords are dropped.
 
-    A missing/unreadable seed degrades to [] (the tool still serves live FQHCs) — never crashes.
+    A missing/unreadable seed degrades to [] (the tool still serves live FQHCs), never crashes.
     """
     clinics: list[Clinic] = []
     try:
@@ -240,7 +240,7 @@ def _facility_citation(ctx: ToolContext, clinic: Clinic, *,
     )
     return ctx.citations.register(
         url,
-        snippet=f"{clinic.name} — {clinic.address or clinic.borough or 'NYC'}",
+        snippet=f"{clinic.name}, {clinic.address or clinic.borough or 'NYC'}",
         title=guarantee.data_title,
         kind="DATA",
         valid_as_of=clinic.valid_as_of,
@@ -249,7 +249,7 @@ def _facility_citation(ctx: ToolContext, clinic: Clinic, *,
 
 
 def _program_citation(ctx: ToolContext, klass: str) -> str:
-    """A DOC citation for the CLASS's official program page — the grounded eligibility guarantee.
+    """A DOC citation for the CLASS's official program page, the grounded eligibility guarantee.
 
     Deduped by the registry on (kind, url, snippet), so many sites of one class share one program id.
     """
@@ -268,7 +268,7 @@ def _program_citation(ctx: ToolContext, klass: str) -> str:
 def _clinic_block(clinic: Clinic, cite: str, dist_mi: float) -> str:
     guarantee = CLASS_GUARANTEE[clinic.klass]
     where = clinic.address or clinic.borough or "NYC"
-    parts = [f"- {clinic.name} [{guarantee.label}] ({where}) — "
+    parts = [f"- {clinic.name} [{guarantee.label}] ({where}), "
              f"{dist_mi:.2f} mi straight-line {{cite:{cite}}}"]
     if clinic.phone:
         parts.append(f"  Phone: {clinic.phone}")
@@ -283,12 +283,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     if not near:
         return ("Ask the user where they are (an NYC address, neighborhood, or ZIP) before searching "
-                "— never guess a clinic location.")
+                ", never guess a clinic location.")
 
     origin = await geocode(near, client=ctx.http)
     if origin is None:
         return (f"I couldn't locate '{near}' in NYC, so I can't find a nearby clinic. Ask the user "
-                f"for a specific NYC address, neighborhood, or ZIP — don't guess a clinic. If they "
+                f"for a specific NYC address, neighborhood, or ZIP, don't guess a clinic. If they "
                 f"need care now, they can {OFFICIAL}.")
     if origin.low_confidence:
         return _clarify_message(near)
@@ -305,7 +305,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     clinics = fqhcs + _load_nyc_care_seed()
     if not clinics:
-        return (f"I couldn't pull any NYC safety-net clinics right now — don't invent one. Point the "
+        return (f"I couldn't pull any NYC safety-net clinics right now, don't invent one. Point the "
                 f"user to {OFFICIAL}, or findahealthcenter.hrsa.gov.")
 
     k = int(args.get("k") or 5)
@@ -326,9 +326,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         _resolution_note(near, origin),
     ]
     if degraded:
-        lines.append("(HRSA's live health-center data was unreachable — showing NYC Health + "
+        lines.append("(HRSA's live health-center data was unreachable, showing NYC Health + "
                      "Hospitals / NYC Care sites only. Suggest the user also try findahealthcenter.hrsa.gov.)")
-    lines.append("Nearby clinics that will see you regardless of insurance — report only these, cite "
+    lines.append("Nearby clinics that will see you regardless of insurance, report only these, cite "
                  "each. Lead with the reassurance that these places serve everyone:")
     classes_present: list[str] = []
     for clinic in ranked:
@@ -339,14 +339,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if clinic.klass not in classes_present:
             classes_present.append(clinic.klass)
 
-    # The eligibility / immigration-safety framing — ONE grounded, cited block per class present.
+    # The eligibility / immigration-safety framing, ONE grounded, cited block per class present.
     # This is the ONLY source of any cost/eligibility/immigration claim (never a per-row field).
     for klass in classes_present:
         guarantee = CLASS_GUARANTEE[klass]
         prog_cite = _program_citation(ctx, klass)
         lines.append(f"What {guarantee.label} means for you: {guarantee.body} {{cite:{prog_cite}}}")
 
-    lines.append("Call ahead to confirm hours and the services you need — this is not medical advice, "
+    lines.append("Call ahead to confirm hours and the services you need, this is not medical advice, "
                  "and for a medical emergency call 911. Report only the sites and the grounded "
                  "eligibility text above; never state a cost, eligibility, or immigration fact that "
                  "isn't in this result.")

@@ -81,7 +81,7 @@ class Registry:
         self.modules = modules
         self.base_allowlist = list(base_allowlist or [])
         # The currency-layer news domains (injected, like base_allowlist). Deliberately kept
-        # OUT of allowlist() so the default web_search never sees them — only the recency check.
+        # OUT of allowlist() so the default web_search never sees them, only the recency check.
         self._news_tier = list(news_tier or [])
 
     @classmethod
@@ -92,7 +92,7 @@ class Registry:
         news_tier: Optional[list[str]] = None,
     ) -> "Registry":
         """Scan `modules_dir` for manifests. `modules_dir` + `base_allowlist` + `news_tier` are
-        injected by the application — the engine reads no domain config module."""
+        injected by the application, the engine reads no domain config module."""
         modules: list[ServiceModule] = []
         if modules_dir.exists():
             for child in sorted(modules_dir.iterdir()):
@@ -125,7 +125,7 @@ class Registry:
     def allowlist(self) -> list[str]:
         """Base allowlist plus every module's additions, deduped and sorted.
 
-        Note: this is the trusted allowlist ONLY — it never includes the news tier, so the
+        Note: this is the trusted allowlist ONLY, it never includes the news tier, so the
         default web_search stays gov/authoritative-grounded. The recency check unions in
         news_tier() itself."""
         domains = set(self.base_allowlist)
@@ -187,7 +187,7 @@ class Registry:
         return out[:n]
 
     def capability_menu(self) -> list[tuple[str, str, list[str]]]:
-        """The grounded 'what can you do' for the welcome/help reply — one row per top-level
+        """The grounded 'what can you do' for the welcome/help reply, one row per top-level
         module: (category, blurb, examples). Submodules fold into their parent. Pure function of
         installed modules → it can't drift from what's actually loaded."""
         menu: list[tuple[str, str, list[str]]] = []
@@ -257,16 +257,16 @@ class Registry:
         return "\n".join(lines)
 
     def welcome_text(self) -> str:
-        """A warm, grounded 'here's what I can do' for first contact / the help intent — generated
+        """A warm, grounded 'here's what I can do' for first contact / the help intent, generated
         from the modules' examples, never a bare 'How can I help?'. Single source = the manifests,
         so it can never drift from what's actually installed."""
-        lines = ["Hi! I'm HeyNYC — I help you find and use NYC services, grounded in real city data, "
+        lines = ["Hi! I'm HeyNYC, I help you find and use NYC services, grounded in real city data, "
                  "and I cite my sources.", "", "Here are some things you can ask me:"]
         for example in self.welcome_examples(6):
             lines.append(f"  • {example}")
         lines += [
             "",
-            "Just tell me what you need — I'll reply in your language, using the city's official "
+            "Just tell me what you need, I'll reply in your language, using the city's official "
             "translation where there is one and translating the rest as best I can.",
             "",
             "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
@@ -278,7 +278,7 @@ class Registry:
         """Import each module's optional tools.py and collect its get_tools().
 
         A module ships custom tools by setting `tools: tools.py` in its manifest and
-        exposing `def get_tools() -> list[Tool]`. Failures are logged, not fatal —
+        exposing `def get_tools() -> list[Tool]`. Failures are logged, not fatal,
         one broken module shouldn't break the whole agent.
         """
         import importlib.util

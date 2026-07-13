@@ -3,12 +3,12 @@
 Embedding the same catalog on every call is wasteful; this memoizes the built
 `InMemoryVectorStore` keyed by (hash of the embedded texts, embedder model id).
 
-The KEY DESIGN is the established embedding-cache pattern — `hash(text)` namespaced
-by the model id — used by LangChain's `CacheBackedEmbeddings` and Redis `EmbeddingsCache`:
+The KEY DESIGN is the established embedding-cache pattern, `hash(text)` namespaced
+by the model id, used by LangChain's `CacheBackedEmbeddings` and Redis `EmbeddingsCache`:
 embeddings are NOT content-addressed, so a model/tokenizer change yields different vectors
 for identical text and the model id must be part of the key (spec §14). We reuse that
 pattern plus our own `Embedder`/`InMemoryVectorStore` rather than pulling in LangChain or
-Redis — disproportionate dependencies for a framework-light project and a tiny catalog.
+Redis, disproportionate dependencies for a framework-light project and a tiny catalog.
 
 On-disk persistence (survive restarts) is the documented next step and should reuse our
 existing LanceDB store (`core/index/store.py`); in-process covers the hot path (a

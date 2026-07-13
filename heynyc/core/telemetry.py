@@ -1,4 +1,4 @@
-"""Per-turn cost/usage telemetry — internal operational metrics, $0, no paid SaaS.
+"""Per-turn cost/usage telemetry, internal operational metrics, $0, no paid SaaS.
 
 Tokens come from LiteLLM (the agent attaches them to AgentResult.usage); cost is
 LiteLLM's own `cost_per_token`. Records are appended as JSONL and aggregated by
@@ -12,7 +12,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np  # already a dep (core/index/store.py) — reuse for percentiles
+import numpy as np  # already a dep (core/index/store.py), reuse for percentiles
 
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -29,7 +29,7 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 def default_path(data_dir: Path) -> Path:
-    """The telemetry log path under the app's data dir (injected — no domain config)."""
+    """The telemetry log path under the app's data dir (injected, no domain config)."""
     return Path(data_dir) / "telemetry.jsonl"
 
 

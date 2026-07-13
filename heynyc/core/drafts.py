@@ -1,7 +1,7 @@
-"""Per-user structured draft store — the agent's *actual* memory for an in-progress form.
+"""Per-user structured draft store, the agent's *actual* memory for an in-progress form.
 
 The problem it solves: conversation history is persisted (Session JSONL), but the form's
-answers live as chat text the LLM re-derives each turn — lossy for a long, legal form. This
+answers live as chat text the LLM re-derives each turn, lossy for a long, legal form. This
 store persists the **validated slot dict** as structured JSON keyed by (user_key, program),
 so the agent reads state instead of reconstructing it. It is the seed of the once-only vault:
 SNAP-collected answers can later pre-fill other programs.

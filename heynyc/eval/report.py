@@ -24,7 +24,7 @@ class CaseReport:
     @property
     def passed(self) -> bool:
         # Only blocking (structural-fact) checks gate; non-blocking semantic refusal checks
-        # are informational — the agent-as-judge is authoritative for them (amendment §A.1).
+        # are informational, the agent-as-judge is authoritative for them (amendment §A.1).
         return all(c.passed for c in self.checks if c.blocking)
 
 
@@ -68,7 +68,7 @@ class GateReport:
             for report in self.failures():
                 for check in report.checks:
                     if not check.passed:
-                        lines.append(f"  ✗ [{report.module}] {report.case_id} — {check.name}: {check.detail}")
+                        lines.append(f"  ✗ [{report.module}] {report.case_id}, {check.name}: {check.detail}")
         return "\n".join(lines)
 
 

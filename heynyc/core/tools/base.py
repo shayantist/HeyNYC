@@ -48,10 +48,10 @@ class Tool:
     handler: ToolHandler
     # MCP annotation hints (https://modelcontextprotocol.io/...): behavioral
     # metadata clients use to decide auto-approval, parallelism, caching, etc.
-    read_only: bool = True       # readOnlyHint  — doesn't modify state
-    destructive: bool = False    # destructiveHint — destroys/overwrites data
-    idempotent: bool = True      # idempotentHint — safe to retry with same args
-    open_world: bool = False     # openWorldHint  — hits external/open-ended data
+    read_only: bool = True       # readOnlyHint , doesn't modify state
+    destructive: bool = False    # destructiveHint, destroys/overwrites data
+    idempotent: bool = True      # idempotentHint, safe to retry with same args
+    open_world: bool = False     # openWorldHint , hits external/open-ended data
     requires_approval: bool = False  # gate side-effecting tools behind user approval
     strict: bool = False         # emit `strict: true` (all params required) for constrained decoding
     title: str = ""              # human-readable label
@@ -70,7 +70,7 @@ class Tool:
         return {"type": "function", "function": fn}
 
     def to_mcp(self) -> dict:
-        """Model Context Protocol tool object — portable to any MCP client."""
+        """Model Context Protocol tool object, portable to any MCP client."""
         return {
             "name": self.name,
             "description": self.description,

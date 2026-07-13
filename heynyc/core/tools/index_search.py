@@ -1,4 +1,4 @@
-"""index_search tool — retrieval over the curated NYC corpus (the "skeleton").
+"""index_search tool, retrieval over the curated NYC corpus (the "skeleton").
 
 Returns passages with DOC citations so the agent can ground general questions
 (how a service works, what to bring) that aren't location lookups. When nothing

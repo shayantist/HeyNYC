@@ -1,8 +1,8 @@
-"""Vector store with hybrid retrieval — dense cosine + BM25, fused by Reciprocal Rank Fusion.
+"""Vector store with hybrid retrieval, dense cosine + BM25, fused by Reciprocal Rank Fusion.
 
 Two backends behind one interface: InMemoryVectorStore (numpy, zero-config, the small-corpus
 default + tests) and LanceVectorStore (persistent). Ranking follows the documented hybrid
-standard — dense (semantic) + Okapi BM25 (lexical, IDF-weighted), combined with RRF, which fuses
+standard, dense (semantic) + Okapi BM25 (lexical, IDF-weighted), combined with RRF, which fuses
 by *rank* not score so the incompatible scales (cosine ∈ [-1,1] vs unbounded BM25) need no
 normalization. See docs/superpowers/specs/2026-06-29-eval-grading-and-retrieval-amendment.md.
 """
@@ -42,7 +42,7 @@ def _bm25_scores(query_terms: list[str], doc_tokens: list[list[str]],
                  k1: float = BM25_K1, b: float = BM25_B) -> list[float]:
     """Okapi BM25 of the query against each doc: IDF · saturated TF, length-normalized.
 
-    The standard lexical signal — rare discriminative terms (SCRIE, IDNYC) outweigh common
+    The standard lexical signal, rare discriminative terms (SCRIE, IDNYC) outweigh common
     ones via IDF (which bare term-overlap lacked), with TF saturation and doc-length
     normalization. A doc sharing no query term scores 0.
     """
@@ -76,7 +76,7 @@ def _bm25_scores(query_terms: list[str], doc_tokens: list[list[str]],
 
 
 def _rrf_fuse(dense: list[float], sparse: list[float], k: int = RRF_K) -> list[float]:
-    """Reciprocal Rank Fusion — combine two score lists by rank position, not magnitude,
+    """Reciprocal Rank Fusion, combine two score lists by rank position, not magnitude,
     so cosine and BM25 (incompatible scales) fuse without per-retriever normalization."""
     def ranks(scores: list[float]) -> list[int]:
         order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)

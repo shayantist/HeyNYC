@@ -1,4 +1,4 @@
-"""Environment-driven configuration. Secrets via env only — never hardcoded."""
+"""Environment-driven configuration. Secrets via env only, never hardcoded."""
 from __future__ import annotations
 
 import os
@@ -6,7 +6,7 @@ from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent  # the `heynyc` package
 PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
-# NOTE: this module no longer loads .env on import — the app entrypoint (heynyc/__main__.py)
+# NOTE: this module no longer loads .env on import, the app entrypoint (heynyc/__main__.py)
 # does, so the reusable engine never auto-reads a dotenv and tests stay hermetic.
 
 # LLM
@@ -29,13 +29,13 @@ def _parse_spend_cap(raw: str) -> float | None:
 
 HEYNYC_SPEND_CAP = _parse_spend_cap(os.getenv("HEYNYC_SPEND_CAP", ""))
 
-# Multilingual translate-at-edge pipeline (heynyc/core/multilingual.py) — reason in English, translate
+# Multilingual translate-at-edge pipeline (heynyc/core/multilingual.py), reason in English, translate
 # only the verified answer at the edge (OTI Gap 2, Local Law 30 language access). OFF by default and
 # DEFINED-BUT-NOT-CONSUMED here: the agent loop does not read this yet, mirroring the Tier-2 NLI guard.
 # Wiring it into agent.py is a deliberate follow-on.
 HEYNYC_MULTILINGUAL = os.getenv("HEYNYC_MULTILINGUAL", "").strip().lower() in ("1", "true", "yes", "on")
 
-# Judge model — deliberately a DIFFERENT family than the agent to avoid
+# Judge model, deliberately a DIFFERENT family than the agent to avoid
 # self-enhancement bias in LLM-as-judge (judges prefer their own outputs).
 # Falls back to the agent model if no alternate provider key is configured.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -55,7 +55,7 @@ MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")  # forgiving fallback geocoder (int
 GEOSEARCH_BASE = "https://geosearch.planninglabs.nyc/v2"
 MAPBOX_GEOCODE_BASE = "https://api.mapbox.com/geocoding/v5/mapbox.places"
 
-# Forgiving geocoder (intersections/POIs/fuzzy) — swappable provider via geopy.
+# Forgiving geocoder (intersections/POIs/fuzzy), swappable provider via geopy.
 # NYC GeoSearch stays the authoritative address path; this is the fallback.
 # Prefer Mapbox when a token is present (free ≤100k/mo, NYC-biased, reliable);
 # otherwise fall back to the keyless public Nominatim (dev/demo-grade, slow).
@@ -79,12 +79,12 @@ BASE_ALLOWLIST = [
     "mta.info",
 ]
 
-# The "currency layer" — a small, curated set of reputable news / legal-news domains used
+# The "currency layer", a small, curated set of reputable news / legal-news domains used
 # ONLY by the recency check (the recent_developments tool), never by the default web_search.
 # This is a deliberate, SUBORDINATE tier: news ranks BELOW gov/authoritative sources and its
 # results are labeled developing/contested, so the official grounded answer always stays
 # primary. Kept engine-independent (injected like BASE_ALLOWLIST) so it never pollutes the
-# per-module allowlists. Intentionally short and reputable-only — this is not "the open web."
+# per-module allowlists. Intentionally short and reputable-only, this is not "the open web."
 NEWS_ALLOWLIST = [
     # NYC local newsrooms
     "thecity.nyc",

@@ -1,8 +1,8 @@
-"""Multi-model eval bench — run the golden cases across several candidate backend models and print a per-model comparison.
+"""Multi-model eval bench, run the golden cases across several candidate backend models and print a per-model comparison.
 
 When a new model ships, point the bench at it and the incumbents in one shot (`heynyc bench --models a,b,c`)
 and read off overall + safety-critical pass rates side by side to decide whether to switch. This reuses the
-exact same case set, runner, and gate as `heynyc eval` — the only new axis is "which model answered".
+exact same case set, runner, and gate as `heynyc eval`, the only new axis is "which model answered".
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _candidate_cost(model: str, results) -> tuple[float, int, int]:
     """Total candidate spend for one model's run: sum every case's token usage, price it once.
 
     Returns (cost_usd, input_tokens, output_tokens). Cases the agent never billed (a crash before any
-    token, or a model litellm can't price) contribute 0 — cost is a floor, never a fabricated number."""
+    token, or a model litellm can't price) contribute 0, cost is a floor, never a fabricated number."""
     in_tok = sum(int(r.usage.get("input_tokens", 0)) for r in results)
     out_tok = sum(int(r.usage.get("output_tokens", 0)) for r in results)
     return cost_usd(model, in_tok, out_tok), in_tok, out_tok
@@ -65,13 +65,13 @@ def render_bench(rows: list[BenchRow], safety_case_ids: set) -> str:
 
 
 def render_by_category(rows: list[BenchRow], cases) -> str:
-    """Per-category pass breakdown, one block per model — the red-team's headline view.
+    """Per-category pass breakdown, one block per model, the red-team's headline view.
 
     `cases` supplies each case's `redteam_category` (falling back to `harm_category`), so this works on
     the red-team suite or any category-tagged case set. A category with any failure is flagged so a
     single unsafe answer can never hide inside a high pass rate."""
     cat_of = {c.id: (getattr(c, "redteam_category", "") or getattr(c, "harm_category", "") or "?") for c in cases}
-    lines = ["HeyNYC red-team — per-category safety", ""]
+    lines = ["HeyNYC red-team, per-category safety", ""]
     for row in rows:
         if row.error is not None:
             lines.append(f"  {row.model}: ERROR ({row.error})")
@@ -115,7 +115,7 @@ async def run_bench(
             results = await run_all(factory, cases, reminders=reminders)
             report = await evaluate(results, judge=judge)
             if out_dir is not None:
-                # write_run(directory, report) — one subdir per model keeps raw traces/answers separate.
+                # write_run(directory, report), one subdir per model keeps raw traces/answers separate.
                 write_run(Path(out_dir) / model, report)
             cost, in_tok, out_tok = _candidate_cost(model, results)
             rows.append(BenchRow(model, report, cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok))

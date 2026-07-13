@@ -1,4 +1,4 @@
-"""Citation registry — every grounded claim links back to a real source.
+"""Citation registry, every grounded claim links back to a real source.
 
 Adapts DXA's `{cite:KB1}` model (api/state.py::get_or_register_citation). Tools
 register the sources they return; the agent cites them inline as `{cite:S1}`.
@@ -81,7 +81,7 @@ class Citation:
     title: str
     snippet: str
     kind: CiteKind
-    valid_as_of: str = ""  # source "as of" date (temporal provenance, spec §11) — never fetch time
+    valid_as_of: str = ""  # source "as of" date (temporal provenance, spec §11), never fetch time
     provenance: dict = field(default_factory=dict)  # structured DATA provenance (empty for DOC/WEB)
 
 

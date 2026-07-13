@@ -3,7 +3,7 @@
 NYC GeoSearch (geo.py) stays the authoritative *address* path; this is the
 swappable fallback for queries GeoSearch can't do. The provider is config-
 selected (`HEYNYC_GEOCODER`) so the backend isn't hard-wired to any vendor or
-city — geopy abstracts ~15 providers behind one interface and runs async via
+city, geopy abstracts ~15 providers behind one interface and runs async via
 `AioHTTPAdapter`.
 
 Per Nominatim's usage policy the default provider sets a `user_agent` and is
@@ -47,7 +47,7 @@ def _confidence(provider: str, raw: dict) -> float:
 
 
 def _nyc_box():
-    """NYC bounding box as geopy Points (SW, NE) — keeps results inside the city.
+    """NYC bounding box as geopy Points (SW, NE), keeps results inside the city.
 
     Without this, a global geocoder confidently returns the wrong city
     ("2920 Broadway" → Lorain, Ohio); biasing is essential, not optional."""

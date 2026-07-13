@@ -1,12 +1,12 @@
-"""Notify NYC advisories client — the city's emergency-alert feed (Everbridge / CAP).
+"""Notify NYC advisories client, the city's emergency-alert feed (Everbridge / CAP).
 
-Notify NYC (run by NYC Emergency Management) publishes emergency advisories — extreme heat,
-air quality, boil-water notices, beach/pool closures, transit disruptions — as a public RSS feed
+Notify NYC (run by NYC Emergency Management) publishes emergency advisories, extreme heat,
+air quality, boil-water notices, beach/pool closures, transit disruptions, as a public RSS feed
 of CAP (Common Alerting Protocol 1.2) alerts on Everbridge. This adapter is the injectable seam
 that mirrors `arcgis.query_feature_service`: pass an httpx client so tests stay fully offline.
 
 The feed is two hops:
-  1. RSS (`RSS_URL`, must follow redirects) — ~64 `<item>`s, one per (alert × language). Each item's
+  1. RSS (`RSS_URL`, must follow redirects), ~64 `<item>`s, one per (alert × language). Each item's
      `<author>` tags the language ("NYCEM [English]" / "NYCEM [Spanish]" / …). We RETAIN every
      language variant the feed carries (~12 official languages besides English) so a caller can
      request an advisory in the user's language, falling back to the official English text when that
@@ -14,12 +14,12 @@ The feed is two hops:
      (fallback: `<link>` text). An official city translation beats an LLM paraphrase, so we surface it.
   2. Each CAP XML (namespace `urn:oasis:names:tc:emergency:cap:1.2`) carries the structured alert:
      event/severity/urgency/category, `sent`/`expires` (ISO 8601 with tz offset), headline, and an
-     `<area>` `areaDesc` — a comma-separated list of borough names that is OFTEN all five (a citywide
+     `<area>` `areaDesc`, a comma-separated list of borough names that is OFTEN all five (a citywide
      default even for a local event), so it must NOT be over-trusted for geo filtering.
 
 We parse namespace-AGNOSTICALLY (by local tag name) so a namespace-prefix change never breaks it,
 and stay resilient: any network/parse error yields an empty list so the caller abstains rather than
-fabricating — this feed never invents an advisory. Verified live 2026-07-02.
+fabricating, this feed never invents an advisory. Verified live 2026-07-02.
 """
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ _LANG_ALIASES = {
 }
 
 
-# A DTD/entity declaration in the prolog — the prerequisite for both the "billion laughs"
+# A DTD/entity declaration in the prolog, the prerequisite for both the "billion laughs"
 # entity-expansion attack and XXE. Legitimate RSS/CAP never uses one.
 _DTD_RE = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
@@ -116,10 +116,10 @@ def _safe_fromstring(xml_text: str) -> ET.Element:
     """Parse XML after refusing any DTD / entity declaration.
 
     This feed is external, and the stdlib parser is by default vulnerable to the "billion laughs"
-    entity-expansion and XXE attacks — both of which require a DTD (`<!DOCTYPE … [ <!ENTITY …> ]>`).
+    entity-expansion and XXE attacks, both of which require a DTD (`<!DOCTYPE … [ <!ENTITY …> ]>`).
     Rather than add a `defusedxml` dependency, we reject a DTD before parsing (a portable equivalent
     of `defusedxml`'s `forbid_dtd`). A stray external entity reference without a declaration is
-    undefined and makes expat error out on its own — so the parser can never expand a bomb. Every
+    undefined and makes expat error out on its own, so the parser can never expand a bomb. Every
     caller fails safe (None / []) on the raised error.
     """
     if _DTD_RE.search(xml_text):
@@ -154,7 +154,7 @@ def _direct_child_text(parent: ET.Element, name: str) -> str:
 
 
 def _parse_cap(xml_text: str, source_url: str) -> Optional[Advisory]:
-    """Parse one CAP XML into an Advisory. Returns None on any parse failure — never raises.
+    """Parse one CAP XML into an Advisory. Returns None on any parse failure, never raises.
 
     `source_url` is the resolvable CAP XML url (a DATA citation can re-fetch it). We require an
     `<info>` block and a non-empty `expires` (without it there's no active-window to reason about).
@@ -200,7 +200,7 @@ def _item_cap_url(item: ET.Element) -> str:
 def _cap_urls_by_language(rss_text: str) -> dict[str, list[str]]:
     """Map each language NAME (lowercased, from the item `<author>` tag) to its CAP XML urls.
 
-    Retains ALL official-language variants the feed carries — English plus ~12 others — instead of
+    Retains ALL official-language variants the feed carries, English plus ~12 others, instead of
     discarding everything but English, so a caller can serve an advisory in the user's language.
     """
     try:
@@ -256,7 +256,7 @@ def _dedupe(results: list) -> list[Advisory]:
     seen: set[str] = set()
     for result in results:
         if not isinstance(result, Advisory):
-            continue  # a failed/None CAP — tolerated, skipped
+            continue  # a failed/None CAP, tolerated, skipped
         key = _advisory_key(result)
         if key in seen:
             continue
@@ -272,7 +272,7 @@ async def fetch_advisories(
 
     GETs the RSS (following redirects), then fetches CAP XMLs CONCURRENTLY (tolerating individual
     failures), parses each, and dedupes by CAP identifier (the alert id, which is language-stable).
-    The default (`lang=None` or English) fetches ONLY the English items — unchanged behavior. When a
+    The default (`lang=None` or English) fetches ONLY the English items, unchanged behavior. When a
     non-English language is requested AND the feed carries it, we ALSO fetch those variants and
     overlay them on the English base per alert: the requested language wins, English is the fallback
     for any alert with no variant in that language (an official city translation, not a paraphrase).

@@ -1,4 +1,4 @@
-"""Scoped web search — the long-tail / fresh-info fallback.
+"""Scoped web search, the long-tail / fresh-info fallback.
 
 Restricted to an allowlist of trusted NYC domains so the agent can't wander onto
 random sources. Results are double-checked against the allowlist (defense in depth)
@@ -53,7 +53,7 @@ async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]
 
 
 async def tavily_search(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
-    """Default backend — plain allowlisted search, no recency bias. IGNORES `recency` so the
+    """Default backend, plain allowlisted search, no recency bias. IGNORES `recency` so the
     default web_search stays untimed and can serve general/historical/older-than-a-year queries."""
     return await _tavily(query, allowed_domains)
 
@@ -65,12 +65,12 @@ async def tavily_search_recent(query: str, allowed_domains: list[str], recency: 
     fresh NATIONAL headlines: measured against this allowlist it never surfaced the March-2026
     source-of-income appellate ruling for ANY query wording (broad, entity-rich, or by case name),
     while the relevance-first topic returned that exact ruling as the top on-point result. Recency
-    comes from the entity-rich, year-bearing query the agent builds (rule 9) plus this window — not
+    comes from the entity-rich, year-bearing query the agent builds (rule 9) plus this window, not
     from a news-trending sort that trades away relevance.
 
     The window is agent-settable via `recency` (day/week/month/year): narrow to day/week for
     fast-moving current events, default to a full year for slow-moving rules/laws/rulings. Defaults
-    to "year" when unset; defense in depth — any unexpected value also falls back to "year"."""
+    to "year" when unset; defense in depth, any unexpected value also falls back to "year"."""
     window = recency if recency in _RECENCY_WINDOWS else "year"
     return await _tavily(query, allowed_domains, time_range=window)
 
@@ -83,7 +83,7 @@ def _tier_of(
     source_tiers: dict[str, tuple[str, str]],
     news_tier: tuple[str, ...] | list[str] = (),
 ) -> str:
-    """Best tier for a URL's host: an explicit source_tiers match (highest wins), else a default —
+    """Best tier for a URL's host: an explicit source_tiers match (highest wins), else a default,
     gov domains are authoritative, a curated news-tier domain is `news` (subordinate), and
     everything else allowlisted is editorial. Gov always outranks news so an official page can
     never be demoted by also appearing in the recency check."""
@@ -109,8 +109,8 @@ def _prefers(url: str, prefer: list[str]) -> bool:
 
 # Per-tier presentation label for a result block (falls back to the bare tier name).
 _TIER_LABELS = {
-    "community": "⚠️ community-posted — confirm before you go",
-    "news": "📰 news — recent/developing, verify against the official source",
+    "community": "⚠️ community-posted, confirm before you go",
+    "news": "📰 news, recent/developing, verify against the official source",
 }
 
 
@@ -175,7 +175,7 @@ def web_search_tools(
         recent_search, recent_domains, source_tiers, news_tier,
         abstain_msg=(
             "No recent developments found in trusted news or official sources for that query. "
-            "Don't invent one — it's fine to say there's nothing new you can confirm."
+            "Don't invent one, it's fine to say there's nothing new you can confirm."
         ),
     )
 
@@ -186,7 +186,7 @@ def web_search_tools(
             "description": "Optional domains to rank first (e.g. a topic's official sites).",
         },
     }
-    # recent_developments ONLY — lets the agent pick the recency window per question.
+    # recent_developments ONLY, lets the agent pick the recency window per question.
     recency_param = {
         "recency": {
             "type": "string",
@@ -204,7 +204,7 @@ def web_search_tools(
             name="web_search",
             description=(
                 "Search trusted NYC web sources (nyc.gov, nyctourism.com, official event sites, etc.) "
-                "for fresh or long-tail info not in the index — e.g. a specific event this weekend. "
+                "for fresh or long-tail info not in the index, e.g. a specific event this weekend. "
                 "Restricted to an allowlist and ranked by source trust; results are tagged "
                 "authoritative/editorial/community. Treat community-tagged (⚠️) results as unconfirmed "
                 "and tell the user to verify. Pass `prefer` to boost the active topic's official "
@@ -225,15 +225,15 @@ def web_search_tools(
                 "sources, for legal / policy / benefits-rules / rights questions whose answer could "
                 "have CHANGED recently (a court ruling, a new or amended law, an eligibility change). "
                 "Build a SPECIFIC, entity-rich `query` from the actual rule/program/parties in the "
-                "question — name the statute, program, or case and add 'ruling'/'law'/the year, e.g. "
+                "question, name the statute, program, or case and add 'ruling'/'law'/the year, e.g. "
                 "'NYC Section 8 source of income discrimination court ruling 2026', NOT a broad "
                 "'Section 8 news'. A broad query returns unrelated trending headlines instead of the "
                 "on-point change. Searches the trusted allowlist PLUS a small curated set of reputable "
                 "news + legal-news sources. News results are tagged '📰 news' and rank BELOW official "
-                "sources — they are DEVELOPING/CONTESTED. RELEVANCE GATE: only surface a result if it "
+                "sources, they are DEVELOPING/CONTESTED. RELEVANCE GATE: only surface a result if it "
                 "bears on the SAME rule/law/program the user asked about. If what comes back is merely "
                 "tangential (e.g. unrelated funding cuts when the question was about the discrimination "
-                "law), STAY SILENT — saying nothing beats appending an off-topic caveat. When a result "
+                "law), STAY SILENT, saying nothing beats appending an off-topic caveat. When a result "
                 "IS on point, surface it as a clearly labeled, DATED, CITED heads-up (e.g. 'Heads up, "
                 "this may be changing: <X>, per <source> (<date>)') that NEVER overrides the official "
                 "answer. CONTESTED LEGAL MATTER: if the development is a court ruling or a legal "
@@ -241,7 +241,7 @@ def web_search_tools(
                 "scope from a news snippet as fact, and NEVER tell the user their protection is 'struck "
                 "down / gone / annulled / no longer applies / may have changed.' LEAD with the protection "
                 "that CURRENTLY STANDS (grounded + cited to the official source), then frame the "
-                "litigation only as 'there is an active legal challenge, this could change — confirm the "
+                "litigation only as 'there is an active legal challenge, this could change, confirm the "
                 "current status with 311 or the official agency.' Never name the court or characterize "
                 "the outcome or scope; never imply a valid right is already gone. This holds in every "
                 "language. Cite every result; if nothing on point comes back, don't invent a development."

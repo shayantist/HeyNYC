@@ -1,7 +1,7 @@
 """Twilio adapter (WhatsApp sandbox + SMS). Inbound is form-encoded + X-Twilio-Signature;
 reply out-of-band via the sync REST client in a threadpool (create_async hangs on uvloop).
 
-NOTE: no `from __future__ import annotations` here on purpose — the FastAPI route below
+NOTE: no `from __future__ import annotations` here on purpose, the FastAPI route below
 annotates `request: Request`, and FastAPI must see the real class (not a deferred string)
 to inject it rather than treat it as a query parameter."""
 import asyncio
@@ -26,14 +26,14 @@ class TwilioReplier:
     async def send_document(self, path: str, caption: str = "") -> None:
         # Twilio fetches media by PUBLIC URL; a local file can't be attached directly. If we're
         # given a hosted URL, send it as media; otherwise degrade to a text note (Meta is the
-        # document-capable channel — see the channels README).
+        # document-capable channel, see the channels README).
         if path.startswith(("http://", "https://")):
             await asyncio.to_thread(
                 self._client.messages.create,
                 from_=self._from, to=self._to, body=caption or "", media_url=[path],
             )
         else:
-            await self.send_text(f"{caption or 'Your document is ready'} — I'll send a download link shortly.")
+            await self.send_text(f"{caption or 'Your document is ready'}, I'll send a download link shortly.")
 
     async def indicate_typing(self) -> None:
         return  # Twilio has no typing indicator

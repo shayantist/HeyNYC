@@ -36,7 +36,7 @@ def _from_ticketmaster(raw: dict) -> Optional[Event]:
     start = (raw.get("dates") or {}).get("start") or {}
     start_date = start.get("localDate") or ""
     if not start_date:
-        return None  # undated / TBA — don't surface as a real listing
+        return None  # undated / TBA, don't surface as a real listing
     venues = (raw.get("_embedded") or {}).get("venues") or []
     venue = venues[0].get("name", "") if venues else ""
     borough = (venues[0].get("city") or {}).get("name", "") if venues else ""
@@ -68,7 +68,7 @@ def _future_only(events: list[Event], today: str) -> list[Event]:
 
 _NO_RESULTS = (
     "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks). "
-    "Don't invent events — tell the user nothing grounded came up and suggest they check the "
+    "Don't invent events, tell the user nothing grounded came up and suggest they check the "
     "official source directly."
 )
 
@@ -76,7 +76,7 @@ _NO_RESULTS = (
 def _event_block(ev: Event, cite: str) -> str:
     when = ev.start_date + (f" {ev.start_time}" if ev.start_time else "")
     where = f" @ {ev.venue}" if ev.venue else ""
-    return f"- {ev.name}{where} — {when} ({ev.source}) {{cite:{cite}}}"
+    return f"- {ev.name}{where}, {when} ({ev.source}) {{cite:{cite}}}"
 
 
 async def _handler(args: dict, ctx: ToolContext) -> str:
@@ -122,14 +122,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     for ev in events:
         cite = ctx.citations.register(
             ev.url or PARKS_SOURCE_URL,
-            snippet=f"{ev.name} — {ev.start_date} {ev.venue}".strip(),
+            snippet=f"{ev.name}, {ev.start_date} {ev.venue}".strip(),
             title=ev.name or "NYC event", kind="DATA", valid_as_of=ev.start_date,
         )
         blocks.append(_event_block(ev, cite))
 
     header = (
         "Upcoming NYC events from live sources (Ticketmaster + NYC Parks). Each links to its "
-        "official page — cite them and don't add events that aren't listed here:\n"
+        "official page, cite them and don't add events that aren't listed here:\n"
     )
     return header + "\n".join(blocks)
 
@@ -140,9 +140,9 @@ def get_tools() -> list[Tool]:
             name="whats_on_events",
             description=(
                 "Find upcoming NYC events (concerts, sports, festivals, free park events, watch "
-                "parties) from live sources — Ticketmaster + NYC Parks. Pass `keyword` (e.g. "
+                "parties) from live sources, Ticketmaster + NYC Parks. Pass `keyword` (e.g. "
                 "'world cup', 'jazz'), optional `classification` (Music/Sports/Arts & Theatre), "
-                "and optional `borough`. Returns grounded, dated, linked listings — future events "
+                "and optional `borough`. Returns grounded, dated, linked listings, future events "
                 "only. Use this for 'what's happening' / 'events this weekend' questions; it never "
                 "invents events. For curated topic pages use index_search; for the long tail use "
                 "web_search."

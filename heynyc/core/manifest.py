@@ -1,4 +1,4 @@
-"""ServiceModule manifest — the extension contract.
+"""ServiceModule manifest, the extension contract.
 
 Each pluggable service ("skill") lives in `heynyc/modules/<name>/manifest.yaml`
 and declares its data sources, index seeds, web allowlist, capability blurb,
@@ -56,7 +56,7 @@ class ServiceModule(BaseModel):
     category: str = "general"
     description: str = ""
     keywords: list[str] = Field(default_factory=list)
-    examples: list[str] = Field(default_factory=list)  # user-facing example queries — the single source for capability discovery
+    examples: list[str] = Field(default_factory=list)  # user-facing example queries, the single source for capability discovery
     datasets: list[DatasetBinding] = Field(default_factory=list)
     seeds: list[str] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)

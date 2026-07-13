@@ -1,9 +1,9 @@
-"""housing_connect module tool: `open_housing_lotteries` — currently-open NYC
+"""housing_connect module tool: `open_housing_lotteries`, currently-open NYC
 affordable-housing lotteries, plus a deep-link handoff to the login-gated portal.
 
 Grounded in one NYC Open Data (Socrata) dataset:
 
-  - Advertised Lotteries on Housing Connect by Lottery (vy5i-a666) — one row per
+  - Advertised Lotteries on Housing Connect by Lottery (vy5i-a666), one row per
     lottery, filtered to the currently-open slice:
     `lottery_status='Active' AND lottery_end_date >= <today>`.
 
@@ -204,7 +204,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             provenance=data_provenance(snapshot, record_id=lottery_id, field_pointer="/"),
         )
 
-        detail = f"- {name} — {boro}. {units} unit(s)"
+        detail = f"- {name}, {boro}. {units} unit(s)"
         if mix:
             detail += f" ({', '.join(mix)})"
         if ami:

@@ -1,15 +1,15 @@
 """Owner-gated live entrypoint for the adversarial red-team.
 
-This is a THIN orchestration over the shared eval machinery — it reinvents nothing:
+This is a THIN orchestration over the shared eval machinery, it reinvents nothing:
 
   • the suite is `cases.load_redteam_cases()` (205 attack prompts as EvalCases, each carrying a
     `safety_criterion` so the shared judge grades them with the strict adversarial rubric);
-  • the runner + gate are `bench.run_bench` / `report.evaluate` — the SAME path `heynyc eval` and
+  • the runner + gate are `bench.run_bench` / `report.evaluate`, the SAME path `heynyc eval` and
     `heynyc bench` use, so red-team answers also pick up the deterministic grounding floor,
     link-liveness, and invariants a standalone harness would have skipped;
-  • the grader is `judges.make_api_judge(..., require_independent=True)` — an INDEPENDENT,
+  • the grader is `judges.make_api_judge(..., require_independent=True)`, an INDEPENDENT,
     family-separated cross-family judge that STRUCTURALLY refuses to be built in the candidate's own
-    model family (the candidate can never grade its own output — OTI-readiness Gap 1's whole point);
+    model family (the candidate can never grade its own output, OTI-readiness Gap 1's whole point);
   • the headline view is `bench.render_by_category` (per-category SAFE counts, any failure flagged).
 
 Standards (see docs/eval/red-team-v2-methodology.md): the 8 categories + strict SAFE/FAIL rubric are
@@ -45,7 +45,7 @@ async def run_redteam(
     INDEPENDENT cross-family judge. Returns the single BenchRow (its `.report` is the full GateReport).
 
     Building the judge with `require_independent=True` raises BEFORE any model runs when the grader
-    shares the candidate's family — the structural self-grading guard, surfaced loudly rather than
+    shares the candidate's family, the structural self-grading guard, surfaced loudly rather than
     swallowed as a per-model error."""
     cases = cases if cases is not None else load_redteam_cases()
     judge = make_api_judge(grader_model, now=now, candidate_model=candidate_model, require_independent=True)
@@ -89,7 +89,7 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
     if same_family(args.model, grader_model):
         raise SystemExit(
             f"grader '{grader_model}' shares family '{model_family(grader_model)}' with candidate "
-            f"'{args.model}' — that is self-grading. Pass --grader with a different model family."
+            f"'{args.model}', that is self-grading. Pass --grader with a different model family."
         )
 
     cases = load_redteam_cases(Path(args.suite) if args.suite else default_redteam_suite())

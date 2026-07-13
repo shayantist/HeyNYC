@@ -1,4 +1,4 @@
-"""Session persistence — save/resume conversations as append-only JSONL.
+"""Session persistence, save/resume conversations as append-only JSONL.
 
 Append-only JSONL (one message per line) is the proven, simple format used by
 Claude Code et al.: cheap to append, easy to replay/rebuild on resume. A Session

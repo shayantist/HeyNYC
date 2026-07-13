@@ -8,7 +8,7 @@ fp_<day>_open*/close* hours), phone, dietary/access flags (Halal/Kosher/HIV/Mobi
 Maps directions link. Every site is a row-addressed DATA citation grounded in the ArcGIS source URL.
 
 Honest limitations (enforced in the manifest prompt too): the source has NO languages field, and
-`fp_notes` (eligibility) is frequently blank — we never invent hours, requirements, or languages.
+`fp_notes` (eligibility) is frequently blank, we never invent hours, requirements, or languages.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from heynyc.core.tools.geo import (
     miles,
 )
 
-# The live backend of finder.nyc.gov/foodhelp — verified public + tokenless.
+# The live backend of finder.nyc.gov/foodhelp, verified public + tokenless.
 FOODHELP_URL = (
     "https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/"
     "Food_Help_Programs_PROD_view/FeatureServer/0"
@@ -67,7 +67,7 @@ def _parse_time(value) -> int | None:
     """A source time string → minutes since midnight, or None if blank/unparseable.
 
     Defensive across the formats the finder might emit: '9:00 AM', '5:30 PM', 24h '17:30',
-    and military '0900'. NOTE: the exact live format is not verified offline — if the pull shows
+    and military '0900'. NOTE: the exact live format is not verified offline, if the pull shows
     a different encoding, extend this parser (the open-now display fails safe to 'hours not listed').
     """
     if value is None:
@@ -130,7 +130,7 @@ def _status_label(open_now: bool | None) -> str:
         return "open now"
     if open_now is False:
         return "closed now"
-    return "hours not listed — call ahead"
+    return "hours not listed, call ahead"
 
 
 # --- record → pantry -------------------------------------------------------
@@ -167,7 +167,7 @@ def _epoch_ms_to_date(ms: float) -> str:
 
 
 def _valid_as_of(record: dict) -> str:
-    """The record's EditDate (ArcGIS epoch-ms or ISO), else today's pull date — never fetch-faked."""
+    """The record's EditDate (ArcGIS epoch-ms or ISO), else today's pull date, never fetch-faked."""
     value = record.get("EditDate")
     if isinstance(value, (int, float)):
         parsed = _epoch_ms_to_date(value)
@@ -218,7 +218,7 @@ def _flags(pantry: FoodPantry) -> list[str]:
 
 def directions_link(lat: float, lon: float) -> str:
     """A Google Maps directions deep link to a grounded coordinate (navigation handoff, no citation
-    needed — it's a deterministic transform of an already-grounded point)."""
+    needed, it's a deterministic transform of an already-grounded point)."""
     return f"https://www.google.com/maps/dir/?api=1&destination={lat:.5f},{lon:.5f}"
 
 
@@ -239,7 +239,7 @@ def _pantry_citation(ctx: ToolContext, pantry: FoodPantry, *,
     )
     return ctx.citations.register(
         url,
-        snippet=f"{pantry.name} — {pantry.address}",
+        snippet=f"{pantry.name}, {pantry.address}",
         title="NYC FoodHelp (Food Help Programs)",
         kind="DATA",
         valid_as_of=pantry.valid_as_of,
@@ -251,7 +251,7 @@ def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) 
     flags = _flags(pantry)
     flag_str = f" [{', '.join(flags)}]" if flags else ""
     status = _status_label(_open_now(pantry.raw, now))
-    parts = [f"- {pantry.name}{flag_str} ({pantry.address or 'NYC'}) — "
+    parts = [f"- {pantry.name}{flag_str} ({pantry.address or 'NYC'}), "
              f"{dist_mi:.2f} mi straight-line, {status} {{cite:{cite}}}"]
     if pantry.phone:
         parts.append(f"  Phone: {pantry.phone}")
@@ -265,25 +265,25 @@ def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) 
 async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     if not near:
-        return ("Ask the user where they are (an NYC address or neighborhood) before searching — "
+        return ("Ask the user where they are (an NYC address or neighborhood) before searching, "
                 "never guess a pantry location.")
 
     origin = await geocode(near, client=ctx.http)
     if origin is None:
         return (f"I couldn't locate '{near}' in NYC, so I can't find a nearby food pantry. Ask the "
-                f"user for a specific NYC address or neighborhood — don't guess a pantry.")
+                f"user for a specific NYC address or neighborhood, don't guess a pantry.")
     if origin.low_confidence:
         return _clarify_message(near)
 
     try:
         records = await query_feature_service(FOODHELP_URL, where=WHERE_OPEN, client=ctx.http)
     except httpx.HTTPError:
-        return (f"I couldn't reach the city's FoodHelp data right now — don't guess a pantry. "
+        return (f"I couldn't reach the city's FoodHelp data right now, don't guess a pantry. "
                 f"Point the user to {OFFICIAL}.")
 
     pantries = [p for p in (_to_pantry(r) for r in records) if p is not None]
     if not pantries:
-        return (f"No open food pantries came back from the city's FoodHelp data. Don't invent one — "
+        return (f"No open food pantries came back from the city's FoodHelp data. Don't invent one, "
                 f"point the user to {OFFICIAL}.")
 
     k = int(args.get("k") or 5)
@@ -304,14 +304,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     lines = [
         f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
         _resolution_note(near, origin),
-        "Open food pantries from NYC FoodHelp (finder.nyc.gov/foodhelp) — report only these, cite each:",
+        "Open food pantries from NYC FoodHelp (finder.nyc.gov/foodhelp), report only these, cite each:",
     ]
     for pantry in ranked:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon))
         cite = _pantry_citation(ctx, pantry, origin_lat=origin.lat, origin_lon=origin.lon,
                                 dist_mi=dist_mi)
         lines.append(_pantry_block(pantry, cite, dist_mi, now))
-    lines.append("Hours change and eligibility isn't always listed — tell the user to call ahead; "
+    lines.append("Hours change and eligibility isn't always listed, tell the user to call ahead; "
                  "if a field isn't shown, say you don't have it (don't guess). The data has no "
                  "language info.")
     return "\n".join(lines)
@@ -326,9 +326,9 @@ def get_tools() -> list[Tool]:
                 "the city's official FoodHelp data (finder.nyc.gov/foodhelp). Pass `near` = the "
                 "user's NYC address or neighborhood; optional `k` (default 5). Returns each site's "
                 "name, full address, open-now status, phone, dietary/access type "
-                "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link — every site cited. "
+                "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
-                "The source has no language info and eligibility notes are often blank — don't invent."
+                "The source has no language info and eligibility notes are often blank, don't invent."
             ),
             parameters={
                 "type": "object",

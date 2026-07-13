@@ -1,4 +1,4 @@
-"""Eval harness — the no-hallucination gate.
+"""Eval harness, the no-hallucination gate.
 
 Runs each module's golden `eval.yaml` cases through the agent and checks them with
 deterministic assertions (expected/forbidden tools, citation kinds, abstention,

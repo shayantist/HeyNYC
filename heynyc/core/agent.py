@@ -1,4 +1,4 @@
-"""HeyNYC agent — a grounded, streaming tool-calling harness.
+"""HeyNYC agent, a grounded, streaming tool-calling harness.
 
 The core is the standard agent loop (LLM + tools until no tool calls), but built
 as an event stream so a UI can show work in progress, with model-call retries,
@@ -29,29 +29,29 @@ logger = logging.getLogger("heynyc.agent")
 # the core does NOT read a domain config module, so it stays reusable across projects.
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
-# Safe fallback for a terminal turn (no tool calls) that comes back empty/whitespace. Some inputs —
-# notably an encoded-instruction injection the model refuses by going silent — yield a blank final
+# Safe fallback for a terminal turn (no tool calls) that comes back empty/whitespace. Some inputs,
+# notably an encoded-instruction injection the model refuses by going silent, yield a blank final
 # turn; the user must NEVER see an empty response, so we substitute an explicit safe refusal.
 EMPTY_ANSWER_FALLBACK = (
     "I can't help with that request. If there's something about NYC services, benefits, or events "
-    "I can help you find, tell me in your own words and I'll do my best — or you can call 311."
+    "I can help you find, tell me in your own words and I'll do my best, or you can call 311."
 )
 
 # --- Deterministic grounding guard (post-generation safety hook) ----------------------------------
 # The single most important safety mechanism for running HeyNYC on a cheaper model: after the agent
 # produces its FINAL answer, we deterministically re-check that every {cite:Sn}'d structured fact
-# actually appears in the source it's attributed to (core.grounding.check_grounding — the SAME logic
+# actually appears in the source it's attributed to (core.grounding.check_grounding, the SAME logic
 # the eval gate uses). A HARD mismatch (a verbatim phone / dollar amount / address absent from an
 # all-complete-capture source) is a fabrication: we feed the model a SPECIFIC correction and let it
 # regenerate (Tier 3), capped; if it still can't ground it, we strip the offending claim or abstain and
 # route to 311 (Tier 4). SOFT mismatches (name drift, or anything cited to a truncated snippet) never
-# fire — preserving the check's zero-false-fail calibration so a CORRECT answer is never over-blocked.
+# fire, preserving the check's zero-false-fail calibration so a CORRECT answer is never over-blocked.
 GUARD_MAX_RETRIES = 2
 
 # Tier 4 last resort: the model could not ground a load-bearing fact after the retry cap. Rather than
 # ship an unverified number/address, hold off and route to a human / the official source.
 GROUNDING_ABSTAIN_FALLBACK = (
-    "I want to get this right, and I couldn't confirm that detail against an official source — so I'd "
+    "I want to get this right, and I couldn't confirm that detail against an official source, so I'd "
     "rather not guess and risk sending you the wrong number or address. For the accurate, current "
     "info, call 311 or check the official NYC page, and they can take it from there."
 )
@@ -77,7 +77,7 @@ def _grounding_feedback(result: GroundingResult) -> str:
         f"support: {problems}. Each is a structured fact (a phone number, dollar amount, address, or "
         "the like) you attributed to a {cite:Sn} source whose content does not contain it. Fix it: "
         "correct the fact to exactly match the cited source, cite a source that actually contains it, "
-        "remove the claim, or — if you can't ground it — abstain on that specific fact and point the "
+        "remove the claim, or, if you can't ground it, abstain on that specific fact and point the "
         "user to 311 or the official page. Do not repeat the unsupported fact.\n"
         "</system-reminder>"
     )
@@ -86,7 +86,7 @@ def _grounding_feedback(result: GroundingResult) -> str:
 def _strip_ungrounded_claims(text: str, result: GroundingResult) -> str:
     """Tier 4: remove the sentence(s) carrying an ungrounded structured fact; if that guts the answer
     (nothing substantive left), return the abstention that routes to 311. Otherwise return the answer
-    with the offending claim(s) — and their now-orphaned citations — excised."""
+    with the offending claim(s), and their now-orphaned citations, excised."""
     stripped = text
     for claim in {m.claim for m in result.hard_failures}:
         if claim and claim in stripped:
@@ -143,7 +143,7 @@ class Agent:
         # so behavior is unchanged unless HEYNYC_SPEND_CAP is set. Accumulates cost across this
         # instance's turns, so a Conversation caps the whole conversation.
         self._spend = SpendGuard(config.HEYNYC_SPEND_CAP if spend_cap is None else spend_cap)
-        # Deterministic post-generation grounding guard. On by default — it's the safety floor that lets
+        # Deterministic post-generation grounding guard. On by default, it's the safety floor that lets
         # HeyNYC run on a cheaper model; disable only to observe raw model output (see tests).
         self.guard_grounding = guard_grounding
         self.guard_max_retries = guard_max_retries
@@ -163,7 +163,7 @@ class Agent:
           "pass"    → ship out_text unchanged (nothing to verify, or only SOFT mismatches)
           "retry"   → feed _grounding_feedback(result) back and let the model regenerate (Tier 3)
           "abstain" → ship out_text (offending claim stripped, or the abstention fallback) (Tier 4)
-        The guard acts ONLY on a HARD (blocking) mismatch — a verbatim structured fact absent from an
+        The guard acts ONLY on a HARD (blocking) mismatch, a verbatim structured fact absent from an
         all-complete-capture source. Soft mismatches pass through, so a correct answer is never
         over-blocked."""
         if not self.guard_grounding:

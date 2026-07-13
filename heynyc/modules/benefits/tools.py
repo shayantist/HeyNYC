@@ -2,7 +2,7 @@
 
 Fetches the keyless Benefits & Programs catalog (kvhd-5fmu, ~97 programs) and ranks it
 against the user's need with the project's hybrid retriever (the same `Embedder` +
-`InMemoryVectorStore` `index_search` uses). Returns grounded program records — each a DATA
+`InMemoryVectorStore` `index_search` uses). Returns grounded program records, each a DATA
 citation carrying the program's per-row `updated_at` as `valid_as_of`. The tool never
 asserts personalized eligibility; "do I qualify" defers to the official screener / 311.
 """
@@ -34,7 +34,7 @@ def _clean(value) -> str:
     """Normalize a Socrata field: None / literal 'NULL' / blanks → ''; strip any HTML markup.
 
     Real rows carry HTML in prose fields and the literal string 'NULL' in empty url/text
-    fields — both would otherwise leak into grounding or get cited as a fake link."""
+    fields, both would otherwise leak into grounding or get cited as a fake link."""
     if value is None:
         return ""
     text = str(value).strip()
@@ -51,7 +51,7 @@ def _clean(value) -> str:
 def _first_href(value) -> str:
     """Pull the first real URL out of an HTML field. The dataset buries per-program deep links
     inside <a href="..."> in prose fields (get_help_online, how_to_apply_summary, ...); _clean()
-    strips the markup, so we extract the href here — otherwise the real link is lost and the model
+    strips the markup, so we extract the href here, otherwise the real link is lost and the model
     is tempted to invent one."""
     if not value:
         return ""
@@ -68,7 +68,7 @@ def _first_href(value) -> str:
     return url if url.startswith("http") else ""
 
 # The catalog can carry the same program in several official languages (a `language` column). We
-# surface the row matching the user's language when asked, English by default / fallback — an
+# surface the row matching the user's language when asked, English by default / fallback, an
 # official city translation beats an LLM paraphrase. ISO codes / native spellings normalize to the
 # English language NAME the dataset uses.
 DEFAULT_LANG = "english"
@@ -98,7 +98,7 @@ def _program_key(record: dict) -> str:
 def _prefer_language(catalog: list[dict], lang) -> list[dict]:
     """Collapse language-variant rows to ONE row per program, preferring the requested language
     (default English), English fallback, then first-seen. A dataset with no `language` column is
-    unaffected — each program appears once, so this is a no-op. Order preserved."""
+    unaffected, each program appears once, so this is a no-op. Order preserved."""
     target = _norm_lang(lang)
 
     def rank(row: dict) -> int:
@@ -141,7 +141,7 @@ _SEARCH_FIELDS = (
 
 
 def _doc_text(record: dict) -> str:
-    """The searchable blob for a program — what it IS, HTML-stripped."""
+    """The searchable blob for a program, what it IS, HTML-stripped."""
     return " ".join(filter(None, (_clean(record.get(f)) for f in _SEARCH_FIELDS)))
 
 
@@ -150,8 +150,8 @@ def _retrieve(catalog: list[dict], query: str, limit: int, embedder) -> list[dic
 
     Reuses the index stack (`Embedder` + `InMemoryVectorStore`, the same hybrid
     semantic+keyword scoring `index_search` uses) rather than a bespoke ranker.
-    Socrata's server-side `$q` is conjunctive — a verbose query like "food stamps
-    SNAP WIC" returns ZERO (caught by the live eval) — so we fetch the small catalog
+    Socrata's server-side `$q` is conjunctive, a verbose query like "food stamps
+    SNAP WIC" returns ZERO (caught by the live eval), so we fetch the small catalog
     and rank locally. Hybrid retrieval over a small structured catalog is the
     documented best practice (lexical catches acronyms like SNAP/IDNYC; embeddings
     catch meaning like "can't afford food" → SNAP). The embedded store is cached
@@ -175,7 +175,7 @@ def _retrieve(catalog: list[dict], query: str, limit: int, embedder) -> list[dic
 
 
 def _as_of(record: dict) -> str:
-    """Per-program 'as of' date — the row's updated_at, truncated to YYYY-MM-DD."""
+    """Per-program 'as of' date, the row's updated_at, truncated to YYYY-MM-DD."""
     return _clean(record.get("updated_at"))[:10]
 
 
@@ -190,7 +190,7 @@ _HELP_FIELDS = ("get_help_online", "get_help_summary", "how_to_apply_summary",
 
 
 def _help_url(record: dict) -> str:
-    """A real 'learn more / get help' deep link for the program — the href buried in its help /
+    """A real 'learn more / get help' deep link for the program, the href buried in its help /
     how-to-apply prose, or its office-locations map. Empty if the row carries none."""
     for f in _HELP_FIELDS:
         u = _first_href(record.get(f))
@@ -201,7 +201,7 @@ def _help_url(record: dict) -> str:
 
 def _best_url(record: dict) -> str:
     """The most specific REAL url for a program's citation: the apply url, else a help/how-to deep
-    link, else the dataset landing page as a last resort — never the model's invention."""
+    link, else the dataset landing page as a last resort, never the model's invention."""
     return _apply_url(record) or _help_url(record) or SOURCE_URL
 
 
@@ -248,17 +248,17 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     if category and category not in CATEGORIES:
         return (
             f"ERROR: unknown benefits category '{category}'. Choose exactly one of: "
-            f"{', '.join(CATEGORIES)} — or omit it and rely on the query."
+            f"{', '.join(CATEGORIES)}, or omit it and rely on the query."
         )
     where = f"program_category='{category}'" if category else None
     try:
-        # Fetch the catalog (optionally category-scoped), then rank in-memory — `$q` is
+        # Fetch the catalog (optionally category-scoped), then rank in-memory, `$q` is
         # conjunctive and drops verbose queries (see _rank). 200 covers all ~97 rows.
         catalog = await query_dataset(DATASET_ID, where=where, limit=200, client=ctx.http)
     except httpx.HTTPError:
         return (
             "ERROR: couldn't reach the NYC Benefits & Programs dataset right now. "
-            f"Don't guess — tell the user to try {OFFICIAL}."
+            f"Don't guess, tell the user to try {OFFICIAL}."
         )
 
     # Collapse any language-variant rows to one per program, preferring the user's language
@@ -268,7 +268,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     if not records:
         return (
             f"No NYC benefit programs in the dataset matched '{query}'. "
-            f"Don't fabricate one — suggest {OFFICIAL}."
+            f"Don't fabricate one, suggest {OFFICIAL}."
         )
 
     today = date.today().isoformat()
@@ -278,7 +278,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         name = _clean(record.get("program_name"))
         cite = ctx.citations.register(
             _best_url(record),
-            snippet=f"{name} — {_clean(record.get('plain_language_program_name'))}",
+            snippet=f"{name}, {_clean(record.get('plain_language_program_name'))}",
             title=name or "NYC benefit program",
             kind="DATA",
             valid_as_of=as_of,
@@ -287,7 +287,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     header = (
         "NYC benefit programs from the city's Benefits & Programs dataset. Eligibility text is "
-        "general guidance with an 'as of' date, NOT a personalized determination — route any "
+        "general guidance with an 'as of' date, NOT a personalized determination, route any "
         f"'do I qualify' to {OFFICIAL}:\n"
     )
     return header + "\n".join(blocks)
@@ -310,7 +310,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     try:
         screening.assert_pii_free(household, persons)
     except ValueError as exc:
-        return f"ERROR: {exc} Collect only age, household type, and income — never names/DOB/address."
+        return f"ERROR: {exc} Collect only age, household type, and income, never names/DOB/address."
 
     own = ctx.http is None
     client = ctx.http or httpx.AsyncClient(timeout=30.0)
@@ -323,8 +323,8 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
                 screening.clear_token(base)
                 token = await screening.get_token(client, base, user, pw)
                 result = await screening.screen(client, base, token, household, persons, interested)
-            elif exc.response.status_code == 504:          # screening timeout — NEVER a false negative
-                return ("ERROR: the screener is busy right now — don't tell the user they're ineligible; "
+            elif exc.response.status_code == 504:          # screening timeout, NEVER a false negative
+                return ("ERROR: the screener is busy right now, don't tell the user they're ineligible; "
                         "ask them to try again in a moment.")
             else:
                 raise
@@ -334,7 +334,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
         eligible = result.get("eligiblePrograms") or []
         catalog = await query_dataset(DATASET_ID, limit=200, client=client)
     except httpx.HTTPError:
-        return f"ERROR: couldn't reach the screener right now. Don't guess — point the user to {OFFICIAL}."
+        return f"ERROR: couldn't reach the screener right now. Don't guess, point the user to {OFFICIAL}."
     finally:
         if own:
             await client.aclose()
@@ -350,7 +350,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
 
     verdict = ctx.citations.register(
         _ACCESS_NYC,
-        snippet=f"NYC Benefits Screening API — likely-eligible estimate ({len(eligible)} program(s))",
+        snippet=f"NYC Benefits Screening API, likely-eligible estimate ({len(eligible)} program(s))",
         title="NYC Benefits Screening (ACCESS NYC)",
         kind="DATA", valid_as_of=today,
         provenance=api_provenance(
@@ -361,10 +361,10 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     )
     if not eligible:
         return ("Based on what you shared, the screener didn't return any likely-eligible programs "
-                f"{{cite:{verdict}}}. That is NOT a determination of ineligibility — encourage the user "
+                f"{{cite:{verdict}}}. That is NOT a determination of ineligibility, encourage the user "
                 f"to apply or check {OFFICIAL}; more detail may surface more programs.")
 
-    lines = [f"Based on what you shared, you're likely eligible for these — {_ESTIMATE} {{cite:{verdict}}}:"]
+    lines = [f"Based on what you shared, you're likely eligible for these, {_ESTIMATE} {{cite:{verdict}}}:"]
     for prog in eligible:
         code, name = prog.get("code", ""), prog.get("name", "")
         row = by_code.get(code)
@@ -372,13 +372,13 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             rid = _clean(row.get(":id"))
             cite = ctx.citations.register(
                 row_url(DATASET_ID, rid) if rid else SOURCE_URL,
-                snippet=f"{_clean(row.get('program_name')) or name} — likely eligible (program_code {code})",
+                snippet=f"{_clean(row.get('program_name')) or name}, likely eligible (program_code {code})",
                 title=_clean(row.get("program_name")) or name, kind="DATA", valid_as_of=_as_of(row),
                 provenance=data_provenance(row, record_id=rid, field_pointer="/"))
             url = _apply_url(row)
             lines.append(f"- {name} ({_clean(row.get('program_category'))}) {{cite:{cite}}}"
-                         + (f" — apply: {url}" if url else ""))
-        else:  # screenable but not in our catalog cache — fall back to the API's name, cite the verdict
+                         + (f", apply: {url}" if url else ""))
+        else:  # screenable but not in our catalog cache, fall back to the API's name, cite the verdict
             lines.append(f"- {name} {{cite:{verdict}}}")
     lines.append("A program not listed here doesn't mean you're ineligible. "
                  "Want help applying to any of these?")
@@ -415,7 +415,7 @@ def screen_eligibility_tool() -> Tool:
                         "required": ["age", "householdMemberType"]}},
                 "interested_programs": {"type": "array", "items": {"type": "string"},
                     "description": "Optional program-code filter."},
-                "lang": {"type": "string", "description": "Optional language NAME (e.g. 'Spanish') — "
+                "lang": {"type": "string", "description": "Optional language NAME (e.g. 'Spanish'), "
                     "the user's language; returns the matching-language program row where the dataset "
                     "carries a translation, English by default and as the fallback."},
             },
@@ -441,14 +441,14 @@ async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
     confirmed = bool(args.get("confirmed"))
     clean, missing, errors = appmod.validate_slots(raw)
     if errors:
-        return "NEED_FIX: " + "; ".join(errors) + " — re-ask the user only for these; never guess."
+        return "NEED_FIX: " + "; ".join(errors) + ", re-ask the user only for these; never guess."
     if missing:
         labels = ", ".join(s.label for s in appmod.SLOTS if s.key in missing)
-        return (f"NEED_MORE: still need {labels}. Ask the user for these in plain language — "
+        return (f"NEED_MORE: still need {labels}. Ask the user for these in plain language, "
                 f"do not fill them in yourself.")
     if not appmod.verify_template_integrity():
         url = appmod.template_provenance().get("source_url", "otda.ny.gov")
-        return (f"CANNOT_FILL: the official form may have changed — don't auto-fill it. Send the "
+        return (f"CANNOT_FILL: the official form may have changed, don't auto-fill it. Send the "
                 f"user the blank form at {url} and offer to walk them through it instead.")
     if not confirmed:                                  # the meaningful-attestation gate
         return "REVIEW: " + appmod.review_request(clean)
@@ -456,7 +456,7 @@ async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
         pdf = appmod.fill_application(clean)           # bytes; values never logged
     except appmod.FormDriftError:
         url = appmod.template_provenance().get("source_url", "otda.ny.gov")
-        return f"CANNOT_FILL: the form's layout changed — don't auto-fill. Blank form: {url}."
+        return f"CANNOT_FILL: the form's layout changed, don't auto-fill. Blank form: {url}."
     out_dir = Path(ctx.output_dir) if getattr(ctx, "output_dir", None) else Path(tempfile.mkdtemp())
     out_path = out_dir / f"snap-ldss4826-{uuid.uuid4().hex[:8]}.pdf"
     out_path.write_bytes(pdf)
@@ -471,14 +471,14 @@ async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
 
 def prepare_application_tool() -> Tool:
     props = {s.key: {"type": "string",
-                     "description": s.label + (" — read back for the user to re-confirm"
+                     "description": s.label + (", read back for the user to re-confirm"
                                                if s.high_stakes else "")}
              for s in appmod.SLOTS}
     return Tool(
         name="prepare_snap_application",
         description=(
             "Prepare a DRAFT of the official NYS SNAP application (LDSS-4826) for the user to print, "
-            "sign, and mail THEMSELVES — it is never submitted for them and is not a determination. "
+            "sign, and mail THEMSELVES, it is never submitted for them and is not a determination. "
             "You are a scribe: only transcribe answers the USER gave; never invent, infer, or coach a "
             "value, and never decide eligibility. Two steps: (1) call with confirmed=false to get a "
             "field-level review + the attestation, show it to the user, and have them re-confirm the "
@@ -490,7 +490,7 @@ def prepare_application_tool() -> Tool:
             "properties": {
                 "slots": {
                     "type": "object",
-                    "description": ("Answers the user gave, keyed by field name. PII only — never "
+                    "description": ("Answers the user gave, keyed by field name. PII only, never "
                                     "logged or sent anywhere but the user's own draft."),
                     "properties": props,
                 },
@@ -539,7 +539,7 @@ def get_tools() -> list[Tool]:
                     },
                     "lang": {
                         "type": "string",
-                        "description": "Optional language NAME (e.g. 'Spanish') — pass the language "
+                        "description": "Optional language NAME (e.g. 'Spanish'), pass the language "
                         "the user is writing in. When the dataset carries an official translation of "
                         "a program, the matching-language row is returned; English by default and as "
                         "the fallback. Program names, apply links, and 'as of' dates stay as given.",

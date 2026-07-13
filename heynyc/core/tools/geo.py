@@ -1,4 +1,4 @@
-"""Geospatial grounding — geocoding, nearest-X, and distance.
+"""Geospatial grounding, geocoding, nearest-X, and distance.
 
 The agent must NEVER emit a coordinate or distance from its own head. These
 tools are the only authority: NYC GeoSearch for addresses, Socrata datasets for
@@ -25,7 +25,7 @@ _INTERSECTION_RE = re.compile(r"(?:\b(?:and|at)\b|&|/)", re.IGNORECASE)
 
 
 def _looks_like_intersection(text: str) -> bool:
-    """Heuristic: 'X and Y', 'X & Y', 'X/Y' — try the forgiving provider first
+    """Heuristic: 'X and Y', 'X & Y', 'X/Y', try the forgiving provider first
     for these (NYC GeoSearch can't do cross-streets)."""
     return bool(_INTERSECTION_RE.search(text)) and any(ch.isdigit() for ch in text)
 
@@ -45,7 +45,7 @@ def _zip_centroid(zip5: str) -> Optional[tuple[float, float]]:
 
     Lazily loads `heynyc/core/data/zcta_centroids.tsv` (zip<TAB>lat<TAB>lon, no
     header) into a module-level dict on first call. Returns None for an unknown
-    ZIP. A missing/unreadable file degrades to an empty table — never crashes."""
+    ZIP. A missing/unreadable file degrades to an empty table, never crashes."""
     global _ZIP_CENTROIDS
     if _ZIP_CENTROIDS is None:
         table: dict[str, tuple[float, float]] = {}
@@ -79,10 +79,10 @@ class GeoPoint:
     label: str = ""
     confidence: float = 0.0
     match_type: str = ""
-    # True when the result is too ambiguous/uncertain to answer for — the agent
+    # True when the result is too ambiguous/uncertain to answer for, the agent
     # should clarify (which borough? a street address?) rather than proceed.
     low_confidence: bool = False
-    # NYC Borough-Block-Lot (10-char) from GeoSearch's PAD addendum — the building's
+    # NYC Borough-Block-Lot (10-char) from GeoSearch's PAD addendum, the building's
     # tax-lot key, needed for building-level datasets (HPD complaints/violations).
     # Only a specific street address carries one; ZIP/forgiving/POI matches leave it "".
     bbl: str = ""
@@ -107,7 +107,7 @@ def miles(meters: float) -> float:
 def maps_link(lat: float, lon: float) -> str:
     """A Google Maps link to a coordinate. It's a deterministic URL transform of
     an already-grounded GeoPoint, so it carries no hallucination risk (no citation
-    needed) — HeyNYC owns the grounded 'where', Maps owns navigation/ETA."""
+    needed), HeyNYC owns the grounded 'where', Maps owns navigation/ETA."""
     return f"https://www.google.com/maps/search/?api=1&query={lat:.5f},{lon:.5f}"
 
 
@@ -220,7 +220,7 @@ def _gate_low_confidence(point: GeoPoint) -> bool:
     """Flag a geocode too uncertain to answer for → the agent clarifies.
 
     Confidence-only: people overwhelmingly give an address, a place, or a
-    neighborhood (and "near me" via the UI) — not bare cross-streets — and with
+    neighborhood (and "near me" via the UI), not bare cross-streets, and with
     NYC-biased Mapbox those resolve at high confidence (intersections included).
     So we don't special-case phrasing; we just gate a genuinely low provider
     score. Mapbox/Pelias return a real match confidence; GeoSearch (authoritative
@@ -247,7 +247,7 @@ async def geocode(text: str, *, client: Optional[httpx.AsyncClient] = None, forg
     own = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
     try:
-        # ZIP guard: a bare ZIP-area query (a 5-digit token with no OTHER digit —
+        # ZIP guard: a bare ZIP-area query (a 5-digit token with no OTHER digit,
         # "10453", "10453 Bronx", "Bronx 10453") resolves from the bundled ZCTA
         # centroids, never GeoSearch (which has no postalcode layer and would
         # misparse it as a house number). A bare ZIP must never become an address.
@@ -323,17 +323,17 @@ def _resolution_note(query: str, point: GeoPoint) -> str:
     source = "NYC GeoSearch" if point.match_type == "geosearch" else "map search"
     note = f"(Resolved '{query}' to '{point.label}' via {source}."
     if _looks_like_intersection(query) and point.match_type == "geosearch":
-        # Fell back to the strict geocoder for an intersection — least reliable case.
-        note += " Intersections geocode imprecisely here — confirm with the user before relying on it.)"
+        # Fell back to the strict geocoder for an intersection, least reliable case.
+        note += " Intersections geocode imprecisely here, confirm with the user before relying on it.)"
     else:
         note += " If that's not the intended spot, ask for a street address.)"
     return note
 
 
 def _clarify_message(query: str) -> str:
-    """Returned when a location is too ambiguous to answer for — make the agent ask."""
+    """Returned when a location is too ambiguous to answer for, make the agent ask."""
     return (
-        f"I couldn't reliably pin '{query}' to one place — it may match several spots in NYC "
+        f"I couldn't reliably pin '{query}' to one place, it may match several spots in NYC "
         f"(e.g. a street that runs through multiple boroughs). Ask the user which borough it's "
         f"in, or for a specific street address, before giving any location-based answer. "
         f"Do NOT guess a borough."
@@ -372,7 +372,7 @@ def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float
     )
     return ctx.citations.register(
         url,
-        snippet=f"{place.name} — {place.borough} (status: {place.status})",
+        snippet=f"{place.name}, {place.borough} (status: {place.status})",
         title=title,
         kind="DATA",
         valid_as_of=place.updated_at,
@@ -426,8 +426,8 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         where = place.address or place.borough or "NYC"
         phone = f" phone: {place.phone}" if place.phone else ""
         lines.append(
-            f"- {place.name} ({where}) — {dist_mi:.2f} mi straight-line, "
-            f"status={place.status or 'unknown'}{phone} {{cite:{cite}}} — directions: {maps_link(place.lat, place.lon)}"
+            f"- {place.name} ({where}), {dist_mi:.2f} mi straight-line, "
+            f"status={place.status or 'unknown'}{phone} {{cite:{cite}}}, directions: {maps_link(place.lat, place.lon)}"
         )
     return "\n".join(lines)
 
@@ -466,7 +466,7 @@ def geo_tools() -> list[Tool]:
             name="nearest",
             description=(
                 "Find the nearest NYC locations of a given category (e.g. cooling_center) to an "
-                "address, ranked by distance. NEVER guess locations — always use this."
+                "address, ranked by distance. NEVER guess locations, always use this."
             ),
             parameters={
                 "type": "object",

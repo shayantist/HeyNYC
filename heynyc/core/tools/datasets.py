@@ -25,7 +25,7 @@ class Place:
     phone: str = ""
     source_url: str = ""
     record_id: str = ""   # per-row primary key (Socrata `:id`, or the arcgis `record_id_field`)
-    updated_at: str = ""  # Socrata `:updated_at` — the row's "as of" / change signal (blank for arcgis)
+    updated_at: str = ""  # Socrata `:updated_at`, the row's "as of" / change signal (blank for arcgis)
     raw: dict = field(default_factory=dict)
 
 

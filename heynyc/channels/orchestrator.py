@@ -29,7 +29,7 @@ _FLAG_TOKENS = {"wrong", "report", "incorrect", "bad answer", "👎"}
 _FLAG_COMMANDS = ("/wrong", "/report")
 _HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
-_RATE_LIMIT_MSG = "You're sending a lot at once — give me a moment and try again shortly. 🙏"
+_RATE_LIMIT_MSG = "You're sending a lot at once, give me a moment and try again shortly. 🙏"
 
 
 @dataclass
@@ -65,7 +65,7 @@ def flag_note(text: str) -> str:
 
 
 def is_help(text: str) -> bool:
-    """A greeting / 'what can you do' — answered with the grounded capability menu, not the agent."""
+    """A greeting / 'what can you do', answered with the grounded capability menu, not the agent."""
     return text.strip().lower().rstrip("!?. ") in _HELP_TOKENS
 
 
@@ -82,13 +82,13 @@ def _last(turns: list[dict], role: str) -> str:
 
 def _artifacts_in(art_dir: Path) -> list[str]:
     """Files a tool wrote into THIS request's artifacts dir. The orchestrator owns this directory,
-    so untrusted tool-result content can never influence which file is read/sent — we list the dir,
+    so untrusted tool-result content can never influence which file is read/sent, we list the dir,
     we never parse a path out of model/tool text (that would be an arbitrary-file-read sink)."""
     return sorted(str(p) for p in art_dir.glob("*") if p.is_file())
 
 
 async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
-    if deps.store.seen(msg.message_id):       # dedup (also records) — before any work
+    if deps.store.seen(msg.message_id):       # dedup (also records), before any work
         return
     key = user_key(msg.channel, msg.sender, deps.salt)
     if not deps.store.allow(key):
@@ -134,7 +134,7 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
 async def _handle_flag(msg, key, session, replier, deps) -> None:
     agent_text = _last(session.turns, "assistant")
     if not agent_text:
-        await replier.send_text("Nothing to flag yet — ask me something first.")
+        await replier.send_text("Nothing to flag yet, ask me something first.")
         return
     # The flag TOKEN (bare word or the slash command) is bounded and safe to store verbatim; the
     # optional NOTE and the flagged query are resident free text and are redacted at write time.
@@ -146,4 +146,4 @@ async def _handle_flag(msg, key, session, replier, deps) -> None:
         deps.feedback_path, user_key=key, channel=msg.channel, message_id=msg.message_id,
         flag=flag, note=note, user_query=_last(session.turns, "user"), agent_text=agent_text,
     )
-    await replier.send_text("Thanks — I've flagged that answer for a human to review. 🙏")
+    await replier.send_text("Thanks, I've flagged that answer for a human to review. 🙏")

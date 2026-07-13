@@ -2,7 +2,7 @@
 
 PII discipline: slot values are written onto the PDF locally and returned; they are
 NEVER logged, never registered in citations, never sent to a third party. The tool
-fills only the slots it is given — it does not fabricate missing fields.
+fills only the slots it is given, it does not fabricate missing fields.
 
 The 4826 is a FLAT scan (no AcroForm fields), so filling is a text overlay anchored to
 the form's own labels (see forms/ldss-4826.map.yaml). Provenance + a drift-guard keep us
@@ -24,11 +24,11 @@ META = FORM_DIR / "ldss-4826.meta.yaml"
 
 
 class FormDriftError(RuntimeError):
-    """The vendored form no longer matches its recorded provenance — we must NOT print onto
+    """The vendored form no longer matches its recorded provenance, we must NOT print onto
     a form that may have changed under us; the caller degrades to the blank official form."""
 
 DISCLAIMER = (
-    "This is an unofficial draft prepared by HeyNYC — not affiliated with the City or "
+    "This is an unofficial draft prepared by HeyNYC, not affiliated with the City or "
     "State of New York. Review every field, sign it, and submit it yourself. Nothing "
     "here is a guarantee of benefits."
 )
@@ -37,11 +37,11 @@ DISCLAIMER = (
 # faithfully recorded the user's answers; the USER certifies the facts under penalty of perjury.
 SCRIBE_CERT = (
     "Prepared by HeyNYC from what you told me, at your request. HeyNYC recorded your answers "
-    "— it did not verify them, and it is not a lawyer or a government caseworker."
+    ", it did not verify them, and it is not a lawyer or a government caseworker."
 )
 APPLICANT_ATTESTATION = (
     "Before you sign and submit: you're certifying the information is true and complete to the "
-    "best of your knowledge, under penalty of perjury. You — not HeyNYC — are responsible for "
+    "best of your knowledge, under penalty of perjury. You, not HeyNYC, are responsible for "
     "what you submit."
 )
 
@@ -138,11 +138,11 @@ def application_summary(clean: dict, missing: list[str]) -> str:
 
 
 def review_request(clean: dict) -> str:
-    """The meaningful-attestation step (research §11): read back each filled value — high-stakes
-    fields flagged for the user to re-confirm in their own words — then the two-tier scribe
+    """The meaningful-attestation step (research §11): read back each filled value, high-stakes
+    fields flagged for the user to re-confirm in their own words, then the two-tier scribe
     certification + the user's penalty-of-perjury attestation, and ask them to confirm or edit
     BEFORE any PDF is produced. Targeted friction on the load-bearing fields, not a 12-page wall."""
-    lines = ["Let's check your answers before I prepare the form — tell me if any are wrong:", ""]
+    lines = ["Let's check your answers before I prepare the form, tell me if any are wrong:", ""]
     for slot in SLOTS:
         if slot.key in clean:
             tag = "   ← please double-check this one" if slot.high_stakes else ""
@@ -170,7 +170,7 @@ def verify_template_integrity(template: Path | None = None, meta: dict | None = 
 
 def provenance_stamp(meta: dict | None = None) -> str:
     meta = meta or template_provenance()
-    return (f"Based on {meta['form']} ({meta['revision']}), verified {meta['verified_on']} — "
+    return (f"Based on {meta['form']} ({meta['revision']}), verified {meta['verified_on']}, "
             f"confirm it's current at otda.ny.gov.")
 
 
@@ -194,7 +194,7 @@ def fill_application(clean: dict, *, template: Path | None = None,
                      fmap: dict | None = None) -> bytes:
     """Overlay each provided value next to its label anchor on the flat LDSS-4826. Fills only the
     slots in `clean` that the map knows; raises FormDriftError if a mapped anchor can't be located
-    (the form drifted — caller degrades rather than printing into the wrong place)."""
+    (the form drifted, caller degrades rather than printing into the wrong place)."""
     import pdfplumber
     from pypdf import PdfReader, PdfWriter
     from reportlab.pdfgen import canvas
@@ -219,7 +219,7 @@ def fill_application(clean: dict, *, template: Path | None = None,
                 anchor = _find_anchor(words, spec["anchor"], int(spec.get("occurrence", 0)))
                 if anchor is None:
                     raise FormDriftError(
-                        f"anchor {spec['anchor']!r} not found on page {i} — form may have changed")
+                        f"anchor {spec['anchor']!r} not found on page {i}, form may have changed")
                 x = float(anchor["x1"]) + float(spec.get("dx", 4))
                 y = ph - float(anchor["bottom"]) + float(spec.get("dy", 0))
                 c.setFont("Helvetica", int(spec.get("size", 9)))

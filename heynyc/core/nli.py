@@ -1,7 +1,7 @@
-"""Tier-2 faithfulness / NLI checker — per-sentence textual entailment against a cited chunk.
+"""Tier-2 faithfulness / NLI checker, per-sentence textual entailment against a cited chunk.
 
 Tier-1 (core.grounding) catches the STRUCTURED facts it can parse (phones, dollars, addresses,
-quotes) and is deliberately silent on fabricated PROSE cited to a soft (WEB/DOC) source — a made-up
+quotes) and is deliberately silent on fabricated PROSE cited to a soft (WEB/DOC) source, a made-up
 statute like "Ley Local 56 de 2021" reads as a proper noun, and proper-noun mismatches are always
 soft. Tier-2 closes that gap: given a claim sentence and the text of the chunk it cites, it decides
 "does the source SUPPORT this sentence?" This is closed-book entailment, so it needs no world
@@ -9,11 +9,11 @@ knowledge and no current-events cutoff (see the design spec, 2026-07-09-tier2-nl
 
 One tiny interface (NLIChecker), three backends, matching the codebase's inject-the-model pattern so
 tests stay offline and the real backend is swappable:
-  • MockNLI      — deterministic, no network, no model; the backend every unit test uses.
-  • MiniCheckNLI — lazy-loads MiniCheck-Flan-T5-Large (~770M) via the `minicheck` package. ALL heavy
+  • MockNLI     , deterministic, no network, no model; the backend every unit test uses.
+  • MiniCheckNLI, lazy-loads MiniCheck-Flan-T5-Large (~770M) via the `minicheck` package. ALL heavy
                    imports (torch / transformers / minicheck) live INSIDE the class, so importing this
                    module drags in nothing and the base install stays light (like the [whatsapp] extra).
-  • PromptedNLI  — reuses the litellm seam with a tight, JSON-only entailment prompt; pointable at any
+  • PromptedNLI , reuses the litellm seam with a tight, JSON-only entailment prompt; pointable at any
                    litellm model, including a self-hosted ollama/<model>. A general LLM is a WEAKER
                    faithfulness judge than a dedicated checker, so this is a prototype stand-in, not the
                    production Tier-2.
@@ -37,7 +37,7 @@ DEFAULT_SUPPORT_THRESHOLD = 0.5
 class NLIVerdict:
     supported: bool     # is the claim entailed by the source? (backend-native boolean)
     score: float        # 0..1 support probability (backend-native; the grounding hook thresholds this)
-    backend: str        # "mock" | "minicheck" | "prompted" — for provenance / telemetry
+    backend: str        # "mock" | "minicheck" | "prompted", for provenance / telemetry
     reason: str = ""    # optional short note (PromptedNLI fills this; mock / minicheck may not)
 
 

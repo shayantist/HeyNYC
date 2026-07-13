@@ -5,9 +5,9 @@ list, so a trace is a transform of that plus the citation registry.
 
 In-memory, `Span` keeps ergonomic fields (kind/name/input/output) so the
 invariant checks read cleanly. On serialization, spans are emitted using the
-**OpenInference semantic conventions** — `openinference.span.kind` plus the
+**OpenInference semantic conventions**, `openinference.span.kind` plus the
 canonical dotted attribute keys (`tool.name`, `tool_call.function.arguments`,
-`retrieval.documents.<i>.document.content`, `llm.output_messages.<i>...`) — so a
+`retrieval.documents.<i>.document.content`, `llm.output_messages.<i>...`), so a
 trace file can be loaded into Arize Phoenix / Langfuse without re-instrumentation.
 Ref: https://github.com/Arize-ai/openinference/blob/main/spec/semantic_conventions.md
 """
@@ -27,7 +27,7 @@ RETRIEVER_TOOLS: set[str] = {"index_search"}
 # Our ergonomic span kind -> the OpenInference `openinference.span.kind` value.
 _SPAN_KIND = {"llm": "LLM", "tool": "TOOL", "retriever": "RETRIEVER"}
 
-# Scope-redirect phrasing — declining because the question is out of scope.
+# Scope-redirect phrasing, declining because the question is out of scope.
 _SCOPE_MARKERS = [
     "i help with nyc", "i help with new york", "focused on new york", "focused on nyc",
     "outside what i help", "outside of what i help", "i specialize in", "i'm here to help with",
@@ -36,15 +36,15 @@ _SCOPE_MARKERS = [
 
 
 def classify_outcome(text: str, status: str, grounded: bool = False) -> str:
-    """answered | abstained | redirected | error — what the agent ultimately did.
+    """answered | abstained | redirected | error, what the agent ultimately did.
 
     HeyNYC eval metadata (not OpenInference); annotates the trace so the deterministic
     invariants can reason about the final disposition. NOTE: this keyword classifier is the
-    coarse fallback — the agent-as-judge is authoritative for the semantic outcome (§A).
+    coarse fallback, the agent-as-judge is authoritative for the semantic outcome (§A).
 
     A grounded, substantive answer counts as `answered` even when it *also* routes to 311 /
     the official screener: routing alongside a real, cited answer is not an abstention (this
-    is the common benefits pattern — list programs, then point to access.nyc.gov)."""
+    is the common benefits pattern, list programs, then point to access.nyc.gov)."""
     if status == "error":
         return "error"
     low = (text or "").lower()

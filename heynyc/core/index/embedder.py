@@ -26,7 +26,7 @@ class HashEmbedder:
     """Deterministic bag-of-words hashing embedder. No deps, stable across runs.
 
     Not semantically rich, but exercises the full retrieval path and gives usable
-    keyword-ish recall — a safe fallback when fastembed isn't available, and the
+    keyword-ish recall, a safe fallback when fastembed isn't available, and the
     default in unit tests (fast, offline)."""
 
     def __init__(self, dim: int = 256):

@@ -43,7 +43,7 @@ async def run_repeated(
 async def run_all(agent_factory, cases: list[EvalCase], reminders: Optional[list[str]] = None) -> list[CaseResult]:
     """Run each case with a fresh agent (so state never leaks between cases).
 
-    `agent_factory` is a zero-arg callable returning an Agent — keeps cases isolated.
+    `agent_factory` is a zero-arg callable returning an Agent, keeps cases isolated.
     """
     results = []
     for case in cases:

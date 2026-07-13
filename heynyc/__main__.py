@@ -43,7 +43,7 @@ def _load_retriever(required: bool):
 
 
 _MANIFEST_TEMPLATE = """\
-# {name} service module. Fill in the fields below — no code needed for most services.
+# {name} service module. Fill in the fields below, no code needed for most services.
 # Docs: heynyc/modules/README.md
 name: {name}
 category: general            # health | transit | housing | benefits | events | tourism | ...
@@ -52,7 +52,7 @@ description: >-
 keywords:                     # words/phrases that should trigger this module
   - {name}
 # Optional: a NYC Open Data (Socrata) dataset for "nearest X" lookups.
-# Find datasets at https://data.cityofnewyork.us — copy the dataset id from its URL.
+# Find datasets at https://data.cityofnewyork.us, copy the dataset id from its URL.
 datasets: []
 #  - id: xxxx-xxxx
 #    category: {name}          # the category name the agent passes to nearest()
@@ -173,7 +173,7 @@ def _cmd_modules() -> None:
         return
     print(f"{len(registry.modules)} module(s):")
     for module in registry.modules:
-        print(f"  • {module.name} ({module.category}) — {module.description}")
+        print(f"  • {module.name} ({module.category}), {module.description}")
     print(f"\nDatasets: {list(registry.dataset_bindings())}")
     print(f"Allowlist: {registry.allowlist()}")
 
@@ -189,7 +189,7 @@ async def _cmd_index_build() -> None:
     summary = await build_index(registry, store, default_embedder())
     print(f"  ok={summary['ok']}  chunks={summary['chunks']}  failed={len(summary['failed'])}")
     for fail in summary["failed"]:
-        print(f"    ✗ {fail['url']} — {fail['error']}")
+        print(f"    ✗ {fail['url']}, {fail['error']}")
 
 
 def _cmd_index_search(query: str) -> None:
@@ -197,7 +197,7 @@ def _cmd_index_search(query: str) -> None:
     if retriever is None:
         return
     for doc, score in retriever.search(query, k=5):
-        print(f"[{score:.2f}] {doc.title} — {doc.url}\n    {doc.text[:160]}...\n")
+        print(f"[{score:.2f}] {doc.title}, {doc.url}\n    {doc.text[:160]}...\n")
 
 
 async def _cmd_chat(question: str) -> None:
@@ -232,7 +232,7 @@ def _render_stats(path) -> None:
     if not summary["turns"]:
         console.print(f"No telemetry yet at {path}. Run some `heynyc chat` turns first.")
         return
-    table = Table(title=f"HeyNYC usage — {summary['turns']} turn(s)")
+    table = Table(title=f"HeyNYC usage, {summary['turns']} turn(s)")
     table.add_column("metric")
     table.add_column("value", justify="right")
     table.add_row("total cost", f"${summary['total_cost_usd']:.4f}")
@@ -322,7 +322,7 @@ def _append_segment(segments: list, kind: str, text: str) -> None:
     """Accumulate a stream event into ordered REPL render segments.
 
     Consecutive text deltas merge into one block; a tool note breaks the text so
-    ordering is preserved — a tool call that arrives after some preamble text renders
+    ordering is preserved, a tool call that arrives after some preamble text renders
     *below* it (a chronological stack), not pinned above the whole message."""
     if kind == "text" and segments and segments[-1]["kind"] == "text":
         segments[-1]["text"] += text
@@ -331,7 +331,7 @@ def _append_segment(segments: list, kind: str, text: str) -> None:
 
 
 async def _cmd_repl() -> None:
-    """Interactive, streaming multi-turn chat — rich-rendered, Claude-Code-like."""
+    """Interactive, streaming multi-turn chat, rich-rendered, Claude-Code-like."""
     from rich.console import Console, Group
     from rich.live import Live
     from rich.markdown import Markdown
@@ -351,7 +351,7 @@ async def _cmd_repl() -> None:
     artifacts_dir = config.HEYNYC_DATA_DIR / "repl-artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print("[bold]HeyNYC[/] — ask about NYC services & events. [dim]Ctrl-C to exit.[/]\n")
+    console.print("[bold]HeyNYC[/], ask about NYC services & events. [dim]Ctrl-C to exit.[/]\n")
     modules = ", ".join(m.name for m in registry.modules)
     console.print(f"[dim]Modules loaded: {modules or 'none'}[/]\n")
 
@@ -376,7 +376,7 @@ async def _cmd_repl() -> None:
                 elif seg["text"].strip():
                     parts.append(Markdown(seg["text"]))
             # Spinner while we wait (before any output, or after a tool note until the
-            # answer starts streaming) — hidden once answer text is flowing or we're done.
+            # answer starts streaming), hidden once answer text is flowing or we're done.
             answering = bool(segments) and segments[-1]["kind"] == "text" and segments[-1]["text"].strip()
             if not done and not answering:
                 parts.append(Spinner("dots", text=Text(" thinking…", style="dim")))
@@ -435,7 +435,7 @@ async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None
     if use_api_judge:
         # The PAID, opt-in API judge. Thread today's date through so it treats live/future-dated
         # tool data as current rather than "outdated". The default judge is the interactive Agent
-        # reviewing the traces (free) — it needs no in-harness call.
+        # reviewing the traces (free), it needs no in-harness call.
         from heynyc.eval.judges import make_api_judge
 
         judge = make_api_judge(config.HEYNYC_JUDGE_MODEL, now=datetime.now())
@@ -480,7 +480,7 @@ async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool,
 
     judge = None
     if use_api_judge:
-        # The PAID, opt-in API judge — same one `eval` uses. Thread today's date so live/future-dated
+        # The PAID, opt-in API judge, same one `eval` uses. Thread today's date so live/future-dated
         # tool data reads as current, not "outdated".
         from heynyc.eval.judges import make_api_judge
 

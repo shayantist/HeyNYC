@@ -1,11 +1,11 @@
 """BUILD-TIME seed generator for the NYC Care / H+H Gotham clinic seed.
 
 Run once (offline is fine except it needs the live geocoder) to (re)generate
-`data/nyc_care_sites.tsv`. NOT imported at runtime — the tool reads the TSV.
+`data/nyc_care_sites.tsv`. NOT imported at runtime, the tool reads the TSV.
 
 Source of the site list: https://www.nychealthandhospitals.org/locations/ (fetched
 2026-07-04). 11 H+H acute-care hospitals + 29 Gotham Health community health centers.
-Every field below was transcribed from that page — never completed from memory; a
+Every field below was transcribed from that page, never completed from memory; a
 field the page didn't show is left blank. Each address is geocoded via the shared
 NYC geocoder (GeoSearch) at build time and the resulting lat/lon is written to the
 TSV, so the runtime tool never geocodes a seed row.
@@ -28,7 +28,7 @@ from heynyc.core.tools.geo import _in_nyc, geocode
 SOURCE_URL = "https://www.nychealthandhospitals.org/locations/"
 SEED_PATH = Path(__file__).resolve().parent / "data" / "nyc_care_sites.tsv"
 
-# (name, hh_type, street, borough, zip, phone) — phone is the site's own line from the
+# (name, hh_type, street, borough, zip, phone), phone is the site's own line from the
 # page; blank when the page shows only the central appointment line (1-844-692-4692).
 HOSPITALS = [
     ("NYC Health + Hospitals/Bellevue", "Hospital", "462 First Avenue", "Manhattan", "10016", "212-562-1000"),
@@ -93,7 +93,7 @@ def _sites() -> list[dict]:
 
 async def main() -> None:
     rows = _sites()
-    print(f"{len(rows)} sites ({len(HOSPITALS)} hospitals + {len(GOTHAM)} Gotham Health) — geocoding...")
+    print(f"{len(rows)} sites ({len(HOSPITALS)} hospitals + {len(GOTHAM)} Gotham Health), geocoding...")
     flags: list[str] = []
     async with httpx.AsyncClient(timeout=20.0) as client:
         for row in rows:
@@ -101,16 +101,16 @@ async def main() -> None:
             point = await geocode(query, client=client)
             if point is None:
                 row["lat"], row["lon"] = "", ""
-                flags.append(f"GEOCODE FAILED: {row['name']} — {query!r}")
+                flags.append(f"GEOCODE FAILED: {row['name']}, {query!r}")
             elif not _in_nyc(point.lat, point.lon):
                 row["lat"], row["lon"] = "", ""
-                flags.append(f"OUTSIDE NYC: {row['name']} — {query!r} -> {point.lat},{point.lon}")
+                flags.append(f"OUTSIDE NYC: {row['name']}, {query!r} -> {point.lat},{point.lon}")
             else:
                 row["lat"], row["lon"] = f"{point.lat:.6f}", f"{point.lon:.6f}"
 
     SEED_PATH.parent.mkdir(parents=True, exist_ok=True)
     with SEED_PATH.open("w", encoding="utf-8", newline="") as fh:
-        fh.write(f"# NYC Care / NYC Health + Hospitals sites — source: {SOURCE_URL} (fetched 2026-07-04)\n")
+        fh.write(f"# NYC Care / NYC Health + Hospitals sites, source: {SOURCE_URL} (fetched 2026-07-04)\n")
         fh.write("# Built by heynyc/modules/clinics/build_seed.py; lat/lon geocoded via NYC GeoSearch.\n")
         writer = csv.DictWriter(fh, fieldnames=COLUMNS, delimiter="\t")
         writer.writeheader()
@@ -118,13 +118,13 @@ async def main() -> None:
             writer.writerow(row)
 
     geocoded = sum(1 for r in rows if r["lat"])
-    print(f"Wrote {SEED_PATH} — {geocoded}/{len(rows)} geocoded inside NYC.")
+    print(f"Wrote {SEED_PATH}, {geocoded}/{len(rows)} geocoded inside NYC.")
     if flags:
         print("\nFLAGS:")
         for flag in flags:
             print(f"  ! {flag}")
     else:
-        print("No geocode failures — all sites resolved inside NYC.")
+        print("No geocode failures, all sites resolved inside NYC.")
 
 
 if __name__ == "__main__":

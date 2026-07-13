@@ -2,12 +2,12 @@
 
 HeyNYC has two distinct judges (see eval/README.md):
 
-  • Agent judge (DEFAULT, free) — the interactive coding agent reads the run's traces and
+  • Agent judge (DEFAULT, free), the interactive coding agent reads the run's traces and
     renders the verdict against the README rubric. No per-call API cost; it rides the Claude Code
-    subscription. The harness supports it simply by writing rich, reviewable traces — there is no
+    subscription. The harness supports it simply by writing rich, reviewable traces, there is no
     automated in-harness call for it. This is the primary internal judge.
 
-  • API judge (opt-in, PAID) — a programmatic litellm call to a cross-family model, for
+  • API judge (opt-in, PAID), a programmatic litellm call to a cross-family model, for
     reproducibility / parity / CI. Costs money per call. That is what THIS module implements.
 
 Deterministic checks catch most issues; this adds the harder judgment: is every factual claim in
@@ -28,12 +28,12 @@ JudgeComplete = Callable[[str], Awaitable[str]]
 
 _RUBRIC = """\
 You are grading a NYC civic assistant whose #1 rule is: never make up facts. You are judging
-GROUNDEDNESS — whether the answer is supported by the sources / retrieved data placed in front of
+GROUNDEDNESS, whether the answer is supported by the sources / retrieved data placed in front of
 you here, NOT whether you personally happen to know the facts to be true from your own training.
 
 Today's date is {today}. Treat this as "now": data that is current, recently issued, or dated in
 the near future relative to this date is NOT "outdated" or "not current". Time-sensitive,
-future-dated, and freshly tool-retrieved facts are legitimate — never fail a claim for being one.
+future-dated, and freshly tool-retrieved facts are legitimate, never fail a claim for being one.
 
 User question:
 {query}
@@ -48,9 +48,9 @@ This case {abstain_clause}.
 
 Grade with JSON only: {{"grounded": true|false, "reason": "<one sentence>"}}.
 
-How to grade (read carefully — these correct common mis-grades):
+How to grade (read carefully, these correct common mis-grades):
 - A claim that carries a DATA/citation is grounded BY DEFINITION. Your only job is to check the
-  claim is SUPPORTED BY the cited source / retrieved snippet shown above — NOT whether you can
+  claim is SUPPORTED BY the cited source / retrieved snippet shown above, NOT whether you can
   personally verify it. Do not penalize a cited, time-sensitive, or future-dated fact just because
   you cannot confirm it from training. If the snippet supports it, it is grounded.
 - Unsupported *specifics with no citation* (a location, distance, hour, date, price, or eligibility

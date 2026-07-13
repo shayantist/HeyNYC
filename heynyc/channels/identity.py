@@ -1,5 +1,5 @@
 """The PII boundary: a sender becomes a salted, non-reversible key. Raw phone
-numbers never get persisted — sessions, telemetry, and feedback all key off this."""
+numbers never get persisted, sessions, telemetry, and feedback all key off this."""
 from __future__ import annotations
 
 import hmac
