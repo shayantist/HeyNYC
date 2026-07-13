@@ -26,3 +26,10 @@
   base: workers_tip_theft
   perturbation: paraphrase
   expect_same_outcome_as_base: true
+
+- id: workers_clopening_retrieval
+  query: "Can my employer in NYC schedule me to close and then open the next morning?"
+  capability: scope
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  notes: Must answer from official-source retrieval with citations, not abstain.
