@@ -330,6 +330,27 @@ def _append_segment(segments: list, kind: str, text: str) -> None:
         segments.append({"kind": kind, "text": text})
 
 
+def _reconcile_message_text(segments: list, start: int, text: str) -> None:
+    """Replace streamed deltas with the authoritative completed-message snapshot."""
+    del segments[start:]
+    if text.strip():
+        _append_segment(segments, "text", text)
+
+
+def _approve_repl_action(console, name: str, args: dict) -> bool:
+    """Ask for local consent without printing the tool arguments, which may contain PII."""
+    if name == "prepare_snap_application":
+        action = (
+            "create the local SNAP PDF from the answers you reviewed"
+            if args.get("confirmed")
+            else "save these answers in a local draft and show you a review"
+        )
+        prompt = f"[bold yellow]Allow HeyNYC to {action}? It will not submit anything. [y/N] [/]"
+    else:
+        prompt = f"[bold yellow]Allow HeyNYC to run {name}? [y/N] [/]"
+    return console.input(prompt).strip().lower() in {"y", "yes"}
+
+
 async def _cmd_repl() -> None:
     """Interactive, streaming multi-turn chat, rich-rendered, Claude-Code-like."""
     from rich.console import Console, Group
@@ -340,7 +361,13 @@ async def _cmd_repl() -> None:
 
     console = Console()
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
-    agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
+
+    async def approver(name: str, args: dict) -> bool:
+        return _approve_repl_action(console, name, args)
+
+    agent = Agent(
+        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False), approver=approver
+    )
     convo = agent.conversation()
 
     # Form-fill test surface: persist a structured draft + collect generated PDFs, so the REPL
@@ -367,6 +394,7 @@ async def _cmd_repl() -> None:
         segments: list = []  # ordered render parts: {"kind": "text"|"tool", "text": str}
         citations: dict = {}
         done = False
+        message_start = 0
 
         def render():
             parts: list = []
@@ -387,10 +415,14 @@ async def _cmd_repl() -> None:
         with Live(render(), console=console, refresh_per_second=12, vertical_overflow="visible") as live:
             async for event in convo.stream(question, reminders=_default_reminders(),
                                              output_dir=artifacts_dir, drafts=drafts):
-                if isinstance(event, events.ToolStart):
+                if isinstance(event, events.MessageStart):
+                    message_start = len(segments)
+                elif isinstance(event, events.ToolStart):
                     _append_segment(segments, "tool", f"· using {event.name}…")
                 elif isinstance(event, events.TextDelta):
                     _append_segment(segments, "text", event.text)
+                elif isinstance(event, events.MessageCompleted):
+                    _reconcile_message_text(segments, message_start, event.text)
                 elif isinstance(event, events.Done):
                     citations = event.citations
                     done = True

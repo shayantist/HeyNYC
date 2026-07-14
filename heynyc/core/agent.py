@@ -56,7 +56,8 @@ GROUNDING_ABSTAIN_FALLBACK = (
     "info, call 311 or check the official NYC page, and they can take it from there."
 )
 
-_CITE_STRIP_RE = re.compile(r"\{cite:S\d+\}")
+_CITE_STRIP_RE = re.compile(r"\{cite:[^{}]+\}")
+_CITE_MARKER_RE = re.compile(r"\{cite:([^{}]+)\}")
 
 # Spend-cap halt (OWASP LLM10 Unbounded Consumption). When a configured HEYNYC_SPEND_CAP is reached,
 # the loop stops making model calls at the next turn boundary and returns this instead of silently
@@ -65,6 +66,67 @@ SPEND_CAPPED_FALLBACK = (
     "I've reached the usage limit set for this session and can't take another step right now. "
     "For urgent NYC help you can call 311, or 911 in an emergency, and please try again a bit later."
 )
+
+# Clear, active chest-pain statements bypass the model entirely. This is intentionally narrow, not a
+# general medical classifier: present-tense first-person English and Spanish only. A deterministic
+# response prevents unsafe diagnosis or dosage text from entering the streaming event path at all.
+_CHEST_PAIN_EN_RE = re.compile(
+    r"\b(?:i have|i am (?:having|experiencing|feeling)|i['’]m (?:having|experiencing|feeling)|i feel) "
+    r"(?:(?:severe|bad|really bad|a) )?"
+    r"(?:chest (?:pain|pressure)|(?:pain|pressure) in (?:my|the) chest)\b|"
+    r"\bmy chest (?:hurts|is hurting|feels tight)\b",
+    re.IGNORECASE,
+)
+_CHEST_PAIN_ES_RE = re.compile(
+    r"\b(?:tengo|siento|estoy (?:teniendo|experimentando)) "
+    r"(?:un )?(?:dolor|presi[oó]n)(?: fuerte)? "
+    r"(?:en (?:el|mi)|de) pecho\b|"
+    r"\bme (?:duele|est[aá] doliendo) el pecho\b",
+    re.IGNORECASE,
+)
+_CHEST_PAIN_HYPOTHETICAL_RE = re.compile(
+    r"\b(?:what if|if i (?:have|had)|si tengo|si tuviera)\b",
+    re.IGNORECASE,
+)
+_CHEST_PAIN_PAST_RE = re.compile(
+    r"\b(?:stopped|went away|gone|no longer|last week|yesterday|used to|history of|"
+    r"la semana pasada|ayer|ya pas[oó]|ya no|se me pas[oó]|tuve)\b",
+    re.IGNORECASE,
+)
+_CHEST_PAIN_INFORMATIONAL_RE = re.compile(
+    r"^[\s¿]*(?:what|why|how|when|can|could|would|should|is|are|do|does|"
+    r"qu[eé]|por qu[eé]|c[oó]mo|cu[aá]ndo)\b",
+    re.IGNORECASE,
+)
+_EMERGENCY_RESPONSE_EN = "Call 911 right now. I'm an AI and can't diagnose this."
+_EMERGENCY_RESPONSE_ES = "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto."
+
+
+def _emergency_backstop(user_message: str) -> Optional[str]:
+    """Return a fixed, language-matched response for a clear active chest-pain emergency."""
+    signals = [
+        (match.start(), _EMERGENCY_RESPONSE_ES)
+        for match in _CHEST_PAIN_ES_RE.finditer(user_message)
+    ] + [
+        (match.start(), _EMERGENCY_RESPONSE_EN)
+        for match in _CHEST_PAIN_EN_RE.finditer(user_message)
+    ]
+    if not signals:
+        return None
+    signal_pos, response = max(signals, key=lambda item: item[0])
+    hypothetical = _CHEST_PAIN_HYPOTHETICAL_RE.search(user_message)
+    if hypothetical:
+        question_end = user_message.find("?", hypothetical.start())
+        if question_end < 0 or signal_pos < question_end:
+            return None
+    if _CHEST_PAIN_INFORMATIONAL_RE.search(user_message):
+        question_end = user_message.find("?")
+        if question_end < 0 or signal_pos < question_end:
+            return None
+    past = list(_CHEST_PAIN_PAST_RE.finditer(user_message))
+    if past and signal_pos < past[-1].end():
+        return None
+    return response
 
 
 def _grounding_feedback(result: GroundingResult) -> str:
@@ -98,6 +160,26 @@ def _strip_ungrounded_claims(text: str, result: GroundingResult) -> str:
     if len(meaningful) < 40:  # the ungrounded fact was load-bearing → the whole answer must abstain
         return GROUNDING_ABSTAIN_FALLBACK
     return stripped
+
+
+def _unknown_citation_ids(text: str, citations: dict) -> list[str]:
+    """Return model-invented or stale citation ids in first-seen order."""
+    return list(dict.fromkeys(
+        match.group(1) for match in _CITE_MARKER_RE.finditer(text)
+        if match.group(1) not in citations
+    ))
+
+
+def _unknown_citation_feedback(ids: list[str]) -> str:
+    joined = ", ".join(ids)
+    return (
+        "<system-reminder>\n"
+        f"Your last answer used citation ids that do not exist in this turn: {joined}. "
+        "Regenerate the answer. Use only citation ids present in current tool results. Facts the "
+        "user supplied do not need citations. If a factual claim has no current source, remove it "
+        "or retrieve a source before stating it.\n"
+        "</system-reminder>"
+    )
 
 # Non-streaming model fn: (messages, tool_schemas) -> assistant message dict.
 CompletionFn = Callable[[list[dict], list[dict]], Awaitable[dict]]
@@ -225,6 +307,25 @@ class Agent:
         for reminder in reminders or []:
             yield events.Reminder(summary=reminder)
 
+        emergency_text = _emergency_backstop(user_message)
+        if emergency_text:
+            message_id = "m0"
+            assistant = {"role": "assistant", "content": emergency_text, "tool_calls": None}
+            messages.append(assistant)
+            yield events.MessageStart(message_id=message_id)
+            yield events.TextDelta(message_id=message_id, text=emergency_text)
+            yield events.MessageCompleted(
+                message_id=message_id, text=emergency_text, citations=citations.mapping()
+            )
+            result = AgentResult(
+                text=emergency_text, citations=citations.mapping(), tool_calls_made=tools_made,
+                iterations=0, status="success", messages=messages, usage=_usage(),
+            )
+            yield events.Done(
+                status="success", num_turns=0, citations=result.citations, result=result
+            )
+            return
+
         for i in range(max_iters):
             # SPEND-CAP GUARD (turn boundary). Before each model call, halt if this session's
             # cumulative cost has reached the configured ceiling, never spend past it silently.
@@ -284,6 +385,23 @@ class Agent:
             if not tool_calls:
                 # DETERMINISTIC GROUNDING GUARD (the post-generation safety hook). Before the final
                 # answer reaches the user, verify every {cite:Sn}'d structured fact is in its source.
+                unknown_citations = _unknown_citation_ids(text, citations.mapping())
+                if unknown_citations:
+                    if guard_retries < self.guard_max_retries:
+                        guard_retries += 1
+                        yield events.MessageCompleted(
+                            message_id=message_id, text="", citations=citations.mapping()
+                        )
+                        yield events.Reminder(
+                            summary=("citation guard: unknown citation id, retrying "
+                                     f"({guard_retries}/{self.guard_max_retries})")
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": _unknown_citation_feedback(unknown_citations),
+                        })
+                        continue
+                    text = GROUNDING_ABSTAIN_FALLBACK
                 action, text, gr = self._grounding_verdict(
                     text, citations.mapping(), user_message, guard_retries)
                 if action == "retry":

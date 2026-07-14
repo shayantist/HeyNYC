@@ -51,6 +51,21 @@ async def test_stream_emits_text_then_done(empty_registry):
     assert done.result.text == "Hello there"
 
 
+async def test_unknown_citation_marker_is_rejected_and_regenerated(empty_registry):
+    raw = "Draft ready {cite:S5} {cite:prepare_snap_application}"
+    sf = _scripted_stream(
+        [_text(raw), _message(raw)],
+        [_text("Draft ready"), _message("Draft ready")],
+    )
+    agent = Agent(empty_registry, tools={}, stream_fn=sf)
+    evs = [e async for e in agent.stream("go")]
+
+    completed = [e for e in evs if e.type == "message.completed"]
+    assert [event.text for event in completed] == ["", "Draft ready"]
+    assert sum(e.type == "message.start" for e in evs) == 2
+    assert evs[-1].result.text == "Draft ready"
+
+
 async def test_stream_tool_lifecycle(empty_registry):
     async def echo(args, ctx: ToolContext):
         return "tool ran"
@@ -192,6 +207,43 @@ def test_repl_segments_preserve_chronological_order():
         ("tool", "· using geocode…"),
         ("text", "Here are the results"),
     ]
+
+
+def test_repl_reconciles_streamed_text_with_completed_message():
+    from heynyc.__main__ import _append_segment, _reconcile_message_text
+
+    segs = [{"kind": "tool", "text": "· using prepare_snap_application…"}]
+    start = len(segs)
+    _append_segment(segs, "text", "Draft ready {cite:S5}")
+    _reconcile_message_text(segs, start, "Draft ready")
+
+    assert segs == [
+        {"kind": "tool", "text": "· using prepare_snap_application…"},
+        {"kind": "text", "text": "Draft ready"},
+    ]
+
+
+def test_repl_snap_approval_is_explicit_and_does_not_echo_pii():
+    from heynyc.__main__ import _approve_repl_action
+
+    class Console:
+        def __init__(self, answer):
+            self.answer = answer
+            self.prompts = []
+
+        def input(self, prompt):
+            self.prompts.append(prompt)
+            return self.answer
+
+    args = {"slots": {"legal_name": "Ana Diaz", "ssn": "078-05-1120"}, "confirmed": True}
+    denied = Console("")
+    approved = Console("yes")
+
+    assert _approve_repl_action(denied, "prepare_snap_application", args) is False
+    assert _approve_repl_action(approved, "prepare_snap_application", args) is True
+    prompt = " ".join(denied.prompts + approved.prompts)
+    assert "Ana Diaz" not in prompt and "078-05-1120" not in prompt
+    assert "will not submit" in prompt.lower()
 
 
 def test_to_sse_formats_frame():

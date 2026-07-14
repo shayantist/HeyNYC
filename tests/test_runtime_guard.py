@@ -66,6 +66,111 @@ def _agent(complete, **kw):
     return Agent(Registry([]), tools={"lookup": tool}, complete_fn=complete, **kw)
 
 
+# --- Emergency backstop --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (
+            "I have chest pain right now. Should I take 325 mg of aspirin?",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+        (
+            "Tengo dolor en el pecho ahora mismo. ¿Debo tomar aspirina?",
+            "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto.",
+        ),
+        (
+            "I'm feeling chest pain right now.",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+        (
+            "Me está doliendo el pecho ahora.",
+            "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto.",
+        ),
+        (
+            "I have chest pressure right now.",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+        (
+            "Tengo dolor de pecho ahora mismo.",
+            "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto.",
+        ),
+        (
+            "I had chest pain last week, and I have pain in my chest now.",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+        (
+            "Estoy experimentando dolor en el pecho ahora.",
+            "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto.",
+        ),
+        (
+            "What should I do? I have really bad chest pain.",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+        (
+            "¿Qué hago? Tengo dolor fuerte en el pecho.",
+            "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto.",
+        ),
+        (
+            "My chest feels tight right now.",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+        (
+            "What if I have chest pain? I have chest pain right now.",
+            "Call 911 right now. I'm an AI and can't diagnose this.",
+        ),
+    ],
+)
+async def test_clear_chest_pain_short_circuits_before_any_model_text(query, expected):
+    from heynyc.core import events
+
+    async def unsafe_model(messages, tool_schemas):
+        raise AssertionError("a clear emergency must never reach the model")
+
+    agent = Agent(Registry([]), tools={}, complete_fn=unsafe_model)
+    seen = [event async for event in agent.stream(query)]
+
+    assert [event.type for event in seen] == [
+        "message.start", "text.delta", "message.completed", "done",
+    ]
+    assert "".join(event.text for event in seen if isinstance(event, events.TextDelta)) == expected
+    result = seen[-1].result
+    assert result.text == expected
+    assert result.iterations == 0
+    assert result.tool_calls_made == []
+    assert result.citations == {}
+    assert result.usage["input_tokens"] == 0
+    assert result.usage["output_tokens"] == 0
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "The chest pain stopped last week. What clinic should I see?",
+        "I have chest pain, but it stopped last week.",
+        "I have chest pain, but it stopped yesterday. I am okay now.",
+        "I have chest pain, but it is gone now.",
+        "I no longer have chest pain.",
+        "What should someone do if they have chest pain?",
+        "What if I have chest pain?",
+        "What does it mean when my chest hurts?",
+        "What does it mean if I have chest pain right now?",
+        "Tengo dolor en el pecho la semana pasada.",
+        "¿Qué hago si tengo dolor en el pecho?",
+        "¿Qué significa cuando me duele el pecho?",
+        "Tengo dolor en el pecho, pero ya no.",
+    ],
+)
+async def test_chest_pain_history_or_general_question_still_reaches_model(query):
+    complete = _scripted(_assistant(content="I can help with that question."))
+    agent = Agent(Registry([]), tools={}, complete_fn=complete)
+
+    result = await agent.run(query)
+
+    assert result.text == "I can help with that question."
+    assert complete.calls["i"] == 1
+
+
 # --- Tier 3: catch + feedback + retry -------------------------------------------------------------
 
 async def test_guard_catches_ungrounded_phone_then_model_fixes_it():
