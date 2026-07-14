@@ -72,6 +72,12 @@ def _in_nyc(lat: float, lon: float) -> bool:
     return w <= lon <= e and s <= lat <= n
 
 
+def _in_rect(point: "GeoPoint", rect: tuple[float, float, float, float]) -> bool:
+    """True when a point is inside a W,S,E,N rectangle."""
+    w, s, e, n = rect
+    return w <= point.lon <= e and s <= point.lat <= n
+
+
 @dataclass
 class GeoPoint:
     lat: float
@@ -131,6 +137,18 @@ _BOROUGH_RECT: dict[str, tuple[float, float, float, float]] = {
     "staten island": (-74.2591, 40.4774, -74.0492, 40.6518),
 }
 
+_BOROUGH_BOUNDARY_URL = (
+    "https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/ArcGIS/rest/services/"
+    "v_NYC_Borough_Boundary/FeatureServer/0/query"
+)
+_BOROUGH_NAMES = {
+    "manhattan": "Manhattan",
+    "bronx": "Bronx",
+    "brooklyn": "Brooklyn",
+    "queens": "Queens",
+    "staten island": "Staten Island",
+}
+
 # Borough detection patterns: a full name plus common aliases/abbreviations, each matched as a WHOLE
 # token (\b...\b) so a short abbreviation never fires on a substring inside a street name (e.g. "si"
 # inside "Business" or "Simone", "bk" inside a word). "the Bronx" is already covered by the plain
@@ -169,6 +187,37 @@ def _borough_rect(text: str) -> Optional[tuple[float, float, float, float]]:
     """The bounding box for a borough named in the query, or None when no borough is named (the floor then applies)."""
     key = _detect_borough(text)
     return _BOROUGH_RECT.get(key) if key else None
+
+
+def _looks_like_named_area(text: str) -> bool:
+    """A borough-qualified neighborhood or place name, not a numbered address."""
+    return not re.search(r"\d", text) and _detect_borough(text) is not None
+
+
+async def _point_in_named_borough(
+    point: "GeoPoint", borough: str, client: httpx.AsyncClient
+) -> bool:
+    """Fail-closed point containment against DCP's official borough polygons."""
+    try:
+        response = await client.get(
+            _BOROUGH_BOUNDARY_URL,
+            params={
+                "where": f"BoroName='{_BOROUGH_NAMES[borough]}'",
+                "geometry": f"{point.lon},{point.lat}",
+                "geometryType": "esriGeometryPoint",
+                "inSR": 4326,
+                "spatialRel": "esriSpatialRelIntersects",
+                "returnCountOnly": "true",
+                "f": "json",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return False
+        return int(payload.get("count", 0)) > 0
+    except (KeyError, TypeError, ValueError, httpx.HTTPError):
+        return False
 
 
 def _geosearch_params(text: str, rect: Optional[tuple[float, float, float, float]]) -> dict:
@@ -232,7 +281,10 @@ def _gate_low_confidence(point: GeoPoint) -> bool:
     return False
 
 
-async def geocode(text: str, *, client: Optional[httpx.AsyncClient] = None, forgiving=None) -> Optional[GeoPoint]:
+async def geocode(
+    text: str, *, client: Optional[httpx.AsyncClient] = None, forgiving=None,
+    borough_contains=None,
+) -> Optional[GeoPoint]:
     """Hybrid geocoder.
 
     Intersections/POI-ish inputs go to the forgiving provider first (GeoSearch
@@ -244,6 +296,7 @@ async def geocode(text: str, *, client: Optional[httpx.AsyncClient] = None, forg
     if forgiving is None:
         from .geocoder import forgiving_geocode
         forgiving = forgiving_geocode
+    borough_contains = borough_contains or _point_in_named_borough
     own = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
     try:
@@ -256,17 +309,30 @@ async def geocode(text: str, *, client: Optional[httpx.AsyncClient] = None, forg
             centroid = _zip_centroid(m.group())
             if centroid is not None and _in_nyc(*centroid):
                 lat, lon = centroid
-                return GeoPoint(lat=lat, lon=lon, label=f"ZIP {m.group()} area",
-                                confidence=1.0, match_type="zcta")
+                point = GeoPoint(lat=lat, lon=lon, label=f"ZIP {m.group()} area",
+                                 confidence=1.0, match_type="zcta")
+                borough = _detect_borough(text)
+                if borough is not None and not await borough_contains(point, borough, client):
+                    return None
+                return point
             return None  # unknown or non-NYC ZIP → don't fall through to GeoSearch
         # Borough-aware bias: a borough named in the query gives that borough's hard boundary.rect;
         # otherwise rect is None and _geosearch_geocode applies the citywide NYC floor. This is what
         # fixes "125th Street Manhattan" resolving to College Point, Queens.
         rect = _borough_rect(text)
-        if _looks_like_intersection(text):
-            point = await forgiving(text) or await _geosearch_geocode(text, client, rect=rect)
+        if _looks_like_intersection(text) or _looks_like_named_area(text):
+            point = await forgiving(text)
+            if point is not None and rect is not None and not _in_rect(point, rect):
+                point = None
+            point = point or await _geosearch_geocode(text, client, rect=rect)
         else:
             point = await _geosearch_geocode(text, client, rect=rect) or await forgiving(text)
+        if point is not None and rect is not None and not _in_rect(point, rect):
+            point = None
+        borough = _detect_borough(text)
+        if point is not None and borough is not None:
+            if not await borough_contains(point, borough, client):
+                point = None
         if point is not None and _gate_low_confidence(point):
             point.low_confidence = True
         return point

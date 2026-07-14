@@ -107,6 +107,7 @@ def test_to_site_drops_rows_without_coords():
 
 CHILDCARE_HOST = "data.cityofnewyork.us"
 GEOSEARCH_HOST = "geosearch.planninglabs.nyc"
+BOROUGH_BOUNDARY_HOST = "services5.arcgis.com"
 
 
 def _routed_client(records, status: int = 200) -> httpx.AsyncClient:
@@ -116,6 +117,8 @@ def _routed_client(records, status: int = 200) -> httpx.AsyncClient:
             return httpx.Response(200, json={"features": [
                 {"geometry": {"coordinates": [-73.9600, 40.6900]},
                  "properties": {"label": "Origin, Brooklyn"}}]})
+        if BOROUGH_BOUNDARY_HOST in host:
+            return httpx.Response(200, json={"count": 1})
         if CHILDCARE_HOST in host:
             if status != 200:
                 return httpx.Response(status, json={"error": True})

@@ -18,6 +18,7 @@ from heynyc.core.tools.geo import (
     _in_nyc,
     _looks_like_intersection,
     _nearest_handler,
+    _point_in_named_borough,
     _zip_centroid,
     geocode,
     haversine_m,
@@ -135,11 +136,25 @@ async def test_bare_zip_bypasses_geosearch_to_zcta_centroid():
 async def test_zip_with_borough_word_resolves_same_centroid():
     for query in ("10453 Bronx", "Bronx 10453"):
         client = _wrong_queens_client()
-        point = await geocode(query, client=client, forgiving=_fake_forgiving(None))
+        point = await geocode(
+            query, client=client, forgiving=_fake_forgiving(None),
+            borough_contains=_fake_borough_contains(True),
+        )
         await client.aclose()
         assert point.match_type == "zcta"
         assert round(point.lat, 4) == 40.8525
         assert round(point.lon, 4) == -73.9133
+
+
+async def test_zip_with_contradictory_borough_fails_closed():
+    client = _wrong_queens_client()
+    point = await geocode(
+        "10453 Queens", client=client, forgiving=_fake_forgiving(None),
+        borough_contains=_fake_borough_contains(False),
+    )
+    await client.aclose()
+
+    assert point is None
 
 
 async def test_non_nyc_bare_zip_returns_none():
@@ -154,7 +169,10 @@ async def test_real_address_still_uses_geosearch():
         return _geosearch_response(40.8536, -73.9010, "1910 Monterey Ave, Bronx")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    point = await geocode("1910 Monterey Ave Bronx", client=client, forgiving=_fake_forgiving(None))
+    point = await geocode(
+        "1910 Monterey Ave Bronx", client=client, forgiving=_fake_forgiving(None),
+        borough_contains=_fake_borough_contains(True),
+    )
     await client.aclose()
     assert point.match_type == "geosearch"
     assert "Monterey" in point.label
@@ -251,6 +269,12 @@ def _fake_forgiving(point):
     return fn
 
 
+def _fake_borough_contains(result):
+    async def fn(_point, _borough, _client):
+        return result
+    return fn
+
+
 async def test_high_confidence_match_not_flagged():
     # A high-confidence NYC-biased match is trusted regardless of phrasing.
     forg = _fake_forgiving(GeoPoint(40.8073, -73.9626, "Broadway & W 116 St, Manhattan",
@@ -279,6 +303,106 @@ async def test_forgiving_fallback_when_geosearch_empty():
     await client.aclose()
     assert point.match_type == "nominatim"
     assert "Apollo" in point.label
+
+
+async def test_named_neighborhood_with_borough_uses_forgiving_geocoder_first():
+    correct = GeoPoint(
+        40.7557, -73.8858, "Jackson Heights, Queens", confidence=0.8, match_type="nominatim"
+    )
+    forgiving = _fake_forgiving(correct)
+
+    def wrong_pad_match(request: httpx.Request) -> httpx.Response:
+        return _geosearch_response(40.7003, -73.7717, "TRCS JACKSON HEIGHTS, St. Albans")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(wrong_pad_match))
+    point = await geocode(
+        "Jackson Heights, Queens", client=client, forgiving=forgiving,
+        borough_contains=_fake_borough_contains(True),
+    )
+    await client.aclose()
+
+    assert point == correct
+
+
+async def test_named_neighborhood_rejects_forgiving_result_in_wrong_borough():
+    wrong = GeoPoint(40.8460, -73.9090, "Jackson Avenue, Bronx", match_type="nominatim")
+
+    def correct_pad_fallback(request: httpx.Request) -> httpx.Response:
+        return _geosearch_response(40.7557, -73.8858, "Jackson Heights, Queens")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(correct_pad_fallback))
+    point = await geocode(
+        "Jackson Heights, Queens", client=client, forgiving=_fake_forgiving(wrong),
+        borough_contains=_fake_borough_contains(True),
+    )
+    await client.aclose()
+
+    assert point is not None
+    assert point.label == "Jackson Heights, Queens"
+
+
+async def test_numbered_address_rejects_forgiving_fallback_in_wrong_borough():
+    wrong = GeoPoint(40.7557, -73.8858, "125th Street, Queens", match_type="nominatim")
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"features": []}))
+    )
+    point = await geocode(
+        "125th Street Manhattan", client=client, forgiving=_fake_forgiving(wrong)
+    )
+    await client.aclose()
+
+    assert point is None
+
+
+async def test_overlapping_borough_boxes_use_official_polygon_validation():
+    overlap = GeoPoint(40.7000, -73.9000, "Queens result", match_type="nominatim")
+
+    async def outside_brooklyn(_point, _borough, _client):
+        return False
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"features": []}))
+    )
+    point = await geocode(
+        "Brooklyn", client=client, forgiving=_fake_forgiving(overlap),
+        borough_contains=outside_brooklyn,
+    )
+    await client.aclose()
+
+    assert point is None
+
+
+async def test_official_borough_polygon_query_uses_point_intersection():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(request.url.params)
+        return httpx.Response(200, json={"count": 1})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    inside = await _point_in_named_borough(
+        GeoPoint(40.7000, -73.9000), "brooklyn", client
+    )
+    await client.aclose()
+
+    assert inside
+    assert seen["geometry"] == "-73.9,40.7"
+    assert seen["geometryType"] == "esriGeometryPoint"
+    assert seen["spatialRel"] == "esriSpatialRelIntersects"
+    assert seen["where"] == "BoroName='Brooklyn'"
+
+
+async def test_official_borough_polygon_query_fails_closed_on_non_object_json():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=["unexpected"]))
+    )
+    inside = await _point_in_named_borough(
+        GeoPoint(40.7000, -73.9000), "brooklyn", client
+    )
+    await client.aclose()
+
+    assert not inside
 
 
 async def test_low_confidence_origin_makes_nearest_clarify(monkeypatch):
