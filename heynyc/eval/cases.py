@@ -83,6 +83,7 @@ def load_cases(registry: Registry) -> list[EvalCase]:
                     expect_same_outcome_as_base=entry.get("expect_same_outcome_as_base", False),
                     expect_same_programs_as_base=entry.get("expect_same_programs_as_base", False),
                     safety_critical=entry.get("safety_critical", False),
+                    language=entry.get("language", "en"),
                 )
             )
     return cases

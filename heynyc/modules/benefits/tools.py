@@ -287,7 +287,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     header = (
         "NYC benefit programs from the city's Benefits & Programs dataset. Eligibility text is "
-        "general guidance with an 'as of' date, NOT a personalized determination, route any "
+        "general guidance with an 'as of' date, NOT a personalized determination. An 'as of' "
+        "date records the dataset update; it does not prove a rule or limit is current today. "
+        "Confirm exact current amounts and rules on the official program page. Route any "
         f"'do I qualify' to {OFFICIAL}:\n"
     )
     return header + "\n".join(blocks)

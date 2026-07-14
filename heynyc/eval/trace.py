@@ -111,6 +111,7 @@ class Span:
 class Trace:
     case_id: str
     query: str
+    language: str = "en"
     spans: list[Span] = field(default_factory=list)
     final_text: str = ""
     citations: dict = field(default_factory=dict)
@@ -120,6 +121,7 @@ class Trace:
         return {
             "case_id": self.case_id,
             "query": self.query,
+            "language": self.language,
             "spans": [s.to_dict() for s in self.spans],
             "final_text": self.final_text,
             "citations": self.citations,
@@ -169,6 +171,7 @@ def build_trace(case_result: CaseResult) -> Trace:
     return Trace(
         case_id=case_result.case.id,
         query=case_result.case.query,
+        language=case_result.case.language,
         spans=spans,
         final_text=case_result.text,
         citations=case_result.citations,

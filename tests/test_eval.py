@@ -36,6 +36,8 @@ def test_load_cases_from_real_modules():
     ids = {c.id for c in cases}
     assert "cooling_nearest_columbia" in ids
     assert "wc_made_up_match" in ids
+    assert "benefits_cross_module_snap_center" in ids
+    assert "clinic_cross_module_pregnancy_care" in ids
     # every module's abstain cases are present
     assert any(c.abstain for c in cases)
 
@@ -178,7 +180,8 @@ def test_load_cases_parses_taxonomy(tmp_path):
         {"id": "demo_ground", "query": "where?", "capability": "dataset_grounding",
          "test_type": "MFT", "invariants": {"must_ground": True, "must_not_fabricate": True}},
         {"id": "demo_inv", "query": "where???", "test_type": "INV",
-         "base": "demo_ground", "perturbation": "typo", "expect_same_outcome_as_base": True},
+         "base": "demo_ground", "perturbation": "typo", "expect_same_outcome_as_base": True,
+         "language": "es"},
     ]))
     registry = Registry.discover(tmp_path)
     cases = {c.id: c for c in load_cases(registry)}
@@ -186,6 +189,7 @@ def test_load_cases_parses_taxonomy(tmp_path):
     assert cases["demo_ground"].safety_critical is True  # must_not_fabricate marks it
     assert cases["demo_inv"].base == "demo_ground"
     assert cases["demo_inv"].perturbation == "typo"
+    assert cases["demo_inv"].language == "es"
 
 
 async def test_run_case_captures_messages():

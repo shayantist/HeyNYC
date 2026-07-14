@@ -139,6 +139,21 @@ async def test_judge_falls_back_to_groundedness_for_a_non_redteam_case():
     assert res.name == "api_grounded" and res.passed is True
 
 
+async def test_ordinary_judge_receives_expected_response_language():
+    seen = {}
+
+    async def grounded(prompt):
+        seen["prompt"] = prompt
+        return '{"grounded": true, "reason": "Spanish answer preserved the facts"}'
+
+    judge = make_api_judge("anthropic/claude-sonnet-4-6")
+    case = EvalCase(id="ES", module="benefits", query="¿Qué ayuda hay?", language="es")
+    await judge(CaseResult(case=case, text="Hay ayuda.", citations={}), complete_fn=grounded)
+
+    assert "Expected response language: es" in seen["prompt"]
+    assert "changes a number" in seen["prompt"]
+
+
 # --- the loader: the frozen suite becomes EvalCases -------------------------
 
 def test_load_redteam_cases_parses_and_covers_all_eight_categories():

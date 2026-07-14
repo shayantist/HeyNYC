@@ -97,3 +97,15 @@ def test_trace_write_roundtrip(tmp_path: Path):
     assert data["case_id"] == "c"
     assert data["outcome"] in {"answered", "abstained", "redirected", "error"}
     assert isinstance(data["spans"], list)
+
+
+def test_trace_preserves_expected_response_language():
+    cr = _cr(
+        case=EvalCase(id="es", module="m", query="¿Dónde?", language="es"),
+        text="Aquí.",
+    )
+
+    trace = build_trace(cr)
+
+    assert trace.language == "es"
+    assert trace.to_dict()["language"] == "es"
