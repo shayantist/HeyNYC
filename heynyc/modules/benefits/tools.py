@@ -323,6 +323,20 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
                 screening.clear_token(base)
                 token = await screening.get_token(client, base, user, pw)
                 result = await screening.screen(client, base, token, household, persons, interested)
+            elif exc.response.status_code == 400:
+                try:
+                    payload = exc.response.json()
+                except ValueError:
+                    payload = {}
+                raw_errors = payload.get("errors", []) if isinstance(payload, dict) else []
+                if not isinstance(raw_errors, list):
+                    raw_errors = []
+                errors = "; ".join(
+                    item.get("message", "") for item in raw_errors
+                    if isinstance(item, dict) and item.get("message")
+                )
+                detail = errors or "the profile did not match the City's request contract"
+                return f"ERROR: the screener rejected the inputs ({detail}). Re-ask only for that field."
             elif exc.response.status_code == 504:          # screening timeout, NEVER a false negative
                 return ("ERROR: the screener is busy right now, don't tell the user they're ineligible; "
                         "ask them to try again in a moment.")
@@ -332,7 +346,16 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             errs = "; ".join(e.get("message", "") for e in result.get("errors", []))
             return f"ERROR: the screener rejected the inputs ({errs}). Re-ask for the missing field."
         eligible = result.get("eligiblePrograms") or []
-        catalog = await query_dataset(DATASET_ID, limit=200, client=client)
+        try:
+            catalog = await query_dataset(DATASET_ID, limit=200, client=client)
+            if not isinstance(catalog, list) or not all(isinstance(row, dict) for row in catalog):
+                catalog = []
+        except (httpx.HTTPError, ValueError):
+            # Catalog details enrich a successful screening verdict, but are not the verdict.
+            # Keep the API names and provenance if Socrata is temporarily unavailable.
+            catalog = []
+    except ValueError as exc:
+        return f"ERROR: {exc}. Rebuild the profile using only the documented screening fields."
     except httpx.HTTPError:
         return f"ERROR: couldn't reach the screener right now. Don't guess, point the user to {OFFICIAL}."
     finally:
@@ -385,6 +408,96 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
+def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "amount": {
+                "type": "string",
+                "maxLength": max_length,
+                "pattern": rf"^\d{{1,{max_whole_digits}}}(?:\.\d{{1,2}})?$",
+            },
+            "frequency": {"type": "string", "enum": list(screening.FREQUENCIES)},
+            "type": {"type": "string", "enum": list(types)},
+        },
+        "required": ["amount", "frequency", "type"],
+    }
+
+
+def _screen_parameters() -> dict:
+    household_flags = {
+        name: {"type": "boolean"} for name in (
+            "livingRenting", "livingOwner", "livingStayingWithFriend", "livingHotel",
+            "livingShelter", "livingPreferNotToSay",
+        )
+    }
+    person_flags = {
+        name: {"type": "boolean"} for name in (
+            "student", "studentFulltime", "pregnant", "unemployed",
+            "unemployedWorkedLast18Months", "blind", "disabled", "veteran",
+            "benefitsMedicaid", "benefitsMedicaidDisability", "livingOwnerOnDeed",
+            "livingRentalOnLease",
+        )
+    }
+    household_properties = {
+        "cashOnHand": {
+            "type": "string", "maxLength": 10,
+            "pattern": r"^\d{1,7}(?:\.\d{1,2})?$",
+            "description": "Numeric USD amount encoded as a string, for example '500'.",
+        },
+        "livingRentalType": {"type": "string", "enum": list(screening.RENTAL_TYPES)},
+        **household_flags,
+    }
+    person_properties = {
+        "age": {"type": "number", "minimum": 0, "maximum": 999},
+        "householdMemberType": {
+            "type": "string", "enum": list(screening.HOUSEHOLD_MEMBER_TYPES)},
+        "incomes": {
+            "type": "array", "items": _money_item_schema(screening.INCOME_TYPES, 15, 12)},
+        "expenses": {
+            "type": "array", "items": _money_item_schema(screening.EXPENSE_TYPES, 9, 6)},
+        **person_flags,
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "household": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "Household-level housing and cash-on-hand fields. PII-free.",
+                "properties": household_properties,
+            },
+            "persons": {
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "contains": {
+                    "type": "object",
+                    "properties": {"householdMemberType": {"const": "HeadOfHousehold"}},
+                    "required": ["householdMemberType"],
+                },
+                "minContains": 1,
+                "description": "1-8 people; at least one must be HeadOfHousehold.",
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": person_properties,
+                    "required": ["age", "householdMemberType"],
+                },
+            },
+            "interested_programs": {
+                "type": "array", "uniqueItems": True,
+                "items": {"type": "string", "pattern": "^[A-Z0-9]+$"},
+                "description": "Optional uppercase program-code filter.",
+            },
+            "lang": {
+                "type": "string",
+                "description": "Optional language name, for example Spanish.",
+            },
+        },
+        "required": ["persons"],
+    }
+
+
 def screen_eligibility_tool() -> Tool:
     return Tool(
         name="screen_eligibility",
@@ -395,32 +508,7 @@ def screen_eligibility_tool() -> Tool:
             "required; optional income/flags). NEVER pass names, DOB, SSN, or address. Returns a "
             "likely-eligible estimate (NOT a determination); a program's absence is never proof of "
             "ineligibility."),
-        parameters={
-            "type": "object",
-            "properties": {
-                "household": {"type": "object", "description":
-                    "Household-level flags: livingRenting, livingRentalType (enum), livingOwner, "
-                    "livingShelter, cashOnHand (number). PII-free."},
-                "persons": {"type": "array", "description":
-                    "1-8 people; at least one householdMemberType='HeadOfHousehold'.",
-                    "items": {"type": "object", "properties": {
-                        "age": {"type": "integer"},
-                        "householdMemberType": {"type": "string"},
-                        "incomes": {"type": "array", "items": {"type": "object", "properties": {
-                            "amount": {"type": "string"}, "type": {"type": "string"},
-                            "frequency": {"type": "string"}}}},
-                        "student": {"type": "boolean"}, "pregnant": {"type": "boolean"},
-                        "disabled": {"type": "boolean"}, "veteran": {"type": "boolean"},
-                        "unemployed": {"type": "boolean"}},
-                        "required": ["age", "householdMemberType"]}},
-                "interested_programs": {"type": "array", "items": {"type": "string"},
-                    "description": "Optional program-code filter."},
-                "lang": {"type": "string", "description": "Optional language NAME (e.g. 'Spanish'), "
-                    "the user's language; returns the matching-language program row where the dataset "
-                    "carries a translation, English by default and as the fallback."},
-            },
-            "required": ["persons"],
-        },
+        parameters=_screen_parameters(),
         handler=_screen_handler,
         open_world=True,
     )
@@ -435,10 +523,18 @@ async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
     confirmed=false → return the field-level review + two-tier attestation (no PDF produced);
     confirmed=true → render the PDF and hand it back. Fills only provided slots, never invents,
     never logs PII, and degrades if the official form has drifted (integrity guard)."""
-    raw = dict(args.get("slots") or {})
-    if getattr(ctx, "drafts", None) is not None:
-        raw = ctx.drafts.merge("snap", raw)   # accumulate into the persistent structured draft
+    incoming = dict(args.get("slots") or {})
     confirmed = bool(args.get("confirmed"))
+    if getattr(ctx, "drafts", None) is not None:
+        if confirmed:
+            if incoming:
+                return ("NEED_REVIEW: confirmed fields cannot change. Save the edits with "
+                        "confirmed=false, show the new review, then ask for confirmation again.")
+            raw = ctx.drafts.load("snap")
+        else:
+            raw = ctx.drafts.merge("snap", incoming)
+    else:
+        raw = incoming
     clean, missing, errors = appmod.validate_slots(raw)
     if errors:
         return "NEED_FIX: " + "; ".join(errors) + ", re-ask the user only for these; never guess."
@@ -491,7 +587,8 @@ def prepare_application_tool() -> Tool:
                 "slots": {
                     "type": "object",
                     "description": ("Answers the user gave, keyed by field name. PII only, never "
-                                    "logged or sent anywhere but the user's own draft."),
+                                    "logged or sent anywhere but the user's own draft. With a "
+                                    "persisted reviewed draft, pass an empty object when confirmed=true."),
                     "properties": props,
                 },
                 "confirmed": {

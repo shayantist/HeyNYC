@@ -168,6 +168,15 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     assert "311" in benefits.prompt
 
 
+def test_benefits_prompt_keeps_screening_results_actionable_on_a_phone():
+    reg = Registry.discover(config.MODULES_DIR)
+    prompt = " ".join(next(m.prompt for m in reg.modules if m.name == "benefits").lower().split())
+    assert "up to three" in prompt
+    assert "offer to show the rest" in prompt
+    assert "official ranking" in prompt
+    assert "only legal name and home address are required" in prompt
+
+
 def test_fairness_metamorphic_cases_present_and_well_formed():
     # Protected-class fairness: the same benefit question, varying only a protected attribute
     # (name/ethnicity, borough/ZIP, language), must be flagged as outcome-invariant INV cases.
@@ -242,6 +251,111 @@ async def test_screen_eligibility_grounds_and_frames(monkeypatch):
     assert any("/resource/kvhd-5fmu/row-snap.json" in c["url"] for c in cites.values())
 
 
+async def test_screen_eligibility_keeps_verdict_when_catalog_enrichment_fails(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(200, json={"type": "SUCCESS",
+                "eligiblePrograms": [{"code": "S2R007", "name": "SNAP"}]})
+        if req.url.host == "data.cityofnewyork.us":
+            return httpx.Response(503)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    reg = CitationRegistry()
+    ctx = ToolContext(citations=reg, registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {"household": {"livingRenting": True},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}]}, ctx)
+    await client.aclose()
+
+    assert "likely eligible" in out.lower()
+    assert "SNAP" in out
+    assert any(c["provenance"].get("endpoint", "").startswith("POST ")
+               for c in reg.mapping().values())
+
+
+async def test_screen_eligibility_keeps_verdict_when_catalog_json_is_malformed(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(200, json={"type": "SUCCESS",
+                "eligiblePrograms": [{"code": "S2R007", "name": "SNAP"}]})
+        if req.url.host == "data.cityofnewyork.us":
+            return httpx.Response(200, content=b"{")
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    reg = CitationRegistry()
+    ctx = ToolContext(citations=reg, registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {"household": {},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}]}, ctx)
+    await client.aclose()
+
+    assert "likely eligible" in out.lower() and "SNAP" in out
+
+
+async def test_screen_eligibility_surfaces_api_validation_error(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(400, json={"type": "FAILURE", "errors": [{
+                "message": "income frequency must be a supported value",
+                "elementPath": "0.person.0.incomes.0.frequency",
+            }]})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {"household": {},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}]}, ctx)
+    await client.aclose()
+
+    assert "rejected" in out.lower()
+    assert "income frequency must be a supported value" in out
+    assert "couldn't reach" not in out.lower()
+
+
+async def test_screen_eligibility_handles_malformed_api_validation_payload(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(400, json=["unexpected shape"])
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {"household": {},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}]}, ctx)
+    await client.aclose()
+
+    assert "rejected" in out.lower()
+    assert "request contract" in out.lower()
+
+
 async def test_screen_eligibility_rejects_pii(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
@@ -257,6 +371,32 @@ def test_get_tools_gates_screener_on_creds(monkeypatch):
     assert {t.name for t in btools.get_tools()} == {"benefits_search"}
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "u", "p"))
     assert {t.name for t in btools.get_tools()} == {"benefits_search", "screen_eligibility"}
+
+
+def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
+    schema = btools.screen_eligibility_tool().parameters
+    household = schema["properties"]["household"]
+    assert household["properties"]["cashOnHand"]["type"] == "string"
+    assert household["additionalProperties"] is False
+    assert set(household["properties"]) == set(screening.HOUSEHOLD_FIELDS)
+    assert {"livingStayingWithFriend", "livingHotel", "livingPreferNotToSay"} <= set(
+        household["properties"]
+    )
+    person = schema["properties"]["persons"]["items"]["properties"]
+    assert set(person) == set(screening.PERSON_FIELDS)
+    assert schema["properties"]["persons"]["minItems"] == 1
+    assert schema["properties"]["persons"]["maxItems"] == 8
+    assert schema["properties"]["persons"]["minContains"] == 1
+    assert {"studentFulltime", "blind", "benefitsMedicaid", "livingRentalOnLease"} <= set(person)
+    assert "HeadOfHousehold" in person["householdMemberType"]["enum"]
+    income = person["incomes"]["items"]
+    assert set(income["properties"]) == set(screening.MONEY_ITEM_FIELDS)
+    assert income["required"] == ["amount", "frequency", "type"]
+    assert income["additionalProperties"] is False
+    assert "Wages" in income["properties"]["type"]["enum"]
+    assert "Monthly" in income["properties"]["frequency"]["enum"]
+    assert "Medical" in person["expenses"]["items"]["properties"]["type"]["enum"]
+    assert schema["properties"]["interested_programs"]["items"]["pattern"] == "^[A-Z0-9]+$"
 
 
 def test_get_tools_gates_forms_on_flag(monkeypatch):
@@ -315,6 +455,31 @@ async def test_prepare_application_uses_persistent_draft_not_llm_memory(tmp_path
     assert drafts.load("snap")["legal_name"] == "Ana Diaz"  # persisted, not reconstructed
 
 
+async def test_prepare_application_confirmation_cannot_change_reviewed_fields(tmp_path):
+    from heynyc.core.drafts import DraftStore
+
+    drafts = DraftStore(tmp_path / "drafts").for_user("ukey")
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), http=None,
+        output_dir=tmp_path, drafts=drafts,
+    )
+    reviewed = {
+        "legal_name": "Ana Diaz",
+        "residence_street": "1 Main St",
+        "residence_city": "Bronx",
+        "residence_zip": "10453",
+    }
+    await btools._prepare_application_handler({"slots": reviewed, "confirmed": False}, ctx)
+
+    out = await btools._prepare_application_handler(
+        {"slots": {"legal_name": "Changed Name"}, "confirmed": True}, ctx
+    )
+
+    assert out.startswith("NEED_REVIEW")
+    assert drafts.load("snap")["legal_name"] == "Ana Diaz"
+    assert not list(tmp_path.glob("*.pdf"))
+
+
 async def test_prepare_application_confirmed_writes_a_pdf(tmp_path, caplog):
     import logging
     caplog.set_level(logging.DEBUG)
@@ -329,6 +494,111 @@ async def test_prepare_application_confirmed_writes_a_pdf(tmp_path, caplog):
     assert "attached" in out.lower()
     # PII is never logged (it goes onto the local PDF only)
     assert "078-05-1120" not in caplog.text and "Ana Diaz" not in caplog.text
+
+
+async def test_synthetic_screen_review_pdf_workflow_stops_before_submission(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from heynyc.core.agent import Agent
+    from heynyc.core.drafts import DraftStore
+
+    monkeypatch.setattr(
+        config,
+        "screening_creds",
+        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"),
+    )
+
+    async def token(*_args):
+        return "tok"
+
+    async def screen(*_args):
+        return {
+            "type": "SUCCESS",
+            "eligiblePrograms": [{"code": "S2R007", "name": "SNAP"}],
+        }
+
+    async def catalog(*_args, **_kwargs):
+        return [{
+            ":id": "row-snap",
+            "program_code": "S2R007",
+            "program_name": "SNAP",
+            "program_category": "Food",
+            "url_of_online_application": "https://access.nyc.gov/snap",
+            "updated_at": "2026-03-01",
+        }]
+
+    monkeypatch.setattr(screening, "get_token", token)
+    monkeypatch.setattr(screening, "screen", screen)
+    monkeypatch.setattr(btools, "query_dataset", catalog)
+
+    profile = {
+        "household": {"livingRenting": True},
+        "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}],
+    }
+    slots = {
+        "legal_name": "Ana Diaz",
+        "residence_street": "1 Main St",
+        "residence_city": "Bronx",
+        "residence_zip": "10453",
+    }
+
+    def call(name, args, call_id):
+        return {
+            "id": call_id,
+            "function": {"name": name, "arguments": json.dumps(args)},
+        }
+
+    responses = [
+        {"role": "assistant", "content": None, "tool_calls": [call("screen_eligibility", profile, "s1")]},
+        {"role": "assistant", "content": None, "tool_calls": [call(
+            "prepare_snap_application", {"slots": slots, "confirmed": False}, "p1"
+        )]},
+        {"role": "assistant", "content": "Please review the fields above.", "tool_calls": None},
+        {"role": "assistant", "content": None, "tool_calls": [call(
+            "prepare_snap_application", {"slots": {}, "confirmed": True}, "p2"
+        )]},
+        {"role": "assistant", "content": "Your draft is ready for you to review and submit.", "tool_calls": None},
+    ]
+
+    async def stream_fn(_messages, _schemas):
+        message = responses.pop(0)
+        yield {"type": "message", "message": message}
+
+    approvals = []
+
+    async def approve(name, args):
+        approvals.append((name, bool(args.get("confirmed"))))
+        return True
+
+    tools = {
+        "screen_eligibility": btools.screen_eligibility_tool(),
+        "prepare_snap_application": btools.prepare_application_tool(),
+    }
+    assert not any("submit" in name or tool.destructive for name, tool in tools.items())
+    agent = Agent(Registry([]), tools=tools, stream_fn=stream_fn, approver=approve)
+    convo = agent.conversation()
+    drafts = DraftStore(tmp_path / "drafts").for_user("synthetic-user")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+
+    review = await convo.send(
+        "Use this synthetic profile to screen me and prepare a SNAP draft.",
+        output_dir=artifacts,
+        drafts=drafts,
+    )
+    ready = await convo.send(
+        "Yes, the reviewed fields are correct.", output_dir=artifacts, drafts=drafts
+    )
+
+    pdfs = list(artifacts.glob("*.pdf"))
+    assert review.tool_calls_made == ["screen_eligibility", "prepare_snap_application"]
+    assert ready.tool_calls_made == ["prepare_snap_application"]
+    assert approvals == [("prepare_snap_application", False), ("prepare_snap_application", True)]
+    assert len(pdfs) == 1 and pdfs[0].read_bytes()[:4] == b"%PDF"
+    assert drafts.load("snap") == {}
+    assert "submit" in ready.text.lower() and "submitted" not in ready.text.lower()
 
 
 def test_application_eval_cases_present_and_flagged():

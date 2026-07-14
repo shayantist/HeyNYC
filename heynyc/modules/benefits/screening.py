@@ -2,6 +2,7 @@
 call. Kept separate from tools.py so the tool handler stays readable. PII never leaves here."""
 from __future__ import annotations
 
+import copy
 import re
 import time
 from typing import Optional
@@ -10,6 +11,39 @@ import httpx
 
 _TOKEN_TTL = 3300.0  # 55 min (the API token expires at 3600s)
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}  # base -> (token, expires_at)
+
+RENTAL_TYPES = (
+    "NYCHA", "MarketRate", "RentControlled", "RentRegulatedHotel", "Section213",
+    "LimitedDividendDevelopment", "MitchellLama", "RedevelopmentCompany", "HDFC",
+    "FamilyHome", "Condo",
+)
+HOUSEHOLD_MEMBER_TYPES = (
+    "HeadOfHousehold", "Child", "FosterChild", "StepChild", "Grandchild", "Spouse",
+    "Parent", "FosterParent", "StepParent", "Grandparent", "SisterBrother",
+    "StepSisterStepBrother", "BoyfriendGirlfriend", "DomesticPartner", "Unrelated", "Other",
+)
+FREQUENCIES = ("Weekly", "Biweekly", "Monthly", "Semimonthly", "Yearly")
+INCOME_TYPES = (
+    "Wages", "SelfEmployment", "Unemployment", "CashAssistance", "ChildSupport",
+    "DisabilityMedicaid", "SSI", "SSDependent", "SSDisability", "SSSurvivor",
+    "SSRetirement", "NYSDisability", "Veteran", "Pension", "DeferredComp", "WorkersComp",
+    "Alimony", "Boarder", "Gifts", "Rental", "Investment",
+)
+EXPENSE_TYPES = (
+    "ChildCare", "ChildSupport", "DependentCare", "Rent", "Medical", "Heating", "Cooling",
+    "Mortgage", "Utilities", "Telephone", "InsurancePremiums",
+)
+HOUSEHOLD_FIELDS = frozenset({
+    "cashOnHand", "livingRentalType", "livingRenting", "livingOwner",
+    "livingStayingWithFriend", "livingHotel", "livingShelter", "livingPreferNotToSay",
+})
+PERSON_FIELDS = frozenset({
+    "age", "student", "studentFulltime", "pregnant", "unemployed",
+    "unemployedWorkedLast18Months", "blind", "disabled", "veteran", "benefitsMedicaid",
+    "benefitsMedicaidDisability", "householdMemberType", "livingOwnerOnDeed",
+    "livingRentalOnLease", "incomes", "expenses",
+})
+MONEY_ITEM_FIELDS = frozenset({"amount", "frequency", "type"})
 
 
 def clear_token(base: str) -> None:
@@ -95,13 +129,73 @@ def assert_pii_free(household: dict, persons: list[dict]) -> None:
     _assert_pii_free(persons, "persons")
 
 
+def _canonical(value: object, allowed: tuple[str, ...]) -> object:
+    """Restore the City's case-sensitive enum spelling without guessing unknown values."""
+    if not isinstance(value, str):
+        return value
+    return {item.casefold(): item for item in allowed}.get(value.casefold(), value)
+
+
+def _assert_known_fields(household: dict, persons: list[dict]) -> None:
+    unknown = set(household) - HOUSEHOLD_FIELDS
+    if unknown:
+        raise ValueError(f"unsupported screening field(s): household.{', household.'.join(sorted(unknown))}")
+    for index, person in enumerate(persons):
+        unknown = set(person) - PERSON_FIELDS
+        if unknown:
+            prefix = f"persons[{index}]."
+            raise ValueError(f"unsupported screening field(s): {prefix}{(', ' + prefix).join(sorted(unknown))}")
+        for collection in ("incomes", "expenses"):
+            for item_index, item in enumerate(person.get(collection, [])):
+                unknown = set(item) - MONEY_ITEM_FIELDS
+                if unknown:
+                    prefix = f"persons[{index}].{collection}[{item_index}]."
+                    raise ValueError(
+                        f"unsupported screening field(s): {prefix}{(', ' + prefix).join(sorted(unknown))}"
+                    )
+    if not any(
+        isinstance(person.get("householdMemberType"), str)
+        and person["householdMemberType"].casefold() == "headofhousehold".casefold()
+        for person in persons
+    ):
+        raise ValueError("at least one person must have householdMemberType HeadOfHousehold")
+
+
 async def screen(client: httpx.AsyncClient, base: str, token: str,
                  household: dict, persons: list[dict],
                  interested: Optional[list[str]] = None) -> dict:
+    _assert_known_fields(household, persons)
     url = f"{base}/eligibilityPrograms"
     if interested:
-        url += "?interestedPrograms=" + "|".join(interested)
-    body = [{"household": [household], "person": persons, "withholdPayload": True}]
+        url += "?interestedPrograms=" + "|".join(code.upper() for code in interested)
+    wire_household = copy.deepcopy(household)
+    wire_persons = copy.deepcopy(persons)
+    if "cashOnHand" in wire_household:
+        wire_household["cashOnHand"] = str(wire_household["cashOnHand"])
+    if "livingRentalType" in wire_household:
+        wire_household["livingRentalType"] = _canonical(
+            wire_household["livingRentalType"], RENTAL_TYPES
+        )
+    for person in wire_persons:
+        if "householdMemberType" in person:
+            person["householdMemberType"] = _canonical(
+                person["householdMemberType"], HOUSEHOLD_MEMBER_TYPES
+            )
+        for item in person.get("incomes", []):
+            if "amount" in item:
+                item["amount"] = str(item["amount"])
+            if "type" in item:
+                item["type"] = _canonical(item["type"], INCOME_TYPES)
+            if "frequency" in item:
+                item["frequency"] = _canonical(item["frequency"], FREQUENCIES)
+        for item in person.get("expenses", []):
+            if "amount" in item:
+                item["amount"] = str(item["amount"])
+            if "type" in item:
+                item["type"] = _canonical(item["type"], EXPENSE_TYPES)
+            if "frequency" in item:
+                item["frequency"] = _canonical(item["frequency"], FREQUENCIES)
+    body = [{"household": [wire_household], "person": wire_persons, "withholdPayload": True}]
     resp = await client.post(url, json=body, headers={"Authorization": token})
     resp.raise_for_status()
     return resp.json() or {}
