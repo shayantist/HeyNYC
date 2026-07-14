@@ -220,6 +220,35 @@ async def test_agent_captures_token_usage_from_stream():
     assert result.usage["latency_ms"] >= 0.0
 
 
+async def test_agent_reports_latency_breakdown_and_call_counts(empty_registry):
+    async def echo(args, ctx: ToolContext):
+        return "tool ran"
+
+    tool = Tool(name="echo", description="x", parameters={"type": "object", "properties": {}}, handler=echo)
+    responses = [
+        _assistant(tool_calls=[_tool_call("echo", {})]),
+        _assistant(content="done"),
+    ]
+
+    async def sf(messages, tool_schemas):
+        response = responses.pop(0)
+        if response.get("content"):
+            yield {"type": "text", "text": response["content"]}
+        yield {"type": "usage", "input_tokens": 1, "output_tokens": 1}
+        yield {"type": "message", "message": response}
+
+    agent = Agent(empty_registry, tools={"echo": tool}, stream_fn=sf)
+
+    result = await agent.run("go")
+
+    assert result.usage["model_time_ms"] >= 0.0
+    assert result.usage["tool_time_ms"] >= 0.0
+    assert result.usage["orchestration_time_ms"] >= 0.0
+    assert result.usage["n_model_calls"] == 2
+    assert result.usage["n_tool_calls"] == 1
+    assert result.usage["iterations"] == 2
+
+
 def test_completion_kwargs_omits_temperature_for_gpt5_models():
     # GPT-5 models reject temperature != 1 (litellm raises UnsupportedParamsError), so the agent must
     # NOT send temperature=0 for them. Regression guard for the gpt-5-mini backend migration.

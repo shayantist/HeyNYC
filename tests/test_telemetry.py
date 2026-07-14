@@ -14,11 +14,16 @@ def test_record_and_load_roundtrip(tmp_path: Path):
     path = tmp_path / "telemetry.jsonl"
     rec = telemetry.record_turn(
         path, session_id="s1", model="m",
-        usage={"input_tokens": 10, "output_tokens": 5, "latency_ms": 120.0},
+        usage={"input_tokens": 10, "output_tokens": 5, "latency_ms": 120.0,
+               "model_time_ms": 90.0, "tool_time_ms": 20.0, "n_model_calls": 2,
+               "iterations": 2},
         n_tool_calls=1, tool_names=["benefits_search"], status="success",
     )
     assert rec["input_tokens"] == 10
     assert rec["session_id"] == "s1"
+    assert rec["model_time_ms"] == 90.0
+    assert rec["orchestration_time_ms"] == 0.0
+    assert rec["n_model_calls"] == 2
     loaded = telemetry.load(path)
     assert len(loaded) == 1 and loaded[0]["tool_names"] == ["benefits_search"]
 
@@ -42,3 +47,17 @@ def test_summarize_aggregates():
 def test_summarize_empty():
     s = telemetry.summarize([])
     assert s["turns"] == 0 and s["total_cost_usd"] == 0.0
+
+
+def test_summarize_accepts_legacy_records_without_latency_breakdown():
+    summary = telemetry.summarize([{
+        "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+        "latency_ms": 10.0, "tool_names": [], "status": "success",
+    }])
+
+    assert summary["model_time_ms"] == 0.0
+    assert summary["tool_time_ms"] == 0.0
+    assert summary["orchestration_time_ms"] == 0.0
+    assert summary["n_model_calls"] == 0
+    assert summary["n_tool_calls"] == 0
+    assert summary["iterations"] == 0

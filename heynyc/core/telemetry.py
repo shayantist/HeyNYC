@@ -51,7 +51,12 @@ def record_turn(
         "output_tokens": output_tokens,
         "cost_usd": cost_usd(model, input_tokens, output_tokens),
         "latency_ms": float(usage.get("latency_ms", 0.0) or 0.0),
+        "model_time_ms": float(usage.get("model_time_ms", 0.0) or 0.0),
+        "tool_time_ms": float(usage.get("tool_time_ms", 0.0) or 0.0),
+        "orchestration_time_ms": float(usage.get("orchestration_time_ms", 0.0) or 0.0),
+        "n_model_calls": int(usage.get("n_model_calls", 0) or 0),
         "n_tool_calls": n_tool_calls,
+        "iterations": int(usage.get("iterations", 0) or 0),
         "tool_names": list(tool_names),
         "status": status,
     }
@@ -74,7 +79,10 @@ def summarize(records: list[dict]) -> dict:
     if not records:
         return {"turns": 0, "total_cost_usd": 0.0, "cost_per_turn_usd": 0.0,
                 "input_tokens": 0, "output_tokens": 0, "latency_p50_ms": 0.0,
-                "latency_p95_ms": 0.0, "tool_mix": {}, "error_rate": 0.0}
+                "latency_p95_ms": 0.0, "model_time_ms": 0.0, "tool_time_ms": 0.0,
+                "orchestration_time_ms": 0.0,
+                "n_model_calls": 0, "n_tool_calls": 0, "iterations": 0,
+                "tool_mix": {}, "error_rate": 0.0}
     turns = len(records)
     total_cost = sum(float(r.get("cost_usd", 0.0)) for r in records)
     latencies = [float(r.get("latency_ms", 0.0)) for r in records]
@@ -88,6 +96,14 @@ def summarize(records: list[dict]) -> dict:
         "output_tokens": sum(int(r.get("output_tokens", 0)) for r in records),
         "latency_p50_ms": float(np.percentile(latencies, 50)),
         "latency_p95_ms": float(np.percentile(latencies, 95)),
+        "model_time_ms": sum(float(r.get("model_time_ms", 0.0) or 0.0) for r in records),
+        "tool_time_ms": sum(float(r.get("tool_time_ms", 0.0) or 0.0) for r in records),
+        "orchestration_time_ms": sum(
+            float(r.get("orchestration_time_ms", 0.0) or 0.0) for r in records
+        ),
+        "n_model_calls": sum(int(r.get("n_model_calls", 0) or 0) for r in records),
+        "n_tool_calls": sum(int(r.get("n_tool_calls", 0) or 0) for r in records),
+        "iterations": sum(int(r.get("iterations", 0) or 0) for r in records),
         "tool_mix": dict(tool_mix),
         "error_rate": errors / turns,
     }

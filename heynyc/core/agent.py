@@ -299,10 +299,24 @@ class Agent:
         tools_made: list[str] = []
         guard_retries = 0  # how many times the grounding guard has bounced a terminal answer back
         turn_started = time.perf_counter()
-        turn_usage = {"input_tokens": 0, "output_tokens": 0}
-
+        turn_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "model_time_ms": 0.0,
+            "tool_time_ms": 0.0,
+            "n_model_calls": 0,
+            "n_tool_calls": 0,
+            "iterations": 0,
+        }
         def _usage() -> dict:
-            return {**turn_usage, "latency_ms": (time.perf_counter() - turn_started) * 1000.0}
+            latency_ms = (time.perf_counter() - turn_started) * 1000.0
+            return {
+                **turn_usage,
+                "latency_ms": latency_ms,
+                "orchestration_time_ms": max(
+                    0.0, latency_ms - turn_usage["model_time_ms"] - turn_usage["tool_time_ms"]
+                ),
+            }
 
         for reminder in reminders or []:
             yield events.Reminder(summary=reminder)
@@ -343,9 +357,12 @@ class Agent:
                                   citations=result.citations, result=result)
                 return
             message_id = f"m{i}"
+            turn_usage["n_model_calls"] += 1
+            turn_usage["iterations"] = i + 1
             yield events.MessageStart(message_id=message_id)
             parts: list[str] = []
             assistant: Optional[dict] = None
+            model_started = time.perf_counter()
             try:
                 async for chunk in self._stream_fn(messages, self._tool_schemas()):
                     if chunk["type"] == "text":
@@ -360,6 +377,7 @@ class Agent:
                     elif chunk["type"] == "message":
                         assistant = chunk["message"]
             except Exception as exc:  # model call failed after retries
+                turn_usage["model_time_ms"] += (time.perf_counter() - model_started) * 1000.0
                 logger.exception("model stream failed")
                 yield events.ErrorEvent(scope="model", message=str(exc), retryable=True)
                 result = AgentResult(
@@ -368,6 +386,7 @@ class Agent:
                 )
                 yield events.Done(status="error", num_turns=i, citations=result.citations, result=result)
                 return
+            turn_usage["model_time_ms"] += (time.perf_counter() - model_started) * 1000.0
 
             if assistant is None:
                 assistant = {"role": "assistant", "content": "".join(parts) or None, "tool_calls": None}
@@ -430,9 +449,11 @@ class Agent:
                 name = call["function"]["name"]
                 call_id = call.get("id") or name
                 tools_made.append(name)
+                turn_usage["n_tool_calls"] += 1
                 tool = self.tools.get(name)
                 yield events.ToolStart(tool_call_id=call_id, name=name, label=name)
 
+                tool_started = time.perf_counter()
                 async for ev, tool_result in self._invoke(name, call["function"]["arguments"], tool, ctx):
                     if tool_result is None:
                         yield ev  # an approval-required event
@@ -442,6 +463,7 @@ class Agent:
                     yield events.ToolCompleted(
                         tool_call_id=call_id, name=name, status=status, result_summary=tool_result[:200]
                     )
+                turn_usage["tool_time_ms"] += (time.perf_counter() - tool_started) * 1000.0
 
         result = AgentResult(
             text=(messages[-1].get("content") or "").strip() or EMPTY_ANSWER_FALLBACK,

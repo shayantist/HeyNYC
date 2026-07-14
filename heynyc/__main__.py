@@ -239,6 +239,13 @@ def _render_stats(path) -> None:
     table.add_row("cost / turn", f"${summary['cost_per_turn_usd']:.4f}")
     table.add_row("tokens in / out", f"{summary['input_tokens']} / {summary['output_tokens']}")
     table.add_row("latency p50 / p95", f"{summary['latency_p50_ms']:.0f} / {summary['latency_p95_ms']:.0f} ms")
+    table.add_row(
+        "model / tool / other total",
+        f"{summary['model_time_ms']:.0f} / {summary['tool_time_ms']:.0f} / "
+        f"{summary['orchestration_time_ms']:.0f} ms",
+    )
+    table.add_row("model / tool calls", f"{summary['n_model_calls']} / {summary['n_tool_calls']}")
+    table.add_row("iterations total", str(summary["iterations"]))
     table.add_row("error rate", f"{summary['error_rate'] * 100:.0f}%")
     table.add_row("tool mix", ", ".join(f"{k}×{v}" for k, v in summary["tool_mix"].items()) or "-")
     console.print(table)
