@@ -1,8 +1,8 @@
 # Changelog
 
 Notable changes to HeyNYC, newest first. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); dates are milestones, not yet tagged
-releases (this is pre-1.0 and not publicly released).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); these are development milestones, not
+tagged package releases. HeyNYC is pre-1.0 and is not a hosted service.
 
 ## 0.7 - 2026-07-13
 
@@ -17,10 +17,10 @@ releases (this is pre-1.0 and not publicly released).
 
 - **Heat and hot water, in the `housing` module.** No-heat / no-hot-water is a code emergency, so the module now grounds the tenant's actual rights instead of the bare complaint form: the heat-season dates and indoor-temperature standard, the Housing Maintenance Code sections (§27-2029 heat, §27-2031 hot water), and the escalation ladder (311 complaint → HPD inspection → immediately-hazardous class C violation → Housing Court). A new `hpd_litigation_lookup(address)` pulls a building's HPD housing-court record and flags open Heat and Hot Water cases and any harassment finding, from [NYC Open Data (59kj-x8nc)](https://data.cityofnewyork.us/Housing-Development/Housing-Litigations/59kj-x8nc). Every fact comes from the tool with its citation; nothing is stated from memory.
 - **`housing_connect` module: open affordable-housing lotteries.** A finder for the NYC Housing Connect lotteries accepting applications right now (borough, unit and bedroom mix, income bands, set-aside preferences, deadline), grounded in [NYC Open Data (vy5i-a666)](https://data.cityofnewyork.us/Housing-Development/Advertised-Lotteries-on-Housing-Connect-by-Lottery/vy5i-a666/about_data) and cited. Applying is login-gated and human-in-the-loop: it deep-links to the [Housing Connect portal](https://housingconnect.nyc.gov/PublicWeb/) and never fills or submits an application for you.
-- **Runtime grounding guard, Phase 2 Tier-2 NLI checker (prototype, off by default).** A self-hosted [MiniCheck-class NLI](https://arxiv.org/abs/2404.10774) faithfulness checker for the prose claims the deterministic Tier-1 check can't parse (a made-up statute cited to a soft web source, which Tier-1 is silent on). Built and exercised offline, off by default, and not yet wired into the live loop; real-model validation and threshold calibration are still pending. Status and caveats in [SAFETY.md](SAFETY.md); design in the [Tier-2 spec](docs/superpowers/specs/2026-07-09-tier2-nli-checker-design.md).
+- **Runtime grounding guard, Phase 2 Tier-2 NLI checker (prototype, off by default).** A self-hosted [MiniCheck-class NLI](https://arxiv.org/abs/2404.10774) faithfulness checker for prose claims the deterministic check cannot parse. Built and exercised offline, off by default, and not yet wired into the live loop; real-model validation and threshold calibration are still pending. Status and caveats are in [SAFETY.md](SAFETY.md).
 - **`wic` module: WIC site finder.** A nearest-site finder for the WIC nutrition program (pregnant people, infants, young children), grounded in the NY State WIC directory on Health Data NY (dataset g4i5-r6zx) since WIC is state-administered, not city-run. Returns nearest sites with address, phone, and website, each cited; abstains on hours and eligibility (neither is in the data) and routes to the site by phone and to the [state WIC page](https://www.health.ny.gov/prevention/nutrition/wic/).
-- **Translate-at-edge multilingual pipeline (prototype, off by default).** The Local Law 30 language-safety architecture: ground and verify in English, then translate only the finished answer with law numbers, dollar amounts, and citations frozen and passed through verbatim, gated by an entity round-trip check that falls back to the English answer plus an official pointer on any mismatch. Structurally prevents a citation like "Local Law 34" mutating into an invented "Ley Local 56" in Spanish. Self-contained, off by default (`HEYNYC_MULTILINGUAL`), not yet wired into the live loop; design in the [translate-at-edge spec](docs/superpowers/specs/2026-07-05-multilingual-translate-at-edge-design.md).
-- **Adversarial red-team, folded into the eval pipeline.** A frozen 205-case adversarial suite across 8 categories loads as ordinary eval cases, so it runs through the same runner, gate, and judge as the golden set (inheriting the deterministic grounding floor and link-liveness a bespoke harness would skip) rather than duplicating them. Each case carries a `safety_criterion` the shared judge grades SAFE/FAIL with a strict adversarial rubric; that judge structurally refuses to be built in the candidate's own model family, so a model can never grade its own output. Output is a per-category safety report with candidate token cost, reusable across models so it doubles as model-flip evidence. Build-only in the tree; running it live spends API keys. Methodology in [red-team-v2-methodology.md](docs/eval/red-team-v2-methodology.md).
+- **Translate-at-edge multilingual pipeline (prototype, off by default).** The Local Law 30 language-safety architecture grounds and verifies in English, then translates the finished answer while preserving law numbers, dollar amounts, and citations. It is off by default (`HEYNYC_MULTILINGUAL`) and not wired into the live loop.
+- **Adversarial red-team, folded into the eval pipeline.** A frozen 205-case adversarial suite across 8 categories loads as ordinary eval cases and carries a `safety_criterion` for independent grading. It is build-only in the tree; running it live spends API keys.
 - **Outcomes funnel and user feedback loop.** A PII-free funnel report (turns to screened to eligible-shown to apply-started to form-ready) so we can measure whether a resident actually reached the apply step, plus a `/wrong` feedback command that logs a redacted flag for a human to review without running the agent. New CLIs: `heynyc outcomes`, `heynyc feedback`.
 
 ## 0.5.2 - 2026-07-05
@@ -62,7 +62,7 @@ releases (this is pre-1.0 and not publicly released).
 ## 0.4 — 2026-06-28
 
 - **`benefits` navigator.** Live NYC Benefits & Programs data, hybrid retrieval, always-caveated
-  eligibility that defers to the official screener; a per-program "as of" date on every fact.
+  eligibility that defers to the official screener; a per-program "as of" date on returned facts.
 - **`events` module + seasonal `world_cup` submodule.** Live Ticketmaster + NYC Parks, trust-tiered
   and ranked `web_search`, and the submodule architecture (`topics/`). Retired the standalone
   `things_to_do` and `world_cup` modules.

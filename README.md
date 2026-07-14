@@ -1,8 +1,8 @@
 # HeyNYC
 
-**HeyNYC** helps New Yorkers find, understand, and apply for New York City government services, grounded in real city data, in your language, over the channels you already use (SMS, WhatsApp, web).
+**HeyNYC** helps New Yorkers find and understand New York City government services, grounded in real city data and official sources. The current adapters are CLI, SMS, and WhatsApp. There is no resident web UI or deployed HeyNYC service yet.
 
-It answers questions about benefits, housing, food, health, immigration, and events. Every fact has an official citation, or HeyNYC abstains and points you to 311.
+It answers questions about benefits, housing, food, health, immigration, and events. Supported factual claims carry an official citation; when evidence is insufficient, HeyNYC abstains and points you to 311.
 
 > Open-source civic project. Not affiliated with the City of New York.
 
@@ -35,28 +35,38 @@ The table below is the full, generated list of current service modules.
 
 <!-- CAPABILITIES:END -->
 
+## Current status
+
+HeyNYC is an alpha release and is not a public hosted service.
+
+- **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
+- **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
+- **Not yet shipped:** a resident web UI, hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
+
+The assistant gives best-effort answers in the user's language when configured, but multilingual behavior is not a verified production capability. It does not decide eligibility or submit applications. When evidence is insufficient, it abstains and routes to 311 or the relevant agency.
+
 ## What makes it different
 
-- **Cite or abstain:** Every fact needs a citation or an abstention. A deterministic guard rechecks cited claims before an answer ships. See [SAFETY.md](SAFETY.md).
+- **Cite or abstain:** Supported factual claims need a citation or an abstention. A deterministic guard rechecks cited claims before an answer ships. See [SAFETY.md](SAFETY.md).
 - **Does, not just tells:** It uses the city's benefits screener and can prepare the real application for review, without deciding eligibility itself.
-- **Reachable:** SMS, WhatsApp, and web, in the user's language and without an account.
-- **Open and self-hostable:** A deployment can keep resident data inside city infrastructure instead of sending it to a model vendor. See the [model comparison](docs/eval/model-comparison.md).
+- **Reachable today:** CLI, SMS, and WhatsApp adapters, without a resident account. SMS and WhatsApp require provider configuration.
+- **Open and self-hostable:** The package can be run by an operator who controls its infrastructure and model configuration.
 
 ## Quickstart
 
 ```bash
-cd heynyc
+# Run these commands from the repository root
 uv sync --extra dev
 cp .env.example .env        # add an LLM key; others are optional
 uv run python -m heynyc index-build      # build the RAG index from module seeds
 uv run python -m heynyc repl             # interactive, streaming chat
 ```
 
-Other commands: `modules`, `new-module <name>`, `chat "..."`, `index-search "..."`, `capabilities --write-readme`, and `eval`. For SMS or WhatsApp, run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
+Other commands: `modules`, `new-module <name>`, `chat "..."`, `index-search "..."`, `capabilities --write-readme`, and `eval`. Scoped web search is a retrieval tool, not a resident-facing web channel. For SMS or WhatsApp, run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
 
 ## How it works
 
-HeyNYC routes a question to a service module, then uses grounded tools such as city datasets, the benefits screener, geocoding, and scoped official-source search. It returns inline citations for supported facts and sends the answer through a deterministic grounding guard before delivery. If the evidence does not support a claim, it hedges or abstains and routes people to 311 or the right agency. The [safety guide](SAFETY.md) and [system specs](docs/superpowers/specs/) cover the guard, evaluations, and module design.
+HeyNYC routes a question to a service module, then uses grounded tools such as city datasets, the benefits screener, geocoding, and scoped official-source search. It returns inline citations for supported facts and sends the answer through a deterministic grounding guard before delivery. If the evidence does not support a claim, it hedges or abstains and routes people to 311 or the right agency. The [safety guide](SAFETY.md) covers the guard and its boundaries.
 
 ## Repo layout
 
@@ -67,7 +77,6 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 │   ├── modules/         Service modules, their manifests, data, and evals
 │   ├── eval/            Evaluation runner, checks, and trace reporting
 │   └── channels/        SMS and WhatsApp adapters
-├── docs/                Product, safety, evaluation, and design docs
 ├── tests/               Offline test suite
 ├── scripts/             Development and demo scripts
 └── .github/             Issue and pull-request templates
@@ -84,9 +93,9 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 
 ## Status and known limitations
 
-The standalone Python package has offline tests and prior live verification against the real NYC APIs. It includes the agent core, geo, RAG, and web-search tools, the modules above, the Phase 1 runtime grounding guard, and the SMS/WhatsApp on-ramp. Replies are best-effort multilingual, preserve official translations where available, and flag stale data. Next: a web chat UI with a map, wiring the Phase 2 faithfulness checker into the live loop, and an open-weight model behind the guard.
+The standalone Python package includes the agent core, geo, RAG, and scoped web-search retrieval tools, the modules above, the live deterministic grounding guard, and the SMS/WhatsApp adapters. It has an offline test suite and has had prior live verification against selected NYC APIs. A web chat UI, hosted deployment, authenticated browser actions, and production multilingual verification are future work.
 
 - **Intersection geocoding can be wrong.** NYC GeoSearch can misplace an intersection, so HeyNYC echoes the resolved address and asks for confirmation.
 - **Some datasets are thin.** For example, the SNAP-center list lacks per-center hours and phone numbers. HeyNYC does not guess and instead points people to ACCESS HRA or 311.
 
-_Last updated: 2026-07-13_
+_Last updated: 2026-07-14_

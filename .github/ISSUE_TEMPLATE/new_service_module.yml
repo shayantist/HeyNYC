@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for helping HeyNYC cover more of NYC! Fill in what you can, and a maintainer
-        (or you) can turn this into a module. See [docs/MODULES.md](../blob/main/docs/MODULES.md).
+        (or you) can turn this into a module. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
   - type: input
     id: name
     attributes:

@@ -1,9 +1,10 @@
 # Security Policy
 
 HeyNYC is a civic project that helps New Yorkers find, understand, and apply for
-government services. As it grows toward handling resident personal information
-(PII), for example when assisting with a benefits application, we take
-security and privacy seriously and welcome responsible disclosure.
+government services. The optional benefits application-draft workflow can handle
+resident personal information (PII), so we take security and privacy seriously
+and welcome responsible disclosure. The default screening path is PII-free, and
+forms are off unless explicitly enabled.
 
 This is the security policy, how to report a vulnerability. For how the assistant itself stays grounded and safe (guardrails, red-team, abstention), see [SAFETY.md](SAFETY.md).
 
@@ -37,8 +38,9 @@ PII in those paths.
 
 Especially valuable:
 
-- exposure or logging of PII (the design intent is that the screening path is
-  PII-free and application PII is never logged, never sent to third parties),
+- exposure or logging of PII (the screening path is PII-free; the optional
+  application draft is encrypted at rest when `HEYNYC_PII_KEY` is configured,
+  and uses `HEYNYC_PII_RETENTION_DAYS` for cleanup),
 - prompt-injection or grounding bypasses that could cause the agent to emit
   ungrounded/fabricated guidance on regulated topics (benefits, eligibility),
 - secret/credential leakage, authentication/webhook-signature bypasses, and
@@ -51,7 +53,8 @@ lower priority; note it, but it is not treated as an active vulnerability.
 
 ## A note on data
 
-HeyNYC is not affiliated with the City of New York. It never submits anything on
-a resident's behalf and never stores raw phone numbers (senders are reduced to a
-salted, non-reversible key). If a report involves resident data, please handle
-any examples with care and redact real PII from your write-up.
+HeyNYC is not affiliated with the City of New York. It does not submit anything
+on a resident's behalf. Channel senders are reduced to a salted, non-reversible
+key, and the optional draft workflow is intended for transient, consented
+application data. If a report involves resident data, please handle any
+examples with care and redact real PII from your write-up.

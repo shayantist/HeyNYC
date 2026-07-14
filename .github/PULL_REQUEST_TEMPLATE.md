@@ -1,4 +1,4 @@
-<!-- Thanks for contributing to HeyNYC! For a new module, see CONTRIBUTING.md + docs/MODULES.md -->
+<!-- Thanks for contributing to HeyNYC! For a new module, see CONTRIBUTING.md -->
 
 ## Summary
 <!-- What does this PR add/change? If it's a new module, name the service. -->

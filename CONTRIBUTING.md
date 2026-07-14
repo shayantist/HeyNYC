@@ -30,13 +30,13 @@ optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder fo
 a light sub-service that reuses the parent's tool and owns its own sources + eval (e.g.
 `events/topics/world_cup/`). Most modules are a single `manifest.yaml`.
 
-Full field-by-field reference and worked examples: the **[modules README](heynyc/modules/README.md)**.
+The module manifest and examples live in the [modules README](heynyc/modules/README.md) and the existing module folders.
 
 ---
 
 ## How your module plugs in
 
-You drop in a folder. The registry discovers it at startup and fans it out into the prompt, the shared grounded tools, and the test gate. At query time every fact your module returns still has to pass the grounding guard before a New Yorker sees it, so the "grounded or it abstains" contract holds no matter which module answered.
+You drop in a folder. The registry discovers it at startup and fans it out into the prompt, the shared grounded tools, and the test gate. At query time, factual claims your module returns pass through the grounding guard before a New Yorker sees them, so the "grounded or it abstains" contract applies no matter which module answered.
 
 ```mermaid
 flowchart TD
@@ -74,8 +74,8 @@ A maintainer (or you!) can turn that into a module.
 ## Adding a module (pull request)
 
 ```bash
-# 1. Fork + clone, then create the env
-cd heynyc && uv sync --extra dev
+# 1. Fork + clone, then run from the repository root
+uv sync --extra dev
 
 # 2. Scaffold a module
 uv run python -m heynyc new-module <name>
