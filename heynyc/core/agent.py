@@ -72,6 +72,8 @@ FORCED_TOOL_FALLBACK = (
     "Please try again, or call 311 for help."
 )
 
+SCREEN_SHORTLIST_DISCLOSURE = "This is a phone-friendly shortlist, not an official ranking."
+
 # Clear, active chest-pain statements bypass the model entirely. This is intentionally narrow, not a
 # general medical classifier: present-tense first-person English and Spanish only. A deterministic
 # response prevents unsafe diagnosis or dosage text from entering the streaming event path at all.
@@ -300,6 +302,7 @@ class Agent:
         output_dir=None,
         drafts=None,
         forced_tool: Optional[str] = None,
+        forced_tool_args: Optional[dict] = None,
         excluded_tools: Optional[set[str]] = None,
     ) -> AsyncIterator[events.Event]:
         """Run one turn, yielding events (text deltas, tool lifecycle, terminal done)."""
@@ -308,6 +311,7 @@ class Agent:
         ctx = ToolContext(citations=citations, registry=self.registry, embedder=self._embedder,
                           output_dir=output_dir, drafts=drafts)
         tools_made: list[str] = []
+        screen_shortlist_used = False
         guard_retries = 0  # how many times the grounding guard has bounced a terminal answer back
         turn_started = time.perf_counter()
         turn_usage = {
@@ -497,6 +501,13 @@ class Agent:
                                                    f"({guard_retries}/{self.guard_max_retries})"))
                     messages.append({"role": "user", "content": _grounding_feedback(gr)})
                     continue
+                if (
+                    action == "pass"
+                    and screen_shortlist_used
+                    and text != GROUNDING_ABSTAIN_FALLBACK
+                    and SCREEN_SHORTLIST_DISCLOSURE.lower() not in text.lower()
+                ):
+                    text = f"{text.rstrip()}\n\n{SCREEN_SHORTLIST_DISCLOSURE}"
                 # "pass" (grounded, or only soft mismatches) or "abstain" (Tier 4 rewrote `text`).
                 assistant["content"] = text
                 yield events.MessageCompleted(message_id=message_id, text=text, citations=citations.mapping())
@@ -517,10 +528,18 @@ class Agent:
                 yield events.ToolStart(tool_call_id=call_id, name=name, label=name)
 
                 tool_started = time.perf_counter()
-                async for ev, tool_result in self._invoke(name, call["function"]["arguments"], tool, ctx):
+                arg_overrides = forced_tool_args if i == 0 and name == forced_tool else None
+                async for ev, tool_result in self._invoke(
+                    name, call["function"]["arguments"], tool, ctx, arg_overrides=arg_overrides,
+                ):
                     if tool_result is None:
                         yield ev  # an approval-required event
                         continue
+                    if (
+                        name == "screen_eligibility"
+                        and SCREEN_SHORTLIST_DISCLOSURE.lower() in tool_result.lower()
+                    ):
+                        screen_shortlist_used = True
                     messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_result})
                     status = "error" if tool_result.startswith(("ERROR", "Action not approved")) else "ok"
                     yield events.ToolCompleted(
@@ -545,19 +564,24 @@ class Agent:
         output_dir=None,
         drafts=None,
         forced_tool: Optional[str] = None,
+        forced_tool_args: Optional[dict] = None,
         excluded_tools: Optional[set[str]] = None,
     ) -> AgentResult:
         """Drain the event stream into a single AgentResult."""
         result: Optional[AgentResult] = None
         async for event in self.stream(user_message, history=history, max_iters=max_iters,
                                        reminders=reminders, output_dir=output_dir, drafts=drafts,
-                                       forced_tool=forced_tool, excluded_tools=excluded_tools):
+                                       forced_tool=forced_tool, forced_tool_args=forced_tool_args,
+                                       excluded_tools=excluded_tools):
             if isinstance(event, events.Done):
                 result = event.result
         assert result is not None  # stream always ends with Done
         return result
 
-    async def _invoke(self, name: str, raw_args, tool: Optional[Tool], ctx: ToolContext):
+    async def _invoke(
+        self, name: str, raw_args, tool: Optional[Tool], ctx: ToolContext,
+        arg_overrides: Optional[dict] = None,
+    ):
         """Yield (event, tool_result). tool_result is None for non-terminal events
         (e.g. approval prompts); a string when the call resolved."""
         if tool is None:
@@ -568,6 +592,10 @@ class Agent:
         except json.JSONDecodeError as exc:
             yield None, f"ERROR: could not parse arguments for '{name}': {exc}"
             return
+        if not isinstance(args, dict):
+            yield None, f"ERROR: arguments for '{name}' must be a JSON object."
+            return
+        args = {**args, **(arg_overrides or {})}
 
         if tool.requires_approval:
             yield events.ToolApprovalRequired(tool_call_id=name, name=name, args=args), None
@@ -694,21 +722,25 @@ class Conversation:
         self.turns: list[dict] = []
 
     async def send(self, user_message: str, max_iters: int = 8, reminders=None,
-                   output_dir=None, drafts=None, forced_tool=None, excluded_tools=None) -> AgentResult:
+                   output_dir=None, drafts=None, forced_tool=None, forced_tool_args=None,
+                   excluded_tools=None) -> AgentResult:
         result = await self.agent.run(user_message, history=self.turns, max_iters=max_iters,
                                       reminders=reminders, output_dir=output_dir, drafts=drafts,
-                                      forced_tool=forced_tool, excluded_tools=excluded_tools)
+                                      forced_tool=forced_tool, forced_tool_args=forced_tool_args,
+                                      excluded_tools=excluded_tools)
         self.turns.append({"role": "user", "content": user_message})
         self.turns.append({"role": "assistant", "content": result.text})
         return result
 
     async def stream(self, user_message: str, max_iters: int = 8, reminders=None,
-                     output_dir=None, drafts=None, forced_tool=None, excluded_tools=None):
+                     output_dir=None, drafts=None, forced_tool=None, forced_tool_args=None,
+                     excluded_tools=None):
         """Stream a turn's events, then commit the turn to history."""
         final_text = ""
         async for event in self.agent.stream(user_message, history=self.turns, max_iters=max_iters,
                                              reminders=reminders, output_dir=output_dir, drafts=drafts,
-                                             forced_tool=forced_tool, excluded_tools=excluded_tools):
+                                             forced_tool=forced_tool, forced_tool_args=forced_tool_args,
+                                             excluded_tools=excluded_tools):
             if isinstance(event, events.Done) and event.result is not None:
                 final_text = event.result.text
             yield event

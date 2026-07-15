@@ -264,6 +264,119 @@ async def test_screen_eligibility_grounds_and_frames(monkeypatch):
     assert any("/resource/kvhd-5fmu/row-snap.json" in c["url"] for c in cites.values())
 
 
+async def test_screen_eligibility_asks_for_a_goal_instead_of_dumping_matches(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+    programs = [
+        {"code": f"S2R00{i}", "name": name}
+        for i, name in enumerate(("Food Help", "Transit Help", "Health Help", "Housing Help"), 1)
+    ]
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(200, json={"type": "SUCCESS", "eligiblePrograms": programs})
+        if req.url.host == "data.cityofnewyork.us":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    reg = CitationRegistry()
+    ctx = ToolContext(citations=reg, registry=Registry([]), http=client, embedder=_EMBEDDER)
+    out = await btools._screen_handler(
+        {"household": {},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}]}, ctx)
+    await client.aclose()
+
+    assert "4 likely" in out.lower()
+    assert "which need matters most" in out.lower()
+    assert not any(program["name"] in out for program in programs)
+    assert len(reg.mapping()) == 1
+
+
+async def test_screen_eligibility_uses_goal_to_show_three_grounded_matches(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+    programs = [
+        {"code": f"S2R00{i}", "name": name}
+        for i, name in enumerate(("Food Help", "Transit Help", "Health Help", "Housing Help"), 1)
+    ]
+    rows = [
+        {":id": f"row-{i}", "program_code": program["code"], "program_name": program["name"],
+         "program_category": category, "updated_at": "2026-07-01"}
+        for i, (program, category) in enumerate(
+            zip(programs, ("Food", "Cash & expenses", "Health", "Housing")), 1
+        )
+    ]
+    ranked = [rows[0], rows[2], rows[1]]
+    seen = {}
+
+    def retrieve(catalog, query, limit, embedder):
+        seen.update(catalog=catalog, query=query, limit=limit, embedder=embedder)
+        return ranked
+
+    monkeypatch.setattr(btools, "_retrieve", retrieve)
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(200, json={"type": "SUCCESS", "eligiblePrograms": programs})
+        if req.url.host == "data.cityofnewyork.us":
+            return httpx.Response(200, json=rows)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    reg = CitationRegistry()
+    ctx = ToolContext(citations=reg, registry=Registry([]), http=client, embedder=_EMBEDDER)
+    out = await btools._screen_handler(
+        {"household": {},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}],
+         "goal": "help buying food"}, ctx)
+    await client.aclose()
+
+    assert seen["query"] == "help buying food"
+    assert seen["limit"] == 3
+    assert {row["program_code"] for row in seen["catalog"]} == {p["code"] for p in programs}
+    assert all(row["program_name"] in out for row in ranked)
+    assert rows[3]["program_name"] not in out
+    assert "phone-friendly shortlist, not an official ranking" in out.lower()
+    assert "1 other" in out.lower()
+    assert len(reg.mapping()) == 4
+
+
+async def test_screen_eligibility_show_all_returns_every_grounded_match(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
+    programs = [
+        {"code": f"S2R00{i}", "name": name}
+        for i, name in enumerate(("Food Help", "Transit Help", "Health Help", "Housing Help"), 1)
+    ]
+
+    def route(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authToken":
+            return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+        if req.url.path == "/eligibilityPrograms":
+            return httpx.Response(200, json={"type": "SUCCESS", "eligiblePrograms": programs})
+        if req.url.host == "data.cityofnewyork.us":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {"household": {},
+         "persons": [{"age": 32, "householdMemberType": "HeadOfHousehold"}],
+         "show_all": True}, ctx)
+    await client.aclose()
+
+    assert all(program["name"] in out for program in programs)
+
+
 async def test_screen_eligibility_keeps_verdict_when_catalog_enrichment_fails(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
@@ -462,6 +575,8 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert "Monthly" in income["properties"]["frequency"]["enum"]
     assert "Medical" in person["expenses"]["items"]["properties"]["type"]["enum"]
     assert schema["properties"]["interested_programs"]["items"]["pattern"] == r"^S2R\d{3}$"
+    assert schema["properties"]["goal"]["type"] == "string"
+    assert schema["properties"]["show_all"]["type"] == "boolean"
 
 
 def test_get_tools_gates_forms_on_flag(monkeypatch):

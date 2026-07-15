@@ -76,7 +76,7 @@ def is_help(text: str) -> bool:
 
 def is_screen(text: str) -> bool:
     """The exact explicit action command, never a guess from ordinary conversation."""
-    return text.strip().lower() == "/screen"
+    return text.strip().lower() in {"/screen", "/screen all"}
 
 
 def _reminders() -> list[str]:
@@ -123,6 +123,9 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 result = await session.send(
                     msg.text, reminders=reminders, output_dir=art_dir, drafts=user_drafts,
                     forced_tool=_SCREEN_TOOL if screen_requested else None,
+                    forced_tool_args={
+                        "show_all": msg.text.strip().lower() == "/screen all",
+                    } if screen_requested else None,
                     excluded_tools=None if screen_requested else {_SCREEN_TOOL},
                 )
                 for chunk in render(result):

@@ -134,6 +134,17 @@ def request_schema() -> dict:
                 "type": "string",
                 "description": "Optional language name, for example Spanish.",
             },
+            "goal": {
+                "type": "string", "maxLength": 200,
+                "description": (
+                    "Optional local-only need the resident explicitly stated, such as help buying "
+                    "food. Used to shortlist results and never sent to the City API."
+                ),
+            },
+            "show_all": {
+                "type": "boolean",
+                "description": "True only when the resident explicitly asks to see every match.",
+            },
         },
         "required": ["persons"],
     }

@@ -246,6 +246,51 @@ def test_repl_snap_approval_is_explicit_and_does_not_echo_pii():
     assert "will not submit" in prompt.lower()
 
 
+def test_repl_keyboard_interrupt_exits_without_traceback(monkeypatch):
+    from heynyc.__main__ import _run_repl
+
+    def interrupted(_coroutine):
+        _coroutine.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("heynyc.__main__.asyncio.run", interrupted)
+    _run_repl()
+
+
+def test_repl_screening_requires_explicit_command():
+    from heynyc.__main__ import _screen_turn_options
+
+    assert _screen_turn_options("I need food help") == {
+        "forced_tool": None,
+        "forced_tool_args": None,
+        "excluded_tools": {"screen_eligibility"},
+        "screen_reminder": None,
+    }
+    assert _screen_turn_options("/screen")["forced_tool_args"] == {"show_all": False}
+    assert _screen_turn_options(" /SCREEN ALL ")["forced_tool_args"] == {"show_all": True}
+
+
+def test_repl_turn_uses_existing_pii_free_telemetry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from heynyc.__main__ import _record_agent_turn
+    from heynyc.core import config, telemetry
+
+    monkeypatch.setattr(config, "HEYNYC_DATA_DIR", tmp_path)
+    result = SimpleNamespace(
+        usage={"latency_ms": 250.0, "tool_time_ms": 40.0},
+        tool_calls_made=["screen_eligibility"],
+        status="success",
+    )
+
+    _record_agent_turn("repl", "openai/gpt-5.4-mini", result)
+
+    records = telemetry.load(telemetry.default_path(tmp_path))
+    assert records[-1]["session_id"] == "repl"
+    assert records[-1]["latency_ms"] == 250.0
+    assert records[-1]["tool_names"] == ["screen_eligibility"]
+
+
 def test_to_sse_formats_frame():
     frame = events.to_sse(events.TextDelta(message_id="m0", text="hi"))
     assert frame.startswith("event: text.delta\n")

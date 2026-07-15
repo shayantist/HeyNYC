@@ -200,9 +200,21 @@ def _cmd_index_search(query: str) -> None:
         print(f"[{score:.2f}] {doc.title}, {doc.url}\n    {doc.text[:160]}...\n")
 
 
-async def _cmd_chat(question: str) -> None:
+def _record_agent_turn(session_id: str, model: str, result) -> None:
     from heynyc.core import telemetry
 
+    telemetry.record_turn(
+        telemetry.default_path(config.HEYNYC_DATA_DIR),
+        session_id=session_id,
+        model=model,
+        usage=result.usage,
+        n_tool_calls=len(result.tool_calls_made),
+        tool_names=result.tool_calls_made,
+        status=result.status,
+    )
+
+
+async def _cmd_chat(question: str) -> None:
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
     result = await agent.run(question, reminders=_default_reminders())
@@ -214,11 +226,7 @@ async def _cmd_chat(question: str) -> None:
         for cid, c in used.items():
             url = text_fragment_url(c["url"], c.get("snippet", ""), c.get("kind", ""))
             print(f"  [{cid}] {c['title'] or c['url']} - {url}")
-    telemetry.record_turn(
-        telemetry.default_path(config.HEYNYC_DATA_DIR), session_id="chat", model=agent.model,
-        usage=result.usage, n_tool_calls=len(result.tool_calls_made),
-        tool_names=result.tool_calls_made, status=result.status,
-    )
+    _record_agent_turn("chat", agent.model, result)
 
 
 def _render_stats(path) -> None:
@@ -358,6 +366,20 @@ def _approve_repl_action(console, name: str, args: dict) -> bool:
     return console.input(prompt).strip().lower() in {"y", "yes"}
 
 
+def _screen_turn_options(text: str) -> dict:
+    from heynyc.channels.orchestrator import _SCREEN_REMINDER, _SCREEN_TOOL, is_screen
+
+    requested = is_screen(text)
+    return {
+        "forced_tool": _SCREEN_TOOL if requested else None,
+        "forced_tool_args": {
+            "show_all": text.strip().lower() == "/screen all",
+        } if requested else None,
+        "excluded_tools": None if requested else {_SCREEN_TOOL},
+        "screen_reminder": _SCREEN_REMINDER if requested else None,
+    }
+
+
 async def _cmd_repl() -> None:
     """Interactive, streaming multi-turn chat, rich-rendered, Claude-Code-like."""
     from rich.console import Console, Group
@@ -401,6 +423,7 @@ async def _cmd_repl() -> None:
         segments: list = []  # ordered render parts: {"kind": "text"|"tool", "text": str}
         citations: dict = {}
         done = False
+        turn_result = None
         message_start = 0
 
         def render():
@@ -418,10 +441,21 @@ async def _cmd_repl() -> None:
             return Group(*parts)
 
         before_pdfs = set(artifacts_dir.glob("*.pdf"))
+        screen_options = _screen_turn_options(question)
+        reminders = _default_reminders()
+        if screen_options["screen_reminder"]:
+            reminders.append(screen_options["screen_reminder"])
         console.print("[bold cyan]heynyc ▸[/]")
         with Live(render(), console=console, refresh_per_second=12, vertical_overflow="visible") as live:
-            async for event in convo.stream(question, reminders=_default_reminders(),
-                                             output_dir=artifacts_dir, drafts=drafts):
+            async for event in convo.stream(
+                question,
+                reminders=reminders,
+                output_dir=artifacts_dir,
+                drafts=drafts,
+                forced_tool=screen_options["forced_tool"],
+                forced_tool_args=screen_options["forced_tool_args"],
+                excluded_tools=screen_options["excluded_tools"],
+            ):
                 if isinstance(event, events.MessageStart):
                     message_start = len(segments)
                 elif isinstance(event, events.ToolStart):
@@ -432,8 +466,12 @@ async def _cmd_repl() -> None:
                     _reconcile_message_text(segments, message_start, event.text)
                 elif isinstance(event, events.Done):
                     citations = event.citations
+                    turn_result = event.result
                     done = True
                 live.update(render())
+
+        if turn_result is not None:
+            _record_agent_turn("repl", agent.model, turn_result)
 
         from heynyc.core.citations import text_fragment_url, used_citations
         answer_text = "".join(s["text"] for s in segments if s["kind"] == "text")
@@ -531,6 +569,13 @@ async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool,
     print("\n" + render_bench(rows, safety_ids))
 
 
+def _run_repl() -> None:
+    try:
+        asyncio.run(_cmd_repl())
+    except KeyboardInterrupt:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="heynyc")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -586,7 +631,7 @@ def main() -> None:
     elif args.command == "chat":
         asyncio.run(_cmd_chat(args.question))
     elif args.command == "repl":
-        asyncio.run(_cmd_repl())
+        _run_repl()
     elif args.command == "capabilities":
         _cmd_capabilities(markdown=args.markdown, write_readme=args.write_readme)
     elif args.command == "stats":

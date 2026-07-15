@@ -74,7 +74,7 @@ prompt: |
   up to three that directly match the user's stated goal, say how many other matches the screener returned,
   and offer to show the rest. This is a phone-friendly summary, not an official ranking. If the user gave no
   goal that distinguishes the programs, ask which need matters most instead of inventing a ranking. Show every
-  result if the user asks. Say more detail = a better match, and offer to help apply.
+  result if the user asks by having them reply `/screen all`. Say more detail = a better match, and offer to help apply.
   If screen_eligibility is NOT available, keep to benefits_search + the access.nyc.gov screener.
   APPLYING (when prepare_snap_application is in your toolset): if the user wants help applying for SNAP,
   offer to prepare a DRAFT of the official application (LDSS-4826) for them to print, sign, and mail

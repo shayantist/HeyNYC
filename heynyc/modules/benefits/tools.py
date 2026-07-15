@@ -307,6 +307,8 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
         persons = list(args.get("persons") or [])
         interested = args.get("interested_programs") or None
         lang = (args.get("lang") or "").strip() or None
+        goal = (args.get("goal") or "").strip()
+        show_all = bool(args.get("show_all"))
         screening.assert_pii_free(household, persons)
     except ValueError as exc:
         return f"ERROR: {exc} Collect only age, household type, and income, never names/DOB/address."
@@ -390,8 +392,33 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
                 f"{{cite:{verdict}}}. That is NOT a determination of ineligibility, encourage the user "
                 f"to apply or check {OFFICIAL}; more detail may surface more programs.")
 
-    lines = [f"Based on what you shared, you're likely eligible for these, {_ESTIMATE} {{cite:{verdict}}}:"]
-    for prog in eligible:
+    if len(eligible) > 3 and not show_all:
+        if not goal:
+            return (
+                f"The official screener returned {len(eligible)} likely matches {_ESTIMATE} "
+                f"{{cite:{verdict}}}. Which need matters most right now? Tell me in your own words, "
+                "then reply `/screen` again. Reply `/screen all` if you want every match."
+            )
+        eligible_rows = [by_code[program.get("code", "")] for program in eligible
+                         if program.get("code", "") in by_code]
+        ranked_rows = _retrieve(eligible_rows, goal, 3, ctx.embedder)
+        programs_by_code = {program.get("code", ""): program for program in eligible}
+        displayed = [programs_by_code[_clean(row.get("program_code"))] for row in ranked_rows]
+        if not displayed:
+            return (
+                f"The official screener returned {len(eligible)} likely matches {_ESTIMATE} "
+                f"{{cite:{verdict}}}, but I couldn't reliably match them to '{goal}'. Tell me a "
+                "different need, then reply `/screen` again, or reply `/screen all`."
+            )
+    else:
+        displayed = eligible
+
+    match_word = "match" if len(eligible) == 1 else "matches"
+    lines = [f"Based on what you shared, you're likely eligible for {len(eligible)} {match_word}, "
+             f"{_ESTIMATE} {{cite:{verdict}}}:"]
+    if len(displayed) < len(eligible):
+        lines.append("This is a phone-friendly shortlist, not an official ranking.")
+    for prog in displayed:
         code, name = prog.get("code", ""), prog.get("name", "")
         row = by_code.get(code)
         if row:
@@ -406,8 +433,11 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
                          + (f", apply: {url}" if url else ""))
         else:  # screenable but not in our catalog cache, fall back to the API's name, cite the verdict
             lines.append(f"- {name} {{cite:{verdict}}}")
-    lines.append("A program not listed here doesn't mean you're ineligible. "
-                 "Want help applying to any of these?")
+    remaining = len(eligible) - len(displayed)
+    if remaining:
+        lines.append(f"There {'is' if remaining == 1 else 'are'} {remaining} other "
+                     f"match{'es' if remaining != 1 else ''}. Reply `/screen all` to see them.")
+    lines.append("A program not listed here doesn't mean you're ineligible. Want help applying?")
     return "\n".join(lines)
 
 
@@ -418,7 +448,9 @@ def screen_eligibility_tool() -> Tool:
             "Estimate which NYC benefit programs a household is LIKELY eligible for, via the city's "
             "official Benefits Screening API (the ACCESS NYC rules engine). Pass a PII-FREE profile "
             "gathered from the user: household flags + a list of persons (age + householdMemberType "
-            "required; optional income/flags). NEVER pass names, DOB, SSN, or address. Returns a "
+            "required; optional income/flags). Pass goal only when the resident stated a need and "
+            "show_all only when they explicitly requested every match. NEVER pass names, DOB, SSN, "
+            "or address. Returns a "
             "likely-eligible estimate (NOT a determination); a program's absence is never proof of "
             "ineligibility."),
         parameters=screening.request_schema(),

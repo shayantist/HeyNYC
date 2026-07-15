@@ -316,6 +316,126 @@ async def test_forced_tool_applies_only_to_first_model_iteration(empty_registry)
     assert result.tool_calls_made == ["screen_eligibility"]
 
 
+async def test_forced_tool_arguments_override_model_values(empty_registry):
+    calls = []
+
+    async def screen(args, ctx):
+        calls.append(args)
+        return "screened\nThis is a phone-friendly shortlist, not an official ranking."
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    responses = [
+        _assistant(tool_calls=[_tool_call("screen_eligibility", {"show_all": True})]),
+        _assistant(content="done"),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run(
+        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+    )
+
+    assert calls == [{"show_all": False}]
+    assert "phone-friendly shortlist, not an official ranking" in result.text
+
+
+async def test_count_only_screen_response_does_not_claim_to_be_a_shortlist(empty_registry):
+    async def screen(args, ctx):
+        return "16 likely matches. Which need matters most?"
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    responses = [
+        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(content="You have 16 likely matches. Which need matters most?"),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run(
+        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+    )
+
+    assert "shortlist" not in result.text.lower()
+
+
+async def test_grounding_fallback_does_not_claim_to_be_a_shortlist(empty_registry):
+    from heynyc.core.agent import GROUNDING_ABSTAIN_FALLBACK
+
+    async def screen(args, ctx):
+        return "screened\nThis is a phone-friendly shortlist, not an official ranking."
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(
+        empty_registry,
+        tools={"screen_eligibility": tool},
+        guard_max_retries=0,
+    )
+    responses = [
+        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(content="Unsupported {cite:S999}"),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run(
+        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+    )
+
+    assert result.text == GROUNDING_ABSTAIN_FALLBACK
+
+
+@pytest.mark.parametrize("raw_args", ["[]", "null", '"text"'])
+async def test_forced_tool_rejects_non_object_json_arguments(empty_registry, raw_args):
+    called = False
+
+    async def screen(args, ctx):
+        nonlocal called
+        called = True
+        return "screened"
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    responses = [
+        _assistant(tool_calls=[{
+            "id": "c1",
+            "function": {"name": "screen_eligibility", "arguments": raw_args},
+        }]),
+        _assistant(content="I could not use that malformed request."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    events_seen = [event async for event in agent.stream(
+        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+    )]
+
+    completed = [event for event in events_seen if event.type == "tool.completed"]
+    assert completed[0].status == "error"
+    assert not called
+
+
 async def test_forced_tool_fails_closed_when_model_does_not_call_it(empty_registry):
     from heynyc.core.agent import FORCED_TOOL_FALLBACK
 

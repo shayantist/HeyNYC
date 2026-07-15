@@ -88,6 +88,7 @@ def test_is_flag():
 def test_is_screen_only_matches_the_explicit_action_command():
     assert is_screen("/screen")
     assert is_screen("  /SCREEN  ")
+    assert is_screen("/screen all")
     assert not is_screen("screen me")
     assert not is_screen("can you screen me for SNAP?")
 
@@ -126,14 +127,22 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
 
     await handle(_msg(text="Here is my complete profile", mid="profile"), replier, deps)
     await handle(_msg(text="/screen", mid="action"), replier, deps)
+    await handle(_msg(text="/screen all", mid="action-all"), replier, deps)
 
     assert model_calls == [
         (None, []),
         ("screen_eligibility", ["screen_eligibility"]),
         (None, ["screen_eligibility"]),
+        ("screen_eligibility", ["screen_eligibility"]),
+        (None, ["screen_eligibility"]),
     ]
-    assert calls == [{"persons": []}]
-    assert replier.sent == ["Reply /screen when ready", "Reply /screen when ready"]
+    assert calls == [
+        {"persons": [], "show_all": False},
+        {"persons": [], "show_all": True},
+    ]
+    assert replier.sent == [
+        "Reply /screen when ready", "Reply /screen when ready", "Reply /screen when ready",
+    ]
 
 
 async def test_per_user_lock_serializes_same_user(tmp_path):
