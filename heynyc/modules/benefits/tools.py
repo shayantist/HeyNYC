@@ -301,19 +301,19 @@ _ACCESS_NYC = "https://access.nyc.gov/eligibility/"
 
 
 async def _screen_handler(args: dict, ctx: ToolContext) -> str:
-    household = dict(args.get("household") or {})
-    persons = list(args.get("persons") or [])
-    interested = args.get("interested_programs") or None
-    lang = (args.get("lang") or "").strip() or None
+    try:
+        screening.validate_arguments(args)
+        household = dict(args.get("household") or {})
+        persons = list(args.get("persons") or [])
+        interested = args.get("interested_programs") or None
+        lang = (args.get("lang") or "").strip() or None
+        screening.assert_pii_free(household, persons)
+    except ValueError as exc:
+        return f"ERROR: {exc} Collect only age, household type, and income, never names/DOB/address."
     base, user, pw = config.screening_creds()
     if not (user and pw):
         return ("ERROR: eligibility screening isn't configured. Use benefits_search and tell the "
                 f"user to check {OFFICIAL}.")
-    try:
-        screening.assert_pii_free(household, persons)
-        screening.validate_request(household, persons, interested)
-    except ValueError as exc:
-        return f"ERROR: {exc} Collect only age, household type, and income, never names/DOB/address."
 
     own = ctx.http is None
     client = ctx.http or httpx.AsyncClient(timeout=30.0)
@@ -411,99 +411,6 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "amount": {
-                "type": "string",
-                "maxLength": max_length,
-                "pattern": rf"^\d{{1,{max_whole_digits}}}(?:\.\d{{1,2}})?$",
-            },
-            "frequency": {"type": "string", "enum": list(screening.FREQUENCIES)},
-            "type": {"type": "string", "enum": list(types)},
-        },
-        "required": ["amount", "frequency", "type"],
-    }
-
-
-def _screen_parameters() -> dict:
-    household_flags = {
-        name: {"type": "boolean"} for name in (
-            "livingRenting", "livingOwner", "livingStayingWithFriend", "livingHotel",
-            "livingShelter", "livingPreferNotToSay",
-        )
-    }
-    person_flags = {
-        name: {"type": "boolean"} for name in (
-            "student", "studentFulltime", "pregnant", "unemployed",
-            "unemployedWorkedLast18Months", "blind", "disabled", "veteran",
-            "benefitsMedicaid", "benefitsMedicaidDisability", "livingOwnerOnDeed",
-            "livingRentalOnLease",
-        )
-    }
-    household_properties = {
-        "cashOnHand": {
-            "type": "string", "maxLength": 10,
-            "pattern": r"^\d{1,7}(?:\.\d{1,2})?$",
-            "description": "Numeric USD amount encoded as a string, for example '500'.",
-        },
-        "livingRentalType": {"type": "string", "enum": list(screening.RENTAL_TYPES)},
-        **household_flags,
-    }
-    person_properties = {
-        "age": {"type": "number", "minimum": 0, "maximum": 999},
-        "householdMemberType": {
-            "type": "string", "enum": list(screening.HOUSEHOLD_MEMBER_TYPES)},
-        "incomes": {
-            "type": "array", "items": _money_item_schema(screening.INCOME_TYPES, 15, 12)},
-        "expenses": {
-            "type": "array", "items": _money_item_schema(screening.EXPENSE_TYPES, 9, 6)},
-        **person_flags,
-    }
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "household": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": "Household-level housing and cash-on-hand fields. PII-free.",
-                "properties": household_properties,
-            },
-            "persons": {
-                "type": "array", "minItems": 1, "maxItems": 8,
-                "contains": {
-                    "type": "object",
-                    "properties": {"householdMemberType": {"const": "HeadOfHousehold"}},
-                    "required": ["householdMemberType"],
-                },
-                "minContains": 1,
-                "description": "1-8 people; at least one must be HeadOfHousehold.",
-                "items": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": person_properties,
-                    "required": ["age", "householdMemberType"],
-                },
-            },
-            "interested_programs": {
-                "type": "array", "uniqueItems": True,
-                "items": {"type": "string", "pattern": screening.PROGRAM_CODE_PATTERN},
-                "description": (
-                    "Optional official program-code filter such as S2R007. Never pass a program "
-                    "name such as SNAP; omit this field when the exact code is unknown."
-                ),
-            },
-            "lang": {
-                "type": "string",
-                "description": "Optional language name, for example Spanish.",
-            },
-        },
-        "required": ["persons"],
-    }
-
-
 def screen_eligibility_tool() -> Tool:
     return Tool(
         name="screen_eligibility",
@@ -514,7 +421,7 @@ def screen_eligibility_tool() -> Tool:
             "required; optional income/flags). NEVER pass names, DOB, SSN, or address. Returns a "
             "likely-eligible estimate (NOT a determination); a program's absence is never proof of "
             "ineligibility."),
-        parameters=_screen_parameters(),
+        parameters=screening.request_schema(),
         handler=_screen_handler,
         open_world=True,
     )

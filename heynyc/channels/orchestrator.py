@@ -30,6 +30,11 @@ _FLAG_COMMANDS = ("/wrong", "/report")
 _HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
 _RATE_LIMIT_MSG = "You're sending a lot at once, give me a moment and try again shortly. 🙏"
+_SCREEN_TOOL = "screen_eligibility"
+_SCREEN_REMINDER = (
+    "The user explicitly requested the official benefits screening action. Build its PII-free "
+    "arguments only from the conversation history. Do not invent missing profile details."
+)
 
 
 @dataclass
@@ -67,6 +72,11 @@ def flag_note(text: str) -> str:
 def is_help(text: str) -> bool:
     """A greeting / 'what can you do', answered with the grounded capability menu, not the agent."""
     return text.strip().lower().rstrip("!?. ") in _HELP_TOKENS
+
+
+def is_screen(text: str) -> bool:
+    """The exact explicit action command, never a guess from ordinary conversation."""
+    return text.strip().lower() == "/screen"
 
 
 def _reminders() -> list[str]:
@@ -108,8 +118,13 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
             art_dir = Path(tempfile.mkdtemp(prefix="heynyc-art-"))   # per-request, orchestrator-owned
             try:
                 user_drafts = deps.drafts.for_user(key) if deps.drafts else None
-                result = await session.send(msg.text, reminders=_reminders(),
-                                            output_dir=art_dir, drafts=user_drafts)
+                screen_requested = is_screen(msg.text)
+                reminders = _reminders() + ([_SCREEN_REMINDER] if screen_requested else [])
+                result = await session.send(
+                    msg.text, reminders=reminders, output_dir=art_dir, drafts=user_drafts,
+                    forced_tool=_SCREEN_TOOL if screen_requested else None,
+                    excluded_tools=None if screen_requested else {_SCREEN_TOOL},
+                )
                 for chunk in render(result):
                     await replier.send_text(chunk)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir

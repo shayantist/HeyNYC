@@ -404,6 +404,32 @@ async def test_screen_eligibility_rejects_program_name_before_auth(monkeypatch):
     assert calls["n"] == 0
 
 
+async def test_screen_eligibility_validates_the_complete_tool_payload_before_auth(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    calls = {"n": 0}
+
+    def route(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {
+            "household": {},
+            "persons": [{"age": 30, "householdMemberType": "HeadOfHousehold"}],
+            "lang": 123,
+        },
+        ctx,
+    )
+    await client.aclose()
+
+    assert out.startswith("ERROR")
+    assert "invalid screening profile" in out
+    assert calls["n"] == 0
+
+
 def test_get_tools_gates_screener_on_creds(monkeypatch):
     monkeypatch.delenv("HEYNYC_FORMS", raising=False)
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))

@@ -67,6 +67,11 @@ SPEND_CAPPED_FALLBACK = (
     "For urgent NYC help you can call 311, or 911 in an emergency, and please try again a bit later."
 )
 
+FORCED_TOOL_FALLBACK = (
+    "I couldn't start that action safely, so nothing was sent or changed. "
+    "Please try again, or call 311 for help."
+)
+
 # Clear, active chest-pain statements bypass the model entirely. This is intentionally narrow, not a
 # general medical classifier: present-tense first-person English and Spanish only. A deterministic
 # response prevents unsafe diagnosis or dosage text from entering the streaming event path at all.
@@ -231,13 +236,17 @@ class Agent:
         self.guard_max_retries = guard_max_retries
         if stream_fn is not None:
             self._stream_fn = stream_fn
+            self._uses_litellm = False
         elif complete_fn is not None:
             self._stream_fn = _wrap_complete(complete_fn)
+            self._uses_litellm = False
         else:
-            self._stream_fn = self._litellm_stream
+            self._stream_fn = None
+            self._uses_litellm = True
 
-    def _tool_schemas(self) -> list[dict]:
-        return [tool.schema() for tool in self.tools.values()]
+    def _tool_schemas(self, excluded_tools: Optional[set[str]] = None) -> list[dict]:
+        excluded = excluded_tools or set()
+        return [tool.schema() for name, tool in self.tools.items() if name not in excluded]
 
     def _grounding_verdict(self, text: str, citations_map: dict, query: str, retries: int):
         """Run the deterministic grounding guard on a terminal answer. Returns
@@ -290,6 +299,8 @@ class Agent:
         reminders: Optional[list[str]] = None,
         output_dir=None,
         drafts=None,
+        forced_tool: Optional[str] = None,
+        excluded_tools: Optional[set[str]] = None,
     ) -> AsyncIterator[events.Event]:
         """Run one turn, yielding events (text deltas, tool lifecycle, terminal done)."""
         messages = self._build_messages(user_message, history, reminders)
@@ -340,6 +351,22 @@ class Agent:
             )
             return
 
+        if forced_tool and forced_tool not in self.tools:
+            message_id = "m0"
+            assistant = {"role": "assistant", "content": FORCED_TOOL_FALLBACK, "tool_calls": None}
+            messages.append(assistant)
+            yield events.MessageStart(message_id=message_id)
+            yield events.TextDelta(message_id=message_id, text=FORCED_TOOL_FALLBACK)
+            yield events.MessageCompleted(
+                message_id=message_id, text=FORCED_TOOL_FALLBACK, citations=citations.mapping()
+            )
+            result = AgentResult(
+                text=FORCED_TOOL_FALLBACK, citations=citations.mapping(), tool_calls_made=tools_made,
+                iterations=0, status="error", messages=messages, usage=_usage(),
+            )
+            yield events.Done(status="error", num_turns=0, citations=result.citations, result=result)
+            return
+
         for i in range(max_iters):
             # SPEND-CAP GUARD (turn boundary). Before each model call, halt if this session's
             # cumulative cost has reached the configured ceiling, never spend past it silently.
@@ -364,10 +391,18 @@ class Agent:
             assistant: Optional[dict] = None
             model_started = time.perf_counter()
             try:
-                async for chunk in self._stream_fn(messages, self._tool_schemas()):
+                requested_tool = forced_tool if i == 0 else None
+                tool_schemas = self._tool_schemas(excluded_tools)
+                model_stream = (
+                    self._litellm_stream(messages, tool_schemas, requested_tool)
+                    if self._uses_litellm
+                    else self._stream_fn(messages, tool_schemas)
+                )
+                async for chunk in model_stream:
                     if chunk["type"] == "text":
                         parts.append(chunk["text"])
-                        yield events.TextDelta(message_id=message_id, text=chunk["text"])
+                        if requested_tool is None:
+                            yield events.TextDelta(message_id=message_id, text=chunk["text"])
                     elif chunk["type"] == "usage":
                         call_in = int(chunk.get("input_tokens", 0) or 0)
                         call_out = int(chunk.get("output_tokens", 0) or 0)
@@ -392,6 +427,34 @@ class Agent:
                 assistant = {"role": "assistant", "content": "".join(parts) or None, "tool_calls": None}
             tool_calls = assistant.get("tool_calls") or []
             text = assistant.get("content") or "".join(parts)
+            if requested_tool is not None:
+                called_tools = [
+                    call.get("function", {}).get("name")
+                    if isinstance(call, dict) and isinstance(call.get("function"), dict)
+                    else None
+                    for call in tool_calls
+                ]
+                if called_tools != [requested_tool]:
+                    assistant = {
+                        "role": "assistant", "content": FORCED_TOOL_FALLBACK, "tool_calls": None,
+                    }
+                    messages.append(assistant)
+                    yield events.TextDelta(message_id=message_id, text=FORCED_TOOL_FALLBACK)
+                    yield events.MessageCompleted(
+                        message_id=message_id, text=FORCED_TOOL_FALLBACK,
+                        citations=citations.mapping(),
+                    )
+                    result = AgentResult(
+                        text=FORCED_TOOL_FALLBACK, citations=citations.mapping(),
+                        tool_calls_made=tools_made, iterations=i + 1, status="error",
+                        messages=messages, usage=_usage(),
+                    )
+                    yield events.Done(
+                        status="error", num_turns=i + 1, citations=result.citations, result=result,
+                    )
+                    return
+                assistant["content"] = None
+                text = ""
             # EMPTY-ANSWER GUARD: a terminal turn (no tool calls) must never reach the user blank.
             # Substitute an explicit safe refusal and stream it, so both the streaming UI and the
             # drained result get non-empty, safe text.
@@ -450,7 +513,7 @@ class Agent:
                 call_id = call.get("id") or name
                 tools_made.append(name)
                 turn_usage["n_tool_calls"] += 1
-                tool = self.tools.get(name)
+                tool = None if name in (excluded_tools or set()) else self.tools.get(name)
                 yield events.ToolStart(tool_call_id=call_id, name=name, label=name)
 
                 tool_started = time.perf_counter()
@@ -481,11 +544,14 @@ class Agent:
         reminders: Optional[list[str]] = None,
         output_dir=None,
         drafts=None,
+        forced_tool: Optional[str] = None,
+        excluded_tools: Optional[set[str]] = None,
     ) -> AgentResult:
         """Drain the event stream into a single AgentResult."""
         result: Optional[AgentResult] = None
         async for event in self.stream(user_message, history=history, max_iters=max_iters,
-                                       reminders=reminders, output_dir=output_dir, drafts=drafts):
+                                       reminders=reminders, output_dir=output_dir, drafts=drafts,
+                                       forced_tool=forced_tool, excluded_tools=excluded_tools):
             if isinstance(event, events.Done):
                 result = event.result
         assert result is not None  # stream always ends with Done
@@ -519,10 +585,12 @@ class Agent:
     def conversation(self) -> "Conversation":
         return Conversation(self)
 
-    async def _litellm_stream(self, messages: list[dict], tool_schemas: list[dict]) -> AsyncIterator[dict]:
+    async def _litellm_stream(
+        self, messages: list[dict], tool_schemas: list[dict], forced_tool: Optional[str] = None,
+    ) -> AsyncIterator[dict]:
         import litellm
 
-        kwargs = _completion_kwargs(self.model, messages, tool_schemas)
+        kwargs = _completion_kwargs(self.model, messages, tool_schemas, forced_tool=forced_tool)
 
         async def _open():
             return await litellm.acompletion(**kwargs)
@@ -569,7 +637,9 @@ def _is_anthropic(model: str) -> bool:
     return m.startswith("anthropic/") or "claude" in m
 
 
-def _completion_kwargs(model: str, messages: list[dict], tool_schemas: list[dict]) -> dict:
+def _completion_kwargs(
+    model: str, messages: list[dict], tool_schemas: list[dict], forced_tool: Optional[str] = None,
+) -> dict:
     """Build the kwargs for litellm.acompletion.
 
     GPT-5 models reject temperature != 1 (litellm raises UnsupportedParamsError), so we omit
@@ -584,6 +654,10 @@ def _completion_kwargs(model: str, messages: list[dict], tool_schemas: list[dict
         kwargs["temperature"] = 0.0
     if tool_schemas:
         kwargs["tools"] = tool_schemas
+        if forced_tool:
+            kwargs["tool_choice"] = {
+                "type": "function", "function": {"name": forced_tool},
+            }
     if "ollama" in model:
         kwargs["num_ctx"] = config.OLLAMA_NUM_CTX
     return kwargs
@@ -620,19 +694,21 @@ class Conversation:
         self.turns: list[dict] = []
 
     async def send(self, user_message: str, max_iters: int = 8, reminders=None,
-                   output_dir=None, drafts=None) -> AgentResult:
+                   output_dir=None, drafts=None, forced_tool=None, excluded_tools=None) -> AgentResult:
         result = await self.agent.run(user_message, history=self.turns, max_iters=max_iters,
-                                      reminders=reminders, output_dir=output_dir, drafts=drafts)
+                                      reminders=reminders, output_dir=output_dir, drafts=drafts,
+                                      forced_tool=forced_tool, excluded_tools=excluded_tools)
         self.turns.append({"role": "user", "content": user_message})
         self.turns.append({"role": "assistant", "content": result.text})
         return result
 
     async def stream(self, user_message: str, max_iters: int = 8, reminders=None,
-                     output_dir=None, drafts=None):
+                     output_dir=None, drafts=None, forced_tool=None, excluded_tools=None):
         """Stream a turn's events, then commit the turn to history."""
         final_text = ""
         async for event in self.agent.stream(user_message, history=self.turns, max_iters=max_iters,
-                                             reminders=reminders, output_dir=output_dir, drafts=drafts):
+                                             reminders=reminders, output_dir=output_dir, drafts=drafts,
+                                             forced_tool=forced_tool, excluded_tools=excluded_tools):
             if isinstance(event, events.Done) and event.result is not None:
                 final_text = event.result.text
             yield event

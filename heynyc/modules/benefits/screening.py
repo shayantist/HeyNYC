@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 import httpx
+from jsonschema import Draft202012Validator
 
 _TOKEN_TTL = 3300.0  # 55 min (the API token expires at 3600s)
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}  # base -> (token, expires_at)
@@ -45,7 +46,97 @@ PERSON_FIELDS = frozenset({
 })
 MONEY_ITEM_FIELDS = frozenset({"amount", "frequency", "type"})
 PROGRAM_CODE_PATTERN = r"^S2R\d{3}$"
-_PROGRAM_CODE_RE = re.compile(PROGRAM_CODE_PATTERN)
+
+
+def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "amount": {
+                "type": "string",
+                "maxLength": max_length,
+                "pattern": rf"^\d{{1,{max_whole_digits}}}(?:\.\d{{1,2}})?$",
+            },
+            "frequency": {"type": "string", "enum": list(FREQUENCIES)},
+            "type": {"type": "string", "enum": list(types)},
+        },
+        "required": ["amount", "frequency", "type"],
+    }
+
+
+def request_schema() -> dict:
+    """The one screening contract used by both model tools and runtime validation."""
+    household_flags = {
+        name: {"type": "boolean"} for name in (
+            "livingRenting", "livingOwner", "livingStayingWithFriend", "livingHotel",
+            "livingShelter", "livingPreferNotToSay",
+        )
+    }
+    person_flags = {
+        name: {"type": "boolean"} for name in (
+            "student", "studentFulltime", "pregnant", "unemployed",
+            "unemployedWorkedLast18Months", "blind", "disabled", "veteran",
+            "benefitsMedicaid", "benefitsMedicaidDisability", "livingOwnerOnDeed",
+            "livingRentalOnLease",
+        )
+    }
+    household_properties = {
+        "cashOnHand": {
+            "type": "string", "maxLength": 10,
+            "pattern": r"^\d{1,7}(?:\.\d{1,2})?$",
+            "description": "Numeric USD amount encoded as a string, for example '500'.",
+        },
+        "livingRentalType": {"type": "string", "enum": list(RENTAL_TYPES)},
+        **household_flags,
+    }
+    person_properties = {
+        "age": {"type": "number", "minimum": 0, "maximum": 999},
+        "householdMemberType": {"type": "string", "enum": list(HOUSEHOLD_MEMBER_TYPES)},
+        "incomes": {"type": "array", "items": _money_item_schema(INCOME_TYPES, 15, 12)},
+        "expenses": {"type": "array", "items": _money_item_schema(EXPENSE_TYPES, 9, 6)},
+        **person_flags,
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "household": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "Household-level housing and cash-on-hand fields. PII-free.",
+                "properties": household_properties,
+            },
+            "persons": {
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "contains": {
+                    "type": "object",
+                    "properties": {"householdMemberType": {"const": "HeadOfHousehold"}},
+                    "required": ["householdMemberType"],
+                },
+                "minContains": 1,
+                "description": "1-8 people; at least one must be HeadOfHousehold.",
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": person_properties,
+                    "required": ["age", "householdMemberType"],
+                },
+            },
+            "interested_programs": {
+                "type": "array", "uniqueItems": True,
+                "items": {"type": "string", "pattern": PROGRAM_CODE_PATTERN},
+                "description": (
+                    "Optional official program-code filter such as S2R007. Never pass a program "
+                    "name such as SNAP; omit this field when the exact code is unknown."
+                ),
+            },
+            "lang": {
+                "type": "string",
+                "description": "Optional language name, for example Spanish.",
+            },
+        },
+        "required": ["persons"],
+    }
 
 
 def clear_token(base: str) -> None:
@@ -138,42 +229,25 @@ def _canonical(value: object, allowed: tuple[str, ...]) -> object:
     return {item.casefold(): item for item in allowed}.get(value.casefold(), value)
 
 
-def _assert_known_fields(household: dict, persons: list[dict]) -> None:
-    unknown = set(household) - HOUSEHOLD_FIELDS
-    if unknown:
-        raise ValueError(f"unsupported screening field(s): household.{', household.'.join(sorted(unknown))}")
-    for index, person in enumerate(persons):
-        unknown = set(person) - PERSON_FIELDS
-        if unknown:
-            prefix = f"persons[{index}]."
-            raise ValueError(f"unsupported screening field(s): {prefix}{(', ' + prefix).join(sorted(unknown))}")
-        for collection in ("incomes", "expenses"):
-            for item_index, item in enumerate(person.get(collection, [])):
-                unknown = set(item) - MONEY_ITEM_FIELDS
-                if unknown:
-                    prefix = f"persons[{index}].{collection}[{item_index}]."
-                    raise ValueError(
-                        f"unsupported screening field(s): {prefix}{(', ' + prefix).join(sorted(unknown))}"
-                    )
-    if not any(
-        isinstance(person.get("householdMemberType"), str)
-        and person["householdMemberType"].casefold() == "headofhousehold".casefold()
-        for person in persons
-    ):
-        raise ValueError("at least one person must have householdMemberType HeadOfHousehold")
+def validate_arguments(request: object) -> None:
+    """Validate a complete tool payload against the exact model-facing schema."""
+    error = next(iter(Draft202012Validator(request_schema()).iter_errors(request)), None)
+    if error is None:
+        return
+    path = ".".join(str(part) for part in error.absolute_path) or "request"
+    if error.validator == "contains":
+        detail = "at least one person must have householdMemberType HeadOfHousehold"
+    else:
+        detail = error.message
+    raise ValueError(f"invalid screening profile at {path}: {detail}")
 
 
 def validate_request(household: dict, persons: list[dict], interested: Optional[list[str]] = None) -> None:
-    """Validate the local City request contract before authentication or screening network calls."""
-    _assert_known_fields(household, persons)
-    if interested and any(
-        not isinstance(code, str) or _PROGRAM_CODE_RE.fullmatch(code) is None
-        for code in interested
-    ):
-        raise ValueError(
-            "interested_programs must use official codes like S2R007, not program names; "
-            "omit the filter when the code is unknown"
-        )
+    """Validate the City request subset before any authentication or screening network call."""
+    request = {"household": household, "persons": persons}
+    if interested is not None:
+        request["interested_programs"] = interested
+    validate_arguments(request)
 
 
 async def screen(client: httpx.AsyncClient, base: str, token: str,

@@ -275,6 +275,135 @@ def test_completion_kwargs_attaches_tools_only_when_present():
     assert "tools" not in _completion_kwargs("anthropic/claude-sonnet-4-6", messages=[], tool_schemas=[])
 
 
+def test_completion_kwargs_can_force_one_named_tool():
+    from heynyc.core.agent import _completion_kwargs
+
+    schema = [{"type": "function", "function": {"name": "screen_eligibility"}}]
+    kwargs = _completion_kwargs(
+        "openai/gpt-5.4-nano", messages=[], tool_schemas=schema,
+        forced_tool="screen_eligibility",
+    )
+
+    assert kwargs["tool_choice"] == {
+        "type": "function", "function": {"name": "screen_eligibility"},
+    }
+
+
+async def test_forced_tool_applies_only_to_first_model_iteration(empty_registry):
+    calls = []
+
+    async def screen(args, ctx):
+        return "screened"
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        calls.append(forced_tool)
+        message = (
+            _assistant(tool_calls=[_tool_call("screen_eligibility", {})])
+            if len(calls) == 1 else _assistant(content="done")
+        )
+        yield {"type": "message", "message": message}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run("/screen", forced_tool="screen_eligibility")
+
+    assert calls == ["screen_eligibility", None]
+    assert result.tool_calls_made == ["screen_eligibility"]
+
+
+async def test_forced_tool_fails_closed_when_model_does_not_call_it(empty_registry):
+    from heynyc.core.agent import FORCED_TOOL_FALLBACK
+
+    called = False
+
+    async def screen(args, ctx):
+        nonlocal called
+        called = True
+        return "screened"
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": _assistant(content="I will skip it")}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run("/screen", forced_tool="screen_eligibility")
+
+    assert result.text == FORCED_TOOL_FALLBACK
+    assert result.tool_calls_made == []
+    assert not called
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [_tool_call("other", {})],
+        [_tool_call("screen_eligibility", {}), _tool_call("other", {}, call_id="c2")],
+        [None],
+    ],
+)
+async def test_forced_tool_rejects_wrong_multiple_and_malformed_calls(empty_registry, tool_calls):
+    called = []
+
+    async def record(args, ctx):
+        called.append(args)
+        return "ran"
+
+    tools = {
+        name: Tool(name=name, description="x", parameters={}, handler=record)
+        for name in ("screen_eligibility", "other")
+    }
+    agent = Agent(empty_registry, tools=tools)
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": _assistant(tool_calls=tool_calls)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run("/screen", forced_tool="screen_eligibility")
+
+    assert result.status == "error"
+    assert result.tool_calls_made == []
+    assert called == []
+
+
+async def test_excluded_tool_is_hidden_and_cannot_execute(empty_registry):
+    called = False
+    schemas_seen = []
+
+    async def screen(args, ctx):
+        nonlocal called
+        called = True
+        return "ran"
+
+    tool = Tool(
+        name="screen_eligibility", description="x", parameters={}, handler=screen,
+    )
+    responses = [
+        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(content="Reply /screen when ready"),
+    ]
+
+    async def fake_stream(messages, tool_schemas):
+        schemas_seen.append(tool_schemas)
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool}, stream_fn=fake_stream)
+    result = await agent.run("profile", excluded_tools={"screen_eligibility"})
+
+    assert schemas_seen == [[], []]
+    assert result.text == "Reply /screen when ready"
+    assert not called
+
+
 def test_completion_kwargs_sets_num_ctx_for_ollama():
     # Ollama's default context window (~2-4K tokens) silently truncates HeyNYC's ~7.5K-token system
     # prompt, which breaks tool-calling; a self-hosted ollama model must get a large num_ctx so the

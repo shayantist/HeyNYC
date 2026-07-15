@@ -1,11 +1,12 @@
 import asyncio
 import pytest
 from heynyc.channels.base import InboundMessage, KeyedLocks
-from heynyc.channels.orchestrator import Deps, handle, is_flag
+from heynyc.channels.orchestrator import Deps, handle, is_flag, is_screen
 from heynyc.channels.store import ChannelStore
 from heynyc.core import config
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
+from heynyc.core.tools import Tool
 
 
 class FakeReplier:
@@ -82,6 +83,57 @@ async def test_flag_writes_feedback_and_skips_agent(tmp_path):
 def test_is_flag():
     assert is_flag("wrong") and is_flag("  Report ") and is_flag("👎")
     assert not is_flag("what's wrong with my application?")
+
+
+def test_is_screen_only_matches_the_explicit_action_command():
+    assert is_screen("/screen")
+    assert is_screen("  /SCREEN  ")
+    assert not is_screen("screen me")
+    assert not is_screen("can you screen me for SNAP?")
+
+
+async def test_screen_command_forces_and_executes_the_screener_through_the_channel(tmp_path):
+    calls = []
+
+    async def screen(args, ctx):
+        calls.append(args)
+        return "official estimate"
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(Registry([]), tools={"screen_eligibility": tool})
+    model_calls = []
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        names = [schema["function"]["name"] for schema in tool_schemas]
+        model_calls.append((forced_tool, names))
+        message = (
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "c1", "function": {
+                    "name": "screen_eligibility", "arguments": '{"persons": []}',
+                },
+            }]}
+            if forced_tool
+            else {"role": "assistant", "content": "Reply /screen when ready", "tool_calls": None}
+        )
+        yield {"type": "message", "message": message}
+
+    agent._litellm_stream = fake_litellm
+    deps, replier = _deps(tmp_path), FakeReplier()
+    deps.agent = agent
+
+    await handle(_msg(text="Here is my complete profile", mid="profile"), replier, deps)
+    await handle(_msg(text="/screen", mid="action"), replier, deps)
+
+    assert model_calls == [
+        (None, []),
+        ("screen_eligibility", ["screen_eligibility"]),
+        (None, ["screen_eligibility"]),
+    ]
+    assert calls == [{"persons": []}]
+    assert replier.sent == ["Reply /screen when ready", "Reply /screen when ready"]
 
 
 async def test_per_user_lock_serializes_same_user(tmp_path):

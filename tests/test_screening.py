@@ -108,19 +108,19 @@ async def test_screen_posts_body_and_returns_programs():
     assert seen["body"][0]["person"][0]["age"] == 32
 
 
-async def test_screen_serializes_api_money_fields_as_strings_without_mutating_input():
+async def test_screen_preserves_schema_valid_money_fields_without_mutating_input():
     seen = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen["body"] = _json.loads(req.content)
         return httpx.Response(200, json={"type": "SUCCESS", "eligiblePrograms": []})
 
-    household = {"livingRenting": True, "livingRentalType": "marketRate", "cashOnHand": 500}
+    household = {"livingRenting": True, "livingRentalType": "MarketRate", "cashOnHand": "500"}
     persons = [{
         "age": 32,
-        "householdMemberType": "headOfHousehold",
-        "incomes": [{"amount": 1200.50, "type": "wages", "frequency": "monthly"}],
-        "expenses": [{"amount": 50, "type": "medical", "frequency": "monthly"}],
+        "householdMemberType": "HeadOfHousehold",
+        "incomes": [{"amount": "1200.50", "type": "Wages", "frequency": "Monthly"}],
+        "expenses": [{"amount": "50", "type": "Medical", "frequency": "Monthly"}],
     }]
     c = _client(handler)
     await screen(c, "https://sb", "tok", household, persons)
@@ -130,14 +130,14 @@ async def test_screen_serializes_api_money_fields_as_strings_without_mutating_in
     assert payload["household"][0]["cashOnHand"] == "500"
     assert payload["household"][0]["livingRentalType"] == "MarketRate"
     assert payload["person"][0]["householdMemberType"] == "HeadOfHousehold"
-    assert payload["person"][0]["incomes"][0]["amount"] == "1200.5"
+    assert payload["person"][0]["incomes"][0]["amount"] == "1200.50"
     assert payload["person"][0]["incomes"][0]["type"] == "Wages"
     assert payload["person"][0]["incomes"][0]["frequency"] == "Monthly"
     assert payload["person"][0]["expenses"][0]["amount"] == "50"
     assert payload["person"][0]["expenses"][0]["type"] == "Medical"
     assert payload["person"][0]["expenses"][0]["frequency"] == "Monthly"
-    assert household["cashOnHand"] == 500
-    assert persons[0]["incomes"][0]["amount"] == 1200.50
+    assert household["cashOnHand"] == "500"
+    assert persons[0]["incomes"][0]["amount"] == "1200.50"
 
 
 async def test_screen_rejects_unknown_fields_before_network():
@@ -206,6 +206,30 @@ async def test_screen_rejects_lowercase_program_codes_before_network():
             [{"age": 35, "householdMemberType": "HeadOfHousehold"}],
             ["s2r007"],
         )
+    await c.aclose()
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize(
+    ("household", "persons"),
+    [
+        ({"livingRentalType": "Unknown"},
+         [{"age": 35, "householdMemberType": "HeadOfHousehold"}]),
+        ({}, [{"age": "thirty-five", "householdMemberType": "HeadOfHousehold"}]),
+        ({}, [{"age": 35, "householdMemberType": "HeadOfHousehold",
+               "incomes": [{"amount": 1200, "type": "Wages", "frequency": "Monthly"}]}]),
+    ],
+)
+async def test_screen_rejects_values_outside_its_tool_schema_before_network(household, persons):
+    calls = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={})
+
+    c = _client(handler)
+    with pytest.raises(ValueError, match="invalid screening profile"):
+        await screen(c, "https://sb", "tok", household, persons)
     await c.aclose()
     assert calls["n"] == 0
 
