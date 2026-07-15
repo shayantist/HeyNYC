@@ -109,6 +109,14 @@ def test_fill_raises_form_drift_when_anchor_missing():
         fill_application({"legal_name": "Ana Diaz"}, fmap=bad)
 
 
+def test_demo_fields_clear_the_form_underlines():
+    from heynyc.modules.benefits.application import load_map
+
+    fields = load_map()["fields"]
+    for key in ("legal_name", "residence_street", "residence_city", "residence_zip"):
+        assert fields[key]["dy"] >= 4
+
+
 def test_high_stakes_fields_are_the_consequential_ones():
     from heynyc.modules.benefits.application import SLOTS
     hs = {s.key for s in SLOTS if s.high_stakes}
@@ -124,4 +132,5 @@ def test_review_request_flags_high_stakes_and_carries_two_tier_attestation():
     # only high-stakes fields (name, income) get the double-check prompt; phone does not
     assert r.count("double-check") == 2
     assert SCRIBE_CERT in r and APPLICANT_ATTESTATION in r
+    assert "answers ," not in r
     assert "what to change" in r          # invites edits, not a yes/no rubber-stamp

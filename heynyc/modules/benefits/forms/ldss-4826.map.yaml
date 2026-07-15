@@ -7,7 +7,7 @@
 mode: overlay-anchor
 revision: "Rev. 12/23"
 fields:
-  legal_name:       { page: 2, anchor: "Name:",    occurrence: 0, dx: 6, dy: 0, size: 9 }
-  residence_street: { page: 2, anchor: "Address:", occurrence: 0, dx: 6, dy: 0, size: 9 }
-  residence_city:   { page: 2, anchor: "City",     occurrence: 0, dx: 6, dy: 0, size: 9 }
-  residence_zip:    { page: 2, anchor: "Code",     occurrence: 0, dx: 6, dy: 0, size: 9 }
+  legal_name:       { page: 2, anchor: "Name:",    occurrence: 0, dx: 6, dy: 4, size: 9 }
+  residence_street: { page: 2, anchor: "Address:", occurrence: 0, dx: 6, dy: 4, size: 9 }
+  residence_city:   { page: 2, anchor: "City",     occurrence: 0, dx: 6, dy: 4, size: 9 }
+  residence_zip:    { page: 2, anchor: "Code",     occurrence: 0, dx: 6, dy: 4, size: 9 }

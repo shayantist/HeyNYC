@@ -37,7 +37,7 @@ DISCLAIMER = (
 # faithfully recorded the user's answers; the USER certifies the facts under penalty of perjury.
 SCRIBE_CERT = (
     "Prepared by HeyNYC from what you told me, at your request. HeyNYC recorded your answers "
-    ", it did not verify them, and it is not a lawyer or a government caseworker."
+    "but did not verify them, and it is not a lawyer or a government caseworker."
 )
 APPLICANT_ATTESTATION = (
     "Before you sign and submit: you're certifying the information is true and complete to the "
