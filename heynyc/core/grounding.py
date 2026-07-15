@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 # Toggle blocking off here if a future module surfaces a hard false-fail. (Kept as the shared source of
@@ -47,6 +48,7 @@ _WS_RE = re.compile(r"\s+")
 # fragment of a longer digit run.
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)")
 _MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
+_NUMBER_VALUE_RE = re.compile(r"(?<![\w])\d[\d,]*(?:\.\d+)?(?![\w])")
 # A number carrying a VERBATIM unit (temperature / percent), a fact quoted from source text, not a
 # computed/rounded value. Distances/times/counts are intentionally excluded (reformatting → false-fail).
 _UNIT_NUM_RE = re.compile(r"(\d{1,4})\s*(?:°\s*[fc]?|degrees?\b|%|percent\b)", re.IGNORECASE)
@@ -224,11 +226,25 @@ def _mostly_present(words: list[str], blob_norm: str) -> bool:
     return matched == 1 if len(words) == 1 else matched >= len(words) - 1
 
 
-def _token_matches(tok: dict, blob_norm: str, blob_digits: str) -> bool:
+def _money_value(text: str) -> Optional[Decimal]:
+    try:
+        return Decimal(text.replace("$", "").replace(",", "").strip())
+    except InvalidOperation:
+        return None
+
+
+def _token_matches(tok: dict, blob_norm: str, blob_digits: str, blob: str) -> bool:
     """Lenient by design (favor a false PASS): digit-run substring for numbers, phrase-or-mostly-words
     substring for addresses/proper-nouns."""
     kind = tok["kind"]
-    if kind in ("phone", "money", "unit_number"):
+    if kind == "money":
+        value = _money_value(tok["text"])
+        return value is not None and value in {
+            parsed
+            for match in _NUMBER_VALUE_RE.finditer(blob)
+            if (parsed := _money_value(match.group())) is not None
+        }
+    if kind in ("phone", "unit_number"):
         return (not tok["digits"]) or tok["digits"] in blob_digits
     if kind == "address":
         if any(nd not in blob_digits for nd in tok["nums"]):
@@ -366,14 +382,15 @@ def check_grounding(
             # 1) grounded in one specific cited source → record exactly where.
             hit = None
             for cid, blob in blobs.items():
-                if _token_matches(tok, _norm(blob), _digits(blob)):
+                if _token_matches(tok, _norm(blob), _digits(blob), blob):
                     hit = _locate(tok, cid, citations[cid])
                     break
             # 2) grounded across the union of the claim's cited sources (phrase split across sources).
-            if hit is None and blobs and _token_matches(tok, combined_norm, combined_digits):
+            combined = " ".join(blobs.values())
+            if hit is None and blobs and _token_matches(tok, combined_norm, combined_digits, combined):
                 hit = f"{'+'.join(blobs)}#source"
             # 3) a legitimate restatement of the user's own query (origin address, neighborhood, …).
-            if hit is None and _token_matches(tok, query_norm, query_digits):
+            if hit is None and _token_matches(tok, query_norm, query_digits, query):
                 hit = "user-query"
             if hit is not None:
                 locations.append({"token": tok["text"], "kind": tok["kind"], "where": hit})

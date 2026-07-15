@@ -378,6 +378,32 @@ async def test_screen_eligibility_rejects_pii(monkeypatch):
     assert out.startswith("ERROR")
 
 
+async def test_screen_eligibility_rejects_program_name_before_auth(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds",
+                        lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
+    calls = {"n": 0}
+
+    def route(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"type": "SUCCESS", "token": "tok"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await btools._screen_handler(
+        {
+            "household": {},
+            "persons": [{"age": 30, "householdMemberType": "HeadOfHousehold"}],
+            "interested_programs": ["SNAP"],
+        },
+        ctx,
+    )
+    await client.aclose()
+
+    assert out.startswith("ERROR")
+    assert "S2R" in out
+    assert calls["n"] == 0
+
+
 def test_get_tools_gates_screener_on_creds(monkeypatch):
     monkeypatch.delenv("HEYNYC_FORMS", raising=False)
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))
@@ -409,7 +435,7 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert "Wages" in income["properties"]["type"]["enum"]
     assert "Monthly" in income["properties"]["frequency"]["enum"]
     assert "Medical" in person["expenses"]["items"]["properties"]["type"]["enum"]
-    assert schema["properties"]["interested_programs"]["items"]["pattern"] == "^[A-Z0-9]+$"
+    assert schema["properties"]["interested_programs"]["items"]["pattern"] == r"^S2R\d{3}$"
 
 
 def test_get_tools_gates_forms_on_flag(monkeypatch):

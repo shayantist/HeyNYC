@@ -98,7 +98,7 @@ async def test_screen_posts_body_and_returns_programs():
 
     c = _client(handler)
     out = await screen(c, "https://sb", "tok", {"livingRenting": True},
-                       [{"age": 32, "householdMemberType": "HeadOfHousehold"}], ["s2r007"])
+                       [{"age": 32, "householdMemberType": "HeadOfHousehold"}], ["S2R007"])
     await c.aclose()
     assert out["eligiblePrograms"][0]["code"] == "S2R007"
     assert seen["path"] == "/eligibilityPrograms"
@@ -169,6 +169,42 @@ async def test_screen_requires_a_head_of_household_before_network():
         await screen(
             c, "https://sb", "tok", {},
             [{"age": 12, "householdMemberType": "Child"}],
+        )
+    await c.aclose()
+    assert calls["n"] == 0
+
+
+async def test_screen_rejects_program_names_as_filters_before_network():
+    calls = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={})
+
+    c = _client(handler)
+    with pytest.raises(ValueError, match="S2R"):
+        await screen(
+            c, "https://sb", "tok", {},
+            [{"age": 35, "householdMemberType": "HeadOfHousehold"}],
+            ["SNAP"],
+        )
+    await c.aclose()
+    assert calls["n"] == 0
+
+
+async def test_screen_rejects_lowercase_program_codes_before_network():
+    calls = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={})
+
+    c = _client(handler)
+    with pytest.raises(ValueError, match="S2R"):
+        await screen(
+            c, "https://sb", "tok", {},
+            [{"age": 35, "householdMemberType": "HeadOfHousehold"}],
+            ["s2r007"],
         )
     await c.aclose()
     assert calls["n"] == 0

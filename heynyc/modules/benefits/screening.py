@@ -44,6 +44,8 @@ PERSON_FIELDS = frozenset({
     "livingRentalOnLease", "incomes", "expenses",
 })
 MONEY_ITEM_FIELDS = frozenset({"amount", "frequency", "type"})
+PROGRAM_CODE_PATTERN = r"^S2R\d{3}$"
+_PROGRAM_CODE_RE = re.compile(PROGRAM_CODE_PATTERN)
 
 
 def clear_token(base: str) -> None:
@@ -161,13 +163,26 @@ def _assert_known_fields(household: dict, persons: list[dict]) -> None:
         raise ValueError("at least one person must have householdMemberType HeadOfHousehold")
 
 
+def validate_request(household: dict, persons: list[dict], interested: Optional[list[str]] = None) -> None:
+    """Validate the local City request contract before authentication or screening network calls."""
+    _assert_known_fields(household, persons)
+    if interested and any(
+        not isinstance(code, str) or _PROGRAM_CODE_RE.fullmatch(code) is None
+        for code in interested
+    ):
+        raise ValueError(
+            "interested_programs must use official codes like S2R007, not program names; "
+            "omit the filter when the code is unknown"
+        )
+
+
 async def screen(client: httpx.AsyncClient, base: str, token: str,
                  household: dict, persons: list[dict],
                  interested: Optional[list[str]] = None) -> dict:
-    _assert_known_fields(household, persons)
+    validate_request(household, persons, interested)
     url = f"{base}/eligibilityPrograms"
     if interested:
-        url += "?interestedPrograms=" + "|".join(code.upper() for code in interested)
+        url += "?interestedPrograms=" + "|".join(interested)
     wire_household = copy.deepcopy(household)
     wire_persons = copy.deepcopy(persons)
     if "cashOnHand" in wire_household:

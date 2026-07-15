@@ -311,6 +311,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
                 f"user to check {OFFICIAL}.")
     try:
         screening.assert_pii_free(household, persons)
+        screening.validate_request(household, persons, interested)
     except ValueError as exc:
         return f"ERROR: {exc} Collect only age, household type, and income, never names/DOB/address."
 
@@ -488,8 +489,11 @@ def _screen_parameters() -> dict:
             },
             "interested_programs": {
                 "type": "array", "uniqueItems": True,
-                "items": {"type": "string", "pattern": "^[A-Z0-9]+$"},
-                "description": "Optional uppercase program-code filter.",
+                "items": {"type": "string", "pattern": screening.PROGRAM_CODE_PATTERN},
+                "description": (
+                    "Optional official program-code filter such as S2R007. Never pass a program "
+                    "name such as SNAP; omit this field when the exact code is unknown."
+                ),
             },
             "lang": {
                 "type": "string",

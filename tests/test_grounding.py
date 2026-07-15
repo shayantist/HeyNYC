@@ -66,6 +66,32 @@ def test_query_restatement_is_grounded():
     assert res is not None and res.passed, res.detail
 
 
+def test_shorter_money_amount_is_not_a_query_restatement():
+    """`$800` is not grounded by the user's `$1,800`; digit substrings can change eligibility."""
+    snap = {"name": "Supplemental Nutrition Assistance Program"}
+
+    res = check_grounding(
+        "Con un ingreso de $800 al mes, revisa SNAP {cite:S1}.",
+        {"S1": _data_cite(snap)},
+        query="Mi familia gana $1,800 al mes.",
+    )
+
+    assert res is not None and res.blocking
+    assert res.hard_failures[0].kind == "money"
+    assert res.hard_failures[0].text == "$800"
+
+
+def test_equivalent_money_format_is_grounded():
+    snap = {"monthly_income": "$800.00"}
+
+    res = check_grounding(
+        "The monthly income is $800 {cite:S1}.",
+        {"S1": _data_cite(snap)},
+    )
+
+    assert res is not None and res.passed, res.detail
+
+
 def test_nli_none_is_byte_identical_to_tier1_only():
     """Regression guard for the Tier-2 hook: passing nli=None (today's every caller) must leave the
     Tier-1 result untouched and the two new fields at their empty defaults. Pinned across a grounded
