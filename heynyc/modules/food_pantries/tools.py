@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -167,7 +167,7 @@ def _epoch_ms_to_date(ms: float) -> str:
 
 
 def _valid_as_of(record: dict) -> str:
-    """The record's EditDate (ArcGIS epoch-ms or ISO), else today's pull date, never fetch-faked."""
+    """The record's EditDate (ArcGIS epoch-ms or ISO), or blank when the source omits it."""
     value = record.get("EditDate")
     if isinstance(value, (int, float)):
         parsed = _epoch_ms_to_date(value)
@@ -177,10 +177,10 @@ def _valid_as_of(record: dict) -> str:
             parsed = _epoch_ms_to_date(int(text))
         else:
             try:
-                parsed = date.fromisoformat(text[:10]).isoformat()
+                parsed = datetime.fromisoformat(text[:10]).date().isoformat()
             except ValueError:
                 parsed = ""
-    return parsed or date.today().isoformat()
+    return parsed
 
 
 def _to_pantry(record: dict) -> FoodPantry | None:
@@ -258,7 +258,7 @@ def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) 
     if pantry.notes:
         parts.append(f"  Eligibility/notes: {pantry.notes}")
     parts.append(f"  Directions: {directions_link(pantry.lat, pantry.lon)}")
-    parts.append(f"  As of: {pantry.valid_as_of}")
+    parts.append(f"  As of: {pantry.valid_as_of or 'Source date unavailable'}")
     return "\n".join(parts)
 
 

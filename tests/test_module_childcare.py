@@ -26,6 +26,7 @@ from heynyc.modules.childcare.tools import (
     _parse_coords,
     _program_label,
     _to_site,
+    _valid_as_of,
     directions_link,
     get_tools,
 )
@@ -103,6 +104,11 @@ def test_to_site_drops_rows_without_coords():
     assert _to_site(_record(latitude=None)) is None
 
 
+def test_source_date_preserves_valid_value_and_rejects_invalid_value():
+    assert _valid_as_of({":updated_at": "2026-05-14T14:50:58.844Z"}) == "2026-05-14"
+    assert _valid_as_of({":updated_at": "not-a-date"}) == ""
+
+
 # --- the tool handler ------------------------------------------------------
 
 CHILDCARE_HOST = "data.cityofnewyork.us"
@@ -171,6 +177,18 @@ async def test_nearest_child_care_capacity_is_not_open_seats():
     low = out.lower()
     assert "call" in low                                # routes to calling to confirm openings/hours
     assert "available" not in low or "open spot" in low  # never claims seats are available outright
+
+
+async def test_nearest_child_care_does_not_fake_missing_source_date():
+    records = [_record(latitude="40.6901", longitude="-73.9601", **{":updated_at": None})]
+    citations = CitationRegistry()
+    client = _routed_client(records)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
+    await client.aclose()
+
+    assert citations.mapping()["S1"]["valid_as_of"] == ""
+    assert "Source date unavailable" in out
 
 
 async def test_nearest_child_care_omits_no_data_age():

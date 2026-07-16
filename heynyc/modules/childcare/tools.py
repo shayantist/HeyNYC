@@ -24,7 +24,7 @@ Honest limitations (enforced in the manifest prompt too):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import datetime
 
 import httpx
 
@@ -99,14 +99,14 @@ def _capacity_phrase(record: dict) -> str:
 
 
 def _valid_as_of(record: dict) -> str:
-    """The row's Socrata `:updated_at` (its 'as of' / change signal), else today's pull date."""
+    """The row's Socrata `:updated_at` change signal, or blank when unavailable."""
     text = _clean(record.get(":updated_at"))
     if text:
         try:
-            return date.fromisoformat(text[:10]).isoformat()
+            return datetime.fromisoformat(text[:10]).date().isoformat()
         except ValueError:
             pass
-    return date.today().isoformat()
+    return ""
 
 
 # --- record -> site --------------------------------------------------------
@@ -206,7 +206,7 @@ def _site_block(site: ChildCareSite, cite: str, dist_mi: float) -> str:
     if site.phone:
         parts.append(f"  Phone: {site.phone} - call to check openings, hours, ages, and cost")
     parts.append(f"  Directions: {directions_link(site.lat, site.lon)}")
-    parts.append(f"  As of: {site.valid_as_of}")
+    parts.append(f"  As of: {site.valid_as_of or 'Source date unavailable'}")
     return "\n".join(parts)
 
 

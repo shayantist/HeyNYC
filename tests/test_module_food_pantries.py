@@ -24,6 +24,7 @@ from heynyc.modules.food_pantries.tools import (
     _open_now,
     _parse_time,
     _to_pantry,
+    _valid_as_of,
     directions_link,
     get_tools,
 )
@@ -97,6 +98,12 @@ def test_open_now_none_when_no_hours_at_all():
     assert _open_now({"program_type": "FP"}, now) is None  # honest unknown, never a guess
 
 
+def test_source_date_preserves_valid_values_and_rejects_invalid_values():
+    assert _valid_as_of({"EditDate": "2025-11-05T10:30:00Z"}) == "2025-11-05"
+    assert _valid_as_of({"EditDate": 1762300800000}) == "2025-11-05"
+    assert _valid_as_of({"EditDate": "not-a-date"}) == ""
+
+
 # --- the tool handler ------------------------------------------------------
 
 FOODHELP_HOST = "services6.arcgis.com"
@@ -153,11 +160,12 @@ async def test_nearest_food_pantry_ranks_grounds_and_links():
     assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
     assert "{cite:S1}" in out                          # grounded, cited
     assert citations.mapping()["S1"]["kind"] == "DATA"
-    # citation is grounded in the ArcGIS source, carries provenance + an as-of date
+    # citation is grounded in the ArcGIS source and does not fake an as-of date
     assert "arcgis" in citations.mapping()["S1"]["url"].lower()
     assert "globalid" in citations.mapping()["S1"]["url"].lower()  # row-addressed GlobalID permalink
     assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
-    assert citations.mapping()["S1"]["valid_as_of"]
+    assert citations.mapping()["S1"]["valid_as_of"] == ""
+    assert "Source date unavailable" in out
 
 
 async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):

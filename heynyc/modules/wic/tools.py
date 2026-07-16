@@ -16,7 +16,7 @@ always be open, so we flag it and say to call ahead.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import datetime
 
 import httpx
 
@@ -88,14 +88,14 @@ def _website(record: dict) -> str:
 
 
 def _valid_as_of(record: dict) -> str:
-    """The row's Socrata `:updated_at` (the row's 'as of' / change signal), else today's pull date."""
+    """The row's Socrata `:updated_at` change signal, or blank when unavailable."""
     text = _clean(record.get(":updated_at"))
     if text:
         try:
-            return date.fromisoformat(text[:10]).isoformat()
+            return datetime.fromisoformat(text[:10]).date().isoformat()
         except ValueError:
             pass
-    return date.today().isoformat()
+    return ""
 
 
 # --- record → site ---------------------------------------------------------
@@ -192,7 +192,7 @@ def _site_block(site: WicSite, cite: str, dist_mi: float) -> str:
     if site.website:
         parts.append(f"  Website: {site.website}")
     parts.append(f"  Directions: {directions_link(site.lat, site.lon)}")
-    parts.append(f"  As of: {site.valid_as_of}")
+    parts.append(f"  As of: {site.valid_as_of or 'Source date unavailable'}")
     return "\n".join(parts)
 
 

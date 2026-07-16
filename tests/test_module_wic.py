@@ -22,6 +22,7 @@ from heynyc.modules.wic.tools import (
     _address,
     _parse_location,
     _to_site,
+    _valid_as_of,
     _website,
     directions_link,
     get_tools,
@@ -81,6 +82,11 @@ def test_directions_link_is_google_maps_dir():
 def test_to_site_drops_rows_without_coords():
     assert _to_site(_record()) is not None
     assert _to_site(_record(location_1=None)) is None
+
+
+def test_source_date_preserves_valid_value_and_rejects_invalid_value():
+    assert _valid_as_of({":updated_at": "2026-04-30T15:38:21.253Z"}) == "2026-04-30"
+    assert _valid_as_of({":updated_at": "not-a-date"}) == ""
 
 
 # --- the tool handler ------------------------------------------------------
@@ -159,6 +165,19 @@ async def test_nearest_wic_site_never_invents_hours():
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
     assert "call" in out.lower()                        # routes to calling for hours/appointment
+
+
+async def test_nearest_wic_site_does_not_fake_missing_source_date():
+    records = [_record(location_1={"latitude": "40.7510", "longitude": "-73.9910"},
+                       **{":updated_at": None})]
+    citations = CitationRegistry()
+    client = _routed_client(records)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert citations.mapping()["S1"]["valid_as_of"] == ""
+    assert "Source date unavailable" in out
 
 
 async def test_nearest_wic_site_abstains_when_geocode_fails(monkeypatch):
