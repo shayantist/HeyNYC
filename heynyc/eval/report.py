@@ -23,8 +23,8 @@ class CaseReport:
 
     @property
     def passed(self) -> bool:
-        # Only blocking (structural-fact) checks gate; non-blocking semantic refusal checks
-        # are informational, the agent-as-judge is authoritative for them (amendment §A.1).
+        # Declared safety and structural checks block. Advisory readability, legacy abstention,
+        # and metamorphic checks remain visible without deciding the gate.
         return all(c.passed for c in self.checks if c.blocking)
 
 

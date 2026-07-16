@@ -368,9 +368,7 @@ def test_check_abstention_allows_refusal_with_grounded_alternative():
     assert result.blocking is False
 
 
-async def test_nonblocking_semantic_checks_dont_fail_gate():
-    # An abstain case where the agent did NOT hedge: the keyword semantic checks flag it,
-    # but they're non-blocking, so the deterministic gate still passes (agent-judge decides).
+async def test_failed_abstention_invariant_fails_gate():
     async def no_links(url):
         return 200
 
@@ -379,8 +377,9 @@ async def test_nonblocking_semantic_checks_dont_fail_gate():
     results = await run_all(lambda: agent, [case])
     report = await evaluate(results, link_checker=no_links)
     failed = {c.name for c in report.reports[0].checks if not c.passed}
-    assert "abstention" in failed          # the coarse check flagged it
-    assert report.passed                   # ...but the gate still passes (non-blocking)
+    assert "abstention" in failed
+    assert "abstain_or_redirect" in failed
+    assert not report.passed
 
 
 # --- readability (soft plain-language warning) ----------------------------
