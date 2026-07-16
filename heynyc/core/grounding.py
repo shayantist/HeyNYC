@@ -80,7 +80,7 @@ _PROPER_NOUN_RE = re.compile(rf"{_CAP}(?:\s+(?:{_CONNECTOR}\s+)?{_CAP})+")
 # "Google Maps", or a borough asserts nothing the cited row must contain. Stripping these is the main
 # guard against false-failing on civic/geographic boilerplate the agent adds for readability.
 _GENERIC_PN_WORDS = {
-    "new", "york", "city", "nyc", "manhattan", "brooklyn", "queens", "bronx", "staten", "island",
+    "new", "nueva", "york", "city", "ciudad", "nyc", "manhattan", "brooklyn", "queens", "bronx", "staten", "island",
     "united", "states", "america", "usa", "google", "maps", "map", "borough", "the", "and", "for",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     "january", "february", "march", "april", "may", "june", "july", "august", "september",

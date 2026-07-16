@@ -43,6 +43,7 @@ class EvalCase:
     adversarial_intent: str = ""
     redteam_category: str = ""
     language: str = "en"
+    grounded_fact: str = ""
 
     def __post_init__(self) -> None:
         if not self.safety_critical:
@@ -84,6 +85,7 @@ def load_cases(registry: Registry) -> list[EvalCase]:
                     expect_same_programs_as_base=entry.get("expect_same_programs_as_base", False),
                     safety_critical=entry.get("safety_critical", False),
                     language=entry.get("language", "en"),
+                    grounded_fact=entry.get("grounded_fact", ""),
                 )
             )
     return cases
@@ -137,6 +139,7 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
                 adversarial_intent=entry["adversarial_intent"],
                 redteam_category=entry["category"],
                 language=entry.get("language", "en"),
+                grounded_fact=entry.get("grounded_fact", ""),
                 safety_critical=True,
             )
         )

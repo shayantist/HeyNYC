@@ -244,6 +244,17 @@ async def test_health_coverage_emergency_medicaid_grounds_body_and_cites():
     assert "ActionNYC" in out
 
 
+async def test_health_coverage_tourist_emergency_care_separates_treatment_from_billing():
+    out, citations = await _run_coverage("emergency_care")
+    assert "cannot deny an emergency screening" in out
+    assert "does not mean the care is free" in out
+    assert "Emergency Medicaid eligibility is a separate question" in out
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    assert mapping["S1"]["url"] == "https://www.cms.gov/priorities/your-patient-rights/emergency-room-rights"
+    assert "{cite:S1}" in out
+
+
 async def test_health_coverage_nyc_care_grounds_body_and_cites():
     out, citations = await _run_coverage("nyc_care")
     assert "NYC Care" in out
@@ -262,10 +273,12 @@ async def test_health_coverage_public_charge_grounds_body_and_cites():
     out, citations = await _run_coverage("public_charge")
     assert "does not count against you" in out
     assert "not in effect" in out
+    assert "800-354-0365" in out
     mapping = citations.mapping()
     assert len(mapping) == 1
     assert mapping["S1"]["kind"] == "DOC"
     assert "nyc.gov/site/immigrants" in mapping["S1"]["url"]
+    assert "800-354-0365" in mapping["S1"]["snippet"]
     assert "{cite:S1}" in out
 
 

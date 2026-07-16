@@ -205,6 +205,20 @@ def _best_url(record: dict) -> str:
     return _apply_url(record) or _help_url(record) or SOURCE_URL
 
 
+def _citation_snippet(record: dict) -> str:
+    """Put the facts most likely to be cited where the evaluator and footer can see them."""
+    fields = (
+        "program_name",
+        "plain_language_program_name",
+        "how_to_apply_summary",
+        "get_help_summary",
+        "get_help_online",
+        "plain_language_eligibility",
+        "heads_up",
+    )
+    return " | ".join(filter(None, (_clean(record.get(field)) for field in fields)))[:1000]
+
+
 def _block(record: dict, cite: str, as_of: str, today: str) -> str:
     name = _clean(record.get("program_name"))
     parts = [f"- {name} ({_clean(record.get('program_category'))}) {{cite:{cite}}}"]
@@ -276,12 +290,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     for record in records:
         as_of = _as_of(record)
         name = _clean(record.get("program_name"))
+        record_id = _clean(record.get(":id")) or _clean(record.get("program_code")) or _program_key(record)
         cite = ctx.citations.register(
             _best_url(record),
-            snippet=f"{name}, {_clean(record.get('plain_language_program_name'))}",
+            snippet=_citation_snippet(record),
             title=name or "NYC benefit program",
             kind="DATA",
             valid_as_of=as_of,
+            provenance=data_provenance(record, record_id=record_id, field_pointer="/"),
         )
         blocks.append(_block(record, cite, as_of, today))
 

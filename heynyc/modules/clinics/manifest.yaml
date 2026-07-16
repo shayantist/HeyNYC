@@ -23,6 +23,9 @@ keywords:
   - NYC Health and Hospitals
   - undocumented doctor
   - immigrant health care
+  - asylum hearing
+  - immigration lawyer
+  - immigration legal help
   - see a doctor without insurance
 examples:
   - "Where can I see a doctor without insurance?"
@@ -51,11 +54,26 @@ tools: tools.py
 eval: eval.yaml
 seeds:
   - https://access.nyc.gov/programs/nyc-care/
+  - https://www.nyc.gov/site/doh/health/health-topics/immigrant-health.page
+  - https://www.health.ny.gov/health_care/medicaid/emergency_medical_condition_faq.htm
+  - https://www.cms.gov/priorities/your-patient-rights/emergency-room-rights
+  - https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page
+  - https://www.nyc.gov/site/immigrants/legal-resources/moia-immigration-legal-support-hotline.page
+  - https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids
+  - https://www.nyc.gov/site/hra/help/legal-services-for-immigrant-new-yorkers.page
+  - https://www.justice.gov/eoir/check-case-status
+  - https://www.uscis.gov/i-765
 allowlist:
+  - poison.org
   - hrsa.gov
   - access.nyc.gov
   - nyccare.nyc
   - nychealthandhospitals.org
+  - nyc.gov
+  - health.ny.gov
+  - justice.gov
+  - uscis.gov
+  - cms.gov
 prompt: |
   For "I need to see a doctor" when the person has no insurance, can't afford care, is on a low
   income, or is worried about immigration status (doctor / clinic / free clinic / community health
@@ -89,6 +107,9 @@ prompt: |
   do NOT state a coverage rule, a phone number, or a public-charge conclusion from your own knowledge.
   For a public-charge or "will using a benefit hurt my green card / immigration case" question, call
   health_coverage_guidance(topic="public_charge") and report only what it returns, cited.
+  For a tourist, visitor, or anyone asking whether an ER can deny emergency care, call
+  health_coverage_guidance(topic="emergency_care"). Keep the right to screening and stabilizing care
+  separate from billing and Emergency Medicaid eligibility.
 
   If geocoding fails, the location is ambiguous, or no sites come back, DON'T guess a clinic: say so
   plainly and point the user to 311, 646-NYC-CARE (646-692-2273), or findahealthcenter.hrsa.gov.

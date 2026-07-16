@@ -252,12 +252,14 @@ async def test_evaluate_runs_invariants_and_writes_run(tmp_path):
     assert "grounding" in names and "faithfulness" in names
     assert report.reports[0].trace is not None
 
-    write_run(tmp_path, report)
+    write_run(tmp_path, report, metadata={"candidate_model": "test-model", "commit": "abc123"})
     import json
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "traces" / "g.json").exists()
     data = json.loads((tmp_path / "report.json").read_text())
     assert data["total"] == 1
+    assert data["metadata"] == {"candidate_model": "test-model", "commit": "abc123"}
+    assert all("blocking" in check for case in data["cases"] for check in case["checks"])
 
 
 async def test_evaluate_surfaces_metamorphic_programs_for_inv_pair(tmp_path):
@@ -419,6 +421,15 @@ def test_check_readability_is_soft_and_flags_dense_text():
     assert res is not None
     assert not res.passed          # flagged as too dense
     assert res.blocking is False   # ...but SOFT — never gates the run
+
+
+def test_check_readability_skips_non_english_text():
+    from heynyc.eval.checks import check_readability
+
+    spanish = ("La determinación administrativa de elegibilidad requiere documentación detallada "
+               "sobre la composición del hogar y la verificación de ingresos antes de autorizar "
+               "beneficios adicionales para la familia solicitante. " * 3)
+    assert check_readability(_result(_case(language="es"), text=spanish)) is None
 
 
 async def test_readability_warning_does_not_fail_gate():

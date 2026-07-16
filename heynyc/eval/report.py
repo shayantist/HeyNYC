@@ -101,18 +101,20 @@ async def evaluate(
     return GateReport(reports=reports)
 
 
-def write_run(directory, report: "GateReport") -> None:
+def write_run(directory, report: "GateReport", metadata: Optional[dict] = None) -> None:
     """Persist a run: report.json (the CI gate), report.txt, and OpenInference traces."""
     directory = Path(directory)
     (directory / "traces").mkdir(parents=True, exist_ok=True)
     payload = {
+        "metadata": metadata or {},
         "passed": report.passed,
         "passed_count": report.passed_count,
         "total": report.total,
         "metrics": report.metric_summary(),
         "cases": [
             {"case_id": r.case_id, "module": r.module, "passed": r.passed,
-             "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in r.checks]}
+             "checks": [{"name": c.name, "passed": c.passed, "blocking": c.blocking,
+                         "detail": c.detail} for c in r.checks]}
             for r in report.reports
         ],
     }

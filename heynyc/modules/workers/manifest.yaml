@@ -19,6 +19,10 @@ keywords:
   - wage theft
   - restaurant tips
   - server tips
+  - tipped waiter
+  - tipped minimum wage
+  - pregnancy discrimination
+  - pregnant worker
   - stole my tips
 examples:
   - "My boss is keeping our tips, is that legal?"
@@ -26,9 +30,27 @@ examples:
   - "How do I report my employer for stealing tips in NYC?"
 tools: tools.py
 eval: eval.yaml
+seeds:
+  - https://dol.ny.gov
+  - https://www.nyc.gov/site/dca/workers/workersrights/retail-workers.page
+  - https://home4.nyc.gov/site/dca/businesses/fairworkweek-deductions-laws-employers.page
+  - https://www.nyc.gov/site/dca/workers/workersrights/know-your-worker-rights.page
+  - https://www.nyc.gov/site/dca/consumers/Prohibition-of-Cashless-Establishments.page
+  - https://www.nyc.gov/site/cchr/law/sexual-harassment-training-main.page
+  - https://www.nyc.gov/site/cchr/law/hair-discrimination-legal-guidance.page
+  - https://www.nyc.gov/site/cchr/media/fair-chance-employers.page
+  - https://www.nyc.gov/site/cchr/media/salary-history-employers.page
+  - https://dol.ny.gov/minimum-wage-tipped-workers
+  - https://nyc-business.nyc.gov/nycbusiness/resources-by-industry/restaurant
+  - https://legistar.council.nyc.gov/LegislationDetail.aspx?GUID=7800AFC9-D8B1-41FD-9C31-172565712686&ID=3763665&Options=ID%7CText%7C
+  - https://www.nyc.gov/site/cchr/law/pregnancy-legal-guidance.page
+  - https://www.nyc.gov/site/cchr/enforcement/complaint-process.page
 allowlist:
   - dol.ny.gov
   - nysenate.gov
+  - nyc.gov
+  - nyc-business.nyc.gov
+  - legistar.council.nyc.gov
 prompt: |
   Worker rights for NYC workers. Ground every answer in the worker_rights_guidance tool; never
   state a law, an agency, or a phone number about worker rights from your own memory.

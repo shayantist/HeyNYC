@@ -53,10 +53,36 @@ datasets:
       phone: Phone_Number
 tools: tools.py
 eval: eval.yaml
+seeds:
+  - https://access.nyc.gov
+  - https://portal.311.nyc.gov/article/?kanumber=KA-02518
+  - https://home4.nyc.gov/site/hpd/services-and-information/tenants-rights-and-responsibilities.page
+  - https://portal.311.nyc.gov/article/?kanumber=KA-03296
+  - https://www.nyc.gov/site/hpd/services-and-information/good-cause-eviction.page
+  - https://portal.311.nyc.gov/article/?kanumber=KA-03665
+  - https://ag.ny.gov/publications/residential-tenants-rights-guide
+  - https://ag.ny.gov/resources/individuals/tenants-homeowners/legal-services-and-code-enforcement
+  - https://www.nyc.gov/site/fairhousing/rights-responsibilities/what-are-the-protected-classes.page
+  - https://home4.nyc.gov/site/cchr/help/residents.page
+  - https://www.nyc.gov/site/animalwelfare/resources/service-and-emotional-support-animals.page
+  - https://www.nyc.gov/site/cchr/law/disability-discrimination-legal-guidance.page
+  - https://home4.nyc.gov/site/hpd/services-and-information/tenant-harassment.page
+  - https://www.nyc.gov/site/hpd/services-and-information/buyout-agreement-law.page
+  - https://www.nyc.gov/site/mayorspeu/resources/right-to-counsel.page
+  - https://www.nyc.gov/site/dhs/about/frequently-asked-questions.page
+  - https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-shelter.page
+  - https://hcr.ny.gov/rent-control
+  - https://www.nycourts.gov/new-york-city-housing-court/stopping-eviction
+  - https://www.nycourts.gov/new-york-city-housing-court/nyc-housing-court-orders-show-cause
+  - https://www.nyc.gov/site/cchr/media/source-of-income.page
+  - https://www.nycourts.gov/reporter/3dseries/2026/2026_01253.htm
+  - https://www.nycourts.gov/ctapps/Decisions/2026/May26/DecisionList052126.pdf
 allowlist:
   - access.nyc.gov
   - nyc.gov
   - hcr.ny.gov
+  - ag.ny.gov
+  - nycourts.gov
 prompt: |
   Housing help for NYC tenants. Route by what the user needs; ground every answer, never
   invent a deadline, dollar amount, or eligibility rule — when unsure, send them to 311.
@@ -121,7 +147,9 @@ prompt: |
   that in NYC this refusal is illegal source-of-income discrimination under the City Human Rights Law,
   and how to file a complaint with the NYC Commission on Human Rights. Do NOT state the phone number,
   the law, or the year from your own memory, and do NOT hedge that the protection "may have changed":
-  affirm what the tool returns and carry its {cite:Sn}. Whether a specific voucher program is funded
+  affirm what the tool returns and carry its {cite:Sn}. If the user is a landlord or broker asking
+  what they may do, address them as the housing provider and state their obligation directly. Do not
+  switch to tenant voice or offer help refusing the voucher. Whether a specific voucher program is funded
   or how to apply for one is a benefits question; the source-of-income protection itself is answered here.
 
   Eviction and shelter are high-stakes and stressful. Be warm and plain, lead with the one next step,

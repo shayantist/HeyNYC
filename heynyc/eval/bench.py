@@ -99,6 +99,7 @@ async def run_bench(
     reminders,
     judge=None,
     out_dir: Optional[str] = None,
+    run_metadata: Optional[dict] = None,
 ) -> list[BenchRow]:
     """Run the full case set once per model and collect a BenchRow each. One bad model never aborts the rest.
 
@@ -116,7 +117,7 @@ async def run_bench(
             report = await evaluate(results, judge=judge)
             if out_dir is not None:
                 # write_run(directory, report), one subdir per model keeps raw traces/answers separate.
-                write_run(Path(out_dir) / model, report)
+                write_run(Path(out_dir) / model, report, metadata=run_metadata)
             cost, in_tok, out_tok = _candidate_cost(model, results)
             rows.append(BenchRow(model, report, cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok))
         except Exception as e:  # a broken/unauthorized model must not sink the whole comparison

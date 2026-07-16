@@ -289,7 +289,10 @@ def flesch_kincaid_grade(text: str) -> Optional[float]:
 def check_readability(cr: CaseResult) -> Optional[CheckResult]:
     """SOFT (non-blocking) plain-language warning: flag an answer that reads above ~8th grade so the
     voice can be tightened. Never gates the run, informational, like the abstention keyword fallback.
-    Skips answers too short to score (None → not reported)."""
+    Skips non-English cases because this implementation is English-only, and skips answers too short
+    to score (None → not reported)."""
+    if cr.case and cr.case.language != "en":
+        return None
     grade = flesch_kincaid_grade(cr.text or "")
     if grade is None:
         return None

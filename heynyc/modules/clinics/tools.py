@@ -364,7 +364,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 # so the eval's faithfulness check (snippet ⊆ tool output) holds. Where the question crosses into
 # immigration-law consequences (public charge), the tool ROUTES to ActionNYC rather than assert a
 # volatile immigration-law conclusion.
-COVERAGE_VERIFIED_ON = "2026-07-12"
+COVERAGE_VERIFIED_ON = "2026-07-16"
 
 COVERAGE_INTRO = "Health coverage you can get in NYC regardless of immigration status:"
 
@@ -388,6 +388,17 @@ class _Fact:
 
 
 _COVERAGE: dict[str, _Fact] = {
+    "emergency_care": _Fact(
+        url="https://www.cms.gov/priorities/your-patient-rights/emergency-room-rights",
+        title="Emergency room rights under EMTALA, Centers for Medicare & Medicaid Services",
+        snippet=("A hospital emergency department cannot deny an emergency screening or stabilizing "
+                 "treatment because of insurance status or ability to pay; this does not mean the care "
+                 "is free, and Emergency Medicaid eligibility is a separate question"),
+        body=("A hospital emergency department cannot deny an emergency screening or stabilizing "
+              "treatment because of your insurance status or ability to pay. This does not mean the "
+              "care is free, and Emergency Medicaid eligibility is a separate question. If this may "
+              "be an emergency, go to an emergency department or call 911."),
+    ),
     "nyc_care": _Fact(
         url="https://access.nyc.gov/programs/nyc-care/",
         title="NYC Care, ACCESS NYC",
@@ -425,7 +436,10 @@ _COVERAGE: dict[str, _Fact] = {
                  "does not count against you: only cash assistance for income support (like SSI or "
                  "Temporary Assistance) and long-term government-funded institutional care are weighed, "
                  "while Medicaid other than long-term institutional care, Emergency Medicaid, NYC Care, "
-                 "SNAP, WIC, and housing help are not."),
+                 "SNAP, WIC, and housing help are not. Because your own case can be specific and these "
+                 "rules can change, confirm with free, confidential, trusted advice through ActionNYC "
+                 "(call 311 and ask for ActionNYC) or the MOIA immigration hotline at 800-354-0365 "
+                 "before you decide."),
         body=("Under the public charge rule currently in effect (the 2022 rule), using health coverage "
               "does not count against you: only cash assistance for income support (like SSI or "
               "Temporary Assistance) and long-term government-funded institutional care are weighed, "
@@ -440,6 +454,8 @@ _COVERAGE: dict[str, _Fact] = {
 
 # free-text → canonical coverage topic (the model may hand us the user's words instead of a key).
 _COVERAGE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("emergency_care", ("tourist visa", "tourist", "visitor", "emergency medical care",
+                        "denied emergency care", "emergency treatment")),
     ("emergency_medicaid", ("emergency medicaid", "emergency room", "er bill", "hospital bill",
                             "labor and delivery", "giving birth", "delivery", "dialysis",
                             "emergency medical", "ambulance bill")),
@@ -467,7 +483,7 @@ async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_coverage_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded coverage guidance for that. Use health_coverage_guidance with "
-                "topic = 'nyc_care' (low/no-cost care at NYC Health + Hospitals, no immigration "
+                "topic = 'emergency_care' (ER screening and stabilizing care), 'nyc_care' (low/no-cost care at NYC Health + Hospitals, no immigration "
                 "questions) or 'emergency_medicaid' (coverage for a medical emergency regardless of "
                 "immigration status). To find a specific clinic use find_clinic; for anything else, "
                 "point the user to 311 or 646-NYC-CARE (646-692-2273).")
@@ -523,7 +539,8 @@ def get_tools() -> list[Tool]:
                 "(low/no-cost care at NYC Health + Hospitals, sliding-scale fees from $0, doesn't ask "
                 "immigration status, enroll at 646-NYC-CARE) and `emergency_medicaid` (Medicaid for a "
                 "medical emergency, including emergency labor and delivery, regardless of immigration "
-                "status), and `public_charge` (MOIA public-charge guidance). Pass `topic` = one of "
+                "status), `emergency_care` (ER screening and stabilizing care regardless of ability "
+                "to pay), and `public_charge` (MOIA public-charge guidance). Pass `topic` = one of "
                 "those (free text like 'undocumented and pregnant, how "
                 "do I pay for the delivery' is mapped to the right topic). find_clinic answers WHERE "
                 "to go; this answers WHAT coverage / IS IT SAFE. It appends an ActionNYC routing line "
@@ -535,7 +552,7 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": ("nyc_care | emergency_medicaid | public_charge: the coverage "
+                        "description": ("emergency_care | nyc_care | emergency_medicaid | public_charge: the coverage "
                                         "situation (free text is mapped to one of these three)."),
                     },
                 },

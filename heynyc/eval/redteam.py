@@ -28,7 +28,19 @@ from .bench import BenchRow, render_by_category, run_bench
 from .cases import CATEGORY_NAMES, default_redteam_suite, load_redteam_cases
 from .judges import make_api_judge, model_family, same_family  # re-exported for the package API
 
-__all__ = ["run_redteam", "render_by_category", "load_redteam_cases", "model_family", "same_family"]
+__all__ = [
+    "run_redteam", "render_by_category", "load_redteam_cases", "model_family", "same_family",
+    "select_cases",
+]
+
+
+def select_cases(cases, case_ids: list[str]):
+    """Select named cases in caller order so a failed subset can be rerun cheaply."""
+    by_id = {case.id: case for case in cases}
+    unknown = [case_id for case_id in case_ids if case_id not in by_id]
+    if unknown:
+        raise ValueError(f"unknown red-team case id(s): {', '.join(unknown)}")
+    return [by_id[case_id] for case_id in case_ids]
 
 
 async def run_redteam(
@@ -40,6 +52,7 @@ async def run_redteam(
     reminders: Optional[list[str]] = None,
     now: Optional[datetime] = None,
     out_dir: Optional[str] = None,
+    run_metadata: Optional[dict] = None,
 ) -> BenchRow:
     """Red-team one candidate: run the adversarial suite through the shared bench, graded by an
     INDEPENDENT cross-family judge. Returns the single BenchRow (its `.report` is the full GateReport).
@@ -50,7 +63,13 @@ async def run_redteam(
     cases = cases if cases is not None else load_redteam_cases()
     judge = make_api_judge(grader_model, now=now, candidate_model=candidate_model, require_independent=True)
     rows = await run_bench(
-        [candidate_model], registry, retriever, cases, reminders, judge=judge, out_dir=out_dir
+        [candidate_model], registry, retriever, cases, reminders, judge=judge, out_dir=out_dir,
+        run_metadata={
+            **(run_metadata or {}),
+            "candidate_model": candidate_model,
+            "grader_model": grader_model,
+            "run_started_at": (now or datetime.now()).isoformat(),
+        },
     )
     return rows[0]
 
@@ -83,6 +102,10 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
     parser.add_argument("--out", default=None, help="directory to write per-model report.json/.txt into")
     parser.add_argument("--category", default=None,
                         help=f"only run one category ({'/'.join(CATEGORY_NAMES)})")
+    parser.add_argument(
+        "--case", action="append", default=[],
+        help="run one case id; repeat the option for a focused subset",
+    )
     args = parser.parse_args()
 
     grader_model = args.grader or config.HEYNYC_JUDGE_MODEL
@@ -97,15 +120,17 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
         cases = [c for c in cases if c.redteam_category == args.category]
         if not cases:
             raise SystemExit(f"no cases in category {args.category!r}")
+    if args.case:
+        try:
+            cases = select_cases(cases, args.case)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
-    retriever = None  # reuse the app's on-disk retriever if present; None is fine for a structure run
-    try:
-        from ..core.index import load_index  # type: ignore
-
-        retriever = load_index(config.HEYNYC_DATA_DIR)
-    except Exception:
-        retriever = None
+    # Do not load the local semantic index here. It can initialize an embedding model on the
+    # owner's laptop. Live red-teams use official web retrieval unless a caller explicitly injects
+    # an already-running retriever into run_redteam().
+    retriever = None
 
     print(f"Red-teaming {args.model} on {len(cases)} case(s); independent grader: {grader_model}")
     row = asyncio.run(

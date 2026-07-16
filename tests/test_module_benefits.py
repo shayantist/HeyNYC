@@ -66,6 +66,30 @@ async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
     assert cite["valid_as_of"] == "2026-03-21"
 
 
+async def test_benefits_search_citation_preserves_row_evidence():
+    row = dict(
+        _FAKE_ROW,
+        **{
+            ":id": "row-snap",
+            "how_to_apply_summary": "Apply by phone at 718-557-1399 or through ACCESS HRA.",
+        },
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=registry, http=client, embedder=_EMBEDDER)
+
+    await tool.handler({"query": "how do I apply for SNAP by phone"}, ctx)
+    await client.aclose()
+
+    cite = citations.mapping()["S1"]
+    assert "718-557-1399" in cite["snippet"]
+    assert cite["provenance"]["record_id"] == "row-snap"
+    assert cite["provenance"]["field_pointer"] == "/"
+    assert cite["provenance"]["snapshot"] == row
+    assert len(cite["provenance"]["content_hash"]) == 64
+
+
 async def test_benefits_search_does_not_treat_dataset_date_as_current_verification():
     tool, registry = _benefits_tool()
     client, _ = _client_returning([_FAKE_ROW])

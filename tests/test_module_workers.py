@@ -53,6 +53,8 @@ async def test_tips_maps_free_text_to_topic():
     assert "section 196-d" in out
     slang, _ = await _run("my manager pockets our tips every shift")
     assert "section 196-d" in slang
+    spanish, _ = await _run("mi jefe se queda con mis propinas, ¿es legal?")
+    assert "section 196-d" in spanish
 
 
 async def test_tips_grounds_immigrant_worker_protections_and_cites():

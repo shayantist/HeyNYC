@@ -117,6 +117,24 @@ def test_generic_geographic_proper_noun_not_extracted():
     assert res is None or res.passed, (res.detail if res else "")
 
 
+def test_spanish_generic_geographic_proper_noun_not_extracted():
+    cr = _result(
+        "En la ciudad de Nueva York, Section 8 está protegido {cite:S1}.",
+        citations={"S1": _doc_cite("Section 8 is protected in New York City.", kind="WEB")},
+    )
+
+    res = check_cited_claim_grounding(cr)
+
+    assert res is None or res.passed, (res.detail if res else "")
+
+    capitalized = _result(
+        "La regla se aplica en la Ciudad de Nueva York {cite:S1}.",
+        citations={"S1": _doc_cite("The rule applies in New York City.", kind="WEB")},
+    )
+    res = check_cited_claim_grounding(capitalized)
+    assert res is None or res.passed, (res.detail if res else "")
+
+
 # --- HARD fabrications FAIL and BLOCK (verbatim structured facts) ----------
 
 def test_fabricated_phone_fails_and_blocks():

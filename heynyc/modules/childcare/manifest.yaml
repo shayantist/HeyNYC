@@ -19,6 +19,9 @@ keywords:
   - who can watch my kid
   - care for my baby
   - care for my toddler
+  - school immigration status
+  - immigrant student rights
+  - school asked immigration status
 examples:
   - "Where's the nearest day care?"
   - "I need child care for my 2-year-old near Fordham, the Bronx"
@@ -26,10 +29,13 @@ tools: tools.py
 eval: eval.yaml
 seeds:
   - https://www.nyc.gov/site/doh/services/child-care.page
+  - https://www.schools.nyc.gov/school-life/school-environment/immigrant-families
+  - https://www.schools.nyc.gov/learning/multilingual-learners/bill-of-rights-for-parents-of-english-language-learners
 allowlist:
   - nyc.gov
   - access.nyc.gov
   - myschools.nyc
+  - schools.nyc.gov
 prompt: |
   For child care questions (day care / daycare, preschool, nursery, infant or toddler care, "where
   can I find child care / who can watch my kid near me"), call

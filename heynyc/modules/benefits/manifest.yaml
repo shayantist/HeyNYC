@@ -29,9 +29,21 @@ examples:
   - "Are there NYC programs to help pay my rent?"
 tools: tools.py
 eval: eval.yaml
+seeds:
+  - https://access.nyc.gov
+  - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
+  - https://www.nyc.gov/main/services/snap-benefits/abawd
+  - https://www.nyc.gov/site/hra/about/claims-collections.page
+  - https://access.nyc.gov/snap-work-requirements/
+  - https://www.otda.ny.gov/programs/snap/work-requirements.asp
+  - https://otda.ny.gov/policy/directives/2017/
+  - https://otda.ny.gov/hearings/request/
+  - https://opendata.cityofnewyork.us/
 allowlist:
   - access.nyc.gov
   - nyc.gov
+  - otda.ny.gov
+  - opendata.cityofnewyork.us
 prompt: |
   For questions about affording essentials or NYC benefit programs (SNAP/food stamps,
   Fair Fares, HEAP, SCRIE/DRIE rent freeze, IDNYC, WIC, Cash Assistance, child care,

@@ -85,7 +85,7 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
 _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tips", ("tip", "tips", "stolen tips", "tip theft", "gratuity", "gratuities", "took my tips",
               "keeping our tips", "keep our tips", "pockets our tips", "tip pool", "tipped",
-              "tip jar", "cut of our tips")),
+              "tip jar", "cut of our tips", "propina", "propinas", "se queda con mis propinas")),
 )
 
 

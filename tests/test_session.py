@@ -73,14 +73,14 @@ async def test_transcript_round_trips_and_hides_pii_when_key_set(tmp_path, monke
     path = tmp_path / "enc.jsonl"
     agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("noted"))
     s = Session(agent=agent, id="enc", path=path)
-    await s.send("my SSN is 123-45-6789")
+    await s.send("my address is 123 Main Street")
 
     raw = path.read_bytes()
-    assert b"123-45-6789" not in raw  # the typed PII is not on disk in the clear
+    assert b"123 Main Street" not in raw  # the typed PII is not on disk in the clear
 
     # a fresh load with the key transparently decrypts the multi-turn context
     resumed = Session.load(agent, "enc", path)
-    assert [t["content"] for t in resumed.turns] == ["my SSN is 123-45-6789", "noted"]
+    assert [t["content"] for t in resumed.turns] == ["my address is 123 Main Street", "noted"]
 
 
 async def test_multi_turn_context_survives_encryption(tmp_path, monkeypatch):
