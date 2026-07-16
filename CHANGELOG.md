@@ -4,6 +4,13 @@ Notable changes to HeyNYC, newest first. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); these are development milestones, not
 tagged package releases. HeyNYC is pre-1.0 and is not a hosted service.
 
+## Unreleased
+
+- **Useful-now location answers.** FoodHelp results now read all published daily time slots and call regular hours scheduled rather than guaranteed. SNAP centers carry the source's listed hours, event search excludes cancellation and postponement signals, and missing WIC or child-care contacts lead to an official fallback instead of a dead end.
+- **Safer hosted messaging.** Hosted channels require encrypted conversation storage, purge expired sessions and drafts on startup and daily, redact assistant text in feedback, convert supported Markdown to WhatsApp formatting, and use Twilio's typing indicator while a reply is being prepared.
+- **SNAP retention path.** A resident reporting a work-rule cutoff is routed through current official guidance, exemption or compliance help, a human or fair-hearing path, and grounded emergency food access. Pantry assistance is never presented as a replacement for lost SNAP.
+- **Public pilot boundary.** The repository includes pilot-specific privacy and terms documents, documented encryption settings, and a reproducible optional MiniCheck dependency pinned to a commit.
+
 ## 0.7 - 2026-07-13
 
 - **Retrieval before abstention.** The agent now tries the RAG index, then a scoped web search over the trusted city allowlist, before routing or abstaining on a non-emergency NYC question it can ground and cite. This closes the pattern where it punted questions it could have answered. Safety boundaries are unchanged: a medical emergency still gets 911, an eligibility determination still routes to the agency, and an active legal case still routes to a lawyer.

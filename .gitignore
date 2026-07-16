@@ -5,6 +5,12 @@
 # (Public/contributor docs live as README.md per folder + CONTRIBUTING.md + CHANGELOG.md.)
 docs/
 
+# Local agent operations and review artifacts
+AGENTS.md
+.agents/
+CANON-CANDIDATES.md
+tmp/
+
 # Data / build artifacts
 .data/
 .cache/

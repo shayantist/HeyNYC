@@ -63,7 +63,7 @@ uv run python -m heynyc index-build      # build the RAG index from module seeds
 uv run python -m heynyc repl             # interactive, streaming chat
 ```
 
-Other commands: `modules`, `new-module <name>`, `chat "..."`, `index-search "..."`, `capabilities --write-readme`, and `eval`. Scoped web search is a retrieval tool, not a resident-facing web channel. For SMS or WhatsApp, run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
+Other commands: `modules`, `new-module <name>`, `chat "..."`, `index-search "..."`, `capabilities --write-readme`, and `eval`. Scoped web search is a retrieval tool, not a resident-facing web channel. For SMS or WhatsApp, configure `HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`, then run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
 
 ## How it works
 
@@ -89,6 +89,8 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 | --- | --- |
 | [SAFETY.md](SAFETY.md) | How the AI stays grounded and safe: guardrails, red-team results, abstention, and data freshness. |
 | [SECURITY.md](SECURITY.md) | How to report a security vulnerability through the private disclosure policy. |
+| [Privacy Notice](legal/HEYNYC-PRIVACY.md) | What the HeyNYC pilot handles, stores, and shares. |
+| [Terms of Use](legal/HEYNYC-TERMS.md) | Pilot limitations, messaging terms, and user responsibilities. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to add a module or contribute. |
 | [CHANGELOG.md](CHANGELOG.md) | The running day-to-day log of what shipped. |
 
@@ -97,6 +99,6 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 The standalone Python package includes the agent core, geo, RAG, and scoped web-search retrieval tools, the modules above, the live deterministic grounding guard, and the SMS/WhatsApp adapters. It has an offline test suite and has had prior live verification against selected NYC APIs. A web chat UI, hosted deployment, authenticated browser actions, and production multilingual verification are future work.
 
 - **Intersection geocoding can be wrong.** NYC GeoSearch can misplace an intersection, so HeyNYC echoes the resolved address and asks for confirmation.
-- **Some datasets are thin.** For example, the SNAP-center list lacks per-center hours and phone numbers. HeyNYC does not guess and instead points people to ACCESS HRA or 311.
+- **Some datasets are thin.** For example, the SNAP-center list has regular weekday hours but no phone numbers or holiday exceptions. HeyNYC labels the hours as listed and points people to ACCESS HRA or 311 when the source cannot answer more.
 
-_Last updated: 2026-07-14_
+_Last updated: 2026-07-16_
