@@ -4,16 +4,38 @@ state lives only in Session."""
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
-from heynyc.core import config, telemetry
+from heynyc.core import config, pii_crypto, telemetry
 from heynyc.core.agent import Agent
+from heynyc.core.drafts import DraftStore
 from heynyc.core.registry import Registry
+from heynyc.core.session import migrate_plaintext_sessions, purge_expired_sessions
 
+from . import analytics
 from .base import drain
 from .orchestrator import Deps
 
 _INDEX_PATH = config.HEYNYC_DATA_DIR / "index.lance"
+_PURGE_INTERVAL_S = 24 * 60 * 60
+
+
+def purge_private_data(data_dir: Path) -> None:
+    purge_expired_sessions(data_dir / "sessions")
+    DraftStore(data_dir / "drafts").purge_expired()
+
+
+def migrate_private_data(data_dir: Path) -> None:
+    migrate_plaintext_sessions(data_dir / "sessions")
+    DraftStore(data_dir / "drafts").migrate_plaintext()
+    analytics.migrate_plaintext_feedback(data_dir / "feedback.jsonl")
+
+
+async def _purge_loop(data_dir: Path) -> None:
+    while True:
+        await asyncio.sleep(_PURGE_INTERVAL_S)
+        purge_private_data(data_dir)
 
 
 def _load_retriever():
@@ -29,8 +51,6 @@ def build_agent() -> Agent:
 
 
 def build_deps(agent: Agent) -> Deps:
-    from heynyc.core.drafts import DraftStore
-
     from .base import KeyedLocks
     from .store import ChannelStore
 
@@ -53,13 +73,27 @@ def create_app(provider: str | None = None):
     provider = provider or config.WHATSAPP_PROVIDER
     if not config.HEYNYC_PII_SALT:
         raise RuntimeError("HEYNYC_PII_SALT must be set to serve (pseudonymizes senders).")
+    if not pii_crypto.is_enabled():
+        raise RuntimeError("HEYNYC_PII_KEY must be set to serve (encrypts persisted conversations).")
+    try:
+        pii_crypto.encrypt("")
+    except pii_crypto.PiiCryptoError as exc:
+        raise RuntimeError("HEYNYC_PII_KEY must be a valid encryption key.") from exc
 
     deps = build_deps(build_agent())
 
     @asynccontextmanager
     async def lifespan(_app):
-        yield
-        await drain()   # graceful shutdown: finish in-flight replies
+        migrate_private_data(config.HEYNYC_DATA_DIR)
+        purge_private_data(config.HEYNYC_DATA_DIR)
+        purge_task = asyncio.create_task(_purge_loop(config.HEYNYC_DATA_DIR))
+        try:
+            yield
+        finally:
+            purge_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await purge_task
+            await drain()   # graceful shutdown: finish in-flight replies
 
     app = FastAPI(lifespan=lifespan)
 

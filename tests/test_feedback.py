@@ -9,7 +9,7 @@ from heynyc.channels.base import InboundMessage, KeyedLocks
 from heynyc.channels.identity import user_key
 from heynyc.channels.orchestrator import Deps, flag_note, handle, is_flag
 from heynyc.channels.store import ChannelStore
-from heynyc.core import config
+from heynyc.core import config, pii_crypto
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
 
@@ -55,7 +55,7 @@ def test_record_feedback_redacts_note_and_query_and_keeps_user_key(tmp_path):
         path, user_key="abc123", channel="whatsapp_meta", message_id="m1", flag="/wrong",
         note="you're wrong, my number is 212-555-1234",
         user_query="is 350 Jay Street rent stabilized?",
-        agent_text="Call 311 at 212-639-9675 for that. {cite:S1}",
+        agent_text="You said 350 Jay Street. Call 311 at 212-639-9675. {cite:S1}",
     )
     written = json.loads(path.read_text().splitlines()[0])
     assert written["user_key"] == "abc123"
@@ -63,9 +63,38 @@ def test_record_feedback_redacts_note_and_query_and_keeps_user_key(tmp_path):
     # resident-authored free text is redacted at write time
     assert "212-555-1234" not in written["note"]
     assert "350 Jay Street" not in written["user_query"]
-    # the grounded agent answer is kept verbatim (its phone is a civic line, needed to debug)
-    assert "212-639-9675" in written["agent_text"]
+    # assistant text can echo resident PII, so it is redacted before persistence too
+    assert "350 Jay Street" not in written["agent_text"]
+    assert "212-639-9675" not in written["agent_text"]
+    assert "Call 311" in written["agent_text"]
     assert rec["note"] == written["note"]
+
+
+def test_feedback_is_encrypted_when_hosted_key_is_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    path = tmp_path / "fb.jsonl"
+    analytics.record_feedback(
+        path, user_key="abc123", channel="whatsapp_meta", message_id="m1", flag="wrong",
+        note="Ana Diaz is undocumented", user_query="Ana Diaz needs SNAP", agent_text="Hi Ana",
+    )
+
+    assert b"Ana Diaz" not in path.read_bytes()
+    assert analytics.load_feedback(path)[0]["note"] == "Ana Diaz is undocumented"
+
+
+def test_plaintext_feedback_is_migrated_when_encryption_is_enabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("HEYNYC_PII_KEY", raising=False)
+    path = tmp_path / "fb.jsonl"
+    analytics.record_feedback(
+        path, user_key="abc123", channel="whatsapp_meta", message_id="m1", flag="wrong",
+        note="Ana Diaz is undocumented", user_query="question", agent_text="answer",
+    )
+    assert "Ana Diaz" in path.read_text()
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    assert analytics.migrate_plaintext_feedback(path) is True
+    assert b"Ana Diaz" not in path.read_bytes()
+    assert analytics.load_feedback(path)[0]["note"] == "Ana Diaz is undocumented"
 
 
 # ---- Aggregation report --------------------------------------------------------

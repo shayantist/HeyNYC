@@ -5,6 +5,7 @@ NOTE: no `from __future__ import annotations` here on purpose, the FastAPI route
 annotates `request: Request`, and FastAPI must see the real class (not a deferred string)
 to inject it rather than treat it as a query parameter."""
 import asyncio
+import logging
 
 from heynyc.core import config
 
@@ -12,11 +13,13 @@ from .base import InboundMessage, dispatch
 from .orchestrator import Deps, handle
 
 CHANNEL = "whatsapp_twilio"
+_TYPING_URL = "https://messaging.twilio.com/v3/Indicators/Typing.json"
+logger = logging.getLogger("heynyc.channels.twilio")
 
 
 class TwilioReplier:
-    def __init__(self, client, from_: str, to: str) -> None:
-        self._client, self._from, self._to = client, from_, to
+    def __init__(self, client, from_: str, to: str, message_id: str = "") -> None:
+        self._client, self._from, self._to, self._mid = client, from_, to, message_id
 
     async def send_text(self, text: str) -> None:
         await asyncio.to_thread(
@@ -36,7 +39,20 @@ class TwilioReplier:
             await self.send_text(f"{caption or 'Your document is ready'}, I'll send a download link shortly.")
 
     async def indicate_typing(self) -> None:
-        return  # Twilio has no typing indicator
+        if not self._from.startswith("whatsapp:") or not self._mid.startswith(("SM", "MM")):
+            return
+        try:
+            response = await asyncio.to_thread(
+                self._client.request,
+                "POST",
+                _TYPING_URL,
+                data={"channel": "WHATSAPP", "messageId": self._mid},
+                headers={"Content-Type": "application/json"},
+            )
+            if response.status_code >= 400:
+                logger.warning("Twilio typing indicator returned HTTP %s", response.status_code)
+        except Exception:
+            logger.warning("Twilio typing indicator failed", exc_info=True)
 
 
 def to_inbound(params: dict) -> InboundMessage:
@@ -77,7 +93,9 @@ def make_twilio_router(deps: Deps):
         if not validator.validate(public_url(request), params, signature):
             return Response(status_code=403)
         inbound = to_inbound(params)
-        replier = TwilioReplier(client, from_=config.TWILIO_FROM, to=inbound.sender)
+        replier = TwilioReplier(
+            client, from_=config.TWILIO_FROM, to=inbound.sender, message_id=inbound.message_id
+        )
         dispatch(handle(inbound, replier, deps))   # 200 returns fast; agent runs out-of-band
         return Response(status_code=200)
 

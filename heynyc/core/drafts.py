@@ -88,6 +88,24 @@ class DraftStore:
     def for_user(self, user_key: str) -> UserDrafts:
         return UserDrafts(self._dir / f"{user_key}.json")
 
+    def migrate_plaintext(self) -> list[str]:
+        """Encrypt valid legacy cleartext drafts before a hosted service accepts traffic."""
+        if not pii_crypto.is_enabled() or not self._dir.exists():
+            return []
+        migrated: list[str] = []
+        for path in sorted(self._dir.glob("*.json")):
+            raw = path.read_bytes()
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pii_crypto.decrypt(raw)
+                continue
+            replacement = path.with_suffix(path.suffix + ".tmp")
+            replacement.write_bytes(pii_crypto.encrypt(json.dumps(data)))
+            replacement.replace(path)
+            migrated.append(str(path))
+        return migrated
+
     def purge_expired(self, max_age_days: float | None = None) -> list[str]:
         """Irreversibly delete draft files older than the retention window (default
         from `HEYNYC_PII_KEY`'s sibling `HEYNYC_PII_RETENTION_DAYS`, else 30 days).

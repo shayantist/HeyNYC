@@ -1,14 +1,14 @@
-"""Pseudonymous, operational analytics (keyed by user_key, never a phone number) +
-a feedback log of user-flagged turns shaped to feed the agent-as-judge later."""
+"""Pseudonymous operational analytics and encrypted user-flagged feedback."""
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from heynyc.core import telemetry
+from heynyc.core import pii_crypto, telemetry
 from heynyc.eval.trace import classify_outcome
 
 
@@ -27,16 +27,49 @@ def record_interaction(*, telemetry_path: Path, model: str, user_key: str, chann
 
 def feedback_log(path: Path, record: dict) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record)
+    if pii_crypto.is_enabled():
+        line = base64.b64encode(pii_crypto.encrypt(line)).decode("ascii")
     with Path(path).open("a") as fh:
-        fh.write(json.dumps(record) + "\n")
+        fh.write(line + "\n")
+
+
+def _decode_feedback_line(line: str) -> dict:
+    if pii_crypto.is_enabled():
+        return json.loads(pii_crypto.decrypt(base64.b64decode(line)))
+    return json.loads(line)
+
+
+def migrate_plaintext_feedback(path: Path) -> bool:
+    """Encrypt a legacy cleartext feedback log before hosted traffic is accepted."""
+    path = Path(path)
+    if not pii_crypto.is_enabled() or not path.exists():
+        return False
+    lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    migrated = False
+    encoded: list[str] = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            _decode_feedback_line(line)
+            encoded.append(line)
+        else:
+            encoded.append(base64.b64encode(pii_crypto.encrypt(json.dumps(record))).decode("ascii"))
+            migrated = True
+    if migrated:
+        replacement = path.with_suffix(path.suffix + ".tmp")
+        replacement.write_text("\n".join(encoded) + ("\n" if encoded else ""))
+        replacement.replace(path)
+    return migrated
 
 
 # PII redaction for resident-authored free text (a flag note or the flagged query can carry the
 # resident's own phone / SSN / email / home address). Patterns MIRROR the ones already proven in
 # the codebase (core/grounding.py's phone regex, modules/benefits/screening.py's SSN/DOB regex) so
 # the feedback log is PII-minimized by construction, same as sessions and telemetry. Over-masking a
-# resident's own free text is the safe direction; the grounded agent answer is NOT run through this
-# (its numbers are civic lines a reviewer needs to see).
+# resident's own free text is the safe direction. Assistant text is also redacted because it can
+# echo a resident's message.
 _REDACTION = "[redacted]"
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _SSN_RE = re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b")
@@ -74,9 +107,8 @@ def record_feedback(
 ) -> dict:
     """Build one PII-redacted feedback record for a user-flagged turn and append it (JSONL).
 
-    Free text the resident authored (their `note` and the flagged `user_query`) is redacted at
-    write time; the grounded `agent_text` is kept verbatim so the reviewer sees what was actually
-    said. Keyed off the salted `user_key` (never a raw sender). Enough context to find and fix a
+    Free text in the note, query, and assistant answer is redacted at write time. Keyed off the
+    salted `user_key` (never a raw sender). Enough context to find and fix a
     systematic error without re-running the agent: the query, the answer, the reason, a timestamp."""
     record = {
         "ts": ts or datetime.now(timezone.utc).isoformat(),
@@ -86,7 +118,7 @@ def record_feedback(
         "flag": flag,
         "note": redact_pii(note),
         "user_query": redact_pii(user_query),
-        "agent_text": agent_text,
+        "agent_text": redact_pii(agent_text),
     }
     feedback_log(path, record)
     return record
@@ -94,7 +126,10 @@ def record_feedback(
 
 def load_feedback(path: Path) -> list[dict]:
     """Read the append-only feedback log (JSONL) back into records."""
-    return telemetry.load(Path(path))
+    path = Path(path)
+    if not path.exists():
+        return []
+    return [_decode_feedback_line(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def summarize_feedback(records: list[dict]) -> dict:

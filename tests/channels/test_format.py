@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import signal
 from heynyc.channels.format import render, WA_LIMIT
 
 
@@ -28,7 +29,45 @@ def test_no_citations_no_footer():
     assert out == ["Just a plain reply."]
 
 
-def test_sources_footer_uses_text_fragment_for_web_citation():
+def test_converts_common_markdown_to_whatsapp_markup():
+    text = (
+        "**🏠 Housing**\n"
+        "## Map links\n"
+        "- [Morningside Heights Library](https://maps.google.com/?q=40.806,-73.965)"
+    )
+
+    assert render(FakeResult(text)) == [
+        "*🏠 Housing*\n"
+        "*Map links*\n"
+        "- Morningside Heights Library: https://maps.google.com/?q=40.806,-73.965"
+    ]
+
+
+def test_preserves_code_and_urls_while_converting_other_markup():
+    text = (
+        "`**literal**` and ```**block**```\n"
+        "* item\n"
+        "~~closed~~\n"
+        "https://example.com/__keep__"
+    )
+
+    assert render(FakeResult(text)) == [
+        "`**literal**` and ```**block**```\n"
+        "- item\n"
+        "~closed~\n"
+        "https://example.com/__keep__"
+    ]
+
+
+def test_heading_preserves_a_trailing_hash_character():
+    assert render(FakeResult("# C#")) == ["*C#*"]
+
+
+def test_bold_heading_has_one_whatsapp_bold_delimiter():
+    assert render(FakeResult("## **Housing**")) == ["*Housing*"]
+
+
+def test_sources_footer_uses_canonical_page_for_web_citation():
     r = FakeResult(
         "Help is available {cite:S1}.",
         {
@@ -41,7 +80,47 @@ def test_sources_footer_uses_text_fragment_for_web_citation():
         },
     )
 
-    assert "https://nyc.gov/help#:~:text=The%20city%2Drun%20service%20offers%20help%20to%20New" in render(r)[0]
+    footer = render(r)[0]
+    assert "https://nyc.gov/help" in footer
+    assert "#:~:text=" not in footer
+
+
+def test_sources_footer_preserves_socrata_row_links():
+    r = FakeResult(
+        "One {cite:S1}. Two {cite:S2}.",
+        {
+            "S1": {
+                "url": "https://data.cityofnewyork.us/resource/i7jb-7jku/row-1.json",
+                "title": "NYC Open Data - Public Restrooms",
+                "kind": "DATA",
+            },
+            "S2": {
+                "url": "https://data.cityofnewyork.us/resource/i7jb-7jku/row-2.json",
+                "title": "NYC Open Data - Public Restrooms",
+                "kind": "DATA",
+            },
+        },
+    )
+
+    footer = render(r)[0]
+    assert footer.count("NYC Open Data - Public Restrooms") == 2
+    assert "row-1.json" in footer and "row-2.json" in footer
+
+
+def test_sources_footer_preserves_arcgis_row_queries():
+    layer = "https://services6.arcgis.com/example/FeatureServer/0"
+    r = FakeResult(
+        "One {cite:S1}. Two {cite:S2}.",
+        {
+            "S1": {"url": f"{layer}/query?where=id%3D1", "title": "NYC Finder", "kind": "DATA"},
+            "S2": {"url": f"{layer}/query?where=id%3D2", "title": "NYC Finder", "kind": "DATA"},
+        },
+    )
+
+    footer = render(r)[0]
+    assert footer.count("NYC Finder") == 2
+    assert f"{layer}/query?where=id%3D1" in footer
+    assert f"{layer}/query?where=id%3D2" in footer
 
 
 def test_splits_long_text_on_paragraph_boundaries_footer_last():
@@ -51,3 +130,27 @@ def test_splits_long_text_on_paragraph_boundaries_footer_last():
     assert len(out) >= 2
     assert all(len(c) <= WA_LIMIT for c in out)
     assert "Sources:" in out[-1] and "Sources:" not in out[0]
+
+
+def test_large_sources_footer_finishes_and_respects_the_limit():
+    citations = {
+        f"S{i}": {
+            "url": f"https://example.com/{i}/" + "x" * 80,
+            "title": f"Source {i}",
+        }
+        for i in range(100)
+    }
+    def timeout(_signum, _frame):
+        raise TimeoutError("render did not finish")
+
+    previous = signal.signal(signal.SIGALRM, timeout)
+    signal.setitimer(signal.ITIMER_REAL, 0.5)
+    try:
+        result = render(FakeResult("Answer " + " ".join(
+            f"{{cite:S{i}}}" for i in range(100)
+        ), citations))
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+    assert all(len(chunk) <= WA_LIMIT for chunk in result)

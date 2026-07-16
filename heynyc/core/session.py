@@ -9,9 +9,8 @@ is set (security-audit F1, see `pii_crypto`): a filled-form conversation carries
 the user's name / SSN / DOB / address as chat text, so the transcript is a PII
 sink. Per-line encryption keeps the append-only property (a fresh nonce per line)
 while hiding the content; with no key the line stays cleartext (the insecure
-dev/test path). The line format is fixed by the key state at read time: do not
-flip the key against a file already written in the other mode. Retention is the
-`purge_expired_sessions` TTL backstop.
+dev/test path). Hosted startup migrates valid legacy cleartext lines before
+accepting traffic. Retention is the `purge_expired_sessions` TTL backstop.
 """
 from __future__ import annotations
 
@@ -38,6 +37,37 @@ def _decode_line(line: str) -> dict:
     if pii_crypto.is_enabled():
         return json.loads(pii_crypto.decrypt(base64.b64decode(line)))
     return json.loads(line)
+
+
+def _migrate_plaintext_file(path: Path) -> bool:
+    """Encrypt legacy JSON lines in one transcript while preserving encrypted lines."""
+    lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    migrated = False
+    encoded: list[str] = []
+    for line in lines:
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            _decode_line(line)
+            encoded.append(line)
+        else:
+            encoded.append(_encode_line(message))
+            migrated = True
+    if migrated:
+        replacement = path.with_suffix(path.suffix + ".tmp")
+        replacement.write_text("\n".join(encoded) + ("\n" if encoded else ""))
+        replacement.replace(path)
+    return migrated
+
+
+def migrate_plaintext_sessions(sessions_dir: Path) -> list[str]:
+    """Encrypt valid legacy cleartext transcripts before a hosted service accepts traffic."""
+    if not pii_crypto.is_enabled():
+        return []
+    directory = Path(sessions_dir)
+    if not directory.exists():
+        return []
+    return [str(path) for path in sorted(directory.glob("*.jsonl")) if _migrate_plaintext_file(path)]
 
 
 def purge_expired_sessions(sessions_dir: Path, max_age_days: float | None = None) -> list[str]:

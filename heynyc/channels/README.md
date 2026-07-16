@@ -30,10 +30,22 @@ mandatory, not optional). Per-user `asyncio.Lock` keeps one person's messages in
 
 Senders are reduced to a salted-HMAC `user_key` at the door. **Raw phone numbers are never
 persisted** — not session filenames, not telemetry, not the feedback log. The raw address lives only
-in memory during a request, held by the `Replier` to send the reply. Set `HEYNYC_PII_SALT` to serve.
+in memory during a request, held by the `Replier` to send the reply. Serving requires both
+`HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`; conversation and draft files are encrypted, and the service
+deletes expired files on startup and once per day using `HEYNYC_PII_RETENTION_DAYS` (30 by default).
+Resident-authored queries, notes, and assistant text are PII-redacted before feedback is stored.
 
 ## Inherited WhatsApp constraints (documented, not built around)
 
+- WhatsApp uses a smaller text-formatting dialect than Markdown. `format.py` converts common
+  headings, bold, links, lists, and strikethrough at the channel boundary while preserving code
+  and URLs, following [Twilio's WhatsApp formatting reference](https://help.twilio.com/articles/360037743094).
+- Civic citations never use a third-party shortener. `format.py` groups exact row citations under
+  their canonical official dataset or ArcGIS layer for display while retaining row-addressed
+  evidence internally.
+- Twilio WhatsApp sends a native typing indicator before model work using Twilio's
+  [public-beta indicator API](https://www.twilio.com/docs/whatsapp/api/typing-indicators-resource).
+  It fails open so a beta outage cannot block the final reply.
 - A user message opens/resets a **24-hour service window** where free-form replies are free and
   unlimited — an inbound assistant lives here, so WhatsApp messaging cost ≈ $0; the LLM call is the
   real cost.
@@ -43,7 +55,9 @@ in memory during a request, held by the `Replier` to send the reply. Set `HEYNYC
 
 ## Setup (ranked, do top-to-bottom)
 
-1. **Generate the salt:** `HEYNYC_PII_SALT=$(openssl rand -hex 32)` → put it in `.env`.
+1. **Generate the privacy secrets:** create `HEYNYC_PII_SALT` with `openssl rand -hex 32`, create
+   `HEYNYC_PII_KEY` with `uv run python -c "from heynyc.core.pii_crypto import generate_key; print(generate_key())"`,
+   and put both in `.env`.
 2. **Fastest demo — Twilio sandbox** (no Meta app, no money): create a Twilio account → Messaging →
    *Try WhatsApp* → send `join <code>` from your phone → copy `TWILIO_ACCOUNT_SID`,
    `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` into `.env` → point the sandbox's "when a message comes

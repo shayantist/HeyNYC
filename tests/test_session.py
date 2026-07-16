@@ -9,7 +9,7 @@ import pytest
 from heynyc.core import pii_crypto
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
-from heynyc.core.session import Session, purge_expired_sessions
+from heynyc.core.session import Session, migrate_plaintext_sessions, purge_expired_sessions
 
 
 def _const_complete(text: str):
@@ -101,6 +101,22 @@ async def test_transcript_stays_cleartext_when_no_key(tmp_path, monkeypatch):
     s = Session(agent=agent, id="plain", path=path)
     await s.send("hello")
     assert "hello" in path.read_text()  # unchanged dev behavior
+
+
+async def test_plaintext_session_is_migrated_when_encryption_is_enabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("HEYNYC_PII_KEY", raising=False)
+    path = tmp_path / "legacy.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+    await Session(agent=agent, id="legacy", path=path).send("Ana Diaz needs SNAP")
+    assert "Ana Diaz" in path.read_text()
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    assert migrate_plaintext_sessions(tmp_path) == [str(path)]
+    assert b"Ana Diaz" not in path.read_bytes()
+    resumed = Session.load(agent, "legacy", path)
+    assert [turn["content"] for turn in resumed.turns] == [
+        "Ana Diaz needs SNAP", "legacy answer",
+    ]
 
 
 # --- Retention / TTL sweep (irreversible; GDPR Art 5(1)(e)) -----------------

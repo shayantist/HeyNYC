@@ -71,6 +71,17 @@ def test_stays_cleartext_when_no_key(tmp_path, monkeypatch):
     assert "Ana" in raw  # unchanged, insecure-by-design dev behavior
 
 
+def test_plaintext_draft_is_migrated_when_encryption_is_enabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("HEYNYC_PII_KEY", raising=False)
+    DraftStore(tmp_path).for_user("u1").merge("snap", {"legal_name": "Ana Diaz"})
+    assert "Ana Diaz" in (tmp_path / "u1.json").read_text()
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    assert DraftStore(tmp_path).migrate_plaintext() == [str(tmp_path / "u1.json")]
+    assert b"Ana Diaz" not in (tmp_path / "u1.json").read_bytes()
+    assert DraftStore(tmp_path).for_user("u1").load("snap") == {"legal_name": "Ana Diaz"}
+
+
 def test_merge_fails_closed_on_malformed_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HEYNYC_PII_KEY", "!!!not-base64!!!")
     d = DraftStore(tmp_path).for_user("u1")
