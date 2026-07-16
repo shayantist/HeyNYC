@@ -16,14 +16,39 @@ def test_cooling_center_binding_present():
     bindings = registry.dataset_bindings()
     assert "cooling_center" in bindings
     binding = bindings["cooling_center"]
-    # BUG-2 fix: repointed from the wrong Socrata outdoor-misting dataset to the ArcGIS
-    # indoor cooling-center finder (NYC Emergency Management), row-addressed by NYCEM_ID.
+    # The generic binding mirrors the active-center layer used by the current Cool Options app.
+    # The custom tool also queries the separate year-round Cool Options layer.
     assert binding.source == "arcgis"
-    assert "CoolingCenters_PROD_view" in binding.url
+    assert "services5.arcgis.com/tMsas0Edz7Aih7fO" in binding.url
+    assert "Cooling_Centers_PROD_view" in binding.url
     assert binding.record_id_field == "NYCEM_ID"
     # field_map must cover the keys geo.normalize relies on
     for key in ("name", "lat", "lon", "status"):
         assert key in binding.field_map
+
+    cool_option = bindings["cool_option"]
+    assert "services6.arcgis.com/yG5s3afENB5iO9fj" in cool_option.url
+    assert "Cool_Options" in cool_option.url
+    module = next(module for module in registry.modules if module.name == "cooling_centers")
+    assert "services5.arcgis.com" in module.allowlist
+    assert "services6.arcgis.com" in module.allowlist
+
+
+def test_public_restroom_binding_uses_the_operational_city_dataset():
+    registry = Registry.discover(config.MODULES_DIR)
+    binding = registry.dataset_bindings()["public_restroom"]
+
+    assert binding.id == "i7jb-7jku"
+    assert binding.where == "status='Operational'"
+    assert binding.field_map == {
+        "name": "facility_name",
+        "lat": "latitude",
+        "lon": "longitude",
+        "status": "status",
+        "website": "website",
+    }
+    module = next(module for module in registry.modules if module.name == "public_restrooms")
+    assert "services6.arcgis.com" in module.allowlist
 
 
 def test_cooling_cases_cover_archetypes_and_are_valid():

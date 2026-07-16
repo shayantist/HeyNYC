@@ -153,7 +153,7 @@ def test_query_loads_only_matching_blurbs_but_keeps_menu_and_all_rules():
     # the matched module's DETAILED blurb loads
     assert "nearest_food_pantry(near=" in prompt
     # clearly-unrelated modules' DETAILED blurbs do NOT load
-    assert "NOT outdoor misting stations" not in prompt   # cooling blurb text
+    assert "cool_options_lookup" not in prompt             # cooling blurb text
     assert "nyc_advisories" not in prompt                 # advisories blurb text
     assert "PROGRAM INFO" not in prompt                   # housing blurb text
     # the always-on capability menu + every safety rule stay present (a routing miss drops neither)
@@ -179,7 +179,7 @@ def test_query_none_includes_every_blurb_backward_compat():
     prompt = build_system_prompt(_real_registry())  # query defaults to None -> today's behavior
     assert "nearest_food_pantry(near=" in prompt      # food blurb
     assert "benefits_search(query=" in prompt         # benefits blurb
-    assert "NOT outdoor misting stations" in prompt   # cooling blurb
+    assert "cool_options_lookup" in prompt             # cooling blurb
     assert "nyc_advisories" in prompt                 # advisories blurb
 
 

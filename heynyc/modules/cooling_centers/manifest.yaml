@@ -1,10 +1,8 @@
 name: cooling_centers
 category: health
 description: >-
-  Find indoor, staffed, air-conditioned cooling centers (libraries, older-adult
-  centers, and other public sites) across NYC. These are activated by NYC Emergency
-  Management during declared heat emergencies, so they're only open when the city
-  has called one.
+  Find activated NYC cooling centers and other indoor or outdoor Cool Options,
+  with current City-listed hours, access details, distance, and directions.
 keywords:
   - cooling
   - cooling center
@@ -23,10 +21,24 @@ examples:
   - "It's too hot, where can I cool off indoors today?"
 datasets:
   - source: arcgis
-    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/CoolingCenters_PROD_view/FeatureServer/0
+    url: https://services5.arcgis.com/tMsas0Edz7Aih7fO/arcgis/rest/services/Cooling_Centers_PROD_view/FeatureServer/0
     category: cooling_center
     record_id_field: NYCEM_ID
-    title: NYC Emergency Management - Cooling Centers
+    title: NYC Emergency Management - Activated Cooling Centers
+    where: "Finder_status='OPEN'"
+    field_map:
+      name: FACILITY_NAME
+      lat: lat
+      lon: lon
+      address: ADDRESS
+      borough: Borough_name
+      status: Finder_status
+      phone: PHONE
+  - source: arcgis
+    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Cool_Options/FeatureServer/0
+    category: cool_option
+    record_id_field: NYCEM_ID
+    title: NYC Emergency Management - Year-round Cool Options
     where: "Finder_status='OPEN'"
     field_map:
       name: Facility_name
@@ -40,15 +52,16 @@ seeds:
   - https://finder.nyc.gov/coolingcenters/
 allowlist:
   - finder.nyc.gov
+  - services5.arcgis.com
+  - services6.arcgis.com
+tools: tools.py
 prompt: |
-  Cooling centers are INDOOR, staffed, air-conditioned public sites (libraries, older-adult
-  centers, and similar) that NYC Emergency Management activates during a declared heat
-  emergency. They are NOT outdoor misting stations or spray showers.
-
-  For heat-relief / cooling questions, call nearest(category="cooling_center", near=<user's address>).
-  Report only the sites the tool returns and cite each one. The tool is filtered to activated
-  ("OPEN") sites, so if it returns none, tell the user that no cooling centers are currently
-  activated — this is normal when the city has not declared a heat emergency — and point them to
-  finder.nyc.gov/coolingcenters and 311 to check for the latest activations. Hours vary by site,
-  so tell users to call ahead; the phone number is included in each tool result.
+  For heat-relief questions, call cool_options_lookup. Use kind="cooling_center" when the user
+  specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
+  and kind="all" for a general place to cool off. Pass limit when the user requests a count.
+  Preserve the tool's distinction between activated cooling centers and other Cool Options,
+  including outdoor options. Report its scheduled status, hours, access details, and citations.
+  A scheduled-open result is not a guarantee of entry, so preserve the call-ahead warning.
+  If no activated center is returned, offer other indoor Cool Options instead of merely linking
+  to the finder. Do not invent capacity, occupancy, amenities, or emergency status.
 eval: eval.yaml

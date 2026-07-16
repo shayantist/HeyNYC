@@ -1,0 +1,40 @@
+name: public_restrooms
+category: city services
+description: >-
+  Find the nearest public restrooms listed by New York City, with grounded
+  distance and directions.
+keywords:
+  - restroom
+  - bathroom
+  - toilet
+  - public restroom
+  - public bathroom
+  - comfort station
+examples:
+  - "Where is the nearest public restroom?"
+  - "Is there a public bathroom near Union Square?"
+datasets:
+  - id: i7jb-7jku
+    category: public_restroom
+    title: NYC Open Data - Public Restrooms
+    where: "status='Operational'"
+    field_map:
+      name: facility_name
+      lat: latitude
+      lon: longitude
+      status: status
+      website: website
+allowlist:
+  - data.cityofnewyork.us
+  - portal.311.nyc.gov
+  - services6.arcgis.com
+tools: tools.py
+prompt: |
+  For public-restroom questions, call public_restroom_lookup(near=<user's location>). Pass limit
+  when the user requests a result count; otherwise use the tool default. For several locations,
+  call the tool once per location. Preserve the tool's ranking, citations, record date, scheduled
+  hours, and distinction between site access and restroom condition. Never turn "Operational" or
+  a scheduled-open result into a guarantee that a restroom is open, unlocked, clean, accessible,
+  or usable right now. Do not invent fees, restrictions, or amenities the tool did not return.
+  Route closures and maintenance problems to NYC 311.
+eval: eval.yaml

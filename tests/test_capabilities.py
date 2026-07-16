@@ -61,7 +61,10 @@ def test_capability_table_is_one_row_per_top_level_module():
 def test_capability_table_derives_source_and_link_from_manifest():
     rows = {r.service: r for r in _reg().capability_table()}
     # ArcGIS dataset binding names itself by its title.
-    assert rows["Cooling centers"].grounded_in == "NYC Emergency Management - Cooling Centers"
+    assert rows["Cooling centers"].grounded_in == (
+        "NYC Emergency Management - Activated Cooling Centers + "
+        "NYC Emergency Management - Year-round Cool Options"
+    )
     # Socrata binding is labelled by its open-data id.
     assert rows["SNAP centers"].grounded_in == "NYC Open Data (tc6u-8rnp)"
     # Official link is the first seed when present, else the first allowlist domain.
