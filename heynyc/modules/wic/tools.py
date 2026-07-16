@@ -39,6 +39,7 @@ WIC_URL = f"{WIC_HOST}/resource/{WIC_DATASET}.json"
 # Richmond=Staten Island, New York=Manhattan). Every NYC physical site carries one of these.
 WHERE_NYC = "counties_boroughs_served in('Bronx','Kings','New York','Queens','Richmond')"
 OFFICIAL = "the NY State WIC info at health.ny.gov/prevention/nutrition/wic or call 311"
+WIC_APPLY_URL = "https://www.health.ny.gov/prevention/nutrition/wic/how_to_apply.htm"
 
 
 def _clean(value) -> str:
@@ -182,7 +183,7 @@ def _site_citation(ctx: ToolContext, site: WicSite, *,
     )
 
 
-def _site_block(site: WicSite, cite: str, dist_mi: float) -> str:
+def _site_block(site: WicSite, cite: str, dist_mi: float, fallback_cite: str = "") -> str:
     temp = " (temporary/rotating site - call to confirm it's open)" if \
         site.site_type.lower() == "temporary" else ""
     parts = [f"- {site.name}{temp} ({site.address or 'NYC'}) - "
@@ -191,6 +192,8 @@ def _site_block(site: WicSite, cite: str, dist_mi: float) -> str:
         parts.append(f"  Phone: {site.phone} - call for hours and to book an appointment")
     if site.website:
         parts.append(f"  Website: {site.website}")
+    if not site.phone and not site.website:
+        parts.append(f"  Contact: {WIC_APPLY_URL} {{cite:{fallback_cite}}}")
     parts.append(f"  Directions: {directions_link(site.lat, site.lon)}")
     parts.append(f"  As of: {site.valid_as_of or 'Source date unavailable'}")
     return "\n".join(parts)
@@ -244,7 +247,13 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, site.lat, site.lon))
         cite = _site_citation(ctx, site, origin_lat=origin.lat, origin_lon=origin.lon,
                               dist_mi=dist_mi)
-        lines.append(_site_block(site, cite, dist_mi))
+        fallback_cite = ""
+        if not site.phone and not site.website:
+            fallback_cite = ctx.citations.register(
+                WIC_APPLY_URL, snippet="Apply for WIC", title="NY State WIC: How to Apply",
+                kind="DOC",
+            )
+        lines.append(_site_block(site, cite, dist_mi, fallback_cite))
     lines.append("This data has NO hours and NO appointment info - tell the user to call the site "
                  "for hours and to book. WIC has income and category rules (pregnant, postpartum, "
                  "infants, and children under 5); don't assert eligibility from this list - point "

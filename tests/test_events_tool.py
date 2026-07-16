@@ -30,6 +30,23 @@ def test_from_ticketmaster_drops_dateless():
     assert _from_ticketmaster({"name": "TBA", "dates": {"start": {}}}) is None
 
 
+def test_from_ticketmaster_drops_cancelled_or_postponed_events():
+    for status in ("canceled", "cancelled", "postponed"):
+        raw = {
+            "name": "No longer happening",
+            "dates": {"start": {"localDate": "2026-07-19"}, "status": {"code": status}},
+        }
+        assert _from_ticketmaster(raw) is None
+
+
+def test_from_ticketmaster_normalizes_null_name():
+    event = _from_ticketmaster({
+        "name": None, "dates": {"start": {"localDate": "2026-07-19"}},
+    })
+    assert event is not None
+    assert event.name == ""
+
+
 def test_from_parks_maps_nested_link():
     raw = {
         "title": "Summer Pickleball",
@@ -46,6 +63,17 @@ def test_from_parks_maps_nested_link():
     assert ev.venue == "Blood Root Valley"
     assert ev.url == "http://www.nycgovparks.org/events/2026/06/17/x"
     assert ev.source == "NYC Parks" and ev.tier == "authoritative"
+
+
+def test_from_parks_drops_cancelled_titles():
+    for title in ("CANCELLED: Movie Night", "Canceled - Outdoor Concert", "POSTPONED: Movie"):
+        assert _from_parks({"title": title, "startdate": "2026-07-19"}) is None
+
+
+def test_from_parks_handles_null_title():
+    event = _from_parks({"title": None, "startdate": "2026-07-19"})
+    assert event is not None
+    assert event.name == ""
 
 
 def test_future_only_filters_past():

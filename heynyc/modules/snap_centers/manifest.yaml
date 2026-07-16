@@ -23,6 +23,7 @@ datasets:
       lon: longitude
       address: street_address
       borough: borough
+      hours: comments
 allowlist:
   - access.nyc.gov
   - nyc.gov
@@ -32,8 +33,9 @@ prompt: |
   tool returns and cite each one — these are the ~13 HRA SNAP application/enrollment centers.
 
   ALWAYS add that they can also apply online at ACCESS HRA (accesshra.nyc.gov) without visiting
-  a center at all, or call 311. The finder does NOT surface per-center hours or a phone number,
-  so tell users to confirm the hours before going, and NEVER invent hours, phone numbers, or
-  eligibility rules. If the tool returns nothing or geocoding fails, don't guess a center —
+  a center at all, or call 311. Pass through the source's listed hours and row update date. The
+  source does NOT surface a phone number, so tell users to confirm schedule exceptions before going,
+  and NEVER invent phone numbers or eligibility rules. If the tool returns nothing or geocoding
+  fails, don't guess a center.
   point the user to ACCESS HRA (accesshra.nyc.gov) and 311.
 eval: eval.yaml

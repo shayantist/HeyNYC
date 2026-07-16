@@ -151,7 +151,8 @@ async def test_nearest_wic_site_flags_temporary_site():
                 location_1={"latitude": "40.7510", "longitude": "-73.9910"}, **{":id": "row-temp"}),
     ]
     client = _routed_client(records)
-    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
     assert "temporary" in out.lower()                  # honesty: a rotating/temporary site is flagged
@@ -165,6 +166,22 @@ async def test_nearest_wic_site_never_invents_hours():
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
     assert "call" in out.lower()                        # routes to calling for hours/appointment
+
+
+async def test_nearest_wic_site_gives_official_fallback_when_contact_is_missing():
+    records = [_record(
+        phone_number="",
+        link_to_website=None,
+        location_1={"latitude": "40.7510", "longitude": "-73.9910"},
+    )]
+    client = _routed_client(records)
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+    assert "health.ny.gov/prevention/nutrition/wic/how_to_apply.htm" in out
+    assert "{cite:" in out.split("Contact:", 1)[1].splitlines()[0]
+    assert any("how_to_apply" in citation["url"] for citation in citations.mapping().values())
 
 
 async def test_nearest_wic_site_does_not_fake_missing_source_date():

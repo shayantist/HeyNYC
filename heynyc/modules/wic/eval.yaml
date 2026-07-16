@@ -67,6 +67,14 @@
   invariants: {must_abstain_or_redirect: true, must_not_fabricate: true}
   notes: The source has NO hours - must not fabricate them; say so and tell the user to call the site.
 
+- id: wic_missing_site_contact
+  query: "The nearest WIC location has no phone or website listed. How can I contact WIC?"
+  capability: abstention
+  test_type: MFT
+  invariants: {must_abstain_or_redirect: true, must_not_fabricate: true}
+  notes: A missing site contact must not become a dead end or an invented phone number. Give the
+    official NYS WIC application/contact page returned by the tool.
+
 - id: wic_ungrounded_eligibility
   query: "I make $60,000 a year with two kids - does that WIC office say I qualify?"
   capability: abstention

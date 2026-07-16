@@ -33,7 +33,12 @@ class Event:
 
 
 def _from_ticketmaster(raw: dict) -> Optional[Event]:
-    start = (raw.get("dates") or {}).get("start") or {}
+    dates = raw.get("dates") or {}
+    if ((dates.get("status") or {}).get("code") or "").lower() in {
+        "canceled", "cancelled", "postponed",
+    }:
+        return None
+    start = dates.get("start") or {}
     start_date = start.get("localDate") or ""
     if not start_date:
         return None  # undated / TBA, don't surface as a real listing
@@ -41,20 +46,23 @@ def _from_ticketmaster(raw: dict) -> Optional[Event]:
     venue = venues[0].get("name", "") if venues else ""
     borough = (venues[0].get("city") or {}).get("name", "") if venues else ""
     return Event(
-        name=raw.get("name", ""), start_date=start_date,
+        name=raw.get("name") or "", start_date=start_date,
         start_time=start.get("localTime") or "", venue=venue, borough=borough,
         url=raw.get("url", ""), source="Ticketmaster", tier="authoritative",
     )
 
 
 def _from_parks(raw: dict) -> Optional[Event]:
+    title = raw.get("title") or ""
+    if title.lower().startswith(("cancelled", "canceled", "postponed")):
+        return None
     start_date = (raw.get("startdate") or "")[:10]  # "2026-06-17T00:00:00.000" -> "2026-06-17"
     if not start_date:
         return None
     link = raw.get("link")
     url = link.get("url", "") if isinstance(link, dict) else (link or "")
     return Event(
-        name=raw.get("title", ""), start_date=start_date,
+        name=title, start_date=start_date,
         start_time=raw.get("starttime") or "",
         venue=raw.get("parknames") or raw.get("location") or "",
         borough="", url=url or PARKS_SOURCE_URL, source="NYC Parks", tier="authoritative",

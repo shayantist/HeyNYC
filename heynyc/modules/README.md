@@ -177,5 +177,8 @@ Run: `uv run python -m heynyc eval`. See [the eval guide](../eval/README.md) for
 - [ ] `keywords` cover how real people phrase it.
 - [ ] `field_map` matches the dataset's actual columns (check the dataset page).
 - [ ] `prompt` says which tool to use, to cite, and **when to abstain**.
+- [ ] The answer exposes the source's real update or verification time, never the fetch date as a freshness substitute.
+- [ ] Location and deadline results handle the practical “useful now” questions that apply: current or today's availability, holiday or exception status, access restrictions, and the exact next action.
+- [ ] Evals include late-night, holiday, stale-source, closure-conflict, and access-restriction cases where those conditions could change the recommendation. See the [useful-now gate](../../docs/superpowers/specs/2026-06-30-service-coverage-map-design.md#7c-the-useful-now-gate-truth-is-necessary-not-sufficient).
 - [ ] At least one `abstain: true` eval case (don't-make-things-up coverage).
 - [ ] `uv run python -m heynyc modules` lists it; `pytest` stays green.

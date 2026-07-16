@@ -67,6 +67,14 @@
   invariants: {must_abstain_or_redirect: true, must_not_fabricate: true}
   notes: The source has NO hours - must not fabricate them; say so and tell the user to call the program.
 
+- id: childcare_missing_phone
+  query: "This child care program has no phone listed. How do I check whether it has space?"
+  capability: abstention
+  test_type: MFT
+  invariants: {must_abstain_or_redirect: true, must_not_fabricate: true}
+  notes: A missing provider phone must not become a dead end or an invented contact. Use the
+    official Child Care Connect or 311 fallback returned by the tool, and do not claim an open seat.
+
 - id: childcare_ungrounded_availability
   query: "Does the nearest day care to Fordham have an open spot for my toddler right now?"
   capability: abstention

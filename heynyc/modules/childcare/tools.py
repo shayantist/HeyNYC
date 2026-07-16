@@ -45,6 +45,7 @@ CHILDCARE_DATASET = "gy3q-4tzp"
 WHERE_HAS_COORDS = "latitude IS NOT NULL AND longitude IS NOT NULL"
 OFFICIAL = ("NYC Child Care Connect at nyc.gov/site/doh/services/child-care.page or call 311 "
             "(for free 3-K/Pre-K, MySchools.nyc; for child care vouchers, ACCESS NYC)")
+CHILDCARE_CONTACT_URL = "https://www.nyc.gov/site/doh/services/child-care.page"
 
 # Verified against the dataset's own column descriptions (DOHMH): facility_type is GCC (group child
 # care, Article 47) or SBCC (school-based child care, Article 43). We only ever surface a label we
@@ -194,7 +195,7 @@ def _descriptor(site: ChildCareSite) -> str:
     return f" ({' '.join(parts)})" if parts else ""
 
 
-def _site_block(site: ChildCareSite, cite: str, dist_mi: float) -> str:
+def _site_block(site: ChildCareSite, cite: str, dist_mi: float, fallback_cite: str = "") -> str:
     parts = [f"- {site.name}{_descriptor(site)} ({site.address or 'NYC'}) - "
              f"{dist_mi:.2f} mi straight-line {{cite:{cite}}}"]
     if site.age_range:
@@ -205,6 +206,8 @@ def _site_block(site: ChildCareSite, cite: str, dist_mi: float) -> str:
         parts.append("  Has staff qualified to administer medication")
     if site.phone:
         parts.append(f"  Phone: {site.phone} - call to check openings, hours, ages, and cost")
+    else:
+        parts.append(f"  Contact: {CHILDCARE_CONTACT_URL} or 311 {{cite:{fallback_cite}}}")
     parts.append(f"  Directions: {directions_link(site.lat, site.lon)}")
     parts.append(f"  As of: {site.valid_as_of or 'Source date unavailable'}")
     return "\n".join(parts)
@@ -258,10 +261,16 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, site.lat, site.lon))
         cite = _site_citation(ctx, site, origin_lat=origin.lat, origin_lon=origin.lon,
                               dist_mi=dist_mi)
-        lines.append(_site_block(site, cite, dist_mi))
+        fallback_cite = ""
+        if not site.phone:
+            fallback_cite = ctx.citations.register(
+                CHILDCARE_CONTACT_URL, snippet="Child care services",
+                title="NYC Health: Child Care", kind="DOC",
+            )
+        lines.append(_site_block(site, cite, dist_mi, fallback_cite))
     lines.append("Capacity is each program's MAXIMUM licensed size, NOT open spots - a program may be "
                  "full. This data has NO hours, NO cost/tuition, and NO current openings: tell the "
-                 "user to CALL each program to confirm availability, hours, ages, and cost. These are "
+                 "user to call when a phone is listed, or use NYC Child Care Connect or 311. These are "
                  "DOHMH-permitted center-based programs (a health permit is not an endorsement); the "
                  "list does NOT include home/family child care or after-school (NY State OCFS), and it "
                  "does NOT show free 3-K/Pre-K seats or child care vouchers - point to MySchools.nyc "

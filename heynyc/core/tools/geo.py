@@ -491,9 +491,13 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
                                origin_lat=origin.lat, origin_lon=origin.lon, dist_mi=dist_mi)
         where = place.address or place.borough or "NYC"
         phone = f" phone: {place.phone}" if place.phone else ""
+        updated = f" record updated={place.updated_at[:10]}" if place.updated_at else ""
+        website = f", official info: {place.website}" if place.website else ""
+        hours = f", hours: {place.hours}" if place.hours else ""
         lines.append(
             f"- {place.name} ({where}), {dist_mi:.2f} mi straight-line, "
-            f"status={place.status or 'unknown'}{phone} {{cite:{cite}}}, directions: {maps_link(place.lat, place.lon)}"
+            f"status={place.status or 'unknown'}{phone}{updated} {{cite:{cite}}}, "
+            f"directions: {maps_link(place.lat, place.lon)}{website}{hours}"
         )
     return "\n".join(lines)
 

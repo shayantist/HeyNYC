@@ -7,6 +7,7 @@ shape so geo tools stay dataset-agnostic.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 import httpx
@@ -23,6 +24,8 @@ class Place:
     status: str = ""
     borough: str = ""
     phone: str = ""
+    website: str = ""
+    hours: str = ""
     source_url: str = ""
     record_id: str = ""   # per-row primary key (Socrata `:id`, or the arcgis `record_id_field`)
     updated_at: str = ""  # Socrata `:updated_at`, the row's "as of" / change signal (blank for arcgis)
@@ -44,6 +47,16 @@ def _get(record: dict, field_map: dict, key: str, default: str = "") -> str:
         return default
     value = record.get(column, default)
     return default if value is None else value
+
+
+def _timestamp(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return value
 
 
 def normalize(
@@ -68,6 +81,9 @@ def normalize(
             record_id = str(record.get(record_id_field, ""))
         else:
             record_id = str(record.get(":id", ""))
+        website = _get(record, field_map, "website")
+        if isinstance(website, dict):
+            website = website.get("url", "")
         places.append(
             Place(
                 name=str(_get(record, field_map, "name")),
@@ -77,9 +93,11 @@ def normalize(
                 status=str(_get(record, field_map, "status")),
                 borough=str(_get(record, field_map, "borough")),
                 phone=str(_get(record, field_map, "phone")),
+                website=str(website),
+                hours=str(_get(record, field_map, "hours")),
                 source_url=source_url,
                 record_id=record_id,
-                updated_at=str(record.get(":updated_at", "")),
+                updated_at=_timestamp(record.get(":updated_at")),
                 raw=record,
             )
         )

@@ -171,7 +171,8 @@ async def test_nearest_child_care_capacity_is_not_open_seats():
     # Honesty: capacity is the MAX licensed number, never presented as open/available seats.
     records = [_record(latitude="40.6901", longitude="-73.9601")]
     client = _routed_client(records)
-    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
     low = out.lower()
@@ -198,6 +199,18 @@ async def test_nearest_child_care_omits_no_data_age():
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
     assert "NO DATA" not in out                          # sentinel never leaks to the user
+
+
+async def test_nearest_child_care_gives_official_fallback_when_phone_is_missing():
+    records = [_record(phone="", latitude="40.6901", longitude="-73.9601")]
+    client = _routed_client(records)
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
+    await client.aclose()
+    assert "nyc.gov/site/doh/services/child-care.page" in out
+    assert "{cite:" in out.split("Contact:", 1)[1].splitlines()[0]
+    assert any("child-care.page" in citation["url"] for citation in citations.mapping().values())
 
 
 async def test_nearest_child_care_abstains_when_geocode_fails(monkeypatch):

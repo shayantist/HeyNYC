@@ -84,6 +84,31 @@ def test_normalize_captures_system_fields():
     assert place.raw[":id"] == "row-1"
 
 
+@pytest.mark.parametrize("updated_at", [None, "not-a-date"])
+def test_normalize_omits_invalid_system_timestamp(updated_at):
+    records = [{
+        ":updated_at": updated_at,
+        "propertyname": "Marconi Park",
+        "y": "40.7",
+        "x": "-73.8",
+    }]
+    [place] = normalize(records, FIELD_MAP)
+    assert place.updated_at == ""
+
+
+def test_normalize_maps_socrata_url_to_website():
+    records = [{
+        "propertyname": "53rd Street Library",
+        "y": "40.76082",
+        "x": "-73.97737",
+        "website": {"url": "https://www.nypl.org/locations/53rd-street"},
+        "comments": "Monday-Friday 8:30am to 5:00pm",
+    }]
+    [place] = normalize(records, {**FIELD_MAP, "website": "website", "hours": "comments"})
+    assert place.website == "https://www.nypl.org/locations/53rd-street"
+    assert place.hours == "Monday-Friday 8:30am to 5:00pm"
+
+
 async def test_query_dataset_requests_system_fields():
     seen = {}
 

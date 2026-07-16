@@ -222,7 +222,7 @@ async def test_geosearch_geocode_leaves_bbl_empty_without_addendum():
     assert point.bbl == ""
 
 
-FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough"}
+FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough", "website": "website", "hours": "comments"}
 
 
 def test_haversine_known_distance():
@@ -438,7 +438,7 @@ async def test_nearest_handler_ranks_and_cites():
                 200,
                 json=[
                     {"propertyname": "Far Site", "y": "40.8000", "x": "-73.9600", "status": "Activated", "borough": "Manhattan"},
-                    {"propertyname": "Close Site", "y": "40.7510", "x": "-73.9910", "status": "Activated", "borough": "Manhattan"},
+                    {"propertyname": "Close Site", "y": "40.7510", "x": "-73.9910", "status": "Activated", "borough": "Manhattan", ":updated_at": "2025-06-27T13:37:17.684Z", "website": {"url": "https://example.nyc/close-site"}, "comments": "Monday-Friday 8:30am to 5:00pm"},
                     {"propertyname": "No Coords", "status": "Activated"},
                 ],
             )
@@ -461,6 +461,9 @@ async def test_nearest_handler_ranks_and_cites():
     assert "Resolved 'origin'" in out
     # A deterministic Google Maps link is offered per place (navigation handoff)
     assert "google.com/maps" in out
+    assert "record updated=2025-06-27" in lines[0]
+    assert "official info: https://example.nyc/close-site" in lines[0]
+    assert "hours: Monday-Friday 8:30am to 5:00pm" in lines[0]
 
 
 def _registry_with_arcgis_cooling() -> Registry:
