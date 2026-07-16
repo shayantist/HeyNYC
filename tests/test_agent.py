@@ -289,6 +289,100 @@ def test_completion_kwargs_can_force_one_named_tool():
     }
 
 
+async def test_snap_work_rule_query_forces_current_official_search(empty_registry):
+    forced = []
+    first_messages = []
+    schemas_seen = []
+
+    async def search(args, ctx):
+        assert "SNAP" in args["query"]
+        assert "fair hearing" in args["query"]
+        return "current official HRA guidance"
+
+    tool = Tool(
+        name="web_search", description="x",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        handler=search,
+    )
+    unrelated = Tool(
+        name="housing_guidance", description="x", parameters={},
+        handler=lambda args, ctx: "unrelated",
+    )
+    agent = Agent(empty_registry, tools={"web_search": tool, "housing_guidance": unrelated})
+    responses = [
+        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(content="Use the current HRA instructions."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        schemas_seen.append([schema["function"]["name"] for schema in tool_schemas])
+        if len(forced) == 1:
+            first_messages.extend(messages)
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run("HRA says my SNAP is stopping because of a work rule")
+
+    assert forced == ["web_search", None]
+    assert result.tool_calls_made == ["web_search"]
+    assert all("housing_guidance" not in names for names in schemas_seen)
+    prompt = "\n".join(str(message.get("content", "")) for message in first_messages)
+    assert "Do not call or mention unrelated service modules" in prompt
+
+
+async def test_generic_snap_question_does_not_force_current_rule_search(empty_registry):
+    forced = []
+    agent = Agent(empty_registry, tools={})
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        yield {"type": "message", "message": _assistant(content="done")}
+
+    agent._litellm_stream = fake_litellm
+    await agent.run("How do I apply for SNAP?")
+
+    assert forced == [None]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "My EBT is stopping because of a work requirement",
+        "HRA says my food benefits are ending because of a work rule",
+        "HRA says my food-benefits are ending because of a work rule",
+        "My food-benefit case is ending under a work requirement",
+        "I may lose food assistance under the ABAWD rule",
+    ],
+)
+def test_snap_work_rule_matcher_covers_common_benefit_wording(query):
+    from heynyc.core.agent import _needs_current_snap_work_rule_guidance
+
+    assert _needs_current_snap_work_rule_guidance(query)
+
+
+def test_snap_work_rule_matcher_does_not_capture_general_food_search():
+    from heynyc.core.agent import _needs_current_snap_work_rule_guidance
+
+    assert not _needs_current_snap_work_rule_guidance("Where is my nearest food pantry?")
+
+
+def test_snap_work_rule_tool_fence_preserves_explicit_cross_module_requests():
+    from heynyc.core.agent import _snap_work_rule_allowed_tools
+
+    base = _snap_work_rule_allowed_tools("My SNAP work rule notice mentions a health condition")
+    assert "housing_guidance" not in base
+    assert "find_clinic" not in base
+
+    housing = _snap_work_rule_allowed_tools("My SNAP work rule and eviction both need help")
+    clinic = _snap_work_rule_allowed_tools("My SNAP work rule and finding a clinic both need help")
+    worker = _snap_work_rule_allowed_tools("My SNAP work rule and unpaid wages both need help")
+
+    assert "housing_guidance" in housing
+    assert "find_clinic" in clinic
+    assert "worker_rights_guidance" in worker
+
+
 async def test_forced_tool_applies_only_to_first_model_iteration(empty_registry):
     calls = []
 

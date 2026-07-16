@@ -74,6 +74,57 @@ FORCED_TOOL_FALLBACK = (
 
 SCREEN_SHORTLIST_DISCLOSURE = "This is a phone-friendly shortlist, not an official ranking."
 
+_SNAP_TERMS_RE = re.compile(
+    r"\b(?:snap|ebt|food stamps?|food[- ]benefits?|food assistance|cupones? de alimentos?|"
+    r"beneficios? de alimentos?|asistencia alimentaria)\b",
+    re.IGNORECASE,
+)
+_SNAP_WORK_RULE_RE = re.compile(
+    r"\b(?:abawd|work (?:rule|requirement)s?|employment requirement|volunteer(?:ing)?|"
+    r"regla(?:s)? de trabajo|requisito(?:s)? de trabajo|empleo|voluntari[oa]s?)\b",
+    re.IGNORECASE,
+)
+_SNAP_WORK_RULE_SEARCH_QUERY = (
+    "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits "
+    "fair hearing current"
+)
+_SNAP_WORK_RULE_SCOPE_REMINDER = (
+    "This turn is about SNAP work-rule recovery. Use current official SNAP guidance, the human "
+    "or fair-hearing path, and immediate food help if requested. Do not call or mention unrelated "
+    "service modules unless the user separately asked for them. Keep the answer phone-length."
+)
+_SNAP_WORK_RULE_BASE_TOOLS = frozenset({
+    "web_search", "recent_developments", "benefits_search", "nearest_food_pantry",
+    "geocode", "nearest", "screen_eligibility", "prepare_snap_application",
+})
+_EXPLICIT_HOUSING_RE = re.compile(
+    r"\b(?:rent|evict(?:ion|ed|ing)?|landlord|housing|shelter|voucher|section 8|cityfheps)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_CLINIC_RE = re.compile(
+    r"\b(?:doctor|clinic|health ?care|medical care|hospital)\b", re.IGNORECASE
+)
+_EXPLICIT_WORKER_RE = re.compile(
+    r"\b(?:employer|boss|wages?|paycheck|workplace|worker rights?)\b", re.IGNORECASE
+)
+
+
+def _needs_current_snap_work_rule_guidance(user_message: str) -> bool:
+    """Require current official retrieval for a SNAP work-rule question, never model memory."""
+    return bool(_SNAP_TERMS_RE.search(user_message) and _SNAP_WORK_RULE_RE.search(user_message))
+
+
+def _snap_work_rule_allowed_tools(user_message: str) -> set[str]:
+    """Keep the recovery turn focused while preserving explicitly requested cross-module help."""
+    allowed = set(_SNAP_WORK_RULE_BASE_TOOLS)
+    if _EXPLICIT_HOUSING_RE.search(user_message):
+        allowed.update({"hpd_building_lookup", "hpd_litigation_lookup", "housing_guidance"})
+    if _EXPLICIT_CLINIC_RE.search(user_message):
+        allowed.update({"find_clinic", "health_coverage_guidance"})
+    if _EXPLICIT_WORKER_RE.search(user_message):
+        allowed.add("worker_rights_guidance")
+    return allowed
+
 # Clear, active chest-pain statements bypass the model entirely. This is intentionally narrow, not a
 # general medical classifier: present-tense first-person English and Spanish only. A deterministic
 # response prevents unsafe diagnosis or dosage text from entering the streaming event path at all.
@@ -306,7 +357,27 @@ class Agent:
         excluded_tools: Optional[set[str]] = None,
     ) -> AsyncIterator[events.Event]:
         """Run one turn, yielding events (text deltas, tool lifecycle, terminal done)."""
+        initial_forced_tool = forced_tool
+        initial_forced_args = forced_tool_args
+        snap_work_rule_turn = False
+        if (
+            initial_forced_tool is None
+            and "web_search" in self.tools
+            and _needs_current_snap_work_rule_guidance(user_message)
+        ):
+            snap_work_rule_turn = True
+            initial_forced_tool = "web_search"
+            initial_forced_args = {"query": _SNAP_WORK_RULE_SEARCH_QUERY}
         messages = self._build_messages(user_message, history, reminders)
+        if snap_work_rule_turn:
+            messages.insert(-1, {
+                "role": "user",
+                "content": f"<system-reminder>\n{_SNAP_WORK_RULE_SCOPE_REMINDER}\n</system-reminder>",
+            })
+        effective_excluded_tools = set(excluded_tools or ())
+        if snap_work_rule_turn:
+            allowed = _snap_work_rule_allowed_tools(user_message)
+            effective_excluded_tools.update(name for name in self.tools if name not in allowed)
         citations = CitationRegistry()
         ctx = ToolContext(citations=citations, registry=self.registry, embedder=self._embedder,
                           output_dir=output_dir, drafts=drafts)
@@ -395,8 +466,8 @@ class Agent:
             assistant: Optional[dict] = None
             model_started = time.perf_counter()
             try:
-                requested_tool = forced_tool if i == 0 else None
-                tool_schemas = self._tool_schemas(excluded_tools)
+                requested_tool = initial_forced_tool if i == 0 else None
+                tool_schemas = self._tool_schemas(effective_excluded_tools)
                 model_stream = (
                     self._litellm_stream(messages, tool_schemas, requested_tool)
                     if self._uses_litellm
@@ -524,11 +595,13 @@ class Agent:
                 call_id = call.get("id") or name
                 tools_made.append(name)
                 turn_usage["n_tool_calls"] += 1
-                tool = None if name in (excluded_tools or set()) else self.tools.get(name)
+                tool = None if name in effective_excluded_tools else self.tools.get(name)
                 yield events.ToolStart(tool_call_id=call_id, name=name, label=name)
 
                 tool_started = time.perf_counter()
-                arg_overrides = forced_tool_args if i == 0 and name == forced_tool else None
+                arg_overrides = (
+                    initial_forced_args if i == 0 and name == initial_forced_tool else None
+                )
                 async for ev, tool_result in self._invoke(
                     name, call["function"]["arguments"], tool, ctx, arg_overrides=arg_overrides,
                 ):

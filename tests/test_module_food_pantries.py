@@ -77,6 +77,18 @@ def test_open_now_true_within_hours():
     assert _open_now(rec, now) is True
 
 
+def test_open_now_reads_the_source_third_daily_slot():
+    now = datetime(2026, 7, 1, 20, 0)
+    day = _DAYS[now.weekday()]
+    rec = _hours_record(
+        day,
+        "9:00 AM",
+        "10:00 AM",
+        **{f"fp_{day}_open3": "7:00 PM", f"fp_{day}_close3": "9:00 PM"},
+    )
+    assert _open_now(rec, now) is True
+
+
 def test_open_now_false_outside_hours():
     now = datetime(2026, 7, 1, 20, 0)              # 8pm, after close
     day = _DAYS[now.weekday()]
@@ -96,6 +108,17 @@ def test_open_now_false_when_closed_today_but_open_other_days():
 def test_open_now_none_when_no_hours_at_all():
     now = datetime(2026, 7, 1, 12, 0)
     assert _open_now({"program_type": "FP"}, now) is None  # honest unknown, never a guess
+
+
+def test_open_now_handles_cross_midnight_hours():
+    late = datetime(2026, 7, 1, 23, 30)
+    late_day = _DAYS[late.weekday()]
+    overnight = _hours_record(late_day, "10:00 PM", "2:00 AM")
+    assert _open_now(overnight, late) is True
+
+    early = datetime(2026, 7, 2, 1, 30)
+    assert _open_now(overnight, early) is True
+    assert _open_now(overnight, datetime(2026, 7, 2, 3, 0)) is False
 
 
 def test_source_date_preserves_valid_values_and_rejects_invalid_values():
@@ -166,6 +189,72 @@ async def test_nearest_food_pantry_ranks_grounds_and_links():
     assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
     assert citations.mapping()["S1"]["valid_as_of"] == ""
     assert "Source date unavailable" in out
+
+
+async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_now():
+    now_day = _DAYS[datetime.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910, 40.7510, program="Closed Pantry", distadd="2 Near Ave",
+            distboro="Manhattan", distzip="10001", org_phone="212-555-0002",
+            type_fp="FP", program_type="FP", OBJECTID=2, GlobalID="closed-1",
+            **{f"fp_{now_day}_open1": "1:00 AM", f"fp_{now_day}_close1": "2:00 AM"},
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert "None of these nearest candidates is scheduled open now" in out
+    assert "Do not present them as food available now" in out
+    assert "No City-listed site in this feed is scheduled open now" in out
+    assert "do not offer to search farther" in out
+    assert "Open food pantries from NYC FoodHelp" not in out
+
+
+async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
+    features = [
+        _pantry_feature(
+            -73.9910, 40.7510, program="Unknown Hours Pantry", distadd="2 Near Ave",
+            distboro="Manhattan", distzip="10001", type_fp="FP", program_type="FP",
+            GlobalID="unknown-hours",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert "hours are unavailable" in out.lower()
+    assert "may still be open" in out
+    assert "No City-listed site in this feed is scheduled open now" not in out
+
+
+async def test_nearest_food_pantry_returns_nearest_farther_open_site():
+    now_day = _DAYS[datetime.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910, 40.7510, program="Nearby Closed Pantry", distadd="2 Near Ave",
+            distboro="Manhattan", distzip="10001", type_fp="FP", program_type="FP",
+            GlobalID="closed-near",
+            **{f"fp_{now_day}_open1": "1:00 AM", f"fp_{now_day}_close1": "2:00 AM"},
+        ),
+        _pantry_feature(
+            -73.9400, 40.8000, program="Farther Open Pantry", distadd="9 Far Ave",
+            distboro="Manhattan", distzip="10027", type_fp="FP", program_type="FP",
+            GlobalID="open-far",
+            **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"},
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Union Square", "k": 1}, ctx)
+    await client.aclose()
+
+    assert "Nearby Closed Pantry" in out
+    assert "Nearest farther site scheduled open now" in out
+    assert "Farther Open Pantry" in out
 
 
 async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):

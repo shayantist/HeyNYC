@@ -1,7 +1,7 @@
 name: food_pantries
 category: Food
 description: >-
-  Find free food pantries and soup kitchens across NYC — the nearest open sites with
+  Find free food pantries and soup kitchens across NYC, the nearest open sites with
   their address, hours, phone, and dietary/access options (Halal, Kosher, HIV-focused,
   mobile) — grounded in the city's official FoodHelp finder.
 keywords:
@@ -31,16 +31,22 @@ prompt: |
   For food-help questions (food pantry, soup kitchen, free groceries, "I'm hungry / can't
   afford food right now"), call nearest_food_pantry(near=<the user's NYC address or neighborhood>).
   Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a full address,
-  an open-now status computed from the site's own hours, a phone number, any dietary/access flag
+  a scheduled-open-now status computed from the site's own hours, a phone number, any dietary/access flag
   (Halal / Kosher / HIV / Mobile), and a Google Maps directions link — pass these through as given.
   HONEST LIMITS — do not fabricate beyond the data:
-    - Open-now is computed from the site's structured hours. If the tool says "hours not listed",
-      say the hours aren't listed and tell the user to call ahead — never invent hours.
+    - Scheduled-open-now is computed from the site's structured weekly hours. The source has no
+      holiday or temporary exception fields, so tell the user to call before leaving. If the tool
+      says "hours not listed", say so and never invent hours.
+    - If every returned candidate is scheduled closed, say that none of those results solves an
+      immediate need. Follow the tool's citywide scheduled-open count: offer a farther search only
+      when the feed has one, otherwise route immediate food help to 311. Never introduce closed results
+      as open options.
     - Eligibility notes are often blank in the source. If a site has no notes, most NYC pantries
       serve anyone in need with no ID or appointment required, but do NOT state requirements the
-      data doesn't show — say you don't have specific eligibility and suggest calling ahead.
-    - The source has NO language information — never claim a pantry offers a given language.
+      data doesn't show, say you don't have specific eligibility and suggest calling ahead.
+    - The source has NO language information, never claim a pantry offers a given language.
   If geocoding fails, the location is ambiguous, or no sites come back, DON'T guess a pantry:
   say so plainly and point the user to finder.nyc.gov/foodhelp or 311. This is often an urgent,
-  sensitive need — be warm and direct, lead with the closest open option, and keep it practical.
+  sensitive need, be warm and direct, lead with a scheduled-open option when one was returned,
+  and keep it practical.
   For SNAP / food stamps (the benefit, not a pantry), that's the benefits module, not this one.

@@ -99,12 +99,12 @@ def _prefix(record: dict) -> str:
 
 
 def _day_slots(record: dict, prefix: str, day: str) -> list[tuple[int, int]]:
-    """The (open, close) minute-ranges for one weekday (up to two windows)."""
+    """The (open, close) minute-ranges for one weekday (up to three windows)."""
     slots: list[tuple[int, int]] = []
-    for n in ("1", "2"):
+    for n in ("1", "2", "3"):
         opened = _parse_time(record.get(f"{prefix}_{day}_open{n}"))
         closed = _parse_time(record.get(f"{prefix}_{day}_close{n}"))
-        if opened is not None and closed is not None and closed > opened:
+        if opened is not None and closed is not None and closed != opened:
             slots.append((opened, closed))
     return slots
 
@@ -117,9 +117,17 @@ def _open_now(record: dict, now: datetime) -> bool | None:
     """
     prefix = _prefix(record)
     today_slots = _day_slots(record, prefix, _DAYS[now.weekday()])
+    previous_slots = _day_slots(record, prefix, _DAYS[(now.weekday() - 1) % 7])
     minutes = now.hour * 60 + now.minute
     if today_slots:
-        return any(open_m <= minutes < close_m for open_m, close_m in today_slots)
+        if any(
+            (open_m < close_m and open_m <= minutes < close_m)
+            or (open_m > close_m and minutes >= open_m)
+            for open_m, close_m in today_slots
+        ):
+            return True
+    if any(open_m > close_m and minutes < close_m for open_m, close_m in previous_slots):
+        return True
     if any(_day_slots(record, prefix, day) for day in _DAYS):
         return False
     return None
@@ -127,9 +135,9 @@ def _open_now(record: dict, now: datetime) -> bool | None:
 
 def _status_label(open_now: bool | None) -> str:
     if open_now is True:
-        return "open now"
+        return "scheduled open now"
     if open_now is False:
-        return "closed now"
+        return "scheduled closed now"
     return "hours not listed, call ahead"
 
 
@@ -290,30 +298,62 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     now = datetime.now(_NYC_TZ)
     ordered = sorted(pantries, key=lambda p: haversine_m(origin.lat, origin.lon, p.lat, p.lon))
     # Collapse duplicate rows for the same physical site (same name + coordinate).
-    ranked: list[FoodPantry] = []
+    unique: list[FoodPantry] = []
     seen: set[tuple] = set()
     for pantry in ordered:
         key = (pantry.name.strip().lower(), round(pantry.lat, 5), round(pantry.lon, 5))
         if key in seen:
             continue
         seen.add(key)
-        ranked.append(pantry)
-        if len(ranked) >= k:
-            break
+        unique.append(pantry)
+    ranked = unique[:k]
 
     lines = [
         f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
         _resolution_note(near, origin),
-        "Open food pantries from NYC FoodHelp (finder.nyc.gov/foodhelp), report only these, cite each:",
+        "Nearest City-listed food pantry candidates from NYC FoodHelp "
+        "(finder.nyc.gov/foodhelp), report only these, cite each:",
     ]
+    scheduled_open_count = sum(_open_now(pantry.raw, now) is True for pantry in ranked)
+    citywide_scheduled_open = sum(_open_now(pantry.raw, now) is True for pantry in unique)
+    citywide_unknown_hours = sum(_open_now(pantry.raw, now) is None for pantry in unique)
+    if scheduled_open_count:
+        verb = "is" if scheduled_open_count == 1 else "are"
+        lines.append(f"{scheduled_open_count} of these candidates {verb} scheduled open now.")
+    else:
+        lines.append(
+            "None of these nearest candidates is scheduled open now. Do not present them as food "
+            "available now; offer to search farther or call 311 for immediate food help."
+        )
+        if citywide_scheduled_open == 0 and citywide_unknown_hours:
+            lines.append(
+                f"Hours are unavailable for {citywide_unknown_hours} City-listed site"
+                f"{'s' if citywide_unknown_hours != 1 else ''}, which may still be open. "
+                "Do not call those sites closed; tell the user to call the listed site or 311."
+            )
+        elif citywide_scheduled_open == 0:
+            lines.append(
+                "No City-listed site in this feed is scheduled open now. Tell the user to call 311 "
+                "for immediate food help; do not offer to search farther in the same feed."
+            )
+        else:
+            farther_open = next(
+                pantry for pantry in unique[k:] if _open_now(pantry.raw, now) is True
+            )
+            dist_mi = miles(haversine_m(origin.lat, origin.lon, farther_open.lat, farther_open.lon))
+            cite = _pantry_citation(
+                ctx, farther_open, origin_lat=origin.lat, origin_lon=origin.lon, dist_mi=dist_mi,
+            )
+            lines.append("Nearest farther site scheduled open now:")
+            lines.append(_pantry_block(farther_open, cite, dist_mi, now))
     for pantry in ranked:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon))
         cite = _pantry_citation(ctx, pantry, origin_lat=origin.lat, origin_lon=origin.lon,
                                 dist_mi=dist_mi)
         lines.append(_pantry_block(pantry, cite, dist_mi, now))
-    lines.append("Hours change and eligibility isn't always listed, tell the user to call ahead; "
-                 "if a field isn't shown, say you don't have it (don't guess). The data has no "
-                 "language info.")
+    lines.append("The listed weekly schedule has no holiday or temporary exception fields, so "
+                 "tell the user to call before leaving. Eligibility isn't always listed; if a "
+                 "field isn't shown, say you don't have it. The data has no language info.")
     return "\n".join(lines)
 
 
@@ -322,10 +362,10 @@ def get_tools() -> list[Tool]:
         Tool(
             name="nearest_food_pantry",
             description=(
-                "Find the nearest OPEN NYC food pantries / soup kitchens to an address, grounded in "
+                "Find the nearest City-listed NYC food pantries / soup kitchens to an address, grounded in "
                 "the city's official FoodHelp data (finder.nyc.gov/foodhelp). Pass `near` = the "
                 "user's NYC address or neighborhood; optional `k` (default 5). Returns each site's "
-                "name, full address, open-now status, phone, dietary/access type "
+                "name, full address, scheduled-open-now status, phone, dietary/access type "
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
                 "The source has no language info and eligibility notes are often blank, don't invent."
