@@ -8,7 +8,14 @@ from zoneinfo import ZoneInfo
 from heynyc.core.citations import data_provenance
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.geo import geocode, haversine_m, maps_link, miles
+from heynyc.core.tools.geo import (
+    _requested_result_limit,
+    _resolution_note,
+    geocode,
+    haversine_m,
+    maps_link,
+    miles,
+)
 
 COOL_OPTIONS_URL = (
     "https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/"
@@ -194,13 +201,10 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         )
     )
 
-    try:
-        limit = int(args.get("limit", 3))
-    except (TypeError, ValueError):
-        limit = 3
-    selected = unique[: min(max(limit, 1), 10)]
+    limit = _requested_result_limit(args.get("limit", 3), ctx.query)
+    selected = unique[:limit]
     day_name = _DAY_NAMES[now.weekday()]
-    lines = [f"NYC Cool Options near {origin.label}:"]
+    lines = [f"NYC Cool Options near {origin.label}:", _resolution_note(near, origin)]
     for index, item in enumerate(selected, 1):
         cite = _citation(ctx, item)
         distance = miles(item["distance_m"])

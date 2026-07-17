@@ -44,6 +44,7 @@ class EvalCase:
     redteam_category: str = ""
     language: str = "en"
     grounded_fact: str = ""
+    utility_criterion: str = ""
 
     def __post_init__(self) -> None:
         if not self.safety_critical:
@@ -86,6 +87,7 @@ def load_cases(registry: Registry) -> list[EvalCase]:
                     safety_critical=entry.get("safety_critical", False),
                     language=entry.get("language", "en"),
                     grounded_fact=entry.get("grounded_fact", ""),
+                    utility_criterion=entry.get("utility_criterion", ""),
                 )
             )
     return cases

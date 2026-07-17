@@ -31,6 +31,9 @@ def test_looks_like_intersection():
     assert _looks_like_intersection("116 St and Broadway")
     assert _looks_like_intersection("W 116 St & Broadway")
     assert _looks_like_intersection("5 Ave / 42 St")
+    assert _looks_like_intersection("Atlantic Avenue and Flatbush Avenue")
+    assert not _looks_like_intersection("Food and Agriculture Building")
+    assert not _looks_like_intersection("I need 2 food pantries and 3 cooling centers")
     # No street numbers → treat as a place name, not an intersection
     assert not _looks_like_intersection("Union Square")
     assert not _looks_like_intersection("Fordham Road, the Bronx")
@@ -255,6 +258,22 @@ async def test_geocode_parses_lon_lat_order():
     assert "Columbia" in point.label
 
 
+async def test_geocode_accepts_grounded_nyc_coordinate_text_without_provider_lookup():
+    async def should_not_run(_text):
+        raise AssertionError("coordinate text reached the place-name geocoder")
+
+    point = await geocode("40.75953,-73.97859", forgiving=should_not_run)
+
+    assert point is not None
+    assert point.match_type == "coordinates"
+    assert point.lat == 40.75953
+    assert point.lon == -73.97859
+
+
+async def test_geocode_rejects_coordinate_text_outside_nyc():
+    assert await geocode("-72.82204,0", forgiving=_fake_forgiving(None)) is None
+
+
 async def test_geocode_no_match_returns_none():
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"features": []})))
     # GeoSearch empty AND forgiving provider empty → None (inject to stay offline).
@@ -282,6 +301,30 @@ async def test_high_confidence_match_not_flagged():
     point = await geocode("116 St and Broadway", forgiving=forg)
     assert point.match_type == "mapbox"
     assert point.low_confidence is False
+
+
+async def test_intersection_direction_mismatch_is_flagged_for_clarification():
+    forg = _fake_forgiving(GeoPoint(
+        40.7980, -73.9410, "Broadway & E 116th St, Manhattan",
+        confidence=0.99, match_type="mapbox",
+    ))
+
+    point = await geocode("Broadway and West 116th Street", forgiving=forg)
+
+    assert point is not None
+    assert point.low_confidence is True
+
+
+async def test_intersection_street_mismatch_is_flagged_for_clarification():
+    forg = _fake_forgiving(GeoPoint(
+        40.8073, -73.9626, "Amsterdam Ave & W 116th St, Manhattan",
+        confidence=0.99, match_type="mapbox",
+    ))
+
+    point = await geocode("Broadway and West 116th Street", forgiving=forg)
+
+    assert point is not None
+    assert point.low_confidence is True
 
 
 async def test_low_confidence_match_flagged():
@@ -464,6 +507,67 @@ async def test_nearest_handler_ranks_and_cites():
     assert "record updated=2025-06-27" in lines[0]
     assert "official info: https://example.nyc/close-site" in lines[0]
     assert "hours: Monday-Friday 8:30am to 5:00pm" in lines[0]
+
+
+async def test_nearest_handler_defaults_to_three_when_model_overrequests():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "geosearch" in request.url.host:
+            return _geosearch_response(40.7500, -73.9900, "Origin, Manhattan")
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "propertyname": f"Site {index}",
+                    "y": str(40.7500 + index / 1000),
+                    "x": "-73.9900",
+                    "status": "Activated",
+                    "borough": "Manhattan",
+                }
+                for index in range(1, 6)
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=_registry_with_cooling(),
+        query="Where are the nearest fountains to Rockefeller Center?",
+        http=client,
+    )
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "Rockefeller Center", "k": 5}, ctx
+    )
+    await client.aclose()
+
+    assert len([line for line in out.splitlines() if line.startswith("- ")]) == 3
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=_registry_with_cooling(),
+        query="Show me five fountains near Rockefeller Center",
+        http=client,
+    )
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "Rockefeller Center", "k": 5}, ctx
+    )
+    await client.aclose()
+
+    assert len([line for line in out.splitlines() if line.startswith("- ")]) == 5
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=_registry_with_cooling(),
+        query="I need 5 cooling centers",
+        http=client,
+    )
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "Rockefeller Center", "k": 8}, ctx
+    )
+    await client.aclose()
+
+    assert len([line for line in out.splitlines() if line.startswith("- ")]) == 5
 
 
 def _registry_with_arcgis_cooling() -> Registry:

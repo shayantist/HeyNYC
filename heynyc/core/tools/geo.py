@@ -21,13 +21,98 @@ from .arcgis import feature_query_url, query_feature_service
 from .base import Tool, ToolContext
 from .datasets import dataset_url, normalize, query_dataset, row_url
 
-_INTERSECTION_RE = re.compile(r"(?:\b(?:and|at)\b|&|/)", re.IGNORECASE)
+_INTERSECTION_RE = re.compile(r"(?:\band\b|&|/)", re.IGNORECASE)
+_NUMBERED_AT_RE = re.compile(r"\bat\b", re.IGNORECASE)
+_STREET_SUFFIX_RE = re.compile(
+    r"\b(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|parkway|pkwy|way)\b",
+    re.IGNORECASE,
+)
+_INTERSECTION_SPLIT_RE = re.compile(r"(?:\band\b|&|/|\bat\b)", re.IGNORECASE)
+_DIRECTIONS = {
+    "north": "n", "n": "n", "south": "s", "s": "s",
+    "east": "e", "e": "e", "west": "w", "w": "w",
+}
+_STREET_SUFFIXES = {
+    "street", "st", "avenue", "ave", "road", "rd", "boulevard", "blvd",
+    "lane", "ln", "drive", "dr", "parkway", "pkwy", "way",
+}
+_COORDINATE_RE = re.compile(
+    r"^\s*(?P<lat>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*"
+    r"(?P<lon>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*$"
+)
+_COUNT_VALUE = r"one|two|three|four|five|six|seven|eight|nine|ten|\d+"
+_VERB_COUNT_RE = re.compile(
+    rf"\b(?:show|give|list|find|return|need|want|have)\s+(?:me\s+)?(?P<count>{_COUNT_VALUE})\b",
+    re.IGNORECASE,
+)
+_NOUN_COUNT_RE = re.compile(
+    rf"\b(?P<count>{_COUNT_VALUE})\s+"
+    r"(?:(?:nearest|nearby|cooling|water|drinking|public|food|indoor|activated|free)\s+)?"
+    r"(?:results?|places?|options?|locations?|centers?|stations?|fountains?|restrooms?|pantries?|clinics?|events?)\b",
+    re.IGNORECASE,
+)
+_MORE_RESULTS_RE = re.compile(r"\b(?:all|more|additional|another)\b", re.IGNORECASE)
+_COUNT_VALUES = {
+    word: number
+    for number, word in enumerate(
+        ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+    )
+}
 
 
 def _looks_like_intersection(text: str) -> bool:
     """Heuristic: 'X and Y', 'X & Y', 'X/Y', try the forgiving provider first
     for these (NYC GeoSearch can't do cross-streets)."""
-    return bool(_INTERSECTION_RE.search(text)) and any(ch.isdigit() for ch in text)
+    match = _INTERSECTION_RE.search(text)
+    if match:
+        left, right = text[:match.start()], text[match.end():]
+        if not left.strip() or not right.strip():
+            return False
+        if any(ch.isdigit() for ch in text):
+            sides = [re.findall(r"[a-z0-9]+", side.lower()) for side in (left, right)]
+            numbers = [int(value) for value in re.findall(r"\d+", text)]
+            streetlike = bool(_STREET_SUFFIX_RE.search(text) or re.search(r"\b\d+(?:st|nd|rd|th)\b", text, re.IGNORECASE))
+            return all(len(side) <= 4 for side in sides) and (streetlike or any(n >= 10 for n in numbers))
+        return bool(_STREET_SUFFIX_RE.search(left) and _STREET_SUFFIX_RE.search(right))
+    return bool(_NUMBERED_AT_RE.search(text)) and any(ch.isdigit() for ch in text)
+
+
+def _intersection_identity_matches(query: str, label: str) -> bool:
+    query_parts = _INTERSECTION_SPLIT_RE.split(query, maxsplit=1)
+    label_parts = _INTERSECTION_SPLIT_RE.split(label, maxsplit=1)
+    if len(query_parts) != 2 or len(label_parts) != 2:
+        return False
+
+    def tokens(value: str) -> set[str]:
+        result = set()
+        for token in re.findall(r"[a-z]+|\d+(?:st|nd|rd|th)?", value.lower()):
+            token = re.sub(r"(?<=\d)(?:st|nd|rd|th)$", "", token)
+            if token not in _STREET_SUFFIXES and token not in _DIRECTIONS:
+                result.add(token)
+        return result
+
+    label_tokens = [tokens(part) for part in label_parts]
+    if not all(any(tokens(part) & candidate for candidate in label_tokens) for part in query_parts):
+        return False
+    query_directions = {_DIRECTIONS[token] for token in re.findall(r"[a-z]+", query.lower()) if token in _DIRECTIONS}
+    label_directions = {_DIRECTIONS[token] for token in re.findall(r"[a-z]+", label.lower()) if token in _DIRECTIONS}
+    return not query_directions or query_directions.issubset(label_directions)
+
+
+def _requested_result_limit(value: object, query: str, *, default: int = 3) -> int:
+    """Trust model counts only when the resident asked for a count or more results."""
+    try:
+        requested = min(max(int(value), 1), 10)
+    except (TypeError, ValueError):
+        requested = default
+    if not query or _MORE_RESULTS_RE.search(query):
+        return requested
+    match = _VERB_COUNT_RE.search(query) or _NOUN_COUNT_RE.search(query)
+    if match:
+        raw_count = match.group("count").casefold()
+        count = _COUNT_VALUES.get(raw_count, int(raw_count) if raw_count.isdigit() else default)
+        return min(max(count, 1), 10)
+    return default
 
 
 EARTH_RADIUS_M = 6_371_000.0
@@ -296,6 +381,16 @@ async def geocode(
     if forgiving is None:
         from .geocoder import forgiving_geocode
         forgiving = forgiving_geocode
+    coordinate = _COORDINATE_RE.fullmatch(text)
+    if coordinate:
+        lat = float(coordinate.group("lat"))
+        lon = float(coordinate.group("lon"))
+        if not _in_nyc(lat, lon):
+            return None
+        return GeoPoint(
+            lat=lat, lon=lon, label=f"{lat:.5f},{lon:.5f}", confidence=1.0,
+            match_type="coordinates",
+        )
     borough_contains = borough_contains or _point_in_named_borough
     own = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
@@ -335,6 +430,9 @@ async def geocode(
                 point = None
         if point is not None and _gate_low_confidence(point):
             point.low_confidence = True
+        if point is not None and _looks_like_intersection(text):
+            if not _intersection_identity_matches(text, point.label):
+                point.low_confidence = True
         return point
     finally:
         if own:
@@ -429,12 +527,19 @@ def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float
     else:
         url = row_url(binding.id, place.record_id) if place.record_id else place.source_url
         title = f"NYC Open Data ({binding.id})"
+    derivation = {
+        "origin": [origin_lat, origin_lon],
+        "point": [place.lat, place.lon],
+        "distance_mi": dist_mi,
+    }
+    limitations = getattr(binding, "limitations", "")
+    if limitations:
+        derivation["limitations"] = limitations
     prov = data_provenance(
         place.raw,
         record_id=place.record_id,
         field_pointer="/",  # whole-row; field-level pointer is a later refinement
-        derivation={"origin": [origin_lat, origin_lon], "point": [place.lat, place.lon],
-                    "distance_mi": dist_mi},
+        derivation=derivation,
     )
     return ctx.citations.register(
         url,
@@ -469,7 +574,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     if not places:
         return f"No '{category}' locations found in the dataset."
 
-    k = int(args.get("k", 3))
+    k = _requested_result_limit(args.get("k", 3), ctx.query)
     ordered = sorted(places, key=lambda p: haversine_m(origin.lat, origin.lon, p.lat, p.lon))
     # Datasets often have multiple rows per site (e.g. several features at one
     # playground); keep only the nearest occurrence of each named place.
@@ -499,6 +604,8 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
             f"status={place.status or 'unknown'}{phone}{updated} {{cite:{cite}}}, "
             f"directions: {maps_link(place.lat, place.lon)}{website}{hours}"
         )
+    if binding.limitations:
+        lines.append(f"Source limit: {binding.limitations}")
     return "\n".join(lines)
 
 

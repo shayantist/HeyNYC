@@ -85,8 +85,10 @@ async def test_lookup_combines_active_centers_and_indoor_cool_options(monkeypatc
     assert "Petco Turtle Bay" in output
     assert "activated cooling center" in output
     assert "scheduled open now" in output
+    assert "Resolved 'Rockefeller Center'" in output
     assert "Wednesday: 8a-10p" in output
     assert "Accessible: Yes" in output
+    assert output.count("https://www.google.com/maps/search/?api=1&query=") == 2
     assert len(ctx.citations.mapping()) == 2
 
 

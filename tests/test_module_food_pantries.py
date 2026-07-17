@@ -30,6 +30,12 @@ from heynyc.modules.food_pantries.tools import (
 )
 
 
+class _Noon(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 7, 17, 12, 0, tzinfo=tz)
+
+
 # --- pure helpers ----------------------------------------------------------
 
 def test_parse_time_handles_common_formats():
@@ -154,6 +160,152 @@ def _routed_client(features) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+async def test_nearest_food_pantry_rejects_model_invented_origin(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("invented location reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="My SNAP stopped and I need food today.",
+        user_history="My SNAP stopped and I need food today.",
+        user_turns=("My SNAP stopped and I need food today.",),
+    )
+
+    out = await get_tools()[0].handler({"near": "Lower East Side"}, ctx)
+
+    assert "where" in out.lower()
+    assert "address or neighborhood" in out.lower()
+    assert "call 311" in out.lower()
+    assert "finder.nyc.gov/foodhelp" in out
+
+
+@pytest.mark.parametrize(
+    ("near", "query", "history"),
+    [
+        ("Upper East Side", "I need food today.", "I am in East Harlem.\nI need food today."),
+        ("Brooklyn", "I need food today.", "I used to live in Brooklyn.\nI am in Queens.\nI need food today."),
+    ],
+)
+async def test_nearest_food_pantry_rejects_partial_or_stale_origins(
+    monkeypatch, near, query, history,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unsupported location reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query=query, user_history=history,
+        user_turns=tuple(history.splitlines()),
+    )
+
+    out = await get_tools()[0].handler({"near": near}, ctx)
+
+    assert "proposed search origin was not supplied" in out
+
+
+async def test_nearest_food_pantry_rejects_location_from_prior_turn(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("stale location reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="Which one is open now?",
+        user_history="I am near Jackson Heights.\nWhich one is open now?",
+        user_turns=("I am near Jackson Heights.", "Which one is open now?"),
+    )
+
+    out = await get_tools()[0].handler({"near": "Jackson Heights"}, ctx)
+
+    assert "proposed search origin was not supplied" in out
+
+
+async def test_nearest_food_pantry_rejects_past_location_in_current_turn(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("stale location reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    query = "I used to live in Brooklyn, but I am now in Queens."
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query=query, user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler({"near": "Brooklyn"}, ctx)
+
+    assert "proposed search origin was not supplied" in out
+
+
+async def test_nearest_food_pantry_rejects_negated_current_origin(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("negated location reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="I am not in Brooklyn.",
+        user_turns=("I am not in Brooklyn.",),
+    )
+
+    out = await get_tools()[0].handler({"near": "Brooklyn"}, ctx)
+
+    assert "proposed search origin was not supplied" in out
+
+
+@pytest.mark.parametrize("query", [
+    "I don't live in Brooklyn.",
+    "I am not located anywhere near Brooklyn.",
+    "Brooklyn is not where I live.",
+])
+async def test_nearest_food_pantry_rejects_extended_negation(monkeypatch, query):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("negated location reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query=query, user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler({"near": "Brooklyn"}, ctx)
+
+    assert "proposed search origin was not supplied" in out
+
+
+async def test_nearest_food_pantry_preserves_resident_address_abbreviation(monkeypatch):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    query = "I am near 123 Main St, Brooklyn."
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query=query, user_turns=(query,),
+    )
+
+    await get_tools()[0].handler({"near": "123 Main Street, Brooklyn"}, ctx)
+
+    assert seen == ["123 Main St, Brooklyn"]
+
+
+async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_resident_landmark(monkeypatch):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="Is there a food pantry open right now near Union Square?",
+        user_turns=("Is there a food pantry open right now near Union Square?",),
+    )
+
+    await get_tools()[0].handler({"near": "Union Square, Manhattan, NYC"}, ctx)
+
+    assert seen == ["Union Square"]
+
+
 async def test_nearest_food_pantry_ranks_grounds_and_links():
     now_day = _DAYS[datetime.now().weekday()]
     features = [
@@ -191,8 +343,9 @@ async def test_nearest_food_pantry_ranks_grounds_and_links():
     assert "Source date unavailable" in out
 
 
-async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_now():
-    now_day = _DAYS[datetime.now().weekday()]
+async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_now(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
     features = [
         _pantry_feature(
             -73.9910, 40.7510, program="Closed Pantry", distadd="2 Near Ave",
@@ -231,8 +384,9 @@ async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
     assert "No City-listed site in this feed is scheduled open now" not in out
 
 
-async def test_nearest_food_pantry_returns_nearest_farther_open_site():
-    now_day = _DAYS[datetime.now().weekday()]
+async def test_nearest_food_pantry_returns_nearest_farther_open_site(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
     features = [
         _pantry_feature(
             -73.9910, 40.7510, program="Nearby Closed Pantry", distadd="2 Near Ave",

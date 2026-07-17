@@ -31,6 +31,7 @@ class DatasetBinding(BaseModel):
     where: Optional[str] = None  # optional default filter (SoQL $where / ArcGIS where)
     record_id_field: Optional[str] = None  # stable id column for arcgis row-addressing, e.g. "NYCEM_ID"
     title: Optional[str] = None  # citation title override
+    limitations: str = ""  # source-level claim boundary preserved in tool and final output
 
     @model_validator(mode="after")
     def _check_source(self) -> "DatasetBinding":

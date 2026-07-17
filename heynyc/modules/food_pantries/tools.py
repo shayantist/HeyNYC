@@ -37,6 +37,12 @@ FOODHELP_URL = (
 )
 WHERE_OPEN = "status='Open'"
 OFFICIAL = "finder.nyc.gov/foodhelp or call 311"
+NO_LOCATION = (
+    "The proposed search origin was not supplied by the user, so do not use it. "
+    "For immediate food help, tell the user to call 311 or use "
+    "https://finder.nyc.gov/foodhelp. Also ask where they are, using an NYC address or "
+    "neighborhood, so the next search can return nearby options. Never guess their location."
+)
 _NYC_TZ = ZoneInfo("America/New_York")
 
 # datetime.weekday(): Monday=0 … Sunday=6 → the source's fp_<day>_* prefixes.
@@ -48,14 +54,49 @@ _TYPE_DESCRIPTORS = {
     "FPH": "Halal", "FPHA": "HIV Customers", "FPK": "Kosher", "FPM": "Mobile",
     "SKK": "Kosher", "SKM": "Mobile",
 }
-
-
+_ORIGIN_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_ORIGIN_NEGATION_RE = re.compile(r"\b(?:no|not|never|without|don['’]?t|do\s+not)\b", re.IGNORECASE)
+_ORIGIN_STALE_RE = re.compile(r"\b(?:used to|formerly|previously)\b", re.IGNORECASE)
+_ORIGIN_TOKEN_ALIASES = {
+    "st": "street", "ave": "avenue", "rd": "road", "blvd": "boulevard",
+    "ln": "lane", "dr": "drive", "pkwy": "parkway",
+}
 def _clean(value) -> str:
     """None / literal 'NULL' / blanks → ''. ArcGIS returns JSON null for empty fields."""
     if value is None:
         return ""
     text = str(value).strip()
     return "" if text.upper() == "NULL" else text
+
+
+def _resident_supplied_origin(near: str, query: str, user_turns: tuple[str, ...]) -> str:
+    current_turn = query or (user_turns[-1] if user_turns else "")
+    if not current_turn:
+        return near
+    parts = [part.strip() for part in near.split(",") if part.strip()]
+    candidates = [", ".join(parts[:end]) for end in range(len(parts), 0, -1)]
+    turn_matches = list(_ORIGIN_TOKEN_RE.finditer(current_turn))
+    turn_tokens = [_ORIGIN_TOKEN_ALIASES.get(match.group().lower(), match.group().lower())
+                   for match in turn_matches]
+    for candidate in candidates:
+        tokens = [_ORIGIN_TOKEN_ALIASES.get(token.lower(), token.lower())
+                  for token in _ORIGIN_TOKEN_RE.findall(candidate)]
+        if len(tokens) < 2 and len(parts) > 1:
+            continue
+        for start in range(len(turn_tokens) - len(tokens) + 1):
+            if tokens != turn_tokens[start:start + len(tokens)]:
+                continue
+            raw_start = turn_matches[start].start()
+            raw_end = turn_matches[start + len(tokens) - 1].end()
+            clause_start = max(current_turn.rfind(mark, 0, raw_start) for mark in ".!?;,") + 1
+            clause_ends = [current_turn.find(mark, raw_end) for mark in ".!?;,"]
+            clause_end = min((end for end in clause_ends if end >= 0), default=len(current_turn))
+            # ponytail: lexical negation is a fail-closed floor; semantic review covers other languages.
+            clause = current_turn[clause_start:clause_end]
+            if _ORIGIN_NEGATION_RE.search(clause) or _ORIGIN_STALE_RE.search(clause):
+                continue
+            return current_turn[raw_start:raw_end]
+    return ""
 
 
 # --- hours / open-now ------------------------------------------------------
@@ -273,8 +314,11 @@ def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) 
 async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     if not near:
-        return ("Ask the user where they are (an NYC address or neighborhood) before searching, "
-                "never guess a pantry location.")
+        return NO_LOCATION
+    resident_origin = _resident_supplied_origin(near, ctx.query, ctx.user_turns)
+    if not resident_origin:
+        return NO_LOCATION
+    near = resident_origin
 
     origin = await geocode(near, client=ctx.http)
     if origin is None:

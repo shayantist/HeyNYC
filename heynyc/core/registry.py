@@ -25,6 +25,7 @@ _SERVICE_NAMES = {
     "benefits": "Benefits & programs",
     "food_pantries": "Food pantries",
     "cooling_centers": "Cooling centers",
+    "drinking_fountains": "Drinking fountains",
     "snap_centers": "SNAP centers",
     "housing": "Housing & eviction help",
     "advisories": "Emergency advisories",

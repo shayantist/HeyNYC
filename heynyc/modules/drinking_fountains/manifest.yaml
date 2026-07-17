@@ -1,0 +1,45 @@
+name: drinking_fountains
+category: city services
+description: >-
+  Find nearby outdoor drinking fountains listed by NYC Parks, with grounded
+  distance and directions.
+keywords:
+  - water station
+  - drinking fountain
+  - water fountain
+  - bottle filling
+  - bottle refill
+  - hydration station
+examples:
+  - "Where is the nearest drinking fountain?"
+  - "Where can I refill my water bottle near Rockefeller Center?"
+datasets:
+  - source: arcgis
+    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/NYC_Parks_Drinking_Fountains/FeatureServer/0
+    category: drinking_fountain
+    record_id_field: FID
+    title: NYC Parks Drinking Fountains
+    where: "FeatureSta='Active'"
+    limitations: >-
+      NYC Parks inventory covers outdoor fountains in parks only. Active is not a live guarantee
+      that a fountain is working or available today.
+    field_map:
+      name: PropName
+      lat: lat
+      lon: lon
+      borough: Borough
+      status: FeatureSta
+seeds:
+  - https://data.cityofnewyork.us/Recreation/NYC-Parks-Drinking-Fountains-Map/622h-mkfu
+allowlist:
+  - data.cityofnewyork.us
+  - services6.arcgis.com
+prompt: |
+  For drinking-water or bottle-refill questions, call nearest with
+  category="drinking_fountain" and the user's location. Pass k when the user requests a count;
+  otherwise use the default. These are outdoor fountains in NYC Parks, not a complete inventory
+  of indoor, private, transit, temporary, or every public water source. Preserve the distance,
+  directions, citation, and park name. An "Active" inventory record is not a live guarantee that
+  the fountain is on, clean, accessible, or available today. Say that plainly without telling the
+  user merely to check for themselves. Offer a nearby indoor Cool Option when heat safety matters.
+eval: eval.yaml
