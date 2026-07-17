@@ -2,7 +2,6 @@
 it lands in a PII-redacted, append-only log keyed off the salted user_key, and the owner
 can aggregate the flags to spot a systematic error. All offline: no model, no network."""
 import asyncio
-import json
 
 from heynyc.channels import analytics
 from heynyc.channels.base import InboundMessage, KeyedLocks
@@ -39,6 +38,14 @@ def test_redact_pii_masks_anumber_and_card():
     assert "save my" in out and "for next time" in out
 
 
+def test_redact_pii_masks_passport_and_bank_account_like_ids():
+    out = analytics.redact_pii(
+        "passport X1234567 and bank account 123456789012"
+    )
+    assert "X1234567" not in out
+    assert "123456789012" not in out
+
+
 def test_redact_pii_keeps_ordinary_text():
     assert analytics.redact_pii("the cooling center hours are outdated") == \
         "the cooling center hours are outdated"
@@ -57,7 +64,7 @@ def test_record_feedback_redacts_note_and_query_and_keeps_user_key(tmp_path):
         user_query="is 350 Jay Street rent stabilized?",
         agent_text="You said 350 Jay Street. Call 311 at 212-639-9675. {cite:S1}",
     )
-    written = json.loads(path.read_text().splitlines()[0])
+    written = analytics.load_feedback(path)[0]
     assert written["user_key"] == "abc123"
     assert written["flag"] == "/wrong"
     # resident-authored free text is redacted at write time
@@ -169,7 +176,8 @@ def _msg(text, mid):
     return InboundMessage(channel="whatsapp_meta", sender="+1555", text=text, message_id=mid)
 
 
-async def test_slash_wrong_with_note_flags_without_agent_and_redacts(tmp_path):
+async def test_slash_wrong_with_note_flags_without_agent_and_redacts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     deps = _deps(tmp_path)
     # 1) a normal turn so there's a last answer to flag
     await handle(_msg("when do cooling centers open?", "q1"), FakeReplier(), deps)
@@ -181,7 +189,7 @@ async def test_slash_wrong_with_note_flags_without_agent_and_redacts(tmp_path):
     assert flagger.sent and "flag" in flagger.sent[0].lower()   # fixed acknowledgment
 
     raw = (tmp_path / "fb.jsonl").read_text()
-    rec = json.loads(raw.splitlines()[0])
+    rec = analytics.load_feedback(tmp_path / "fb.jsonl")[0]
     # keyed off the salted user_key, never the raw phone number
     assert rec["user_key"] == user_key("whatsapp_meta", "+1555", "s")
     assert "+1555" not in raw and "212-555-1234" not in raw

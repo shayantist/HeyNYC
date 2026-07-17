@@ -216,7 +216,9 @@ def _record_agent_turn(session_id: str, model: str, result) -> None:
 
 async def _cmd_chat(question: str) -> None:
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
-    agent = Agent(registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False))
+    agent = Agent(
+        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False), scope_gate=True,
+    )
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
     from heynyc.core.citations import text_fragment_url, used_citations
@@ -395,7 +397,8 @@ async def _cmd_repl() -> None:
         return _approve_repl_action(console, name, args)
 
     agent = Agent(
-        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False), approver=approver
+        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False),
+        approver=approver, scope_gate=True,
     )
     convo = agent.conversation()
 
@@ -486,7 +489,40 @@ async def _cmd_repl() -> None:
         console.print()
 
 
-async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None, module: str | None = None) -> None:
+def _select_eval_cases(cases: list, case_ids: list[str]) -> list:
+    if not case_ids:
+        return cases
+    missing = sorted(set(case_ids) - {case.id for case in cases})
+    if missing:
+        noun = "id" if len(missing) == 1 else "ids"
+        raise SystemExit(f"Unknown eval case {noun}: {', '.join(missing)}")
+    selected = set(case_ids)
+    return [case for case in cases if case.id in selected]
+
+
+def _eval_run_metadata(model: str, results: list) -> dict:
+    from heynyc.eval.bench import _candidate_cost
+
+    cost, input_tokens, output_tokens = _candidate_cost(model, results)
+    return {
+        "model": model,
+        "case_ids": [result.case.id for result in results],
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "candidate_cost_usd": cost,
+        "latency_ms": sum(float(result.usage.get("latency_ms", 0) or 0) for result in results),
+        "n_model_calls": sum(int(result.usage.get("n_model_calls", 0) or 0) for result in results),
+        "n_tool_calls": sum(int(result.usage.get("n_tool_calls", 0) or 0) for result in results),
+    }
+
+
+async def _cmd_eval(
+    use_api_judge: bool,
+    repeat: int = 1,
+    out: str | None = None,
+    module: str | None = None,
+    case_ids: list[str] | None = None,
+) -> None:
     from datetime import timezone
     from pathlib import Path
 
@@ -498,6 +534,7 @@ async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None
     cases = load_cases(registry)
     if module:
         cases = [c for c in cases if c.module == module]
+    cases = _select_eval_cases(cases, case_ids or [])
     if not cases:
         scope = f" for module '{module}'" if module else ""
         print(f"No eval cases found{scope} (modules need an eval.yaml).")
@@ -505,7 +542,7 @@ async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None
     print(f"Running {len(cases)} eval case(s) across {len(registry.modules)} module(s)...")
 
     def factory():
-        return Agent(registry, model=config.HEYNYC_MODEL, index=retriever)
+        return Agent(registry, model=config.HEYNYC_MODEL, index=retriever, scope_gate=True)
 
     results = await run_all(factory, cases, reminders=_default_reminders())
     judge = None
@@ -534,7 +571,7 @@ async def _cmd_eval(use_api_judge: bool, repeat: int = 1, out: str | None = None
     run_dir = Path(out) if out else (
         config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
     )
-    write_run(run_dir, report)
+    write_run(run_dir, report, metadata=_eval_run_metadata(config.HEYNYC_MODEL, results))
     print(f"\nRun written to {run_dir}")
     raise SystemExit(0 if report.passed else 1)
 
@@ -607,6 +644,8 @@ def main() -> None:
     ev.add_argument("--repeat", type=int, default=1, help="run the safety subset K times and report pass^K")
     ev.add_argument("--out", default=None, help="run directory to write traces + report into")
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
+    ev.add_argument("--case", dest="case_ids", action="append", default=[],
+                    help="only run this case id; repeat for more than one")
     bench = sub.add_parser("bench", help="run the eval cases across several candidate models and compare")
     bench.add_argument("--models", required=True,
                        help="comma-separated model ids to bench, e.g. gpt-5,claude-sonnet-4,gemini-2")
@@ -646,7 +685,8 @@ def main() -> None:
     elif args.command == "feedback":
         _render_feedback(_feedback_path())
     elif args.command == "eval":
-        asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out, module=args.module))
+        asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
+                              module=args.module, case_ids=args.case_ids))
     elif args.command == "bench":
         models = [m.strip() for m in args.models.split(",") if m.strip()]
         asyncio.run(_cmd_bench(models=models, module=args.module, use_api_judge=args.api_judge, out=args.out))

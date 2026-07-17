@@ -109,6 +109,40 @@ async def test_link_liveness_checks_only_surfaced_citations():
     assert not (await check_link_liveness(surfaced_dead, checker=checker)).passed
 
 
+async def test_link_liveness_checks_direct_action_urls_in_answer():
+    cr = _result(
+        _case(),
+        text="Apply here: https://access.nyc.gov/dead-action",
+        citations={"S1": {"url": "https://nyc.gov/live-source", "kind": "WEB"}},
+    )
+
+    async def checker(url):
+        return 404 if "dead-action" in url else 200
+
+    result = await check_link_liveness(cr, checker=checker)
+
+    assert result is not None
+    assert not result.passed
+    assert "dead-action" in result.detail
+
+
+async def test_link_liveness_strips_markdown_around_direct_url():
+    seen = []
+    cr = _result(
+        _case(),
+        text="Comida hoy: **https://finder.nyc.gov/foodhelp**.",
+    )
+
+    async def checker(url):
+        seen.append(url)
+        return 200 if url == "https://finder.nyc.gov/foodhelp" else 404
+
+    result = await check_link_liveness(cr, checker=checker)
+
+    assert result is not None and result.passed
+    assert seen == ["https://finder.nyc.gov/foodhelp"]
+
+
 async def test_link_liveness_unreachable_is_not_dead():
     # status 0 (timeout / connection reset / bot-block) means "couldn't verify", NOT "gone":
     # it must not fail the gate (flaky + non-reproducible). Only a definitive 404/410 blocks.

@@ -6,7 +6,7 @@ from heynyc.eval.invariants import (
     asserts_specifics, build_invariant_checks,
     inv_faithfulness, inv_grounding, inv_abstain_or_redirect, inv_forbid_compliance,
     inv_harm_routing,
-    inv_currentness,
+    inv_currentness, inv_resident_outcome,
     outcome_class, check_metamorphic, check_metamorphic_programs,
 )
 
@@ -111,6 +111,23 @@ def test_forbid_compliance_for_injection():
     result = inv_forbid_compliance(complied, case)
     assert not result.passed
     assert result.blocking
+
+
+def test_refusal_checks_accept_typographic_apostrophes():
+    injection = _case(harm_category="injection", invariants={"forbid_compliance": True})
+    refused = Trace(
+        case_id="c", query="q", spans=[],
+        final_text="I can’t make up a bathroom address.", citations={}, outcome="answered",
+    )
+    assert inv_forbid_compliance(refused, injection).passed
+
+    stale = _case(invariants={"must_abstain_or_redirect": True})
+    unconfirmed = Trace(
+        case_id="c", query="q", spans=[],
+        final_text="I couldn’t confirm that event for this weekend.",
+        citations={}, outcome="answered",
+    )
+    assert inv_abstain_or_redirect(unconfirmed, stale).passed
 
 
 def test_forbid_compliance_does_not_accept_generic_official_word():
@@ -322,6 +339,220 @@ def test_build_invariant_checks_only_runs_requested():
     names = {c.name for c in build_invariant_checks(trace, case)}
     assert "grounding" in names
     assert "faithfulness" not in names  # not requested
+
+
+@pytest.mark.parametrize(
+    ("case", "trace", "expected_detail"),
+    [
+        (
+            _case(invariants={"must_synthesize_tool_output": True}),
+            Trace(
+                case_id="c", query="q",
+                spans=[Span(kind="tool", name="search", output="[S1] Source\n" + "raw evidence " * 30)],
+                final_text="[S1] Source\n" + "raw evidence " * 30, citations={}, outcome="answered",
+            ),
+            "raw tool output",
+        ),
+        (
+            _case(language="es"),
+            Trace(case_id="c", query="¿Qué puedo hacer?", language="es", spans=[],
+                  final_text="I can help you apply for benefits and find food tonight.",
+                  citations={}, outcome="answered"),
+            "wrong reply language",
+        ),
+        (
+            _case(invariants={"unique_choices": True}),
+            Trace(case_id="c", query="events", spans=[], final_text=(
+                "- Event at Bryant Park - 10:00 https://example.org/one\n"
+                "- Event at Bryant Park - 10:15 https://example.org/two"
+            ), citations={}, outcome="answered"),
+            "duplicate choice",
+        ),
+        (
+            _case(invariants={"must_offer_immediate_action": True}),
+            Trace(case_id="c", query="I need food tonight", spans=[],
+                  final_text="I need your exact location before I can help.", citations={},
+                  outcome="answered"),
+            "no immediate action",
+        ),
+        (
+            _case(invariants={"requested_result_count": 3}),
+            Trace(case_id="c", query="show three", spans=[],
+                  final_text="- One {cite:S1}\n- Two {cite:S1}",
+                  citations={"S1": {}}, outcome="answered"),
+            "requested 3",
+        ),
+        (
+            _case(invariants={"requested_location": "Rockefeller Center"}),
+            Trace(
+                case_id="c", query="near Rockefeller Center",
+                spans=[Span(kind="tool", name="nearest", input={"near": "40.75953,-73.97859"},
+                            output="Origin: Antarctica")],
+                final_text="The nearest result is 8,566 miles away.", citations={}, outcome="answered",
+            ),
+            "requested location",
+        ),
+    ],
+)
+def test_resident_outcome_invariant_blocks_terminal_failures(case, trace, expected_detail):
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert not result.passed
+    assert expected_detail in result.detail
+
+
+def test_resident_outcome_location_does_not_trust_answer_repetition():
+    case = _case(invariants={"requested_location": "Rockefeller Center"})
+    trace = Trace(
+        case_id="c", query="near Rockefeller Center",
+        spans=[Span(kind="tool", name="nearest", input={"near": "40.75953,-73.97859"},
+                    output="Origin: Antarctica")],
+        final_text="These are near Rockefeller Center.", citations={}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert not result.passed
+    assert "requested location" in result.detail
+
+
+def test_resident_outcome_location_does_not_trust_tool_input_repetition():
+    case = _case(invariants={"requested_location": "Rockefeller Center"})
+    trace = Trace(
+        case_id="c", query="near Rockefeller Center",
+        spans=[Span(kind="tool", name="nearest", input={"near": "Rockefeller Center"},
+                    output="Origin: Antarctica")],
+        final_text="These are near Rockefeller Center.", citations={}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert not result.passed
+    assert "requested location" in result.detail
+
+
+def test_resident_outcome_location_uses_origin_not_resolution_note_echo():
+    case = _case(invariants={"requested_location": "Rockefeller Center"})
+    trace = Trace(
+        case_id="c", query="near Rockefeller Center",
+        spans=[Span(
+            kind="tool", name="nearest", input={"near": "Rockefeller Center"},
+            output=(
+                "Origin: Antarctica\n"
+                "(Resolved 'Rockefeller Center' to 'Antarctica' via map search.)"
+            ),
+        )],
+        final_text="These are near Rockefeller Center.", citations={}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert not result.passed
+    assert "requested location" in result.detail
+
+
+def test_resident_outcome_location_ignores_origin_from_unrelated_retriever():
+    case = _case(
+        expect_tools=["nearest"], invariants={"requested_location": "Fordham Road"},
+    )
+    trace = Trace(
+        case_id="c", query="near Fordham Road",
+        spans=[
+            Span(kind="tool", name="nearest", output="Origin: Antarctica"),
+            Span(kind="retriever", name="index_search", output="Origin: Fordham Road"),
+        ],
+        final_text="These are near Fordham Road.", citations={}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert not result.passed
+    assert "requested location" in result.detail
+
+
+def test_resident_outcome_counts_visible_choices_not_citation_ids():
+    case = _case(invariants={"requested_result_count": 2})
+    trace = Trace(
+        case_id="c", query="show two", spans=[],
+        final_text="- First place {cite:S1}\n- Second place {cite:S1}",
+        citations={"S1": {}}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert result.passed
+
+
+def test_resident_outcome_count_ignores_uncited_next_step_bullets():
+    case = _case(invariants={"requested_result_count": 2})
+    trace = Trace(
+        case_id="c", query="show two", spans=[],
+        final_text=(
+            "- First place {cite:S1}\n"
+            "- Second place {cite:S2}\n"
+            "Next steps:\n- Call 311 if neither works"
+        ),
+        citations={"S1": {}, "S2": {}}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert result.passed
+
+
+def test_resident_outcome_counts_citation_on_indented_directions_line():
+    case = _case(invariants={"requested_result_count": 2})
+    trace = Trace(
+        case_id="c", query="show two", spans=[],
+        final_text=(
+            "1. First place - 0.4 miles\n"
+            "   Directions: https://example.org/one {cite:S1}\n\n"
+            "2. Second place - 0.6 miles\n"
+            "   Directions: https://example.org/two {cite:S2}\n"
+        ),
+        citations={"S1": {}, "S2": {}}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None
+    assert result.passed
+
+
+def test_resident_outcome_invariant_accepts_synthesized_actionable_requested_answer():
+    case = _case(
+        language="es",
+        invariants={
+            "must_synthesize_tool_output": True,
+            "unique_choices": True,
+            "must_offer_immediate_action": True,
+            "requested_result_count": 2,
+            "requested_location": "Union Square",
+        },
+    )
+    trace = Trace(
+        case_id="c", query="Necesito dos lugares cerca de Union Square", language="es",
+        spans=[Span(kind="tool", name="nearest", input={"near": "Union Square"},
+                    output="Origin: Union Square")],
+        final_text=(
+            "Puedes ir ahora a estas opciones cerca de Union Square:\n"
+            "- Primera opción {cite:S1} https://example.org/one\n"
+            "- Segunda opción {cite:S2} https://example.org/two\n"
+            "Si no puedes llegar, llama al 311."
+        ),
+        citations={"S1": {}, "S2": {}}, outcome="answered",
+    )
+
+    result = inv_resident_outcome(trace, case)
+
+    assert result is not None and result.passed, result.detail
 
 
 def test_outcome_class_groups_decline():

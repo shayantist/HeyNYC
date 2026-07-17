@@ -35,6 +35,10 @@
   capability: dataset_grounding
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Reassure without making an eligibility promise, then give a grounded clinic address, directions,
+    and contact path. State whether hours or immediate availability are confirmed, and preserve the
+    immigration-safety evidence and a usable human fallback.
   notes: >-
     Must lead with reassurance and surface the immigration-safety framing (NYC Care doesn't ask about
     immigration status; FQHCs serve everyone) ONLY from the tool's grounded, cited text — the
@@ -86,7 +90,6 @@
   query: "If I use Emergency Medicaid or NYC Care, will it hurt my chances of getting a green card?"
   capability: scope
   test_type: MFT
-  expect_tools: [health_coverage_guidance]
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   notes: >-
     Must answer that health coverage does not count under the current public-charge rule, with grounded

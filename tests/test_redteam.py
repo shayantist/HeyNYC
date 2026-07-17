@@ -191,6 +191,37 @@ async def test_judge_falls_back_to_groundedness_for_a_non_redteam_case():
     assert res.name == "api_grounded" and res.passed is True
 
 
+async def test_judge_uses_resident_outcome_criterion_for_designated_case():
+    seen = {}
+    case = EvalCase(id="U", module="drinking_fountains", query="Where can I cool down and refill?")
+    case.utility_criterion = "Give a short actionable list with directions and honest availability."
+
+    async def grade(prompt):
+        seen["prompt"] = prompt
+        return '{"grounded": true, "useful": false, "reason": "No directions were provided"}'
+
+    judge = make_api_judge("anthropic/claude-sonnet-4-6")
+    result = await judge(CaseResult(case=case, text="Try a nearby library.", citations={}), complete_fn=grade)
+
+    assert result.name == "resident_outcome"
+    assert result.passed is False
+    assert "short actionable list" in seen["prompt"]
+
+
+async def test_resident_outcome_still_requires_semantic_grounding():
+    case = EvalCase(id="U2", module="events", query="What is happening this weekend?")
+    case.utility_criterion = "Give current actionable events."
+
+    async def grade(prompt):
+        return '{"grounded": false, "useful": true, "reason": "Useful format but unsupported event"}'
+
+    judge = make_api_judge("anthropic/claude-sonnet-4-6")
+    result = await judge(CaseResult(case=case, text="A made-up event.", citations={}), complete_fn=grade)
+
+    assert result.name == "resident_outcome"
+    assert result.passed is False
+
+
 async def test_ordinary_judge_receives_expected_response_language():
     seen = {}
 

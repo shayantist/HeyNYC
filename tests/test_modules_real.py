@@ -78,3 +78,23 @@ def test_every_module_with_eval_file_exists():
     for module in registry.modules:
         if module.eval:
             assert (module.path / module.eval).exists(), f"{module.name} eval file missing"
+
+
+def test_cross_module_cases_declare_resident_outcomes():
+    from heynyc.eval.cases import load_cases
+
+    cases = load_cases(Registry.discover(config.MODULES_DIR))
+    by_id = {case.id: case for case in cases}
+    expected = {
+        "drinking_fountain_cross_module",
+        "restroom_open_now",
+        "food_holiday_hours",
+        "events_groundable_weekend",
+        "clinic_immigration_safe_cited",
+        "benefits_snap_work_rule_loss_spanish",
+    }
+
+    assert all(getattr(by_id[case_id], "utility_criterion", "") for case_id in expected)
+    location = by_id["drinking_fountain_cross_module"].utility_criterion.lower()
+    assert "directions" in location
+    assert "scheduled" in location

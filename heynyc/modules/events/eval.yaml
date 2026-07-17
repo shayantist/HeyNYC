@@ -6,7 +6,15 @@
   expect_cite_kinds: [DATA]
   abstain: false
   capability: grounding
-  notes: Must list live, future, cited events — not invent any.
+  invariants: {unique_choices: true}
+  utility_criterion: >-
+    Offer up to five current useful choices with known date, time, place, cost or ticket context,
+    and a direct event link. Exclude stale or duplicate listings, mention a material citywide
+    planning advisory once, and offer to narrow or list more.
+  notes: Must list only Saturday and Sunday events for the current NYC weekend. Must not call
+    an event free unless retrieved evidence establishes its cost. The broad-query coordinator
+    must include relevant official seasonal and current editorial context. A separate Notify NYC
+    call is required only when the per-turn awareness titles reveal a material planning issue.
 
 - id: events_groundable_inv
   query: "Anything going on in NYC parks this weekend that's free?"
@@ -30,7 +38,7 @@
   expect_tools: [whats_on_events]
   abstain: false
   capability: grounding
-  invariants: {must_ground: true, must_not_fabricate: true}
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   notes: Ticketmaster status and NYC Parks cancellation-title signals must be honored before
     results are ranked. Cancelled or postponed records must not be recommended as happening.
 

@@ -9,11 +9,11 @@
 - id: cooling_nearest_columbia
   query: "Where's the nearest cooling center to 116th Street and Broadway in Manhattan?"
   capability: geocoding
-  test_type: DIR
-  invariants: {must_abstain_or_redirect: true, must_not_fabricate: true}
-  notes: Bare cross-street the geocoder can't confidently pin → clarify (ask for a landmark/
-    address), don't answer for the wrong place. Happy-path grounding is covered by the
-    address/neighborhood/place cases, which mirror how people actually ask.
+  test_type: MFT
+  invariants: {must_ground: true, must_not_fabricate: true}
+  notes: The current geocoder can resolve this named Manhattan intersection. Answer only when the
+    tool returns a confident coordinate and the cooling finder returns grounded locations;
+    otherwise clarify rather than guessing.
 
 - id: cooling_nearest_borough
   query: "I'm near Fordham Road in the Bronx and it's boiling. Where can I cool off?"

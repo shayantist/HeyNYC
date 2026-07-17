@@ -80,7 +80,7 @@ class CheckResult:
 
 
 def looks_like_abstention(text: str) -> bool:
-    low = text.lower()
+    low = text.lower().replace("’", "'").replace("‘", "'")
     return any(marker in low for marker in _ABSTAIN_MARKERS)
 
 
@@ -170,6 +170,8 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
     referenced = set(_CITE_REF_RE.findall(cr.text or ""))
     ids = referenced or set(cr.citations)
     urls = [c["url"] for cid, c in cr.citations.items() if cid in ids and c.get("url")]
+    urls.extend(url.rstrip(".,;:!?)\"]'*_~`") for url in _URL_RE.findall(cr.text or ""))
+    urls = list(dict.fromkeys(urls))
     if not urls:
         return None
     checker = checker or _default_link_checker

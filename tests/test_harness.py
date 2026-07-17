@@ -270,6 +270,45 @@ def test_repl_screening_requires_explicit_command():
     assert _screen_turn_options(" /SCREEN ALL ")["forced_tool_args"] == {"show_all": True}
 
 
+def test_eval_case_filter_selects_requested_ids_and_rejects_typos():
+    from heynyc.__main__ import _select_eval_cases
+    from heynyc.eval.cases import EvalCase
+
+    cases = [
+        EvalCase(id="benefits_snap", module="benefits", query="q"),
+        EvalCase(id="events_weekend", module="events", query="q"),
+    ]
+
+    assert [case.id for case in _select_eval_cases(cases, ["events_weekend"])] == [
+        "events_weekend"
+    ]
+    with pytest.raises(SystemExit, match="Unknown eval case id: typo"):
+        _select_eval_cases(cases, ["typo"])
+
+
+def test_eval_run_metadata_preserves_usage_cost_and_case_ids():
+    from types import SimpleNamespace
+
+    from heynyc.__main__ import _eval_run_metadata
+
+    results = [
+        SimpleNamespace(case=SimpleNamespace(id="a"), usage={
+            "input_tokens": 10, "output_tokens": 2, "cost_usd": 0.01,
+            "latency_ms": 100, "n_model_calls": 2, "n_tool_calls": 1,
+        }),
+        SimpleNamespace(case=SimpleNamespace(id="b"), usage={
+            "input_tokens": 20, "output_tokens": 3, "cost_usd": 0.02,
+            "latency_ms": 200, "n_model_calls": 3, "n_tool_calls": 2,
+        }),
+    ]
+
+    assert _eval_run_metadata("model", results) == {
+        "model": "model", "case_ids": ["a", "b"],
+        "input_tokens": 30, "output_tokens": 5, "candidate_cost_usd": 0.03,
+        "latency_ms": 300.0, "n_model_calls": 5, "n_tool_calls": 3,
+    }
+
+
 def test_repl_turn_uses_existing_pii_free_telemetry(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
