@@ -8,12 +8,13 @@ tool's grounding+citation / clean abstention. The shipped module load mirrors te
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 import pytest
 
 from heynyc.core import config
+from heynyc.core.tools import notify_nyc
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
@@ -23,6 +24,7 @@ from heynyc.core.tools.notify_nyc import (
     fetch_advisories,
     fetch_recent_advisories,
 )
+from heynyc.modules.advisories import tools as advisory_tools
 from heynyc.modules.advisories.tools import get_tools
 
 # --- canned feed fixtures --------------------------------------------------
@@ -440,6 +442,69 @@ async def test_fetch_recent_advisories_empty_array_is_degraded():
     assert feed.confirmed is False
 
 
+async def test_current_awareness_fetches_recent_messages_each_turn(monkeypatch):
+    calls = 0
+
+    async def loader():
+        nonlocal calls
+        calls += 1
+        return notify_nyc.RecentFeed(confirmed=True, notes=[])
+
+    monkeypatch.setattr(advisory_tools, "fetch_recent_advisories", loader)
+    await advisory_tools.current_awareness()
+    await advisory_tools.current_awareness()
+
+    assert calls == 2
+
+
+def test_recent_awareness_is_compact_and_requires_detail_lookup():
+    render = getattr(advisory_tools, "_recent_awareness", None)
+    assert callable(render)
+    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
+        notify_nyc.RecentNote(
+            title="Notify NYC - Air Quality Health Advisory (NYC)",
+            body="Air quality is unhealthy for everyone in all or part of NYC.",
+            issued="2026-07-16T08:59:23-04:00", issued_raw="07/16/2026 08:59:23",
+            source_url=RECENT_MESSAGES_URL, guid="aqi",
+        ),
+        notify_nyc.RecentNote(
+            title="Notify NYC - FDNY Activity (BK)", body="full local body",
+            issued="2026-07-16T13:25:40-04:00", issued_raw="07/16/2026 13:25:40",
+            source_url=RECENT_MESSAGES_URL, guid="fdny",
+        ),
+        notify_nyc.RecentNote(
+            title="Notify NYC - Old notice", body="old body",
+            issued="2026-07-15T13:25:40-04:00", issued_raw="07/15/2026 13:25:40",
+            source_url=RECENT_MESSAGES_URL, guid="old",
+        ),
+    ])
+
+    text = render(feed, date(2026, 7, 16))
+
+    assert "Air Quality Health Advisory" in text
+    assert "Air Quality Health Advisory (NYC) [broad scope confirmed]" in text
+    assert "FDNY Activity" in text
+    assert "Old notice" not in text
+    assert "unhealthy for everyone" not in text
+    assert "call `nyc_advisories`" in text
+    assert "known location" in text
+
+
+def test_recent_awareness_does_not_mark_untagged_local_notice_as_broad():
+    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
+        notify_nyc.RecentNote(
+            title="Notify NYC - Street Closure", body="Avoid one block near 12 Main Street.",
+            issued="2026-07-16T09:00:00-04:00", issued_raw="07/16/2026 09:00:00",
+            source_url=RECENT_MESSAGES_URL, guid="local",
+        ),
+    ])
+
+    text = advisory_tools._recent_awareness(feed, date(2026, 7, 16))
+
+    assert "Street Closure" in text
+    assert "broad scope confirmed" not in text
+
+
 async def test_nyc_advisories_falls_back_to_recent_when_cap_empty():
     # THE production scenario: the CAP/Everbridge feed is EMPTY, but Notify NYC IS carrying today's
     # flood alerts. The tool must surface them (grounded + cited), never fail safe or go silent.
@@ -455,6 +520,8 @@ async def test_nyc_advisories_falls_back_to_recent_when_cap_empty():
     assert "no active notify nyc advisories" not in low   # not a false all-clear
     assert len(citations) >= 1                             # grounded + cited
     assert any("recentmessages" in c["url"].lower() for c in citations.mapping().values())
+    flood = next(c for c in citations.mapping().values() if "Flood Advisory" in c["title"])
+    assert "Avoid flooded roadways" in flood["snippet"]
 
 
 async def test_nyc_advisories_prefers_cap_when_it_has_active():
@@ -468,6 +535,57 @@ async def test_nyc_advisories_prefers_cap_when_it_has_active():
     await client.aclose()
     assert "Heat Advisory in effect for NYC" in out       # the structured CAP advisory
     assert "in effect until 2099-07-02T19:45:28-04:00" in out
+
+
+async def test_nyc_advisories_combines_cap_and_recent_without_exact_duplicates():
+    fireworks_title = "Notify NYC - Fireworks - 7/17 - Coney Island Beach (BK)"
+    rss = _rss(_item(fireworks_title, "NYCEM [English]", "g-fireworks", "fireworks.xml"))
+    cap = _cap(
+        "NYC-FIREWORKS", severity="Moderate", event="Civil Emergency Message",
+        headline=fireworks_title, expires="2099-07-17T22:00:00-04:00",
+    )
+    recent_json = json.dumps([
+        {
+            "pubDate": "07/16/2026 15:05:41", "title": fireworks_title,
+            "description": "Fireworks near Coney Island Beach.",
+        },
+        {
+            "pubDate": "07/16/2026 08:59:23",
+            "title": "Notify NYC - Air Quality Health Advisory (AQI 151-200) - 7/16",
+            "description": "Air quality is unhealthy for everyone in all or part of NYC.",
+        },
+    ])
+    client = _combo_client(rss=rss, recent_json=recent_json, caps={"fireworks.xml": cap})
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "Air Quality Health Advisory" in out
+    assert out.count(fireworks_title) == 1
+
+
+async def test_nyc_advisories_citywide_view_omits_explicit_borough_notices():
+    recent_json = json.dumps([
+        {
+            "pubDate": "07/16/2026 08:59:23",
+            "title": "Notify NYC - Air Quality Health Advisory (AQI 151-200) - 7/16",
+            "description": "Air quality is unhealthy for everyone in all or part of NYC.",
+        },
+        {
+            "pubDate": "07/16/2026 08:27:06",
+            "title": "Notify NYC - Three Alarm Fire - Briggs Avenue (BX)",
+            "description": "Emergency personnel are on scene in the Bronx.",
+        },
+    ])
+    client = _combo_client(rss=_rss(), recent_json=recent_json)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler({"citywide_only": True}, ctx)
+    await client.aclose()
+
+    assert "Air Quality Health Advisory" in out
+    assert "Three Alarm Fire" not in out
 
 
 # --- the shipped module stays valid (mirrors test_module_food_pantries) ----

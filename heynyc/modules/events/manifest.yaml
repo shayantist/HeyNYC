@@ -41,12 +41,18 @@ source_tiers:
     - eventbrite.com
 prompt: |
   For "what's on" / events / festivals / "things to do this weekend" questions, call
-  whats_on_events first — it returns live, dated, linked events from Ticketmaster + NYC
-  Parks (future events only). Pass `keyword` (the topic), optional `classification`
-  (Music/Sports/Arts & Theatre) and `borough`. For curated guides, call index_search over
-  the indexed event pages and cite them. For the long tail, use web_search: results are
-  tagged by trust tier — state authoritative/editorial sources plainly, but prefix any
-  community-tagged (⚠️) result with "community-posted, confirm before you go." Never
+  whats_on_events first. It coordinates live Ticketmaster and NYC Parks listings and, for
+  broad time-sensitive questions, concurrently adds current official, editorial-guide, and news
+  context. Pass `keyword` (the topic), optional `classification`
+  (Music/Sports/Arts & Theatre) and `borough`. Do not make the model repeat those coordinator
+  calls separately. When the user asks for free events, do not call an
+  event free unless the retrieved source explicitly establishes its cost; the NYC Parks feed
+  itself has no price field. Say when cost could not be confirmed. Every normal turn already has
+  a compact index of today's Notify NYC titles. If one materially affects the requested plan, call
+  `nyc_advisories` for its full text and citation before mentioning it. Web results are tagged by
+  trust tier: state authoritative/editorial sources
+  plainly, but prefix any community-tagged (⚠️) result with "community-posted, confirm before
+  you go." Never
   recommend private-residence or "DM for address" gatherings, and never invent an event
   that isn't grounded — if nothing comes back, say so and link the official source.
 tools: tools.py

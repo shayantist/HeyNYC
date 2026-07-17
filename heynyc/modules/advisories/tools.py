@@ -20,7 +20,9 @@ invent an advisory, a severity, or an expiry.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
@@ -29,9 +31,12 @@ from heynyc.core.tools.notify_nyc import (
     RecentNote,
     active_advisories,
     fetch_recent_advisories,
+    is_broad_recent_scope,
+    is_citywide_area,
 )
 
 OFFICIAL = "Notify NYC (nyc.gov/notifynyc) or call 311"
+NYC_TZ = ZoneInfo("America/New_York")
 
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
 # state may tell the user there are no active advisories.
@@ -78,8 +83,9 @@ def _advisory_citation(ctx: ToolContext, advisory: Advisory) -> str:
     )
     return ctx.citations.register(
         advisory.source_url,
-        snippet=f"{advisory.headline or advisory.event}, in effect until {advisory.expires}",
-        title="Notify NYC / NYC Emergency Management",
+        snippet=(f"{advisory.headline or advisory.event}, in effect until {advisory.expires}. "
+                 f"Area: {advisory.area_desc or 'unknown'}"),
+        title=advisory.headline or advisory.event or "Notify NYC advisory",
         kind="DATA",
         valid_as_of=advisory.sent,
         provenance=provenance,
@@ -107,8 +113,8 @@ def _recent_citation(ctx: ToolContext, note: RecentNote) -> str:
     provenance = data_provenance(snapshot, record_id=note.guid, field_pointer="/")
     return ctx.citations.register(
         note.source_url,
-        snippet=f"{note.title} (issued {note.issued_raw})",
-        title="Notify NYC (live recent messages)",
+        snippet=f"{note.title} (issued {note.issued_raw}). {note.body}".strip(),
+        title=note.title or "Notify NYC notification",
         kind="DATA",
         valid_as_of=note.issued or note.issued_raw,
         provenance=provenance,
@@ -121,6 +127,30 @@ def _recent_block(note: RecentNote, cite: str) -> str:
     if note.body:
         parts.append(f"  {note.body}")
     return "\n".join(parts)
+
+
+def _recent_awareness(feed, today: date) -> str:
+    notes = [note for note in feed.notes if note.issued[:10] == today.isoformat()][:8]
+    if not feed.confirmed or not notes:
+        return ""
+    lines = [
+        "Current Notify NYC awareness index. These titles are discovery hints, not evidence for "
+        "a user-facing claim. If one materially affects the resident's question, call "
+        "`nyc_advisories` for its full text and citation. Mention a location-specific notice only "
+        "when the conversation gives a known location that overlaps it:",
+    ]
+    lines.extend(
+        f"- {note.issued_raw}: {note.title}"
+        f"{' [broad scope confirmed]' if is_broad_recent_scope(note.body) else ''}"
+        for note in notes
+    )
+    return "\n".join(lines)
+
+
+async def current_awareness() -> str:
+    return _recent_awareness(
+        await fetch_recent_advisories(), datetime.now(NYC_TZ).date(),
+    )
 
 
 def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
@@ -176,6 +206,16 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
     return "\n".join(lines)
 
 
+def _render_recent_additions(ctx: ToolContext, notes: list[RecentNote]) -> str:
+    lines = [
+        "Additional current notifications from the City's live Notify NYC messages endpoint. "
+        "These have an issue time but no machine-readable expiry:",
+    ]
+    for note in notes:
+        lines.append(_recent_block(note, _recent_citation(ctx, note)))
+    return "\n".join(lines)
+
+
 async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     lang = (args.get("lang") or "").strip() or None
@@ -188,18 +228,43 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     #   3. Fail safe: if NEITHER source can be confirmed, we NEVER say "no advisories"; we say we
     #      could not confirm and route to the official live source + 311 (+ 911 for a life-threat).
     # `lang` surfaces the official city translation of a CAP advisory where the feed carries it.
-    feed = await active_advisories(ctx.http, now=now, lang=lang)
+    feed, recent = await asyncio.gather(
+        active_advisories(ctx.http, now=now, lang=lang),
+        fetch_recent_advisories(ctx.http),
+    )
+    cap_advisories = feed.advisories
+    recent_notes = recent.notes
+    if args.get("citywide_only"):
+        cap_advisories = [
+            advisory for advisory in cap_advisories if is_citywide_area(advisory.area_desc)
+        ]
+        recent_notes = [
+            note for note in recent_notes if is_broad_recent_scope(note.body)
+        ]
 
-    if feed.confirmed and feed.advisories:
-        return _render_cap(ctx, feed.advisories, near)          # best case: structured + active
+    if feed.confirmed and cap_advisories:
+        cap_titles = {
+            (advisory.headline or advisory.event).strip().casefold()
+            for advisory in cap_advisories
+        }
+        additions = [
+            note for note in recent_notes
+            if note.title.strip().casefold() not in cap_titles
+        ] if recent.confirmed else []
+        rendered = _render_cap(ctx, cap_advisories, near)
+        return (
+            f"{rendered}\n\n{_render_recent_additions(ctx, additions)}"
+            if additions else rendered
+        )
     if feed.confirmed:
-        return NO_ACTIVE                                        # working CAP feed, genuinely nothing active
+        if recent.confirmed and recent_notes:
+            return _render_recent_additions(ctx, recent_notes)
+        return NO_ACTIVE
 
     # CAP feed DEGRADED (unreachable / empty body / unreadable), so do NOT trust its emptiness as an
     # all-clear. Consult the city's live notifications before ever telling the user there are none.
-    recent = await fetch_recent_advisories(ctx.http)
-    if recent.confirmed and recent.notes:
-        return _render_recent(ctx, recent.notes, near)          # real-time fallback (today's alerts)
+    if recent.confirmed and recent_notes:
+        return _render_recent(ctx, recent_notes, near)          # real-time fallback (today's alerts)
     return COULD_NOT_CONFIRM                                    # both sources degraded -> fail safe
 
 
@@ -233,6 +298,13 @@ def get_tools() -> list[Tool]:
                         "'Chinese'), pass the language the user is writing in. The feed carries "
                         "official city translations for ~12 languages; defaults to English, and "
                         "falls back to English for any alert with no variant in that language.",
+                    },
+                    "citywide_only": {
+                        "type": "boolean",
+                        "description": (
+                            "For a citywide planning summary with no known resident location, omit "
+                            "notices explicitly tagged for one borough. Defaults to false."
+                        ),
                     },
                 },
             },

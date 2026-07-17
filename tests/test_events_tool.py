@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 import httpx
 import pytest
 
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.modules.events import tools as events
 from heynyc.modules.events.tools import (
-    Event, _from_parks, _from_ticketmaster, _future_only, get_tools,
+    Event, _event_block, _explicitly_free, _from_parks, _from_ticketmaster, _future_only,
+    _requested_window, get_tools,
 )
 
 
@@ -28,6 +32,7 @@ def test_from_ticketmaster_maps_fields():
 
 def test_from_ticketmaster_drops_dateless():
     assert _from_ticketmaster({"name": "TBA", "dates": {"start": {}}}) is None
+    assert _from_ticketmaster({"name": "Bad", "dates": {"start": {"localDate": "later"}}}) is None
 
 
 def test_from_ticketmaster_drops_cancelled_or_postponed_events():
@@ -76,11 +81,97 @@ def test_from_parks_handles_null_title():
     assert event.name == ""
 
 
+def test_from_parks_drops_malformed_date():
+    assert _from_parks({"title": "Bad upstream row", "startdate": "not-a-date"}) is None
+
+
 def test_future_only_filters_past():
     past = Event("old", "2026-06-01", "", "", "", "u", "NYC Parks", "authoritative")
     future = Event("new", "2026-07-19", "", "", "", "u", "NYC Parks", "authoritative")
     kept = _future_only([past, future], today="2026-06-28")
     assert kept == [future]
+
+
+def test_requested_window_resolves_this_weekend_from_nyc_date():
+    assert _requested_window("free events this weekend", "2026-07-16") == (
+        "2026-07-18", "2026-07-19",
+    )
+    assert _requested_window("events this weekend", "2026-07-18") == (
+        "2026-07-18", "2026-07-19",
+    )
+    assert _requested_window("events today", "2026-07-16") == (
+        "2026-07-16", "2026-07-16",
+    )
+    assert _requested_window("what is happening tonight", "2026-07-16") == (
+        "2026-07-16", "2026-07-16",
+    )
+    assert _requested_window("things to do this week", "2026-07-16") == (
+        "2026-07-16", "2026-07-19",
+    )
+
+
+def test_editorial_query_includes_the_resolved_date_window():
+    build = getattr(events, "_editorial_query", None)
+    assert callable(build)
+    query = build("free events this weekend", "2026-07-18", "2026-07-19")
+    assert "July 18, 2026" in query
+    assert "July 19, 2026" in query
+
+
+def test_windowed_context_drops_explicitly_stale_event_blocks():
+    filter_context = getattr(events, "_windowed_context", None)
+    assert callable(filter_context)
+    context = (
+        "[S1] West Side Fest\nJuly 10-12, 2026.\n\n"
+        "[S2] Rockefeller Center\nJuly 11-17, 2026.\n\n"
+        "[S3] FIFA Museum\nOpen July 19, 2026."
+    )
+
+    filtered = filter_context(context, "2026-07-18", "2026-07-19")
+
+    assert "FIFA Museum" in filtered
+    assert "West Side Fest" not in filtered
+    assert "Rockefeller Center" not in filtered
+
+
+def test_nyc_for_free_rss_keeps_only_items_matching_the_requested_dates():
+    select = getattr(events, "_nyc_for_free_items", None)
+    assert callable(select)
+    rss = """<rss><channel><lastBuildDate>Thu, 16 Jul 2026 16:25:39 +0000</lastBuildDate>
+      <item><title>Weekend Pop-Up</title><link>https://www.nycforfree.co/events/weekend</link>
+        <description><![CDATA[Free on July 18th and July 19th.]]></description></item>
+      <item><title>August Event</title><link>https://www.nycforfree.co/events/august</link>
+        <description><![CDATA[Free on August 8th.]]></description></item>
+    </channel></rss>"""
+
+    build_date, items = select(rss, "2026-07-18", "2026-07-19")
+
+    assert build_date == "Thu, 16 Jul 2026 16:25:39 +0000"
+    assert [item[0] for item in items] == ["Weekend Pop-Up"]
+    assert items[0][2] == "July 18th"
+
+
+def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
+    listed_free = Event(
+        "Free Yoga", "2026-07-18", "9:00 AM", "Park", "", "u1", "NYC Parks", "authoritative",
+    )
+    unknown_cost = Event(
+        "Open Run", "2026-07-18", "9:00 AM", "Park", "", "u2", "NYC Parks", "authoritative",
+    )
+
+    assert _explicitly_free([listed_free, unknown_cost], "free events") == [listed_free]
+    assert _explicitly_free([listed_free, unknown_cost], "events") == [listed_free, unknown_cost]
+    assert "Saturday, 2026-07-18" in _event_block(listed_free, "S1")
+    assert "Details: u1" in _event_block(listed_free, "S1")
+
+
+def test_tonight_filter_keeps_only_parseable_future_evening_events():
+    morning = Event("Morning", "2026-07-16", "9:00 am", "", "", "u1", "NYC Parks", "authoritative")
+    evening = Event("Evening", "2026-07-16", "7:00 pm", "", "", "u2", "NYC Parks", "authoritative")
+    unknown = Event("Unknown", "2026-07-16", "", "", "", "u3", "NYC Parks", "authoritative")
+    now = events.datetime(2026, 7, 16, 15, 0, tzinfo=events.NYC_TZ)
+
+    assert events._tonight_only([morning, evening, unknown], now) == [evening]
 
 
 @pytest.fixture(autouse=True)
@@ -124,3 +215,104 @@ async def test_whats_on_events_merges_grounds_and_filters_future():
     assert "Old Festival" not in out          # past event filtered (§12)
     assert "{cite:" in out                     # everything is grounded + cited
     assert citations.mapping()                 # at least one DATA citation registered
+
+
+async def test_broad_temporal_events_gather_current_city_context_concurrently(monkeypatch):
+    started: set[str] = set()
+    all_started = asyncio.Event()
+
+    async def rendezvous(name: str):
+        started.add(name)
+        if len(started) == 5:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=0.5)
+
+    async def fake_ticketmaster(**kwargs):
+        await rendezvous("ticketmaster")
+        return [{
+            "name": "Catalog Event",
+            "url": "https://example.com/catalog",
+            "dates": {"start": {"localDate": events.datetime.now(events.NYC_TZ).strftime("%Y-%m-%d")}},
+        }]
+
+    async def fake_parks(*args, **kwargs):
+        await rendezvous("parks")
+        return []
+
+    async def web_handler(args, ctx):
+        await rendezvous("official-web")
+        current_date = events.datetime.now(events.NYC_TZ).strftime("%B %-d, %Y")
+        cite = ctx.citations.register(
+            "https://www.nyc.gov/current-event",
+            snippet=f"Major current city event on {current_date}",
+            title="NYC current event", kind="WEB",
+        )
+        return f"Major current city event on {current_date} {{cite:{cite}}}"
+
+    async def index_handler(args, ctx):
+        await rendezvous("official-index")
+        cite = ctx.citations.register(
+            "https://www.nynjfwc26.com/fan-events", snippet="Official seasonal event",
+            title="Official seasonal event", kind="DOC",
+        )
+        return f"Official seasonal event {{cite:{cite}}}"
+
+    async def editorial_context(ctx, window_start, window_end):
+        await rendezvous("editorial-guides")
+        cite = ctx.citations.register(
+            "https://secretnyc.co/what-to-do-this-weekend-nyc/",
+            snippet="Current weekend guide", title="Secret NYC weekend guide", kind="WEB",
+        )
+        return f"Current editorial weekend guide {{cite:{cite}}}"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_editorial_context", editorial_context, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: (
+        Tool("index_search", "", {}, index_handler),
+        Tool("web_search", "", {}, web_handler),
+    ))
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="What events are happening in NYC today?",
+    )
+
+    output = await get_tools()[0].handler({}, ctx)
+
+    assert started == {
+        "ticketmaster", "parks", "official-index", "official-web", "editorial-guides",
+    }
+    assert "Catalog Event" in output
+    assert "Official seasonal event" in output
+    assert "Major current city event" in output
+    assert "Current editorial weekend guide" in output
+    assert "newly retrieved" in output.lower()
+    assert "at most 5" in output
+    assert "light emoji" in output
+    assert "group the rest" in output
+    assert "today-only advisory once" in output
+    assert "merge sources" in output
+
+
+def test_context_search_uses_configured_editorial_event_guides(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_web_search_tools(allowlist, source_tiers, news_tier):
+        captured["allowlist"] = allowlist
+        captured["source_tiers"] = source_tiers
+        return [
+            Tool("web_search", "", {}, lambda args, ctx: ""),
+            Tool("recent_developments", "", {}, lambda args, ctx: ""),
+        ]
+
+    monkeypatch.setattr(
+        "heynyc.core.tools.web_search.web_search_tools", fake_web_search_tools,
+    )
+    registry = Registry.discover(Path("heynyc/modules"))
+
+    tools = events._context_tools(ToolContext(citations=CitationRegistry(), registry=registry))
+
+    assert {"secretnyc.co", "nycforfree.co"} <= set(captured["allowlist"])
+    assert [tool.name for tool in tools] == [
+        "web_search", "recent_developments",
+    ]

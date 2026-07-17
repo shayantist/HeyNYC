@@ -31,6 +31,10 @@ from ..registry import Registry
 class ToolContext:
     citations: CitationRegistry
     registry: Registry
+    query: str = ""  # current resident turn; lets tools resolve relative constraints deterministically
+    user_history: str = ""  # resident-authored turns only; validates model-supplied tool arguments
+    user_turns: tuple[str, ...] = ()  # structured resident turns; avoids stale-location substring matches
+    toolbox: Optional[dict[str, Any]] = None  # existing sibling tools for bounded module coordinators
     http: Optional[Any] = None  # httpx.AsyncClient; None → tools create their own
     embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse it (None → default/Hash)
     output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
