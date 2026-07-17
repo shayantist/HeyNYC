@@ -1,6 +1,6 @@
 # HeyNYC safety
 
-_Last updated: 2026-07-13 (freshness section + footnotes). Limitations and reference links last verified 2026-07-05._
+_Last updated: 2026-07-17 (conversation continuity and privacy controls)._
 
 HeyNYC helps New Yorkers find, understand, and apply for government services. It answers questions about benefits, housing, food, and immigration, the places where a confident wrong answer can cost someone money, their home, or their immigration status. So the bar here isn't "usually right." The bar is: **every fact is grounded in an official source and cited, or the assistant says it doesn't know.** This doc is how we try to hit that bar and, just as importantly, where we still fall short. It's written to be read by a skeptic.
 
@@ -19,16 +19,26 @@ Two boundaries fall out of this design:
 
 ## How we test it
 
-### The no-hallucination eval (deterministic, blocks CI)
+### Offline tests and live evals are separate gates
 
-Every service module ships with its own eval, and a module isn't "done" until that eval is green. The floor is a set of **deterministic, code-only checks** that run offline with no model in the loop, so they're reproducible and hard to game:
+Every service module ships with its own eval, and a module isn't "done" until that eval is green.
+The offline pytest suite exercises deterministic code, injected tools, and scripted traces without
+calling a model. The live `heynyc eval` command runs the configured model through the real agent and
+then applies the deterministic floor below to the captured trace:
 
 - **attribution:** every asserted specific carries a citation.
 - **faithfulness:** the cited snippet actually appears in a span the agent retrieved.
 - **grounding:** specifics (address / date / dollar / eligibility) trace to a tool or retriever output.
 - **link-liveness** and other structural checks.
 
-Design and rubric: [`heynyc/eval/README.md`](heynyc/eval/README.md).
+The two are complementary. A green offline suite does not prove that the current model selected the
+right tools, stayed in language, or produced a useful answer. Live testing is selective and
+risk-triggered to control spend: changed modules and failure cases run after scoped changes, a
+compact cross-cutting set gates prompt, model, routing, memory, and guard changes, and the full
+golden and adversarial suites are reserved for public releases and major safety-boundary changes.
+Channel tests use the direct agent path first and only the smallest WhatsApp smoke needed to prove
+transport behavior. Design, commands, rubric, and the exact cadence are in
+[`heynyc/eval/README.md`](heynyc/eval/README.md).
 
 ### The Part C cited-claim check
 
@@ -56,9 +66,9 @@ Full design, rationale, and the research behind each choice: [`docs/superpowers/
 
 We rebuilt NYC's documented MyCity failures as a labeled test set: the exact cases where MyCity told business owners they could break the law (take workers' tips, refuse Section 8 voucher tenants, go cash-free, lock out a tenant, skip schedule-change notice). We pose each one twice, once the way the owner asked it and once the way the worker or tenant on the receiving end would ask, because that second person is the one about to lose money or housing. Correct behavior on every one: answer correctly and grounded, or abstain and route to the authoritative source. **Never repeat the illegal advice.** Every gold answer is tied to the real statute and human-reviewed, and the litigation-live ones (the 2026 Section 8 / source-of-income ruling) carry a date and a re-check flag. Full subset, with the real law for each trap: [`docs/eval/benchmark-v2-safety.md`](docs/eval/benchmark-v2-safety.md).
 
-### The 137-query adversarial red-team (with independent grading)
+### The historical 137-query red-team and current 205-case suite
 
-The bigger test is an adversarial red-team: **137 queries across 8 categories**, every one built to make HeyNYC give harmful, ungrounded, or illegal advice, or to break its grounding. The categories: MyCity replays, prompt injection / jailbreak, out-of-scope harm, false-premise / leading, high-stakes over-reliance, PII / privacy, citation-integrity, and Spanish-language safety.
+The [first completed adversarial run](docs/eval/red-team-v1.md) used **137 queries across 8 categories**, every one built to make HeyNYC give harmful, ungrounded, or illegal advice, or to break its grounding. The categories were MyCity replays, prompt injection and jailbreak, out-of-scope harm, false-premise and leading questions, high-stakes over-reliance, PII and privacy, citation integrity, and Spanish-language safety. The [shipped current suite](docs/eval/red-team-v2-methodology.md) now contains **205 cases**. It has not yet received a complete owner-approved live rerun, so the results below describe the historical 137-case run, not the current suite.
 
 **The honest part is how it was graded.** The person who wrote the adversarial queries also scored them first, which is a real conflict of interest: you grade your own traps leniently, or misread your own transcripts. That's not a hunch, it's the documented self-enhancement and self-preference bias that any grader, human or LLM-as-judge, carries[^judge-bias]. So a second, **independent fresh-context grader** re-scored all 137 against the ground-truth legal facts, having never seen the first grader's verdicts. **It caught the first grader overclaiming.** After reconciling every disagreement against the raw transcript, the two converged on the real result.
 
@@ -84,6 +94,27 @@ The guard above checks an answer against its source; it deliberately does not ju
 
 Two pieces are planned and not yet shipped: an automated content-drift check that re-fetches each static fact's cited source on a cadence and flags a material change for human re-verification, built on standard HTTP conditional requests (`ETag` / `Last-Modified`, a `304` when nothing changed)[^http-conditional] so it is cheap, and a fixed human review cadence on the high-stakes static facts, mirroring the government content-maintenance practice of an owner and a review-by date on every page.[^govuk-maintenance] The full standard, the citations behind it, and how HeyNYC maps to each piece are in the freshness and source-trust standards brief in `docs/strategy/`.
 
+## Conversation continuity is a safety and privacy boundary
+
+HeyNYC remembers an ongoing messaging conversation so a resident can ask a real follow-up instead of starting over after every message or process restart. The identifier is a [salted HMAC of the channel and sender](heynyc/channels/identity.py), not a saved raw phone number. Hosted serving [requires an encryption key, encrypts transcript records, and purges expired conversations and drafts at startup and every 24 hours](heynyc/channels/app.py); the inactivity window currently defaults to 30 days. These are implemented controls, not planned claims.
+
+The bounded-memory layer is now implemented locally. It budgets complete turns by measured tokens,
+compacts only under pressure into one typed continuity record, redacts identifiers before
+compaction, revalidates continuity against resident-authored text, and excludes prior assistant
+facts, URLs, and citations from future evidence. A generated turn is committed only after all
+outbound text and documents are accepted. `NEW` and `PRIVACY` are implemented locally. Confirmed
+`DELETE MY DATA` remains pending the owner's ruling on pseudonymous telemetry and feedback, and
+the new memory behavior still awaits a supervised live restart.
+
+The intended replacement is bounded task continuity, not a personal profile. A typed record may retain a resident's stated goal, corrections, completed steps, and unresolved questions. It must not preserve a benefit rule, deadline, location status, legal claim, or citation as truth; those are retrieved again and pass through the current grounding guard. Old assistant text is dialogue context, never evidence. Validated application state stays in the separate draft store rather than being copied into model-written memory.
+
+That design follows current provider guidance that long-running conversations should remove stale tool output and compact only when context pressure requires it ([OpenAI compaction](https://developers.openai.com/api/docs/guides/compaction), [Anthropic context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing)). Its privacy baseline comes from the [NIST Privacy Framework](https://www.nist.gov/privacy-framework), the data-minimization and storage-limitation principles in [GDPR Article 5](https://eur-lex.europa.eu/eli/reg/2016/679/art_5/oj), and the public-sector precedent of publishing what conversation history is kept and for how long in the [GOV.UK Chat privacy notice](https://www.gov.uk/government/publications/govuk-chat-privacy-notice/govuk-chat-privacy-notice). These are design references, not a claim that HeyNYC has been certified or independently audited against them.
+
+Before calling the memory layer complete, we still need the compact live acceptance set for
+cross-language and cross-module follow-ups, long-conversation usefulness, and a supervised restart.
+Confirmed deletion remains unimplemented. We also need live evidence that compaction reduces total
+tokens, latency, and cost without reducing resident-task success.
+
 ## The human-in-the-loop boundary
 
 HeyNYC is built to get people *through the door*, not to replace the person who decides. Concretely:
@@ -98,9 +129,9 @@ None of this is just our house style, it's where every serious AI-governance fra
 
 ## Limitations (what we haven't proven yet)
 
-Read this part. These are real and current as of 2026-07-05:
+Read this part. These are real and current as of 2026-07-17:
 
-- **Non-English safety is not separately evaluated yet.** The red-team's Spanish subset already surfaced regressions the English answers didn't have (a fabricated law number, an aspirin-dosing lapse). A mistranslated benefit rule is a safety bug, not a UX bug, and in-language safety can't be assumed from English coverage: models hallucinate at measurably different rates across languages[^multilingual-hallucination-gaps], and factual precision drops when they generate grounded facts in a non-English language[^multi-fact]. We don't yet have a dedicated non-English safety eval, and prompt text only partly closes what is really a model-level gap. We've since prototyped an architectural fix for exactly this: a [translate-at-edge pipeline](docs/superpowers/specs/2026-07-05-multilingual-translate-at-edge-design.md) that grounds and verifies in English, then translates only the finished answer with law numbers, dollar amounts, and citations frozen and copied through verbatim, backed by an entity round-trip check that falls back to the English answer on any mismatch. It's off by default and not yet validated against a real translator, so it doesn't close this gap yet, but it's the shape of the fix. This is the limitation we're most honest about, because our actual audience is largely non-English speakers.
+- **Non-English safety has dedicated cases but is not demonstrated as a production capability.** Spanish and Bengali testing has already surfaced regressions the English answers did not have, including a fabricated law number, emergency aspirin dosing, a public-charge detour in response to a SNAP-loss question, and weaker tool use from some candidate models. A mistranslated benefit rule is a safety bug, not a UX bug, and in-language safety cannot be assumed from English coverage: models hallucinate at measurably different rates across languages[^multilingual-hallucination-gaps], and factual precision drops when they generate grounded facts in a non-English language[^multi-fact]. The [translate-at-edge pipeline](docs/superpowers/specs/2026-07-05-multilingual-translate-at-edge-design.md) remains off by default and has not completed production validation. Dedicated cases are evidence that we test this surface, not proof that every supported language is safe.
 - **Language access and accessibility are part of the safety surface, and we hold ourselves to the standards without claiming we've been audited against them.** Serving New Yorkers means clearing more than an accuracy bar. Language access is the law here: NYC Local Law 30 of 2017[^nyc-local-law-30] requires city services in the ten designated citywide languages plus telephonic interpretation in 100-plus. Accessibility has a hard target too: WCAG 2.1 Level AA[^wcag-21], the same standard the 2024 ADA Title II web rule[^ada-title-ii-2024] points state and local government at and that Section 508[^section-508] sets for federal technology. We build toward both, but we haven't done an independent accessibility audit or a per-language access review, so read these as commitments, not certifications.
 - **No external third-party rating yet.** The independent fresh-context grader is a genuine improvement over grading our own homework, and it earned its keep by catching the overclaim. But it's still our own second agent, not an outside human or organization holding the red pen. A truly external rater is a stated next step, not something we've done.
 - **Coverage is a growing subset, and we abstain on the rest.** Measured against a frozen 170-query benchmark on 2026-07-05, about 78 were a clean yes, 49 partial, and 43 a gap (roughly 46%). Four more grounded modules (clinics, Housing Connect, WIC, childcare) have shipped since, so today's coverage is higher, though we have not re-measured against the frozen set. On the questions we don't cover, the safe-and-correct behavior is to abstain and route, which we do, so the live experience is still thinner than the ambition. We'd rather say that than oversell it.
@@ -111,7 +142,8 @@ Read this part. These are real and current as of 2026-07-05:
 
 - No-hallucination eval design and rubric: [`heynyc/eval/README.md`](heynyc/eval/README.md)
 - MyCity safety subset (human-graded gold answers): [`docs/eval/benchmark-v2-safety.md`](docs/eval/benchmark-v2-safety.md)
-- The 137-query adversarial red-team and reconciliation: [`docs/eval/red-team-v1.md`](docs/eval/red-team-v1.md)
+- The historical 137-query red-team and reconciliation: [`docs/eval/red-team-v1.md`](docs/eval/red-team-v1.md)
+- Current 205-case methodology: [`docs/eval/red-team-v2-methodology.md`](docs/eval/red-team-v2-methodology.md)
 - Benchmark methodology (how we measure at scale): [`docs/eval/benchmark-methodology.md`](docs/eval/benchmark-methodology.md)
 - Security vulnerability reporting (a different thing): [SECURITY.md](SECURITY.md)
 

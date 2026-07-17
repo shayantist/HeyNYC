@@ -1,6 +1,6 @@
 # HeyNYC
 
-**HeyNYC** helps New Yorkers find and understand New York City government services, grounded in real city data and official sources. The current adapters are CLI, SMS, and WhatsApp. There is no resident web UI or deployed HeyNYC service yet.
+**HeyNYC** helps New Yorkers find and understand New York City government services, grounded in real city data and official sources. The current adapters are CLI, SMS, and WhatsApp. There is no resident web UI or durable hosted deployment yet.
 
 It answers questions about benefits, housing, food, health, immigration, and events. Supported factual claims carry an official citation; when evidence is insufficient, HeyNYC abstains and points you to 311.
 
@@ -39,11 +39,12 @@ The table below is the full, generated list of current service modules.
 
 ## Current status
 
-HeyNYC is an alpha release and is not a public hosted service.
+HeyNYC is an alpha release. The messaging pilot can run from an operator-managed development server, but it is not a durable public hosted service.
 
 - **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
 - **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
-- **Not yet shipped:** a resident web UI, hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
+- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. In-chat deletion is not yet shipped; see the [privacy notice](legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
+- **Not yet shipped:** a resident web UI, durable hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
 
 The assistant gives best-effort answers in the user's language when configured, but multilingual behavior is not a verified production capability. It does not decide eligibility or submit applications. When evidence is insufficient, it abstains and routes to 311 or the relevant agency.
 
@@ -102,4 +103,4 @@ The standalone Python package includes the agent core, geo, RAG, and scoped web-
 - **Intersection geocoding can be wrong.** NYC GeoSearch can misplace an intersection, so HeyNYC echoes the resolved address and asks for confirmation.
 - **Some datasets are thin.** For example, the SNAP-center list has regular weekday hours but no phone numbers or holiday exceptions. HeyNYC labels the hours as listed and points people to ACCESS HRA or 311 when the source cannot answer more.
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-17_
