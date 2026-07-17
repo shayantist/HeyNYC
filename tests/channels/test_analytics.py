@@ -38,5 +38,5 @@ def test_feedback_log_appends(tmp_path):
     path = tmp_path / "fb.jsonl"
     analytics.feedback_log(path, {"user_key": "k", "flag": "wrong"})
     analytics.feedback_log(path, {"user_key": "k", "flag": "report"})
-    lines = path.read_text().splitlines()
-    assert len(lines) == 2 and json.loads(lines[0])["flag"] == "wrong"
+    records = analytics.load_feedback(path)
+    assert len(records) == 2 and records[0]["flag"] == "wrong"

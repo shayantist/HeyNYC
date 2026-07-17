@@ -12,6 +12,7 @@ from heynyc.core.agent import Agent
 from heynyc.core.drafts import DraftStore
 from heynyc.core.registry import Registry
 from heynyc.core.session import migrate_plaintext_sessions, purge_expired_sessions
+from heynyc.modules.advisories.tools import current_awareness
 
 from . import analytics
 from .base import drain
@@ -47,7 +48,13 @@ def _load_retriever():
 
 
 def build_agent() -> Agent:
-    return Agent(Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST), model=config.HEYNYC_MODEL, index=_load_retriever())
+    return Agent(
+        Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST),
+        model=config.HEYNYC_MODEL,
+        index=_load_retriever(),
+        notify_awareness=current_awareness,
+        scope_gate=True,
+    )
 
 
 def build_deps(agent: Agent) -> Deps:

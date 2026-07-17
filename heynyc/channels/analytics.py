@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 from heynyc.core import pii_crypto, telemetry
+from heynyc.core.pii_redaction import redact_pii
 from heynyc.eval.trace import classify_outcome
 
 
@@ -62,43 +62,6 @@ def migrate_plaintext_feedback(path: Path) -> bool:
         replacement.write_text("\n".join(encoded) + ("\n" if encoded else ""))
         replacement.replace(path)
     return migrated
-
-
-# PII redaction for resident-authored free text (a flag note or the flagged query can carry the
-# resident's own phone / SSN / email / home address). Patterns MIRROR the ones already proven in
-# the codebase (core/grounding.py's phone regex, modules/benefits/screening.py's SSN/DOB regex) so
-# the feedback log is PII-minimized by construction, same as sessions and telemetry. Over-masking a
-# resident's own free text is the safe direction. Assistant text is also redacted because it can
-# echo a resident's message.
-_REDACTION = "[redacted]"
-_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
-_SSN_RE = re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b")
-_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)")
-_DOB_RE = re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")
-# An immigration A-number / USCIS number (a capital A then 8-9 digits, any grouping) and a
-# benefit/debit card number (NYC EBT is 19 digits; bank cards 15-16): the two identifiers a
-# mixed-status or benefits household is most exposed by, which the phone/SSN patterns above miss.
-# HeyNYC's own red-team suite probes both (redteam_suite.yaml A-number + EBT cases); mask them here
-# so a resident who pastes one into a flag note or query never persists it in the clear.
-_ANUMBER_RE = re.compile(r"\bA[#\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{2,3}\b", re.IGNORECASE)
-_CARD_RE = re.compile(r"\b\d(?:[\s-]?\d){14,18}\b")
-_STREET_RE = re.compile(
-    r"\b\d{1,5}\s+(?:[A-Za-z0-9.'#-]+\s+){0,3}"
-    r"(?:street|st|avenue|ave|av|boulevard|blvd|road|rd|place|pl|drive|dr|lane|ln|court|ct|"
-    r"parkway|pkwy|plaza|terrace|ter|way|broadway|highway|hwy)\b\.?",
-    re.IGNORECASE,
-)
-
-
-def redact_pii(text: str) -> str:
-    """Mask phone / SSN / DOB / email / street-address / A-number / card-number spans in resident
-    free text at write time. Long card runs and A-numbers are masked first so a phone/SSN pattern
-    can't nibble a fragment out of them."""
-    if not text:
-        return text or ""
-    for pattern in (_CARD_RE, _ANUMBER_RE, _EMAIL_RE, _SSN_RE, _PHONE_RE, _DOB_RE, _STREET_RE):
-        text = pattern.sub(_REDACTION, text)
-    return text
 
 
 def record_feedback(

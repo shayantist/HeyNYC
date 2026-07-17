@@ -15,18 +15,27 @@ class ChannelStore:
         self.dedup_ttl_s = dedup_ttl_s
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False, timeout=30.0)
-        self._db.execute("CREATE TABLE IF NOT EXISTS seen (message_id TEXT PRIMARY KEY, ts REAL)")
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS seen "
+            "(message_id TEXT PRIMARY KEY, ts REAL, user_key TEXT NOT NULL DEFAULT '')"
+        )
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(seen)")}
+        if "user_key" not in columns:
+            self._db.execute(
+                "ALTER TABLE seen ADD COLUMN user_key TEXT NOT NULL DEFAULT ''"
+            )
         self._db.execute("CREATE TABLE IF NOT EXISTS rate (user_key TEXT, ts REAL)")
         self._db.execute("CREATE INDEX IF NOT EXISTS rate_key ON rate (user_key, ts)")
         self._db.commit()
 
-    def seen(self, message_id: str) -> bool:
+    def seen(self, message_id: str, user_key: str = "") -> bool:
         """True if already seen; otherwise record it and return False. INSERT OR IGNORE
         keeps the prune + insert in one committed transaction (no dangling lock)."""
         now = time.time()
         self._db.execute("DELETE FROM seen WHERE ts < ?", (now - self.dedup_ttl_s,))
         cur = self._db.execute(
-            "INSERT OR IGNORE INTO seen (message_id, ts) VALUES (?, ?)", (message_id, now)
+            "INSERT OR IGNORE INTO seen (message_id, ts, user_key) VALUES (?, ?, ?)",
+            (message_id, now, user_key),
         )
         self._db.commit()
         return cur.rowcount == 0

@@ -9,7 +9,9 @@ import pytest
 from heynyc.core import pii_crypto
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
+from heynyc.core.tools import Tool
 from heynyc.core.session import Session, migrate_plaintext_sessions, purge_expired_sessions
+from heynyc.core.memory import ContinuityRecord
 
 
 def _const_complete(text: str):
@@ -33,6 +35,38 @@ async def test_session_persists_and_resumes(tmp_path: Path):
     assert [t["content"] for t in s2.turns] == ["first question", "first answer"]
 
 
+async def test_session_persists_grounded_assistant_evidence(tmp_path: Path):
+    path = tmp_path / "grounded.jsonl"
+    responses = [
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "function": {"name": "lookup", "arguments": "{}"},
+        }]},
+        {"role": "assistant", "content": "Verified result {cite:S1}", "tool_calls": None},
+    ]
+
+    async def complete(messages, schemas):
+        return responses.pop(0)
+
+    async def lookup(args, ctx):
+        cid = ctx.citations.register(
+            "https://data.cityofnewyork.us/example",
+            snippet="Verified result",
+            title="Verified example",
+            kind="DATA",
+        )
+        return f"Verified result {{cite:{cid}}}"
+
+    agent = Agent(
+        Registry([]),
+        tools={"lookup": Tool("lookup", "", {}, lookup)},
+        complete_fn=complete,
+    )
+    await Session(agent=agent, id="grounded", path=path).send("look it up")
+
+    resumed = Session.load(agent, "grounded", path)
+    assert resumed.turns[-1]["citations"]["S1"]["title"] == "Verified example"
+
+
 async def test_session_appends_across_turns(tmp_path: Path):
     path = tmp_path / "s2.jsonl"
     agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("ok"))
@@ -43,26 +77,138 @@ async def test_session_appends_across_turns(tmp_path: Path):
     assert len(lines) == 4  # 2 turns × (user + assistant)
 
 
-async def test_session_stream_persists(tmp_path: Path):
-    path = tmp_path / "s3.jsonl"
-
-    async def sf(messages, schemas):
-        yield {"type": "text", "text": "streamed"}
-        yield {"type": "message", "message": {"role": "assistant", "content": "streamed", "tool_calls": None}}
-
-    agent = Agent(Registry([]), tools={}, stream_fn=sf)
-    s = Session(agent=agent, id="s3", path=path)
-    types = [e.type async for e in s.stream("hi")]
-    assert types[-1] == "done"
-    assert len(s.turns) == 2
-    assert path.exists()
-
-
 async def test_session_no_path_is_memory_only():
     agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("ok"))
     s = Session(agent=agent, id="mem")
     await s.send("q")
     assert len(s.turns) == 2  # works, just not persisted
+
+
+async def test_prepared_turn_is_not_visible_or_persisted_until_committed(tmp_path: Path):
+    path = tmp_path / "delivery.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("not delivered yet"))
+    session = Session(agent=agent, id="delivery", path=path)
+
+    pending = await session.prepare("question")
+
+    assert session.turns == []
+    assert not path.exists()
+
+    session.commit(pending)
+
+    assert [turn["content"] for turn in session.turns] == ["question", "not delivered yet"]
+    assert path.exists()
+
+
+async def test_new_reset_boundary_preserves_audit_file_but_clears_model_history(tmp_path: Path):
+    path = tmp_path / "reset.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("answer"))
+    session = Session(agent=agent, id="reset", path=path)
+    await session.send("old question")
+
+    session.reset()
+
+    assert session.turns == []
+    assert path.exists()
+    resumed = Session.load(agent, "reset", path)
+    assert resumed.turns == []
+    assert len(path.read_text().splitlines()) == 3
+
+
+async def test_session_compacts_only_under_pressure_and_persists_typed_continuity(tmp_path: Path):
+    path = tmp_path / "compact.jsonl"
+    seen_messages = []
+    compact_calls = []
+
+    async def complete(messages, schemas):
+        seen_messages.append(messages)
+        return {"role": "assistant", "content": "continued", "tool_calls": None}
+
+    async def compact(older, current):
+        compact_calls.append(older)
+        return ContinuityRecord(
+            goal="I need food help",
+            exact_user_excerpts=["I need food help"],
+        )
+
+    def count(messages, schemas):
+        return sum(
+            len(str(message.get("content") or ""))
+            for message in messages
+            if message.get("role") != "system"
+            and not str(message.get("content") or "").startswith("<system-reminder>")
+        )
+
+    agent = Agent(
+        Registry([]), tools={}, complete_fn=complete,
+        memory_limit_tokens=300, memory_token_counter=count, memory_compactor=compact,
+    )
+    session = Session(agent=agent, id="compact", path=path)
+    session.convo.turns = [
+        {"role": "user", "content": "I need food help " * 30},
+        {"role": "assistant", "content": "Tell me what changed " * 20},
+        {"role": "user", "content": "Queens"},
+        {"role": "assistant", "content": "I can help with that"},
+    ]
+
+    pending = await session.prepare("What is the next step?")
+    session.commit(pending)
+
+    assert len(compact_calls) == 1
+    assert any("I need food help" in str(message.get("content")) for message in seen_messages[-1])
+    assert all("Tell me what changed" not in str(message.get("content")) for message in seen_messages[-1])
+    resumed = Session.load(agent, "compact", path)
+    assert resumed.continuity.goal == "I need food help"
+    assert pending.result.usage["memory_compactions"] == 1
+
+
+async def test_late_awareness_is_measured_before_memory_planning(tmp_path: Path):
+    compact_calls = []
+
+    async def awareness():
+        return "citywide alert"
+
+    async def compact(older, current):
+        compact_calls.append(older)
+        return ContinuityRecord(goal="first question")
+
+    def count(messages, schemas):
+        text = " ".join(str(message.get("content") or "") for message in messages)
+        if "citywide alert" in text and text.count("Prior assistant factual text") >= 2:
+            return 11
+        return 9
+
+    agent = Agent(
+        Registry([]), tools={}, complete_fn=_const_complete("continued"),
+        notify_awareness=awareness, memory_limit_tokens=10,
+        memory_token_counter=count, memory_compactor=compact,
+    )
+    session = Session(agent=agent, id="awareness", path=tmp_path / "awareness.jsonl")
+    session.convo.turns = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "recent answer"},
+    ]
+
+    pending = await session.prepare("continue")
+
+    assert pending.result.status == "success"
+    assert compact_calls
+
+
+async def test_context_limit_is_not_returned_as_a_committable_turn(tmp_path: Path):
+    agent = Agent(
+        Registry([]), tools={}, complete_fn=_const_complete("should not run"),
+        memory_limit_tokens=1, memory_token_counter=lambda messages, schemas: 2,
+    )
+    session = Session(agent=agent, id="limit", path=tmp_path / "limit.jsonl")
+
+    with pytest.raises(Exception, match="context"):
+        await session.prepare("hello")
+
+    assert session.turns == []
+    assert not (tmp_path / "limit.jsonl").exists()
 
 
 # --- Encryption at rest (security-audit F1) ---------------------------------

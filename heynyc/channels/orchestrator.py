@@ -14,7 +14,9 @@ from datetime import datetime
 from pathlib import Path
 
 from heynyc.core import outcomes
-from heynyc.core.agent import Agent
+from heynyc.core import pii_crypto
+from heynyc.core.agent import Agent, _emergency_backstop
+from heynyc.core.memory import ContextCapacityError
 from heynyc.core.session import Session
 
 from . import analytics
@@ -30,10 +32,20 @@ _FLAG_COMMANDS = ("/wrong", "/report")
 _HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
 _RATE_LIMIT_MSG = "You're sending a lot at once, give me a moment and try again shortly. 🙏"
+_MEDIA_UNSUPPORTED_MSG = (
+    "I received the attachment, but this pilot can't read attachments yet. "
+    "Please type the text or question you want help with."
+)
 _SCREEN_TOOL = "screen_eligibility"
 _SCREEN_REMINDER = (
     "The user explicitly requested the official benefits screening action. Build its PII-free "
     "arguments only from the conversation history. Do not invent missing profile details."
+)
+_NEW_TOKENS = {"new", "/new"}
+_PRIVACY_TOKENS = {"privacy", "/privacy"}
+_NEW_MESSAGE = (
+    "Started a new conversation. I won't use the earlier chat as context. "
+    "This does not delete stored records."
 )
 
 
@@ -79,6 +91,29 @@ def is_screen(text: str) -> bool:
     return text.strip().lower() in {"/screen", "/screen all"}
 
 
+def is_new(text: str) -> bool:
+    return text.strip().lower() in _NEW_TOKENS
+
+
+def is_privacy(text: str) -> bool:
+    return text.strip().lower() in _PRIVACY_TOKENS
+
+
+def _privacy_message(channel: str) -> str:
+    days = pii_crypto.retention_days()
+    retention = str(int(days)) if days.is_integer() else str(days)
+    delivery = "Twilio" if "twilio" in channel else "Meta"
+    return (
+        "HeyNYC keeps an encrypted conversation transcript and any unfinished application draft "
+        f"for up to {retention} days by default so a conversation can continue after a restart. "
+        f"Messages needed for a reply go to the configured AI model provider and {delivery} "
+        "delivers the reply. HeyNYC uses a pseudonymous sender key, not your raw phone number, in "
+        "its own session and operational logs. Do not send an SSN or other sensitive ID in chat. "
+        "Send NEW to start without earlier model context. Self-service deletion is not yet available "
+        "in this pilot."
+    )
+
+
 def _reminders() -> list[str]:
     return [f"Today's date is {datetime.now():%A, %B %-d, %Y}. The user is in New York City."]
 
@@ -98,9 +133,9 @@ def _artifacts_in(art_dir: Path) -> list[str]:
 
 
 async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
-    if deps.store.seen(msg.message_id):       # dedup (also records), before any work
-        return
     key = user_key(msg.channel, msg.sender, deps.salt)
+    if deps.store.seen(msg.message_id, key):  # dedup (also records), before any work
+        return
     if not deps.store.allow(key):
         await replier.send_text(_RATE_LIMIT_MSG)
         return
@@ -108,8 +143,22 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
     async with deps.locks.get(key):           # serialize one user's messages
         async with deps.semaphore:            # bound global concurrency / LLM spend
             session = Session.load(deps.agent, key, deps.sessions_dir / f"{key}.jsonl")
+            if msg.media:
+                emergency_response = _emergency_backstop(msg.text)
+                if emergency_response:
+                    await replier.send_text(emergency_response)
+                    return
+                await replier.send_text(_MEDIA_UNSUPPORTED_MSG)
+                return
             if is_flag(msg.text):
                 await _handle_flag(msg, key, session, replier, deps)
+                return
+            if is_new(msg.text):
+                await replier.send_text(_NEW_MESSAGE)
+                session.reset()
+                return
+            if is_privacy(msg.text):
+                await replier.send_text(_privacy_message(msg.channel))
                 return
             if is_help(msg.text):   # greeting / "what can you do" → the grounded capability menu
                 await replier.send_text(deps.agent.registry.welcome_text())
@@ -120,19 +169,28 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 user_drafts = deps.drafts.for_user(key) if deps.drafts else None
                 screen_requested = is_screen(msg.text)
                 reminders = _reminders() + ([_SCREEN_REMINDER] if screen_requested else [])
-                result = await session.send(
-                    msg.text, reminders=reminders, output_dir=art_dir, drafts=user_drafts,
-                    forced_tool=_SCREEN_TOOL if screen_requested else None,
-                    forced_tool_args={
-                        "show_all": msg.text.strip().lower() == "/screen all",
-                    } if screen_requested else None,
-                    excluded_tools=None if screen_requested else {_SCREEN_TOOL},
-                )
+                try:
+                    pending = await session.prepare(
+                        msg.text, reminders=reminders, output_dir=art_dir, drafts=user_drafts,
+                        forced_tool=_SCREEN_TOOL if screen_requested else None,
+                        forced_tool_args={
+                            "show_all": msg.text.strip().lower() == "/screen all",
+                        } if screen_requested else None,
+                        excluded_tools=None if screen_requested else {_SCREEN_TOOL},
+                    )
+                except ContextCapacityError:
+                    await replier.send_text(
+                        "I can't safely fit enough of this conversation into the AI model right "
+                        "now. Please try again shortly or send NEW to start a fresh conversation."
+                    )
+                    return
+                result = pending.result
                 for chunk in render(result):
                     await replier.send_text(chunk)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
                 for path in artifacts:
                     await replier.send_document(path, caption="Your draft SNAP application (LDSS-4826)")
+                session.commit(pending)
                 analytics.record_interaction(
                     telemetry_path=deps.telemetry_path, model=deps.agent.model,
                     user_key=key, channel=msg.channel, result=result,
