@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import signal
-from heynyc.channels.format import render, WA_LIMIT
+from heynyc.channels.format import _split, render, WA_LIMIT
 
 
 @dataclass
@@ -63,6 +63,10 @@ def test_heading_preserves_a_trailing_hash_character():
     assert render(FakeResult("# C#")) == ["*C#*"]
 
 
+def test_replaces_model_em_dashes_for_channel_copy():
+    assert render(FakeResult("Free Yoga \N{EM DASH} Saturday")) == ["Free Yoga - Saturday"]
+
+
 def test_bold_heading_has_one_whatsapp_bold_delimiter():
     assert render(FakeResult("## **Housing**")) == ["*Housing*"]
 
@@ -83,6 +87,24 @@ def test_sources_footer_uses_canonical_page_for_web_citation():
     footer = render(r)[0]
     assert "https://nyc.gov/help" in footer
     assert "#:~:text=" not in footer
+
+
+def test_sources_footer_omits_links_already_shown_in_the_answer():
+    r = FakeResult(
+        (
+            "Event details: https://nyc.gov/event {cite:S1}. "
+            "Air quality warning {cite:S2}."
+        ),
+        {
+            "S1": {"url": "https://nyc.gov/event", "title": "Event"},
+            "S2": {"url": "https://nyc.gov/air", "title": "Air quality"},
+        },
+    )
+
+    rendered = render(r)[0]
+
+    assert rendered.count("https://nyc.gov/event") == 1
+    assert "Air quality - https://nyc.gov/air" in rendered
 
 
 def test_sources_footer_preserves_socrata_row_links():
@@ -107,7 +129,7 @@ def test_sources_footer_preserves_socrata_row_links():
     assert "row-1.json" in footer and "row-2.json" in footer
 
 
-def test_sources_footer_preserves_arcgis_row_queries():
+def test_sources_footer_compacts_arcgis_row_queries_to_one_layer_link():
     layer = "https://services6.arcgis.com/example/FeatureServer/0"
     r = FakeResult(
         "One {cite:S1}. Two {cite:S2}.",
@@ -118,9 +140,9 @@ def test_sources_footer_preserves_arcgis_row_queries():
     )
 
     footer = render(r)[0]
-    assert footer.count("NYC Finder") == 2
-    assert f"{layer}/query?where=id%3D1" in footer
-    assert f"{layer}/query?where=id%3D2" in footer
+    assert footer.count("NYC Finder") == 1
+    assert f"NYC Finder - {layer}" in footer
+    assert "/query?where=" not in footer
 
 
 def test_splits_long_text_on_paragraph_boundaries_footer_last():
@@ -154,3 +176,13 @@ def test_large_sources_footer_finishes_and_respects_the_limit():
         signal.signal(signal.SIGALRM, previous)
 
     assert all(len(chunk) <= WA_LIMIT for chunk in result)
+
+
+def test_twilio_sized_split_keeps_each_source_url_intact():
+    urls = [f"https://example.com/{i}/" + "x" * 80 for i in range(30)]
+    footer = "Sources:\n" + "\n".join(f"• Source {i} - {url}" for i, url in enumerate(urls))
+
+    chunks = _split(footer, 1600)
+
+    assert all(len(chunk) <= 1600 for chunk in chunks)
+    assert all(any(url in chunk for chunk in chunks) for url in urls)

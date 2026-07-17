@@ -16,7 +16,7 @@ _HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MU
 
 
 def _strip_markers(text: str) -> str:
-    return _ATTACH.sub("", _CITE.sub("", text or "")).strip()
+    return _ATTACH.sub("", _CITE.sub("", text or "")).replace("\N{EM DASH}", "-").strip()
 
 
 def _whatsapp_markup(text: str) -> str:
@@ -52,19 +52,28 @@ def _whatsapp_markup(text: str) -> str:
     return "".join(pieces)
 
 
-def _sources_footer(citations: dict) -> str:
+def _canonical_url(url: str) -> str:
+    return url.rstrip(".,;:!?").split("#:~:text=", 1)[0].rstrip("/")
+
+
+def _sources_footer(citations: dict, inline_urls: set[str] | None = None) -> str:
     if not citations:
         return ""
+    inline_urls = inline_urls or set()
     lines = ["Sources:"]
     seen: set[tuple[str, str]] = set()
     for c in citations.values():
         title = c.get("title") or c.get("url", "")
         url = c["url"].split("#:~:text=", 1)[0]
+        if c.get("kind") == "DATA" and "/FeatureServer/" in url and "/query?" in url:
+            url = url.split("/query?", 1)[0]
+        if _canonical_url(url) in inline_urls:
+            continue
         if (title, url) in seen:
             continue
         seen.add((title, url))
         lines.append(f"• {title} - {url}")
-    return "\n".join(lines)
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def _split(text: str, limit: int) -> list[str]:
@@ -80,6 +89,21 @@ def _split(text: str, limit: int) -> list[str]:
             continue
         if current:
             chunks.append(current)
+        current = ""
+        lines = para.splitlines()
+        if len(lines) > 1:
+            for line in lines:
+                candidate = f"{current}\n{line}" if current else line
+                if len(candidate) <= limit:
+                    current = candidate
+                    continue
+                if current:
+                    chunks.append(current)
+                while len(line) > limit:
+                    chunks.append(line[:limit])
+                    line = line[limit:]
+                current = line
+            continue
         # a single oversized paragraph: hard-wrap it
         while len(para) > limit:
             chunks.append(para[:limit])
@@ -92,7 +116,8 @@ def _split(text: str, limit: int) -> list[str]:
 
 def render(result) -> list[str]:
     body = _whatsapp_markup(_strip_markers(result.text))
-    footer = _sources_footer(used_citations(result.text, result.citations))
+    inline_urls = {_canonical_url(match.group()) for match in _URL.finditer(body)}
+    footer = _sources_footer(used_citations(result.text, result.citations), inline_urls)
     if not footer:
         return _split(body, WA_LIMIT) or [""]
     return _split(f"{body}\n\n{footer}", WA_LIMIT)

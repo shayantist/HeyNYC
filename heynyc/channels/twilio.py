@@ -10,11 +10,21 @@ import logging
 from heynyc.core import config
 
 from .base import InboundMessage, dispatch
+from .format import _split
 from .orchestrator import Deps, handle
 
 CHANNEL = "whatsapp_twilio"
 _TYPING_URL = "https://messaging.twilio.com/v3/Indicators/Typing.json"
+_TEXT_LIMIT = 1600
+_PAGE_PREFIX_RESERVE = 16
 logger = logging.getLogger("heynyc.channels.twilio")
+
+
+def _ordered_chunks(text: str) -> list[str]:
+    chunks = _split(text, _TEXT_LIMIT - _PAGE_PREFIX_RESERVE)
+    return chunks if len(chunks) < 2 else [
+        f"{index}/{len(chunks)} {chunk}" for index, chunk in enumerate(chunks, 1)
+    ]
 
 
 class TwilioReplier:
@@ -22,18 +32,27 @@ class TwilioReplier:
         self._client, self._from, self._to, self._mid = client, from_, to, message_id
 
     async def send_text(self, text: str) -> None:
-        await asyncio.to_thread(
-            self._client.messages.create, from_=self._from, to=self._to, body=text
-        )
+        for chunk in _ordered_chunks(text):
+            await asyncio.to_thread(
+                self._client.messages.create, from_=self._from, to=self._to, body=chunk
+            )
 
     async def send_document(self, path: str, caption: str = "") -> None:
         # Twilio fetches media by PUBLIC URL; a local file can't be attached directly. If we're
         # given a hosted URL, send it as media; otherwise degrade to a text note (Meta is the
         # document-capable channel, see the channels README).
         if path.startswith(("http://", "https://")):
+            chunks = _ordered_chunks(caption or "")
+            for chunk in chunks[:-1]:
+                await asyncio.to_thread(
+                    self._client.messages.create,
+                    from_=self._from,
+                    to=self._to,
+                    body=chunk,
+                )
             await asyncio.to_thread(
                 self._client.messages.create,
-                from_=self._from, to=self._to, body=caption or "", media_url=[path],
+                from_=self._from, to=self._to, body=chunks[-1], media_url=[path],
             )
         else:
             await self.send_text(f"{caption or 'Your document is ready'}, I'll send a download link shortly.")
@@ -56,12 +75,25 @@ class TwilioReplier:
 
 
 def to_inbound(params: dict) -> InboundMessage:
+    try:
+        count = max(0, int(params.get("NumMedia", 0) or 0))
+    except (TypeError, ValueError):
+        count = 0
+    media = [
+        {
+            "url": params[f"MediaUrl{index}"],
+            "content_type": params.get(f"MediaContentType{index}", ""),
+        }
+        for index in range(count)
+        if params.get(f"MediaUrl{index}")
+    ]
     return InboundMessage(
         channel=CHANNEL,
         sender=params.get("From", ""),
         text=params.get("Body", "") or "",
         message_id=params.get("MessageSid", ""),
         profile_name=params.get("ProfileName", "") or "",
+        media=media,
         raw=dict(params),
     )
 

@@ -71,6 +71,11 @@ Resident-authored queries, notes, and assistant text are PII-redacted before fee
 5. **Expose localhost:** `ngrok http 8000` (or `cloudflared tunnel --url http://localhost:8000`).
 6. **Run it:** `uv run python -m heynyc serve --provider both` (or `meta` / `twilio`).
 
+For the configured HeyNYC production WhatsApp sender and assigned ngrok development domain, run
+the local demo stack with one command: `./scripts/serve_demo.sh`. It starts the Twilio provider and
+the tunnel together on dedicated local port 8791 and stops both on Ctrl-C. This remains a laptop
+demo, not durable hosting.
+
 Install the deps with `uv sync --extra whatsapp` (the messaging deps live in their own extra; the base `--extra dev` install does not pull them).
 
 ## Flagging a bad answer

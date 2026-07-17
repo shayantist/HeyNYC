@@ -10,8 +10,8 @@ class FakeMessages:
     def __init__(self):
         self.created = []
 
-    def create(self, from_, to, body):
-        self.created.append((from_, to, body))
+    def create(self, from_, to, body, media_url=None):
+        self.created.append((from_, to, body, media_url))
 
 
 class FakeClient:
@@ -48,13 +48,62 @@ async def test_twilio_replier_uses_threadpool_create():
     )
     await r.send_text("hi")
     await r.indicate_typing()
-    assert client.messages.created == [("whatsapp:+14155238886", "whatsapp:+1555", "hi")]
+    assert client.messages.created == [("whatsapp:+14155238886", "whatsapp:+1555", "hi", None)]
     assert client.requests == [(
         "POST",
         "https://messaging.twilio.com/v3/Indicators/Typing.json",
         {"channel": "WHATSAPP", "messageId": "SM1"},
         {"Content-Type": "application/json"},
     )]
+
+
+async def test_twilio_replier_splits_bodies_at_twilio_limit():
+    client = FakeClient()
+    replier = TwilioReplier(
+        client, from_="whatsapp:+14155238886", to="whatsapp:+1555", message_id="SM1"
+    )
+
+    await replier.send_text(("a" * 1200) + "\n\n" + ("b" * 1200))
+
+    bodies = [body for _, _, body, _ in client.messages.created]
+    assert bodies == [f"1/2 {'a' * 1200}", f"2/2 {'b' * 1200}"]
+    assert all(len(body) <= 1600 for body in bodies)
+
+
+async def test_twilio_document_caption_uses_the_same_limit():
+    client = FakeClient()
+    replier = TwilioReplier(client, from_="whatsapp:+1", to="whatsapp:+2")
+
+    await replier.send_document("https://example.com/file.pdf", ("a" * 1200) + "\n\n" + ("b" * 1200))
+
+    assert client.messages.created == [
+        ("whatsapp:+1", "whatsapp:+2", f"1/2 {'a' * 1200}", None),
+        ("whatsapp:+1", "whatsapp:+2", f"2/2 {'b' * 1200}", ["https://example.com/file.pdf"]),
+    ]
+
+
+async def test_twilio_document_caption_does_not_renumber_bounded_parts():
+    client = FakeClient()
+    replier = TwilioReplier(client, from_="whatsapp:+1", to="whatsapp:+2")
+    caption = "\n\n".join(character * 1584 for character in "abc")
+
+    await replier.send_document("https://example.com/file.pdf", caption)
+
+    bodies = [body for _, _, body, _ in client.messages.created]
+    assert len(bodies) == 3
+    assert [body[:4] for body in bodies] == ["1/3 ", "2/3 ", "3/3 "]
+    assert all(len(body) <= 1600 for body in bodies)
+
+
+async def test_twilio_document_allows_an_empty_caption():
+    client = FakeClient()
+    replier = TwilioReplier(client, from_="whatsapp:+1", to="whatsapp:+2")
+
+    await replier.send_document("https://example.com/file.pdf")
+
+    assert client.messages.created == [
+        ("whatsapp:+1", "whatsapp:+2", "", ["https://example.com/file.pdf"]),
+    ]
 
 
 async def test_twilio_typing_indicator_failure_does_not_block_the_reply():
@@ -71,7 +120,7 @@ async def test_twilio_typing_indicator_failure_does_not_block_the_reply():
     await replier.send_text("final answer")
 
     assert client.messages.created == [
-        ("whatsapp:+14155238886", "whatsapp:+1555", "final answer")
+        ("whatsapp:+14155238886", "whatsapp:+1555", "final answer", None)
     ]
 
 
@@ -93,6 +142,22 @@ def test_to_inbound_maps_twilio_params():
     m = to_inbound({"From": "whatsapp:+1555", "Body": "hi", "MessageSid": "SM1", "ProfileName": "Ada"})
     assert m.channel == "whatsapp_twilio" and m.sender == "whatsapp:+1555"
     assert m.text == "hi" and m.message_id == "SM1" and m.profile_name == "Ada"
+
+
+def test_to_inbound_maps_twilio_media_without_downloading_it():
+    m = to_inbound({
+        "From": "whatsapp:+1555",
+        "Body": "What does this notice say?",
+        "MessageSid": "MM1",
+        "NumMedia": "1",
+        "MediaUrl0": "https://api.twilio.com/media/ME1",
+        "MediaContentType0": "image/jpeg",
+    })
+
+    assert m.media == [{
+        "url": "https://api.twilio.com/media/ME1",
+        "content_type": "image/jpeg",
+    }]
 
 
 def test_signature_validation_accepts_genuine_and_rejects_tampered():
