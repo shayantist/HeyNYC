@@ -105,12 +105,16 @@ def test_system_prompt_emergency_no_medical_dosing():
 
 
 def test_system_prompt_public_charge_snap_guardrail():
-    # Red-team FP03 fix: the agent must NOT say SNAP counts toward public charge; SNAP is generally
-    # NOT a public-charge benefit, and it must not derive the rule from news about "the administration."
+    # Keep public charge available as a retrieved topic-specific answer, not as a detailed answer
+    # injected into every conversation. The latter hijacked a Bengali SNAP-loss question.
     low = build_system_prompt(Registry([])).lower()
     assert "public charge" in low
-    assert "snap" in low and "not counted" in low
-    assert "actionnyc" in low  # routes to immigration legal aid
+    assert "only when the resident asks" in low
+    assert "never introduce immigration or public charge" in low
+    assert "retrieve current official guidance" in low
+    assert "snap (food stamps)" not in low
+    assert "cash assistance" not in low
+    assert "institutional care" not in low
 
 
 def test_system_prompt_same_discipline_in_every_language():
@@ -130,6 +134,24 @@ def test_router_matches_module_on_curated_keyword():
     from heynyc.core.prompts import route_modules
 
     assert "food_pantries" in route_modules("where's the nearest food pantry?", _real_registry())
+
+
+def test_router_loads_cooling_and_water_details_for_combined_request():
+    from heynyc.core.prompts import route_modules
+
+    matched = route_modules(
+        "Where are the nearest cooling centers and water stations to Rockefeller Center?",
+        _real_registry(),
+    )
+
+    assert {"cooling_centers", "drinking_fountains"} <= matched
+
+
+def test_phone_style_limits_combined_default_without_capping_user_requests():
+    from heynyc.core.prompts import BASE_SYSTEM_PROMPT
+
+    assert "about 6 total" in BASE_SYSTEM_PROMPT
+    assert "honor the user's requested count" in BASE_SYSTEM_PROMPT
 
 
 def test_router_returns_empty_set_on_unrelated_query():
