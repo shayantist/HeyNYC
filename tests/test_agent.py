@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from heynyc.core.agent import Agent
+from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool, ToolContext
 
@@ -29,6 +31,97 @@ def _tool_call(name, args, call_id="c1"):
     return {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
 
 
+def test_history_does_not_register_prior_assistant_citations_as_current_evidence():
+    from heynyc.core.agent import _history_messages
+
+    citations = CitationRegistry()
+    history = [{
+        "role": "assistant",
+        "content": "The office closes at 5 p.m. {cite:S1}",
+        "citations": {
+            "S1": {
+                "url": "https://example.gov/old",
+                "title": "Old office hours",
+                "snippet": "Closes at 5 p.m.",
+                "kind": "WEB",
+            },
+        },
+    }]
+
+    messages = _history_messages(history)
+
+    assert citations.mapping() == {}
+    assert "{cite:S1}" not in messages[0]["content"]
+    assert "retrieve current evidence" in messages[0]["content"].lower()
+
+
+async def test_model_call_aborts_when_current_request_exceeds_verified_capacity():
+    calls = 0
+
+    async def complete(messages, schemas):
+        nonlocal calls
+        calls += 1
+        return _assistant("should not run")
+
+    agent = Agent(
+        Registry([]), tools={}, complete_fn=complete, memory_limit_tokens=10,
+        memory_token_counter=lambda messages, schemas: 11,
+    )
+
+    result = await agent.run("hello")
+
+    assert calls == 0
+    assert result.status == "context_limit"
+    assert "safely fit" in result.text.lower()
+
+
+def test_citywide_notify_awareness_ignores_borough_only_notices():
+    from heynyc.core.agent import _has_citywide_notify_notice
+
+    assert _has_citywide_notify_notice(
+        "- 07/16: Notify NYC - Air Quality Health Advisory - 7/16 [broad scope confirmed]"
+    )
+    assert not _has_citywide_notify_notice(
+        "- 07/16: Notify NYC - FDNY Activity - 5th Ave (BK)\n"
+        "- 07/16: Notify NYC - Untagged local street closure"
+    )
+
+
+async def test_broad_event_turn_forces_citywide_advisory_check_from_awareness(
+    empty_registry, monkeypatch,
+):
+    forced = []
+    received_args = []
+
+    async def awareness():
+        return "- 07/16: Notify NYC - Citywide current notice [broad scope confirmed]"
+
+    async def advisory(args, ctx):
+        received_args.append(args)
+        return "Current citywide notice checked"
+
+    async def model_stream(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        if forced_tool:
+            yield {"type": "message", "message": _assistant(
+                tool_calls=[_tool_call(forced_tool, {})],
+            )}
+        else:
+            yield {"type": "message", "message": _assistant(content="Current plans checked.")}
+
+    tool = Tool("nyc_advisories", "", {}, advisory)
+    agent = Agent(
+        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+    )
+    monkeypatch.setattr(agent, "_litellm_stream", model_stream)
+
+    result = await agent.run("What events are happening in NYC this weekend?")
+
+    assert forced == ["nyc_advisories", None]
+    assert received_args == [{"citywide_only": True}]
+    assert result.tool_calls_made == ["nyc_advisories"]
+
+
 @pytest.fixture
 def empty_registry():
     return Registry([])
@@ -42,6 +135,200 @@ async def test_abstains_with_no_tools(empty_registry):
     assert result.iterations == 1
     assert result.tool_calls_made == []
     assert not result.hit_max_iters
+
+
+async def test_scope_denial_stops_before_main_model_or_tools(empty_registry):
+    model_calls = 0
+    tool_calls = 0
+
+    async def deny_scope(user_message, history):
+        assert user_message == "Is Taiwan independent?"
+        assert history == []
+        return False
+
+    async def complete(messages, tool_schemas):
+        nonlocal model_calls
+        model_calls += 1
+        return _assistant(content="This must not run.")
+
+    async def search(args, ctx):
+        nonlocal tool_calls
+        tool_calls += 1
+        return "This must not run."
+
+    agent = Agent(
+        empty_registry,
+        tools={"web_search": Tool("web_search", "", {}, search)},
+        complete_fn=complete,
+        scope_fn=deny_scope,
+    )
+
+    result = await agent.run("Is Taiwan independent?")
+
+    assert "NYC" in result.text
+    assert "not the right source" in result.text
+    assert result.iterations == 0
+    assert result.tool_calls_made == []
+    assert result.citations == {}
+    assert model_calls == 0
+    assert tool_calls == 0
+
+
+async def test_rights_sensitive_scope_denial_declares_civic_values(empty_registry):
+    async def deny_rights_scope(user_message, history):
+        return "deny_rights"
+
+    agent = Agent(
+        empty_registry,
+        tools={},
+        complete_fn=_scripted(_assistant(content="This must not run.")),
+        scope_fn=deny_rights_scope,
+    )
+
+    result = await agent.run("Is Israel committing genocide?")
+
+    assert "equal dignity" in result.text
+    assert "Palestinian and Jewish safety" in result.text
+    assert "freedom from discrimination" in result.text
+    assert "civil liberties" in result.text
+    assert "due process" in result.text
+    assert "equal access to government" in result.text
+    assert result.iterations == 0
+
+
+async def test_scope_classifier_error_fails_closed(empty_registry):
+    async def broken_scope(user_message, history):
+        raise TimeoutError("classifier timed out")
+
+    complete = _scripted(_assistant(content="This must not run."))
+    agent = Agent(empty_registry, tools={}, complete_fn=complete, scope_fn=broken_scope)
+
+    result = await agent.run("Is Israel committing genocide?")
+
+    assert "NYC" in result.text
+    assert result.iterations == 0
+    assert result.usage["n_model_calls"] == 1
+    assert result.usage["scope_model"] == "unknown/injected-scope"
+    assert result.usage["cost_usd"] is None
+    assert result.usage["cost_status"] == "unpriced"
+
+
+async def test_default_scope_classifier_rejects_malformed_structured_output(
+    empty_registry, monkeypatch,
+):
+    captured = {}
+
+    async def malformed_completion(**kwargs):
+        captured.update(kwargs)
+        message = SimpleNamespace(content='{"decision":"maybe"}', refusal=None, parsed=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage={"prompt_tokens": 7, "completion_tokens": 2},
+        )
+
+    monkeypatch.setattr("litellm.acompletion", malformed_completion)
+    agent = Agent(empty_registry, tools={}, scope_gate=True)
+
+    result = await agent.run("Is Taiwan independent?")
+
+    assert result.iterations == 0
+    assert result.usage["scope_input_tokens"] == 7
+    assert result.usage["scope_output_tokens"] == 2
+    assert result.usage["n_model_calls"] == 1
+    assert result.usage["cost_status"] != "priced" or result.usage["cost_usd"] != 0
+    assert captured["response_format"].model_json_schema()["properties"]["decision"]["enum"] == [
+        "allow", "deny", "deny_rights",
+    ]
+    assert captured["stream"] is False
+
+
+async def test_default_scope_classifier_call_error_is_unpriceable_not_free(
+    empty_registry, monkeypatch,
+):
+    async def failed_completion(**kwargs):
+        raise TimeoutError("scope provider timed out")
+
+    monkeypatch.setattr("litellm.acompletion", failed_completion)
+    agent = Agent(empty_registry, tools={}, scope_gate=True)
+
+    result = await agent.run("Is Taiwan independent?")
+
+    assert result.iterations == 0
+    assert result.usage["scope_model"]
+    assert result.usage["n_model_calls"] == 1
+    assert result.usage["cost_usd"] is None
+    assert result.usage["cost_status"] == "unpriced"
+
+
+async def test_scope_classifier_omits_openai_reasoning_param_for_other_providers(
+    empty_registry, monkeypatch,
+):
+    captured = {}
+
+    async def classified_completion(**kwargs):
+        captured.update(kwargs)
+        message = SimpleNamespace(
+            content='{"decision":"allow"}', refusal=None, parsed=None,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage={"prompt_tokens": 7, "completion_tokens": 2},
+        )
+
+    monkeypatch.setattr("litellm.acompletion", classified_completion)
+    monkeypatch.setattr("heynyc.core.config.HEYNYC_SCOPE_MODEL", "openrouter/mistralai/test")
+    agent = Agent(empty_registry, tools={})
+
+    result = await agent._classify_scope("Where is the nearest pantry?", [])
+    assert result.decision == "allow"
+    assert (result.input_tokens, result.output_tokens) == (7, 2)
+    assert "reasoning_effort" not in captured
+
+
+async def test_scope_receives_conversation_for_contextual_followup(empty_registry):
+    seen = {}
+
+    async def contextual_scope(user_message, history):
+        seen["user_message"] = user_message
+        seen["history"] = history
+        return history[-1]["content"] == "How did the mayors differ?"
+
+    history = [
+        {"role": "user", "content": "Who is the mayor?"},
+        {"role": "assistant", "content": "How did the mayors differ?"},
+    ]
+    agent = Agent(
+        empty_registry,
+        tools={},
+        complete_fn=_scripted(_assistant(content="Housing comparison.")),
+        scope_fn=contextual_scope,
+    )
+
+    result = await agent.run("Housing", history=history)
+
+    assert result.text == "Housing comparison."
+    assert seen == {"user_message": "Housing", "history": history}
+
+
+async def test_emergency_backstop_runs_before_scope_classifier(empty_registry):
+    scope_calls = 0
+
+    async def scope(user_message, history):
+        nonlocal scope_calls
+        scope_calls += 1
+        return False
+
+    agent = Agent(
+        empty_registry,
+        tools={},
+        complete_fn=_scripted(_assistant(content="This must not run.")),
+        scope_fn=scope,
+    )
+
+    result = await agent.run("I'm going to kill myself")
+
+    assert result.text.startswith("Call 911 right now")
+    assert scope_calls == 0
 
 
 async def test_empty_final_answer_falls_back_to_safe_refusal(empty_registry):
@@ -146,7 +433,7 @@ async def test_handler_exception_surfaced(empty_registry):
     assert "socrata down" in tool_msgs[0]["content"]
 
 
-async def test_conversation_threads_history(empty_registry):
+async def test_conversation_threads_user_history_without_stale_assistant_facts(empty_registry):
     seen_messages = []
 
     async def recorder(messages, tool_schemas):
@@ -161,14 +448,711 @@ async def test_conversation_threads_history(empty_registry):
 
     assert r1.text == "answer 1"
     assert r2.text == "answer 2"
-    # Second turn's prompt includes the first user msg + first assistant reply + new user msg
+    # Second turn keeps resident context but omits the prior assistant's factual text.
     second_turn = seen_messages[1]
     contents = [m["content"] for m in second_turn]
     assert "nearest cooling center to Union Square?" in contents
-    assert "answer 1" in contents
+    assert "answer 1" not in contents
+    assert any("retrieve current evidence" in content.lower() for content in contents)
     assert "what about in the Bronx?" in contents
     # History accumulates: 2 user + 2 assistant
     assert len(convo.turns) == 4
+
+
+async def test_conversation_recalls_prior_answer_without_reusing_stale_evidence(empty_registry):
+    provider_messages = []
+
+    async def grounded(args, ctx: ToolContext):
+        cid = ctx.citations.register(
+            "https://data.cityofnewyork.us/example",
+            snippet="The earlier verified answer says Central Park.",
+            title="Verified example",
+            kind="DATA",
+        )
+        return f"The earlier verified answer says Central Park. {{cite:{cid}}}"
+
+    responses = [
+        _assistant(tool_calls=[_tool_call("grounded", {})]),
+        _assistant(content="I found Central Park. {cite:S1}"),
+        _assistant(content=(
+            "Earlier I said I found Central Park. I need to retrieve current evidence before "
+            "relying on that result now."
+        )),
+    ]
+
+    async def complete(messages, tool_schemas):
+        provider_messages.append(list(messages))
+        return responses.pop(0)
+
+    agent = Agent(
+        empty_registry,
+        tools={"grounded": Tool("grounded", "", {}, grounded)},
+        complete_fn=complete,
+    )
+    convo = agent.conversation()
+
+    first = await convo.send("Find the nearest option")
+    recalled = await convo.send("Summarize that result in the context of our conversation")
+
+    assert first.citations["S1"]["title"] == "Verified example"
+    assert recalled.text == (
+        "Earlier I said I found Central Park. I need to retrieve current evidence before "
+        "relying on that result now."
+    )
+    assert recalled.citations == {}
+    assert all("citations" not in message for call in provider_messages for message in call)
+
+
+def test_build_messages_routes_with_the_immediately_prior_exchange():
+    from heynyc.core import config
+
+    agent = Agent(Registry.discover(config.MODULES_DIR), tools={})
+    history = [
+        {"role": "user", "content": "Where is the nearest cooling center?"},
+        {"role": "assistant", "content": "I found one nearby."},
+    ]
+
+    system = agent._build_messages("Can you narrow that down?", history, None)[0]["content"]
+    system_text = "".join(
+        block["text"] for block in system
+    ) if isinstance(system, list) else system
+
+    assert "Preserve the tool's distinction between activated cooling centers" in system_text
+    assert "Interpret the latest message using the conversation" in system_text
+
+
+async def test_notify_awareness_is_checked_for_every_turn(empty_registry):
+    seen_messages = []
+    checks = 0
+
+    async def awareness():
+        nonlocal checks
+        checks += 1
+        return "Current Notify NYC awareness: citywide notice."
+
+    async def recorder(messages, tool_schemas):
+        seen_messages.append(list(messages))
+        return _assistant(content="ok")
+
+    agent = Agent(
+        empty_registry, tools={}, complete_fn=recorder, notify_awareness=awareness,
+    )
+
+    await agent.run("Help with SNAP")
+    await agent.run("Nearest cooling center")
+
+    assert checks == 2
+    for messages in seen_messages:
+        assert any(
+            message.get("role") == "user"
+            and "Current Notify NYC awareness" in str(message.get("content"))
+            for message in messages
+        )
+
+
+async def test_broad_event_answer_does_not_force_every_source_lane():
+    from heynyc.core import config
+
+    registry = Registry.discover(config.MODULES_DIR)
+
+    async def event_context(args, ctx):
+        seasonal = ctx.citations.register(
+            "https://www.nynjfwc26.com/fan-events", snippet="Official fan events",
+            title="Official seasonal fan events", kind="DOC",
+        )
+        listing = ctx.citations.register(
+            "https://www.nycgovparks.org/events/free-yoga", snippet="Free Yoga Saturday",
+            title="Free Yoga", kind="WEB",
+        )
+        editorial = ctx.citations.register(
+            "https://www.nycforfree.co/events/current", snippet="Current editorial event",
+            title="Current editorial event", kind="WEB",
+        )
+        return (
+            f"Seasonal {{cite:{seasonal}}}; listing {{cite:{listing}}}; "
+            f"editorial {{cite:{editorial}}}"
+        )
+
+    tool = Tool("whats_on_events", "events", {}, event_context)
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("whats_on_events", {})]),
+        _assistant(content=(
+            "Free Yoga is Saturday: https://www.nycgovparks.org/events/free-yoga {cite:S2}"
+        )),
+    )
+    agent = Agent(
+        registry, tools={"whats_on_events": tool}, complete_fn=complete, guard_grounding=False,
+    )
+
+    result = await agent.run("What free events are happening in NYC this weekend?")
+
+    assert result.iterations == 2
+    assert "Free Yoga" in result.text
+    assert "seasonal event" not in result.text
+    assert "editorial" not in result.text
+
+
+def test_broad_event_feedback_rejects_buried_citywide_advisory():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
+            "snippet": (
+                "Air quality is unhealthy for everyone in all or part of NYC. "
+                "Limit strenuous outdoor activity."
+            ),
+        },
+    }
+    feedback = _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        "The event search returned one result. {cite:S1}",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+    )
+
+    assert feedback is not None
+    assert "Air Quality Health Advisory" in feedback
+
+
+def test_broad_event_feedback_accepts_named_citywide_advisory():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
+            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
+        },
+    }
+
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        "Today-only heads-up: there is an air quality health advisory. {cite:S1}",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+    ) is None
+
+
+def test_broad_event_feedback_rejects_named_but_uncited_citywide_advisory():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
+            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
+        },
+    }
+
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        "Today-only heads-up: there is an air quality health advisory.",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+    ) is not None
+
+
+def test_broad_event_feedback_rejects_advisory_cited_only_in_sources():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
+            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
+        },
+    }
+    text = (
+        "Today-only heads-up: there is an air quality health advisory.\n\n"
+        "Sources:\nNotify NYC {cite:S1}"
+    )
+
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        text,
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+    ) is not None
+
+
+def test_broad_event_feedback_rejects_advisory_named_only_in_sources():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
+            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
+        },
+    }
+    feedback = _broad_event_context_feedback(
+        "What events are happening in NYC this weekend?",
+        "Free Yoga is Saturday.\n\nSources:\nAir Quality Health Advisory {cite:S1}",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+    )
+
+    assert feedback is not None
+
+
+def test_broad_event_feedback_handles_citywide_cap_advisory():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://member.everbridge.net/cap/alert.xml",
+            "title": "Heat Health Emergency",
+            "snippet": "Heat Health Emergency, in effect until tonight. Area: New York City",
+            "provenance": {
+                "snapshot": {"headline": "Heat Health Emergency", "areaDesc": "New York City"},
+            },
+        },
+    }
+    feedback = _broad_event_context_feedback(
+        "What events are happening in NYC this weekend?",
+        "Free Yoga is Saturday. {cite:S1}",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+    )
+
+    assert feedback is not None
+    assert "Heat Health Emergency" in feedback
+
+
+def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://www.nycforfree.co/events/fifa-museum#details",
+            "title": "FIFA Museum: Legacies of Champions",
+            "snippet": "Free on July 19, 2026.",
+        },
+        "S2": {
+            "url": "https://www.nycgovparks.org/events/free-yoga",
+            "title": "Free Yoga",
+            "snippet": "Free Yoga, Saturday, July 18 at Franz Sigel Park.",
+        },
+    }
+    text = "- FIFA Museum on Sunday. {cite:S1}\n- Free Yoga on Saturday. {cite:S2}"
+
+    feedback = _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        text,
+        citations,
+        ["whats_on_events"],
+    )
+
+    assert feedback is not None
+    assert "direct URL" in feedback
+
+    linked = (
+        "- FIFA Museum on Sunday: https://www.nycforfree.co/events/fifa-museum {cite:S1}\n"
+        "- Free Yoga on Saturday: https://www.nycgovparks.org/events/free-yoga {cite:S2}"
+    )
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        linked,
+        citations,
+        ["whats_on_events"],
+    ) is None
+
+    linked_continuation = (
+        "- FIFA Museum on Sunday. {cite:S1}\n"
+        "  Details: https://www.nycforfree.co/events/fifa-museum\n"
+        "- Free Yoga on Saturday. {cite:S2}\n"
+        "  Details: https://www.nycgovparks.org/events/free-yoga"
+    )
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        linked_continuation,
+        citations,
+        ["whats_on_events"],
+    ) is None
+
+    footer_only = (
+        "- FIFA Museum on Sunday. {cite:S1}\n- Free Yoga on Saturday. {cite:S2}\n\n"
+        "Sources:\nhttps://www.nycforfree.co/events/fifa-museum\n"
+        "https://www.nycgovparks.org/events/free-yoga"
+    )
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        footer_only,
+        citations,
+        ["whats_on_events"],
+    ) is not None
+
+
+def test_broad_event_feedback_ignores_a_source_url_trailing_slash():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://secretnyc.co/what-to-do-this-weekend-nyc/",
+            "title": "Weekend guide",
+            "snippet": "Current weekend events.",
+        },
+    }
+    text = (
+        "- Weekend event: https://secretnyc.co/what-to-do-this-weekend-nyc {cite:S1}"
+    )
+
+    assert _broad_event_context_feedback(
+        "What events are happening in NYC this weekend?",
+        text,
+        citations,
+        ["whats_on_events"],
+    ) is None
+
+
+def test_broad_event_feedback_does_not_accept_a_longer_lookalike_url():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://example.org/events/a",
+            "title": "Event A",
+            "snippet": "Event A is Saturday.",
+        },
+    }
+
+    assert _broad_event_context_feedback(
+        "What events are happening in NYC this weekend?",
+        "- Event A: https://example.org/events/abc {cite:S1}",
+        citations,
+        ["whats_on_events"],
+    ) is not None
+
+
+def test_broad_event_feedback_ignores_registered_but_hidden_sources():
+    from heynyc.core.agent import _broad_event_context_feedback
+
+    citations = {
+        "S1": {
+            "url": "https://secretnyc.co/stale-event",
+            "title": "Stale editorial event",
+            "snippet": "July 10, 2026.",
+        },
+        "S2": {
+            "url": "https://www.nycgovparks.org/events/free-yoga",
+            "title": "Free Yoga",
+            "snippet": "July 18, 2026.",
+        },
+    }
+
+    assert _broad_event_context_feedback(
+        "What events are happening in NYC this weekend?",
+        "- Free Yoga: https://www.nycgovparks.org/events/free-yoga {cite:S2}",
+        citations,
+        ["whats_on_events"],
+        available_citation_ids={"S2"},
+    ) is None
+
+    from heynyc.core.agent import _attach_event_action_urls
+
+    unchanged = _attach_event_action_urls(
+        "A stale event. {cite:S1}", citations, available_citation_ids={"S2"},
+    )
+    assert "https://secretnyc.co/stale-event" not in unchanged
+
+
+def test_broad_event_action_urls_put_notify_source_inline():
+    from heynyc.core.agent import _attach_event_action_urls
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory",
+        },
+    }
+
+    text = _attach_event_action_urls(
+        "Today-only air quality heads-up. {cite:S1}", citations,
+    )
+
+    assert "Alert source: https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages" in text
+
+
+def test_attach_location_action_urls_adds_directions_from_cited_coordinates():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "- City fountain, 0.2 miles away {cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {"snapshot": {"lat": 40.76082, "lon": -73.97737}},
+            },
+        },
+        available_citation_ids={"S1"},
+    )
+
+    assert "Directions: https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737" in text
+
+
+def test_attach_location_action_urls_does_not_duplicate_existing_map():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    url = "https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737"
+    text = _attach_location_action_urls(
+        f"- City fountain {url} {{cite:S1}}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {"derivation": {"point": [40.76082, -73.97737]}},
+            },
+        },
+        available_citation_ids={"S1"},
+    )
+
+    assert text.count(url) == 1
+
+
+def test_attach_location_action_urls_keeps_dataset_limit_once():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    limitation = (
+        "NYC Parks inventory covers outdoor fountains in parks only. "
+        "Active is not a live guarantee that a fountain is working or available today."
+    )
+    citations = {
+        "S1": {
+            "kind": "DATA",
+            "provenance": {
+                "derivation": {
+                    "point": [40.76082, -73.97737],
+                    "limitations": limitation,
+                },
+            },
+        },
+        "S2": {
+            "kind": "DATA",
+            "provenance": {
+                "derivation": {
+                    "point": [40.75921, -73.97609],
+                    "limitations": limitation,
+                },
+            },
+        },
+    }
+
+    text = _attach_location_action_urls(
+        "- One {cite:S1}\n- Two {cite:S2}", citations,
+    )
+
+    assert text.count(f"Source limit: {limitation}") == 1
+
+
+def test_attach_location_action_urls_does_not_repeat_live_guarantee_limit():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    limitation = (
+        "NYC Parks inventory covers outdoor fountains in parks only. "
+        "Active is not a live guarantee that a fountain is working or available today."
+    )
+    text = _attach_location_action_urls(
+        "The fountain list is only NYC Parks outdoor fountains, and Active doesn’t guarantee "
+        "the fountain is working right now. "
+        "{cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {
+                    "derivation": {
+                        "point": [40.76082, -73.97737],
+                        "limitations": limitation,
+                    },
+                },
+            },
+        },
+    )
+
+    assert "Source limit:" not in text
+
+
+def test_attach_location_action_urls_recognizes_formatted_limit_paraphrase():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    limitation = (
+        "NYC Parks inventory covers outdoor fountains in parks only. "
+        "Active is not a live guarantee that a fountain is working or available today."
+    )
+    text = _attach_location_action_urls(
+        "The list is **NYC Parks outdoor fountains only**, and Active does **not** guarantee "
+        "the fountain is working right now. {cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {
+                    "derivation": {
+                        "point": [40.76082, -73.97737],
+                        "limitations": limitation,
+                    },
+                },
+            },
+        },
+    )
+
+    assert "Source limit:" not in text
+
+
+def test_attach_location_action_urls_preserves_scheduled_cooling_status():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "- City library, open today 10a-6p {cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "title": "NYC Emergency Management Cool Options",
+                "provenance": {"derivation": {"point": [40.76082, -73.97737]}},
+            },
+        },
+    )
+
+    assert "scheduled open today 10a-6p" in text
+    assert "scheduled scheduled" not in text
+
+
+def test_scheduled_cooling_status_does_not_rewrite_other_location():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "- Museum, open today {cite:S2}\n- Cooling library, open today {cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "title": "NYC Emergency Management Cool Options",
+                "provenance": {"derivation": {"point": [40.76082, -73.97737]}},
+            },
+            "S2": {
+                "kind": "DATA",
+                "title": "Museum inventory",
+                "provenance": {"derivation": {"point": [40.76100, -73.97800]}},
+            },
+        },
+    )
+
+    assert "- Museum, open today" in text
+    assert "- Cooling library, scheduled open today" in text
+
+
+def test_scheduled_cooling_status_is_scoped_in_numbered_lists():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "1. Museum, open today {cite:S2}\n2. Cooling library, open today {cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "title": "NYC Emergency Management Cool Options",
+                "provenance": {"derivation": {"point": [40.76082, -73.97737]}},
+            },
+            "S2": {
+                "kind": "DATA",
+                "title": "Museum inventory",
+                "provenance": {"derivation": {"point": [40.76100, -73.97800]}},
+            },
+        },
+    )
+
+    assert "1. Museum, open today" in text
+    assert "2. Cooling library, scheduled open today" in text
+
+
+async def test_broad_event_answer_attaches_action_url_without_a_retry(empty_registry):
+    from heynyc.core.agent import EVENT_CONTEXT_ABSTAIN_FALLBACK
+
+    async def event_context(args, ctx):
+        cite = ctx.citations.register(
+            "https://www.nycgovparks.org/events/free-yoga",
+            snippet="Free Yoga, Saturday at Franz Sigel Park.", title="Free Yoga", kind="WEB",
+        )
+        return f"Free Yoga {{cite:{cite}}}"
+
+    agent = Agent(
+        empty_registry,
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, event_context)},
+        complete_fn=_scripted(
+            _assistant(tool_calls=[_tool_call("whats_on_events", {})]),
+            _assistant(content="Free Yoga is Saturday. {cite:S1}"),
+        ),
+        guard_grounding=False,
+        guard_max_retries=0,
+    )
+
+    result = await agent.run("What free events are happening in NYC this weekend?")
+
+    assert result.text != EVENT_CONTEXT_ABSTAIN_FALLBACK
+    assert "https://www.nycgovparks.org/events/free-yoga" in result.text
+    assert result.iterations == 2
+
+
+async def test_broad_event_answer_fails_closed_after_context_retry_cap():
+    from heynyc.core import config
+    from heynyc.core.agent import EVENT_CONTEXT_ABSTAIN_FALLBACK
+
+    async def event_context(args, ctx):
+        cite = ctx.citations.register(
+            "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            snippet="Air quality is unhealthy for everyone in all or part of NYC.",
+            title="Notify NYC - Air Quality Health Advisory", kind="DATA",
+        )
+        return f"A citywide current warning is available. {{cite:{cite}}}"
+
+    agent = Agent(
+        Registry.discover(config.MODULES_DIR),
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, event_context)},
+        complete_fn=_scripted(
+            _assistant(tool_calls=[_tool_call("whats_on_events", {})]),
+            _assistant(content="I couldn't find anything."),
+        ),
+        guard_grounding=False,
+        guard_max_retries=0,
+    )
+
+    result = await agent.run("What free events are happening in NYC this weekend?")
+
+    assert result.text == EVENT_CONTEXT_ABSTAIN_FALLBACK
+
+
+async def test_broad_event_coordinator_removes_duplicate_context_tools(empty_registry):
+    schemas_by_call = []
+
+    async def event_context(args, ctx):
+        return "Current event context"
+
+    async def unused(args, ctx):
+        return "duplicate"
+
+    calls = 0
+
+    async def stream(messages, tool_schemas):
+        nonlocal calls
+        schemas_by_call.append({schema["function"]["name"] for schema in tool_schemas})
+        calls += 1
+        if calls == 1:
+            yield {"type": "message", "message": _assistant(
+                tool_calls=[_tool_call("whats_on_events", {})],
+            )}
+        else:
+            yield {"type": "message", "message": _assistant(content="Current events checked.")}
+
+    tools = {
+        "whats_on_events": Tool("whats_on_events", "", {}, event_context),
+        "web_search": Tool("web_search", "", {}, unused),
+        "recent_developments": Tool("recent_developments", "", {}, unused),
+        "nyc_advisories": Tool("nyc_advisories", "", {}, unused),
+    }
+    agent = Agent(empty_registry, tools=tools, stream_fn=stream)
+
+    await agent.run("What events are happening in NYC this weekend?")
+
+    assert "recent_developments" in schemas_by_call[0]
+    assert "recent_developments" not in schemas_by_call[1]
+    assert "nyc_advisories" in schemas_by_call[1]
 
 
 async def test_run_with_explicit_history(empty_registry):
@@ -186,6 +1170,29 @@ async def test_run_with_explicit_history(empty_registry):
     await agent.run("follow up", history=history)
     roles = [m["role"] for m in captured["messages"]]
     assert roles == ["system", "user", "assistant", "user"]
+
+
+async def test_non_latin_reply_script_mismatch_retries_once(empty_registry):
+    from heynyc.core import events
+
+    agent = Agent(
+        empty_registry,
+        tools={},
+        complete_fn=_scripted(
+            _assistant(content="Your SNAP benefits may change."),
+            _assistant(content="আপনার SNAP সুবিধা পরিবর্তন হতে পারে।"),
+        ),
+        guard_grounding=False,
+        guard_max_retries=1,
+    )
+
+    emitted = [event async for event in agent.stream("আমার স্ন্যাপ বেনিফিট কি চলে যাবে?")]
+    result = next(event.result for event in emitted if isinstance(event, events.Done))
+    deltas = [event.text for event in emitted if isinstance(event, events.TextDelta)]
+
+    assert result.text == "আপনার SNAP সুবিধা পরিবর্তন হতে পারে।"
+    assert result.iterations == 2
+    assert deltas == ["আপনার SNAP সুবিধা পরিবর্তন হতে পারে।"]
 
 
 async def test_hits_max_iters(empty_registry):
@@ -218,6 +1225,37 @@ async def test_agent_captures_token_usage_from_stream():
     assert result.usage["input_tokens"] == 42
     assert result.usage["output_tokens"] == 7
     assert result.usage["latency_ms"] >= 0.0
+
+
+async def test_scope_usage_is_included_without_pricing_it_as_answer_model(empty_registry):
+    from heynyc.core.agent import ScopeResult
+
+    async def scope(_message, _history):
+        return ScopeResult(
+            decision="allow", model="openai/gpt-5.4-nano",
+            input_tokens=11, output_tokens=2, cost_usd=0.0003,
+        )
+
+    async def answer(messages, tool_schemas):
+        yield {"type": "usage", "input_tokens": 5, "output_tokens": 1}
+        yield {"type": "message", "message": _assistant(content="done")}
+
+    agent = Agent(
+        empty_registry, tools={}, model="gpt-4o-mini", stream_fn=answer, scope_fn=scope,
+    )
+
+    result = await agent.run("help")
+
+    assert result.usage["input_tokens"] == 16
+    assert result.usage["output_tokens"] == 3
+    assert result.usage["answer_input_tokens"] == 5
+    assert result.usage["answer_output_tokens"] == 1
+    assert result.usage["scope_input_tokens"] == 11
+    assert result.usage["scope_output_tokens"] == 2
+    assert result.usage["scope_model"] == "openai/gpt-5.4-nano"
+    assert result.usage["scope_cost_usd"] == 0.0003
+    assert result.usage["scope_time_ms"] >= 0.0
+    assert result.usage["n_model_calls"] == 2
 
 
 async def test_agent_reports_latency_breakdown_and_call_counts(empty_registry):
@@ -256,6 +1294,15 @@ def test_completion_kwargs_omits_temperature_for_gpt5_models():
 
     kw = _completion_kwargs("openai/gpt-5-mini", messages=[], tool_schemas=[])
     assert "temperature" not in kw
+
+
+def test_completion_kwargs_disables_luna_reasoning_for_chat_tools():
+    from heynyc.core.agent import _completion_kwargs
+
+    schema = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+    kw = _completion_kwargs("openai/gpt-5.6-luna", messages=[], tool_schemas=schema)
+
+    assert kw["reasoning_effort"] == "none"
 
 
 def test_completion_kwargs_pins_temperature_zero_for_non_gpt5():
@@ -1142,6 +2189,17 @@ def test_immigrant_benefits_answer_requires_current_program_distinctions():
     )
 
 
+def test_reply_script_feedback_is_language_agnostic_and_ignores_urls():
+    from heynyc.core.agent import _reply_script_feedback
+
+    bengali = "আমার স্ন্যাপ বেনিফিট কি চলে যাবে?"
+    assert _reply_script_feedback(bengali, "Your SNAP benefits may change. https://nyc.gov")
+    assert _reply_script_feedback(bengali, "আপনার SNAP benefits সম্পর্কে তথ্য এখানে আছে।") is None
+    assert _reply_script_feedback("Will my SNAP benefits change?", "Yes, they may change.") is None
+    assert _reply_script_feedback("Please check এটা", "I can check that.") is None
+    assert _reply_script_feedback(bengali, "This is English with বাংলা only.")
+
+
 async def test_civic_law_query_prefers_direct_declared_official_source(empty_registry):
     seen = {}
     schemas_seen = []
@@ -1580,3 +2638,12 @@ def test_build_messages_routes_blurbs_by_query():
     assert "nearest_food_pantry(near=" in system
     assert "NOT outdoor misting stations" not in system     # cooling blurb not loaded
     assert "Services you can help with (quick menu)" in system
+
+
+def test_build_messages_keeps_reply_language_instruction_next_to_latest_turn():
+    agent = Agent(Registry([]), tools={})
+
+    messages = agent._build_messages("আমার স্ন্যাপ বেনিফিট কি চলে যাবে?", None, None)
+
+    assert messages[-1]["content"] == "আমার স্ন্যাপ বেনিফিট কি চলে যাবে?"
+    assert "same language as the resident's latest message" in str(messages[0]["content"])

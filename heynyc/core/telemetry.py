@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np  # already a dep (core/index/store.py), reuse for percentiles
 
 
-def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    """USD cost for a call via LiteLLM's pricing; 0.0 for unknown/mock models (never raises)."""
+def priced_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """USD cost from LiteLLM, or None when the model cannot be priced."""
     try:
         import litellm
 
@@ -25,7 +25,12 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
         )
         return float(prompt_cost) + float(completion_cost)
     except Exception:
-        return 0.0
+        return None
+
+
+def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """USD cost, explicitly None when LiteLLM cannot price the model."""
+    return priced_cost_usd(model, input_tokens, output_tokens)
 
 
 def default_path(data_dir: Path) -> Path:
@@ -43,13 +48,17 @@ def record_turn(
     for the messaging on-ramp; `summarize()` ignores unknown keys."""
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
+    turn_cost = usage.get("cost_usd") if "cost_usd" in usage else priced_cost_usd(
+        model, input_tokens, output_tokens
+    )
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cost_usd": cost_usd(model, input_tokens, output_tokens),
+        "cost_usd": turn_cost,
+        "cost_status": usage.get("cost_status") or ("priced" if turn_cost is not None else "unpriced"),
         "latency_ms": float(usage.get("latency_ms", 0.0) or 0.0),
         "model_time_ms": float(usage.get("model_time_ms", 0.0) or 0.0),
         "tool_time_ms": float(usage.get("tool_time_ms", 0.0) or 0.0),
@@ -60,6 +69,15 @@ def record_turn(
         "tool_names": list(tool_names),
         "status": status,
     }
+    for key in (
+        "answer_input_tokens", "answer_output_tokens", "scope_input_tokens",
+        "scope_output_tokens", "scope_model", "scope_cost_usd", "scope_time_ms",
+        "memory_compactions", "memory_model", "memory_input_tokens",
+        "memory_output_tokens", "memory_cost_usd", "memory_time_ms",
+        "memory_pre_tokens", "memory_post_tokens",
+    ):
+        if key in usage:
+            record[key] = usage[key]
     if extra:
         record.update(extra)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,13 +96,16 @@ def summarize(records: list[dict]) -> dict:
     """Aggregate per-turn records into the `heynyc stats` dashboard numbers."""
     if not records:
         return {"turns": 0, "total_cost_usd": 0.0, "cost_per_turn_usd": 0.0,
+                "unpriced_turns": 0,
                 "input_tokens": 0, "output_tokens": 0, "latency_p50_ms": 0.0,
                 "latency_p95_ms": 0.0, "model_time_ms": 0.0, "tool_time_ms": 0.0,
-                "orchestration_time_ms": 0.0,
+                "scope_time_ms": 0.0, "orchestration_time_ms": 0.0,
+                "memory_compactions": 0, "memory_time_ms": 0.0,
                 "n_model_calls": 0, "n_tool_calls": 0, "iterations": 0,
                 "tool_mix": {}, "error_rate": 0.0}
     turns = len(records)
-    total_cost = sum(float(r.get("cost_usd", 0.0)) for r in records)
+    total_cost = sum(float(r["cost_usd"]) for r in records if r.get("cost_usd") is not None)
+    unpriced_turns = sum(1 for r in records if r.get("cost_usd") is None)
     latencies = [float(r.get("latency_ms", 0.0)) for r in records]
     tool_mix = Counter(t for r in records for t in r.get("tool_names", []))
     errors = sum(1 for r in records if r.get("status") not in ("success", None))
@@ -92,12 +113,18 @@ def summarize(records: list[dict]) -> dict:
         "turns": turns,
         "total_cost_usd": total_cost,
         "cost_per_turn_usd": total_cost / turns,
+        "unpriced_turns": unpriced_turns,
         "input_tokens": sum(int(r.get("input_tokens", 0)) for r in records),
         "output_tokens": sum(int(r.get("output_tokens", 0)) for r in records),
         "latency_p50_ms": float(np.percentile(latencies, 50)),
         "latency_p95_ms": float(np.percentile(latencies, 95)),
         "model_time_ms": sum(float(r.get("model_time_ms", 0.0) or 0.0) for r in records),
         "tool_time_ms": sum(float(r.get("tool_time_ms", 0.0) or 0.0) for r in records),
+        "scope_time_ms": sum(float(r.get("scope_time_ms", 0.0) or 0.0) for r in records),
+        "memory_compactions": sum(
+            int(r.get("memory_compactions", 0) or 0) for r in records
+        ),
+        "memory_time_ms": sum(float(r.get("memory_time_ms", 0.0) or 0.0) for r in records),
         "orchestration_time_ms": sum(
             float(r.get("orchestration_time_ms", 0.0) or 0.0) for r in records
         ),

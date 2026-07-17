@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import httpx
 
-from heynyc.core import config
+from heynyc.core import config, pii_crypto
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.index.embedder import HashEmbedder
 from heynyc.core.registry import Registry
@@ -203,6 +203,18 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     low = benefits.prompt.lower()
     assert "fair hearing" in low
     assert "311" in benefits.prompt
+
+
+def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence():
+    from heynyc.core.agent import _BENEFITS_RECOVERY_URLS, _SNAP_WORK_RULE_URLS
+
+    hra_faq = "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page"
+    reg = Registry.discover(config.MODULES_DIR)
+    benefits = next(module for module in reg.modules if module.name == "benefits")
+
+    assert hra_faq in benefits.seeds
+    assert hra_faq in _SNAP_WORK_RULE_URLS
+    assert hra_faq in _BENEFITS_RECOVERY_URLS
 
 
 def test_benefits_prompt_keeps_screening_results_actionable_on_a_phone():
@@ -708,6 +720,7 @@ async def test_synthetic_screen_review_pdf_workflow_stops_before_submission(
     from heynyc.core.agent import Agent
     from heynyc.core.drafts import DraftStore
 
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     monkeypatch.setattr(
         config,
         "screening_creds",

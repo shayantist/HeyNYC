@@ -5,9 +5,8 @@ from pathlib import Path
 from heynyc.core import telemetry
 
 
-def test_cost_usd_is_zero_for_unknown_model():
-    # never crash on an unpriced/mock model — telemetry must not break a turn
-    assert telemetry.cost_usd("definitely-not-a-real-model", 100, 50) == 0.0
+def test_cost_usd_is_explicit_for_unknown_model():
+    assert telemetry.cost_usd("definitely-not-a-real-model", 100, 50) is None
 
 
 def test_record_and_load_roundtrip(tmp_path: Path):
@@ -26,6 +25,43 @@ def test_record_and_load_roundtrip(tmp_path: Path):
     assert rec["n_model_calls"] == 2
     loaded = telemetry.load(path)
     assert len(loaded) == 1 and loaded[0]["tool_names"] == ["benefits_search"]
+
+
+def test_record_turn_preserves_explicit_unpriceable_cost(tmp_path: Path):
+    rec = telemetry.record_turn(
+        tmp_path / "telemetry.jsonl", session_id="s1", model="unknown/model",
+        usage={"input_tokens": 10, "output_tokens": 2, "cost_usd": None,
+               "cost_status": "unpriced", "scope_model": "unknown/scope"},
+        n_tool_calls=0, tool_names=[], status="success",
+    )
+
+    assert rec["cost_usd"] is None
+    assert rec["cost_status"] == "unpriced"
+    assert rec["scope_model"] == "unknown/scope"
+
+
+def test_record_turn_preserves_memory_compaction_accounting(tmp_path: Path):
+    rec = telemetry.record_turn(
+        tmp_path / "telemetry.jsonl", session_id="s1", model="answer/model",
+        usage={
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "memory_compactions": 1,
+            "memory_model": "openai/gpt-5.4-nano",
+            "memory_input_tokens": 30,
+            "memory_output_tokens": 5,
+            "memory_cost_usd": 0.001,
+            "memory_time_ms": 50.0,
+            "memory_pre_tokens": 1_500,
+            "memory_post_tokens": 700,
+        },
+        n_tool_calls=0, tool_names=[], status="success",
+    )
+
+    assert rec["memory_compactions"] == 1
+    assert rec["memory_model"] == "openai/gpt-5.4-nano"
+    assert rec["memory_pre_tokens"] == 1_500
+    assert rec["memory_post_tokens"] == 700
 
 
 def test_summarize_aggregates():
@@ -47,6 +83,7 @@ def test_summarize_aggregates():
 def test_summarize_empty():
     s = telemetry.summarize([])
     assert s["turns"] == 0 and s["total_cost_usd"] == 0.0
+    assert s["unpriced_turns"] == 0
 
 
 def test_summarize_accepts_legacy_records_without_latency_breakdown():
@@ -57,7 +94,10 @@ def test_summarize_accepts_legacy_records_without_latency_breakdown():
 
     assert summary["model_time_ms"] == 0.0
     assert summary["tool_time_ms"] == 0.0
+    assert summary["scope_time_ms"] == 0.0
     assert summary["orchestration_time_ms"] == 0.0
     assert summary["n_model_calls"] == 0
     assert summary["n_tool_calls"] == 0
     assert summary["iterations"] == 0
+    assert summary["memory_compactions"] == 0
+    assert summary["memory_time_ms"] == 0.0

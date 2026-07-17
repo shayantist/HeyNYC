@@ -47,7 +47,7 @@ async def test_run_bench_isolates_a_failing_model(monkeypatch):
     from heynyc.eval import bench as bench_mod
 
     class _FakeAgent:
-        def __init__(self, registry, model=None, index=None):
+        def __init__(self, registry, model=None, index=None, scope_gate=False):
             if model == "bad-model":
                 raise RuntimeError("no such model")
             self.model = model
@@ -89,17 +89,50 @@ def test_candidate_cost_sums_usage_across_cases():
     assert cost > 0                              # a litellm-priced model yields a real cost floor
 
 
-def test_candidate_cost_is_zero_for_an_unpriceable_model():
+def test_candidate_cost_is_explicit_for_an_unpriceable_model():
     from heynyc.eval.bench import _candidate_cost
     from heynyc.eval.runner import CaseResult
 
     r = [CaseResult(case=EvalCase(id="a", module="m", query="q"), usage={"input_tokens": 10, "output_tokens": 5})]
     cost, in_tok, out_tok = _candidate_cost("some/model-litellm-cannot-price", r)
     assert (in_tok, out_tok) == (10, 5)
-    assert cost == 0.0                           # never a fabricated number when pricing is unknown
+    assert cost is None                          # never present unknown pricing as free
+
+
+def test_candidate_cost_uses_per_turn_multi_model_cost():
+    from heynyc.eval.bench import _candidate_cost
+    from heynyc.eval.runner import CaseResult
+
+    results = [CaseResult(
+        case=EvalCase(id="a", module="m", query="q"),
+        usage={"input_tokens": 15, "output_tokens": 3, "cost_usd": 0.0042},
+    )]
+
+    cost, _, _ = _candidate_cost("gpt-4o-mini", results)
+
+    assert cost == 0.0042
 
 
 def test_render_bench_surfaces_candidate_cost():
     rows = [BenchRow(model="gpt-5", report=_report([("a", True)]), cost_usd=0.0123)]
     out = render_bench(rows, safety_case_ids=set())
     assert "$0.0123" in out
+
+
+def test_render_bench_labels_unpriceable_candidate():
+    rows = [BenchRow(model="unknown", report=_report([("a", True)]), cost_usd=None)]
+
+    assert "UNPRICED" in render_bench(rows, safety_case_ids=set())
+
+
+def test_render_bench_surfaces_scope_model_tokens_and_latency():
+    rows = [BenchRow(
+        model="answer/model", report=_report([("a", True)]), cost_usd=0.01,
+        input_tokens=100, output_tokens=20, scope_model="scope/model",
+        scope_input_tokens=10, scope_output_tokens=2, scope_time_ms=15.5,
+    )]
+
+    out = render_bench(rows, safety_case_ids=set())
+
+    assert "tokens 100/20" in out
+    assert "scope scope/model 10/2 tokens 15.5ms" in out

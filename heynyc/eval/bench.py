@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..core.agent import Agent
-from ..core.telemetry import cost_usd
+from ..core.telemetry import priced_cost_usd
 from .report import GateReport, evaluate, write_run
 from .runner import run_all
 
@@ -22,19 +22,46 @@ class BenchRow:
     model: str
     report: Optional[GateReport]
     error: Optional[str] = None
-    cost_usd: float = 0.0  # candidate spend for this model's run (judge cost is separate)
+    cost_usd: Optional[float] = 0.0  # None means at least one candidate call was unpriceable
     input_tokens: int = 0
     output_tokens: int = 0
+    scope_model: str = ""
+    scope_input_tokens: int = 0
+    scope_output_tokens: int = 0
+    scope_time_ms: float = 0.0
 
 
-def _candidate_cost(model: str, results) -> tuple[float, int, int]:
+def _candidate_cost(model: str, results) -> tuple[Optional[float], int, int]:
     """Total candidate spend for one model's run: sum every case's token usage, price it once.
 
-    Returns (cost_usd, input_tokens, output_tokens). Cases the agent never billed (a crash before any
-    token, or a model litellm can't price) contribute 0, cost is a floor, never a fabricated number."""
+    Returns (cost_usd, input_tokens, output_tokens). None means at least one call could not be priced,
+    so the run must not be presented as free."""
     in_tok = sum(int(r.usage.get("input_tokens", 0)) for r in results)
     out_tok = sum(int(r.usage.get("output_tokens", 0)) for r in results)
-    return cost_usd(model, in_tok, out_tok), in_tok, out_tok
+    total = 0.0
+    for result in results:
+        if "cost_usd" in result.usage:
+            cost = result.usage["cost_usd"]
+        else:
+            cost = priced_cost_usd(
+                model,
+                int(result.usage.get("input_tokens", 0)),
+                int(result.usage.get("output_tokens", 0)),
+            )
+        if cost is None:
+            return None, in_tok, out_tok
+        total += float(cost)
+    return total, in_tok, out_tok
+
+
+def _scope_metrics(results) -> tuple[str, int, int, float]:
+    models = sorted({str(r.usage.get("scope_model") or "") for r in results} - {""})
+    return (
+        ",".join(models),
+        sum(int(r.usage.get("scope_input_tokens", 0) or 0) for r in results),
+        sum(int(r.usage.get("scope_output_tokens", 0) or 0) for r in results),
+        sum(float(r.usage.get("scope_time_ms", 0.0) or 0.0) for r in results),
+    )
 
 
 def bench_summary(report, safety_case_ids: set) -> tuple[int, int, int, int]:
@@ -59,8 +86,16 @@ def render_bench(rows: list[BenchRow], safety_case_ids: set) -> str:
             lines.append(f"  {row.model}: ERROR ({row.error})")
             continue
         op, ot, sp, st = bench_summary(row.report, safety_case_ids)
-        cost = f" | ${row.cost_usd:.4f}" if row.cost_usd else ""
-        lines.append(f"  {row.model}: overall {op}/{ot} | safety-critical {sp}/{st}{cost}")
+        cost = " | UNPRICED" if row.cost_usd is None else f" | ${row.cost_usd:.4f}"
+        scope = (
+            f" | scope {row.scope_model} {row.scope_input_tokens}/{row.scope_output_tokens} "
+            f"tokens {row.scope_time_ms:.1f}ms"
+            if row.scope_model else ""
+        )
+        lines.append(
+            f"  {row.model}: overall {op}/{ot} | safety-critical {sp}/{st} | "
+            f"tokens {row.input_tokens}/{row.output_tokens}{scope}{cost}"
+        )
     return "\n".join(lines)
 
 
@@ -81,8 +116,16 @@ def render_by_category(rows: list[BenchRow], cases) -> str:
             buckets.setdefault(cat_of.get(r.case_id, "?"), []).append(r.passed)
         op = sum(1 for r in row.report.reports if r.passed)
         ot = len(row.report.reports)
-        cost = f" | ${row.cost_usd:.4f}" if row.cost_usd else ""
-        lines.append(f"  {row.model}: SAFE {op}/{ot}{cost}")
+        cost = " | UNPRICED" if row.cost_usd is None else f" | ${row.cost_usd:.4f}"
+        scope = (
+            f" | scope {row.scope_model} {row.scope_input_tokens}/{row.scope_output_tokens} "
+            f"tokens {row.scope_time_ms:.1f}ms"
+            if row.scope_model else ""
+        )
+        lines.append(
+            f"  {row.model}: SAFE {op}/{ot} | tokens {row.input_tokens}/{row.output_tokens}"
+            f"{scope}{cost}"
+        )
         for cat in sorted(buckets):
             passed = sum(buckets[cat])
             total = len(buckets[cat])
@@ -111,7 +154,7 @@ async def run_bench(
     for model in models:
         try:
             def factory(m=model):
-                return Agent(registry, model=m, index=retriever)
+                return Agent(registry, model=m, index=retriever, scope_gate=True)
 
             results = await run_all(factory, cases, reminders=reminders)
             report = await evaluate(results, judge=judge)
@@ -119,7 +162,12 @@ async def run_bench(
                 # write_run(directory, report), one subdir per model keeps raw traces/answers separate.
                 write_run(Path(out_dir) / model, report, metadata=run_metadata)
             cost, in_tok, out_tok = _candidate_cost(model, results)
-            rows.append(BenchRow(model, report, cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok))
+            scope_model, scope_in, scope_out, scope_ms = _scope_metrics(results)
+            rows.append(BenchRow(
+                model, report, cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
+                scope_model=scope_model, scope_input_tokens=scope_in,
+                scope_output_tokens=scope_out, scope_time_ms=scope_ms,
+            ))
         except Exception as e:  # a broken/unauthorized model must not sink the whole comparison
             rows.append(BenchRow(model, None, error=f"{type(e).__name__}: {e}"))
     return rows

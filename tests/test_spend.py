@@ -15,7 +15,7 @@ from heynyc.core.registry import Registry
 
 def test_default_cost_fn_is_the_telemetry_pricing_path():
     # "computes cost via the existing telemetry path": no reinvented price table.
-    assert spend.SpendGuard(1.0)._cost_fn is telemetry.cost_usd
+    assert spend.SpendGuard(1.0)._cost_fn is telemetry.priced_cost_usd
 
 
 def test_disabled_when_no_cap_and_is_a_noop():
@@ -106,6 +106,28 @@ async def test_agent_halts_further_model_calls_when_cap_exceeded():
     result = done.result
     assert result.status == "max_budget"
     assert result.text == SPEND_CAPPED_FALLBACK
+
+
+async def test_scope_call_counts_toward_spend_cap_before_answer_model():
+    from heynyc.core import events
+    from heynyc.core.agent import Agent, ScopeResult
+
+    async def scope(_message, _history):
+        return ScopeResult("allow", "scope/model", 10, 1, 0.01)
+
+    async def should_not_run(messages, tool_schemas):
+        raise AssertionError("answer model ran after scope exhausted the cap")
+        yield
+
+    agent = Agent(Registry([]), tools={}, stream_fn=should_not_run, scope_fn=scope)
+    agent._spend = spend.SpendGuard(0.50, cost_fn=lambda model, i, o: 1.0)
+
+    seen = [event async for event in agent.stream("go")]
+
+    done = next(event for event in seen if isinstance(event, events.Done))
+    assert done.status == "max_budget"
+    assert done.result.usage["n_model_calls"] == 1
+    assert done.result.usage["scope_input_tokens"] == 10
 
 
 async def test_agent_runs_normally_when_cap_disabled_even_with_usage():

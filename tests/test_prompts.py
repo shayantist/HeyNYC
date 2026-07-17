@@ -72,6 +72,10 @@ def test_system_prompt_describes_data_practices_accurately():
     assert "draft" in low
     assert "profile" in low                          # "don't build a profile"
     assert "store nothing" in low or "retain nothing" in low  # named as the claim to AVOID
+    assert "encrypted conversation" in low
+    assert "configured retention period" in low
+    assert "deletion through the channel controls" not in low
+    assert "don't carry a chat history between separate conversations" not in low
 
 
 def test_system_prompt_sets_plain_language_reading_level():

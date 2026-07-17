@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from . import telemetry
 
-CostFn = Callable[[str, int, int], float]
+CostFn = Callable[[str, int, int], Optional[float]]
 
 
 class SpendGuard:
@@ -26,7 +26,9 @@ class SpendGuard:
     `cost_fn`: injected for tests; defaults to `telemetry.cost_usd` (LiteLLM pricing).
     """
 
-    def __init__(self, cap_usd: Optional[float] = None, *, cost_fn: CostFn = telemetry.cost_usd):
+    def __init__(
+        self, cap_usd: Optional[float] = None, *, cost_fn: CostFn = telemetry.priced_cost_usd,
+    ):
         self.cap_usd = float(cap_usd) if cap_usd else 0.0
         self._cost_fn = cost_fn
         self.spent_usd = 0.0
@@ -46,12 +48,21 @@ class SpendGuard:
         if not self.enabled:
             return 0.0
         try:
-            cost = float(self._cost_fn(model, int(input_tokens), int(output_tokens)))
+            priced = self._cost_fn(model, int(input_tokens), int(output_tokens))
+            if priced is None:
+                self._cost_unavailable = True
+                return 0.0
+            cost = float(priced)
         except Exception:
             self._cost_unavailable = True
             return 0.0
         self.spent_usd += cost
         return cost
+
+    def mark_unpriceable(self) -> None:
+        """Fail closed when a model call occurred but its cost cannot be established."""
+        if self.enabled:
+            self._cost_unavailable = True
 
     def halt_reason(self) -> Optional[str]:
         """A human-readable reason further model calls must stop, or None to proceed.

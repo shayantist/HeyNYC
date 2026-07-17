@@ -11,6 +11,11 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 
 # LLM
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
+# Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
+# the resident-answer model; deployments can override it independently.
+HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.4-nano")
+# Structured continuity compaction runs only when measured context pressure requires it.
+HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
 # Context window for self-hosted Ollama models. Ollama defaults to ~2-4K tokens, which silently
 # truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
 OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))
