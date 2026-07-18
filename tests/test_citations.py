@@ -156,3 +156,22 @@ def test_highlight_url_keeps_existing_fragment_unchanged():
     citation = Citation("S1", "https://nyc.gov/program#details", "Program", "Helpful text.", "WEB")
 
     assert citations.text_fragment_url(citation.url, citation.snippet, citation.kind) == "https://nyc.gov/program#details"
+
+
+def test_discard_removes_citations_without_reusing_ids():
+    """F057: orphaned registrations can be pruned, and a discarded id is never reissued,
+    so markers already emitted into text can never silently point at a different source."""
+    from heynyc.core.citations import CitationRegistry
+
+    registry = CitationRegistry()
+    s1 = registry.register("https://a.example", snippet="kept")
+    s2 = registry.register("https://b.example", snippet="orphaned")
+
+    registry.discard({s2})
+
+    assert s1 in registry.mapping()
+    assert s2 not in registry.mapping()
+
+    s3 = registry.register("https://c.example", snippet="new after discard")
+    assert s3 != s2
+    assert registry.mapping()[s3]["url"] == "https://c.example"

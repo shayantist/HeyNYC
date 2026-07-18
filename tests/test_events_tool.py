@@ -535,3 +535,54 @@ def test_context_search_uses_configured_editorial_event_guides(monkeypatch):
     assert [tool.name for tool in tools] == [
         "web_search", "recent_developments",
     ]
+
+
+async def test_filtered_lane_citations_are_pruned(monkeypatch):
+    """F057: a lane may register citations whose content the window filter then drops from
+    the returned text. Those orphaned registrations must not survive the call, or the
+    registry-wide faithfulness floor distrusts evidence the model never saw."""
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_parks(*args, **kwargs):
+        return []
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    async def web_handler(args, ctx):
+        if "prefer" not in args:
+            return "no identity rows"
+        tomorrow = events.datetime.now(events.NYC_TZ) + events.timedelta(days=1)
+        kept = ctx.citations.register(
+            "https://www.nyc.gov/kept", snippet="kept row", title="Kept", kind="WEB",
+        )
+        orphan = ctx.citations.register(
+            "https://www.nyc.gov/orphan", snippet="junk row", title="Orphan", kind="WEB",
+        )
+        return (
+            f"[{kept}] Kept row dated {tomorrow.strftime('%B %-d, %Y')}"
+            "\n\n"
+            f"[{orphan}] Sports junk with no date"
+        )
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: (
+        Tool("web_search", "", {}, web_handler),
+    ))
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="what to prepare for tomorrows wc game",
+    )
+
+    output = await get_tools()[0].handler({"keyword": "world cup"}, ctx)
+
+    kept_ids = {cid for cid, c in ctx.citations.mapping().items()
+                if c["url"] == "https://www.nyc.gov/kept"}
+    orphan_ids = {cid for cid, c in ctx.citations.mapping().items()
+                  if c["url"] == "https://www.nyc.gov/orphan"}
+    assert kept_ids, "windowed-in citation survives"
+    assert not orphan_ids, "windowed-out citation is pruned"
+    assert "Kept row" in output

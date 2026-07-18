@@ -327,7 +327,15 @@ async def _editorial_context(
     return "\n\n".join(blocks) or "Current editorial event guides unavailable for this lookup."
 
 
+_ANY_MARKER_RE = re.compile(r"\{cite:(S\d+)\}|\[(S\d+)\]")
+
+
+def _referenced_ids(text: str) -> set[str]:
+    return {a or b for a, b in _ANY_MARKER_RE.findall(text)}
+
+
 async def _handler(args: dict, ctx: ToolContext) -> str:
+    pre_existing_ids = set(ctx.citations.mapping())
     keyword = (args.get("keyword") or "").strip() or None
     classification = (args.get("classification") or "").strip() or None
     borough = (args.get("borough") or "").strip().lower()
@@ -548,7 +556,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"event the resident means):\n{identity_context}\n\n"
         )
     synthesis_rules = _PREPARATION_SYNTHESIS_RULES if preparation_context else _SHORTLIST_SYNTHESIS_RULES
-    return (
+    composed = (
         f"{catalog}\n\n"
         "Newly retrieved current city context for this event-planning question:\n"
         f"{identity_block}"
@@ -558,6 +566,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f"Current editorial and news discovery:\n{recent_context}\n\n"
         f"{synthesis_rules}"
     )
+    # F057: lanes register citations while fetching, then windowing can drop their content
+    # from the composed text. Prune this call's registrations that the model never sees, so
+    # no orphaned evidence survives; citations from other tools or turns are untouched.
+    orphaned = (
+        set(ctx.citations.mapping()) - pre_existing_ids - _referenced_ids(composed)
+    )
+    ctx.citations.discard(orphaned)
+    return composed
 
 
 def get_tools() -> list[Tool]:

@@ -89,6 +89,9 @@ class CitationRegistry:
     def __init__(self) -> None:
         self._by_key: dict[tuple, Citation] = {}
         self._ordered: list[Citation] = []
+        # Monotonic id counter: ids survive discards, so a marker already emitted into text
+        # can never silently point at a different, later-registered source.
+        self._counter = 0
 
     def register(
         self,
@@ -110,7 +113,8 @@ class CitationRegistry:
         existing = self._by_key.get(key)
         if existing is not None:
             return existing.id
-        cite_id = f"S{len(self._ordered) + 1}"
+        self._counter += 1
+        cite_id = f"S{self._counter}"
         citation = Citation(
             id=cite_id, url=url, title=title, snippet=snippet, kind=kind,
             valid_as_of=valid_as_of, provenance=provenance or {},
@@ -118,6 +122,15 @@ class CitationRegistry:
         self._by_key[key] = citation
         self._ordered.append(citation)
         return cite_id
+
+    def discard(self, ids: set[str]) -> None:
+        """Remove citations whose content never reached the model (F057: a coordinating tool
+        may filter lane output after its sub-handlers registered). Discarded ids are never
+        reissued."""
+        if not ids:
+            return
+        self._ordered = [c for c in self._ordered if c.id not in ids]
+        self._by_key = {key: c for key, c in self._by_key.items() if c.id not in ids}
 
     def mapping(self) -> dict[str, dict]:
         """{ "S1": {url, title, snippet, kind}, ... } in registration order."""
