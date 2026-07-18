@@ -18,6 +18,8 @@ examples:
   - "Where can I watch the World Cup in NYC?"
   - "Any World Cup fan events near me?"
 ticketmaster_keyword: world cup
+# Lifestyle discovery under events: same stakes tier as its parent (RULED 2026-07-18).
+official_only: false
 seeds:
   - https://www.nynjfwc26.com/fan-events
   - https://portal.311.nyc.gov/article/?kanumber=KA-03721

@@ -48,6 +48,7 @@ def test_manifest_parses_source_tiers_and_submodule_fields(tmp_path: Path):
         "name: events\n"
         "category: events\n"
         "ticketmaster_keyword: world cup\n"
+        "official_only: false\n"
         "source_tiers:\n"
         "  authoritative: [nyctourism.com, nycgovparks.org]\n"
         "  editorial: [timeout.com]\n"

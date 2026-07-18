@@ -88,6 +88,12 @@ class ServiceModule(BaseModel):
     # Trust tiers for web_search ranking: {tier: [domain, ...]} where tier is one of
     # authoritative | editorial | community. Aggregated by registry.source_tiers().
     source_tiers: dict[str, list[str]] = Field(default_factory=dict)
+    # RULED 2026-07-18, stakes-tiered retrieval: official modules (the DEFAULT) answer from
+    # official sources only, because being wrong costs someone a benefit, a home, or their
+    # safety. A module opts out (`official_only: false`) only when its answers are lifestyle
+    # discovery — events atmosphere, where-to-watch, fun — where a governed editorial pool
+    # matches the stakes. Enforced at load: no opt-out, no editorial/community tiers.
+    official_only: bool = True
     # Submodule hint (events topics): the Ticketmaster `keyword` the agent should pass to
     # whats_on_events for this topic. Advisory metadata; the prompt blurb drives the call.
     ticketmaster_keyword: Optional[str] = None
@@ -97,6 +103,19 @@ class ServiceModule(BaseModel):
     # Populated by the loader, not from YAML.
     path: Optional[Path] = Field(default=None, exclude=True)
     parent: Optional[str] = Field(default=None, exclude=True)  # set on submodules to the parent module name
+
+    @model_validator(mode="after")
+    def _official_only_blocks_non_official_tiers(self) -> "ServiceModule":
+        if self.official_only:
+            declared = set(self.source_tiers) & {"editorial", "community", "news"}
+            if declared:
+                raise ValueError(
+                    f"module {self.name!r} declares {sorted(declared)} source tiers but is "
+                    "official_only (the default); set `official_only: false` in its manifest "
+                    "only if this module answers lifestyle discovery, never benefits, housing, "
+                    "health, or safety"
+                )
+        return self
 
     @classmethod
     def from_manifest(cls, manifest_path: Path) -> "ServiceModule":

@@ -74,9 +74,9 @@ def test_news_tier_kept_separate_from_allowlist():
 def test_source_tiers_aggregates_highest_trust_wins():
     from heynyc.core.manifest import ServiceModule
 
-    a = ServiceModule(name="events", source_tiers={
+    a = ServiceModule(name="events", official_only=False, source_tiers={
         "authoritative": ["NYCTourism.com"], "community": ["eventbrite.com"]})
-    b = ServiceModule(name="world_cup", source_tiers={
+    b = ServiceModule(name="world_cup", official_only=False, source_tiers={
         "editorial": ["eventbrite.com"]})  # same domain, higher tier than community
     tiers = Registry([a, b]).source_tiers()
     assert tiers["nyctourism.com"] == ("authoritative", "events")   # lowercased
@@ -102,3 +102,36 @@ def test_housing_manifest_declares_the_active_lockout_situation():
     assert "911" in hint.reminder
     assert "housing_guidance" in hint.focus_tools
     assert len(hint.definition.split()) >= 8  # meaning, not a keyword
+
+
+def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
+    """RULED 2026-07-18: retrieval pools are stakes-tiered, and the stakes declaration lives in
+    each module's OWN manifest (`official_only`, default true), enforced by the schema at load —
+    a high-stakes module physically cannot grow an editorial pool without an explicit opt-out."""
+    import pytest
+    from heynyc.core.manifest import ServiceModule
+
+    with pytest.raises(ValueError, match="official_only"):
+        ServiceModule(
+            name="benefits_like",
+            source_tiers={"editorial": ["example.com"]},
+        )
+
+    lifestyle = ServiceModule(
+        name="events_like",
+        official_only=False,
+        source_tiers={"editorial": ["example.com"]},
+    )
+    assert lifestyle.official_only is False
+
+
+def test_events_editorial_pool_covers_nyc_lifestyle_press():
+    """The approved editorial tier for lifestyle discovery: the sources that actually answer
+    'where do French fans watch' (F-none: the Google-comparison transcript, 2026-07-18)."""
+    registry = Registry.discover(Path("heynyc/modules"))
+    events = next(m for m in registry.modules if m.name == "events")
+    assert events.official_only is False
+    editorial = set(events.source_tiers.get("editorial", ()))
+    for domain in ("theinfatuation.com", "eater.com", "cntraveler.com", "bkmag.com"):
+        assert domain in editorial
+        assert domain in registry.allowlist()

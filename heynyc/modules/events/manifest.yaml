@@ -21,12 +21,20 @@ examples:
 seeds:
   - https://www.nyctourism.com/events/
   - https://www.nyc.gov/events
+# RULED 2026-07-18: events is lifestyle discovery, so it carries a governed editorial pool
+# (the sources that actually answer "where do French fans watch") alongside official listings.
+# Official modules keep the default official_only: true and cannot declare these tiers.
+official_only: false
 allowlist:
   - nyctourism.com
   - nycgovparks.org
   - timeout.com
   - secretnyc.co
   - nycforfree.co
+  - theinfatuation.com
+  - eater.com
+  - cntraveler.com
+  - bkmag.com
 source_tiers:
   authoritative:
     - nyc.gov
@@ -37,6 +45,10 @@ source_tiers:
     - timeout.com
     - secretnyc.co
     - nycforfree.co
+    - theinfatuation.com
+    - eater.com
+    - cntraveler.com
+    - bkmag.com
   community:
     - eventbrite.com
 prompt: |
