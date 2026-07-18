@@ -54,3 +54,13 @@ def test_health_watch_logs_public_endpoint_and_notifies_on_transitions():
     assert 'if [ "$status" = "FAIL" ] && [ "$prev" = "OK" ]' in text
     assert 'if [ "$status" = "OK" ] && [ "$prev" = "FAIL" ]' in text
     subprocess.run(["sh", "-n", script], check=True)
+
+
+def test_demo_launcher_sources_env_itself():
+    """`sh scripts/serve_demo.sh` must just work: the script loads the ignored .env itself
+    when present, then still gates loudly on anything missing."""
+    script = Path(__file__).parents[1] / "scripts" / "serve_demo.sh"
+    text = script.read_text()
+
+    assert ". ./.env" in text
+    assert text.index(". ./.env") < text.index("Missing required env")

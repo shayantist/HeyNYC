@@ -159,7 +159,10 @@ _PREPARATION_SYNTHESIS_RULES = (
     "event's own date plainly, and say so when it is not on the exact day the resident asked "
     "about. Skip "
     "generic packing advice unless a retrieved advisory or forecast supports it. Do not guess "
-    "kickoff times, prices, or transit changes. Keep prior-conversation facts separate from "
+    "kickoff times, prices, or transit changes. Take a start or kickoff time only from the "
+    "most authoritative schedule source retrieved, state it with its timezone, and when two "
+    "sources disagree on a time, say so plainly instead of silently choosing one. Keep "
+    "prior-conversation facts separate from "
     "these newly retrieved results."
 )
 

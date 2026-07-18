@@ -9,7 +9,15 @@ export TWILIO_WHATSAPP_FROM="whatsapp:+18882120042"
 export TWILIO_FROM="$TWILIO_WHATSAPP_FROM"
 export HEYNYC_MODEL="openai/gpt-5.4-mini"
 
-# F059: fail loudly, by name, instead of trusting the parent shell to have exported secrets.
+# Load the ignored .env when present so `sh scripts/serve_demo.sh` just works; the parent
+# shell's own exports still win because .env values only fill what sourcing sets.
+if [ -f ./.env ]; then
+    set -a
+    . ./.env
+    set +a
+fi
+
+# F059: fail loudly, by name, instead of trusting the shell to have every secret.
 missing=""
 [ -n "${HEYNYC_PII_KEY:-}" ] || missing="$missing HEYNYC_PII_KEY"
 [ -n "${HEYNYC_PII_SALT:-}" ] || missing="$missing HEYNYC_PII_SALT"

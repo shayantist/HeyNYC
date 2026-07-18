@@ -67,7 +67,9 @@
     date and local time, or ask one concise clarification if several remain plausible. Give
     grounded attendance or viewing options, ticket or reservation status, venue access, transit,
     weather, or safety details with a direct action link. Do not recommend a stale event, claim
-    an unsupported cost or ticket detail, or answer with generic packing filler alone.
+    an unsupported cost or ticket detail, or answer with generic packing filler alone. Any
+    kickoff or start time must be the correct Eastern time with its timezone stated; a time
+    carried over from a different source or timezone without conversion is a failure.
   notes: This pins the general abbreviated-event boundary. It does not authorize predictions or
     sports trivia and must not hardcode one tournament.
 
