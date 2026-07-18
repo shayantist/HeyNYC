@@ -1,0 +1,36 @@
+name: nyc311_status
+category: city services
+# Meaning-based, not a keyword list: routing draws its signal from this description and the
+# examples below (prompts.route_modules content-token match), never a curated keyword phrase.
+description: >-
+  Check the status of an existing NYC 311 service request, or see what recent 311
+  complaints about a problem are doing near a location, grounded in the city's own
+  311 Service Requests data. Read-only: it looks up and reports status, it never
+  files a complaint.
+examples:
+  - "Is my 311 complaint moving? My service request number is 69741503"
+  - "What's happening with 311 noise complaints near Union Square?"
+datasets:
+  - id: erm2-nwe9
+    category: service_request_311
+    title: NYC Open Data - 311 Service Requests
+allowlist:
+  - data.cityofnewyork.us
+  - portal.311.nyc.gov
+tools: tools.py
+prompt: |
+  For questions about an EXISTING 311 complaint or recent 311 activity, call nyc311_status.
+  Two shapes:
+  - "Is my complaint moving / what's the status of SR <number>?" pass sr_number=<the resident's
+    service request number>. Pass ONLY the number, never their name or address.
+  - "What's happening with 311 complaints about <thing> near <place>?" pass about=<the problem, in
+    the resident's words, e.g. noise, heat, illegal parking> and/or near=<one NYC address or
+    landmark>.
+  Preserve the tool's statuses, dates, resolution text, citations, and its "updates about once a
+  day" caveat. Report the status verbatim (Open, In Progress, Assigned, Started, Pending, Closed)
+  and never upgrade "Open" or "In Progress" into a promise that the problem is fixed. Do not invent
+  a service request number, a status, a resolution, or a closing date. If no matching request is
+  found, say so plainly and point the resident to portal.311.nyc.gov or 311. This lane is
+  READ-ONLY: it cannot file, update, or close a 311 request. To report a NEW problem, route the
+  resident to 311, do not claim to have filed anything.
+eval: eval.yaml
