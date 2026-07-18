@@ -261,7 +261,9 @@ def check_cited_claim_grounding(cr: CaseResult) -> Optional[CheckResult]:
 _READABILITY_MAX_GRADE = 9.0        # target ~6-8; a little headroom for unavoidable proper nouns
 _READABILITY_MIN_WORDS = 30         # below this, FK grade is too noisy to be meaningful
 _URL_RE = re.compile(r"https?://\S+")
-_SENTENCE_RE = re.compile(r"[.!?]+")
+# Line breaks end a thought in phone-format answers (the voice rules demand dash lists with
+# no terminal periods); without \n here a six-bullet list scores as one forty-word run-on.
+_SENTENCE_RE = re.compile(r"[.!?]+|\n+")
 _WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 _VOWEL_GROUP_RE = re.compile(r"[aeiouy]+")
 

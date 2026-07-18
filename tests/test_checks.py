@@ -368,3 +368,27 @@ def test_grounded_answer_is_not_blocking():
     cr = _result("Call (917) 720-9700 {cite:S1}.", citations={"S1": _data_cite(snap)})
     res = check_cited_claim_grounding(cr)
     assert res.passed and res.blocking is False
+
+
+def test_flesch_kincaid_treats_line_breaks_as_sentence_ends():
+    """Phone-format answers are dash lists with no terminal periods (the voice rules demand
+    exactly that); the splitter must not score six short lines as one forty-word run-on."""
+    from heynyc.eval.checks import flesch_kincaid_grade
+
+    bullets = (
+        "Here is what to do next for your food help today\n"
+        "- Bring your photo ID and your mail\n"
+        "- Go to the office before four today\n"
+        "- Ask the desk for a same day slot\n"
+        "- Call this number if the line is long\n"
+        "- Keep your papers in one safe place\n"
+        "- Text me after and I can help more"
+    )
+    prose = bullets.replace("\n- ", ". ").replace("\n", ". ")
+
+    bullet_grade = flesch_kincaid_grade(bullets)
+    prose_grade = flesch_kincaid_grade(prose)
+
+    assert bullet_grade is not None and prose_grade is not None
+    assert abs(bullet_grade - prose_grade) < 1.0  # a line break ends a thought
+    assert bullet_grade <= 9
