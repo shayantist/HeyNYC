@@ -494,15 +494,9 @@ async def _cmd_repl() -> None:
         console.print()
 
 
-def _select_eval_cases(cases: list, case_ids: list[str]) -> list:
-    if not case_ids:
-        return cases
-    missing = sorted(set(case_ids) - {case.id for case in cases})
-    if missing:
-        noun = "id" if len(missing) == 1 else "ids"
-        raise SystemExit(f"Unknown eval case {noun}: {', '.join(missing)}")
-    selected = set(case_ids)
-    return [case for case in cases if case.id in selected]
+# Conservative per-case live-cost planning figure for the eval cost guard, from observed
+# GPT-5.4-mini acceptance runs (simple denials ~$0.0002, tool-heavy events ~$0.02).
+_EVAL_COST_PER_CASE_USD = 0.02
 
 
 def _eval_run_metadata(model: str, results: list) -> dict:
@@ -527,19 +521,32 @@ async def _cmd_eval(
     out: str | None = None,
     module: str | None = None,
     case_ids: list[str] | None = None,
+    tags: list[str] | None = None,
+    sample: int | None = None,
+    seed: int = 0,
+    run_all_cases: bool = False,
 ) -> None:
     from datetime import timezone
     from pathlib import Path
 
     from heynyc.core.agent import Agent
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
+    from heynyc.eval.cases import select_cases
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
-    retriever = _load_retriever(required=False)
     cases = load_cases(registry)
-    if module:
-        cases = [c for c in cases if c.module == module]
-    cases = _select_eval_cases(cases, case_ids or [])
+    unselective = not (module or case_ids or tags or sample)
+    if unselective and not run_all_cases:
+        estimate = len(cases) * _EVAL_COST_PER_CASE_USD
+        print(
+            f"This would run all {len(cases)} eval cases live (roughly ${estimate:.2f} at "
+            f"planning rates). Full runs are for large changes: pass --all to confirm, or "
+            f"select with --module, --case, --tag, or --sample."
+        )
+        return
+    retriever = _load_retriever(required=False)
+    cases = select_cases(cases, module=module, case_ids=case_ids or None, tags=tags or None,
+                         sample=sample, seed=seed)
     if not cases:
         scope = f" for module '{module}'" if module else ""
         print(f"No eval cases found{scope} (modules need an eval.yaml).")
@@ -651,6 +658,13 @@ def main() -> None:
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
     ev.add_argument("--case", dest="case_ids", action="append", default=[],
                     help="only run this case id; repeat for more than one")
+    ev.add_argument("--tag", dest="tags", action="append", default=[],
+                    help="only run cases carrying this tag (e.g. a failure-db id like F046)")
+    ev.add_argument("--sample", type=int, default=None,
+                    help="run a deterministic random sample of N cases (after other filters)")
+    ev.add_argument("--seed", type=int, default=0, help="seed for --sample (default 0)")
+    ev.add_argument("--all", dest="run_all_cases", action="store_true",
+                    help="confirm running the FULL live case set (large changes only)")
     bench = sub.add_parser("bench", help="run the eval cases across several candidate models and compare")
     bench.add_argument("--models", required=True,
                        help="comma-separated model ids to bench, e.g. gpt-5,claude-sonnet-4,gemini-2")
@@ -691,7 +705,9 @@ def main() -> None:
         _render_feedback(_feedback_path())
     elif args.command == "eval":
         asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
-                              module=args.module, case_ids=args.case_ids))
+                              module=args.module, case_ids=args.case_ids,
+                              tags=args.tags, sample=args.sample, seed=args.seed,
+                              run_all_cases=args.run_all_cases))
     elif args.command == "bench":
         models = [m.strip() for m in args.models.split(",") if m.strip()]
         asyncio.run(_cmd_bench(models=models, module=args.module, use_api_judge=args.api_judge, out=args.out))

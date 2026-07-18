@@ -20,7 +20,15 @@ class CaseResult:
 
 async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None) -> CaseResult:
     try:
-        result = await agent.run(case.query, reminders=reminders)
+        if len(case.turns) > 1:
+            # A conversational case plays through one Conversation so history flows exactly
+            # as it does for the live surfaces; checks grade the final turn's result.
+            convo = agent.conversation()
+            for turn in case.turns[:-1]:
+                await convo.send(turn, reminders=reminders)
+            result = await convo.send(case.turns[-1], reminders=reminders)
+        else:
+            result = await agent.run(case.query, reminders=reminders)
     except Exception as exc:  # a crash is a failed case, not a crashed run
         return CaseResult(case=case, error=str(exc))
     return CaseResult(

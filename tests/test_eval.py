@@ -522,3 +522,123 @@ def test_data_grounding_fails_on_tampered_snapshot():
 def test_data_grounding_ignores_non_data_citations():
     cr = _result(_case(), citations={"S1": {"url": "https://nyc.gov", "kind": "DOC", "snippet": "x"}})
     assert check_data_grounding(cr) is None
+
+
+def test_load_cases_parses_tags_and_global_file(tmp_path):
+    import yaml as _yaml
+    from heynyc.eval.cases import load_cases
+
+    mod = tmp_path / "demo"
+    mod.mkdir()
+    (mod / "manifest.yaml").write_text(_yaml.safe_dump({
+        "name": "demo", "category": "general", "description": "d", "eval": "eval.yaml",
+    }))
+    (mod / "eval.yaml").write_text(_yaml.safe_dump([
+        {"id": "demo_tagged", "query": "where?", "tags": ["F046", "retrieval-identity"]},
+    ]))
+    global_file = tmp_path / "global.yaml"
+    global_file.write_text(_yaml.safe_dump([
+        {"id": "global_cross_module", "query": "events and food together?", "tags": ["F051"]},
+    ]))
+    registry = Registry.discover(tmp_path)
+
+    cases = {c.id: c for c in load_cases(registry, global_path=global_file)}
+
+    assert cases["demo_tagged"].tags == ["F046", "retrieval-identity"]
+    assert cases["global_cross_module"].module == "global"
+    # Absent global file stays harmless.
+    assert "global_cross_module" not in {
+        c.id for c in load_cases(registry, global_path=tmp_path / "missing.yaml")
+    }
+
+
+def test_select_cases_by_tag_id_and_deterministic_sample():
+    from heynyc.eval.cases import select_cases
+
+    cases = [
+        EvalCase(id=f"case_{i}", module="m", query="q", tags=(["F046"] if i % 2 else []))
+        for i in range(10)
+    ]
+
+    tagged = select_cases(cases, tags=["F046"])
+    assert [c.id for c in tagged] == [f"case_{i}" for i in range(10) if i % 2]
+
+    picked = select_cases(cases, case_ids=["case_3", "case_4"])
+    assert [c.id for c in picked] == ["case_3", "case_4"]
+
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        select_cases(cases, case_ids=["nope"])
+
+    sampled_a = select_cases(cases, sample=3, seed=7)
+    sampled_b = select_cases(cases, sample=3, seed=7)
+    sampled_c = select_cases(cases, sample=3, seed=8)
+    assert [c.id for c in sampled_a] == [c.id for c in sampled_b]
+    assert len(sampled_a) == 3
+    assert [c.id for c in sampled_a] != [c.id for c in sampled_c]
+
+
+async def test_bare_eval_run_requires_all_flag(capsys, monkeypatch):
+    """Cost guard: a bare `heynyc eval` must not silently launch the full paid gate."""
+    import heynyc.eval as eval_pkg
+    from heynyc.__main__ import _cmd_eval
+
+    def boom(*args, **kwargs):
+        raise AssertionError("run must not start without --all")
+
+    monkeypatch.setattr(eval_pkg, "run_all", boom)
+
+    await _cmd_eval(use_api_judge=False)
+
+    out = capsys.readouterr().out
+    assert "--all" in out
+    assert "220" in out or "case" in out.lower()
+
+
+def test_multi_turn_case_schema_derives_final_query(tmp_path):
+    import yaml as _yaml
+    from heynyc.eval.cases import load_cases
+
+    mod = tmp_path / "demo"
+    mod.mkdir()
+    (mod / "manifest.yaml").write_text(_yaml.safe_dump({
+        "name": "demo", "category": "general", "description": "d", "eval": "eval.yaml",
+    }))
+    (mod / "eval.yaml").write_text(_yaml.safe_dump([
+        {"id": "convo_case", "turns": ["first question", "and a follow-up?"]},
+        {"id": "single_case", "query": "one shot"},
+    ]))
+    registry = Registry.discover(tmp_path)
+
+    cases = {c.id: c for c in load_cases(registry)}
+
+    assert cases["convo_case"].turns == ["first question", "and a follow-up?"]
+    assert cases["convo_case"].query == "and a follow-up?"  # checks apply to the final turn
+    assert cases["single_case"].turns == ["one shot"]  # single-turn stays the degenerate case
+
+
+async def test_runner_plays_multi_turn_cases_through_a_conversation():
+    """The follow-up turn must see the first turn as real history (the F052 contract),
+    exercised through the same Conversation wrapper the surfaces use."""
+    from heynyc.core.agent import Agent
+    from heynyc.core.registry import Registry as _Registry
+    from heynyc.eval.runner import run_case
+
+    seen_histories = []
+
+    async def complete(messages, tool_schemas):
+        seen_histories.append([str(m.get("content") or "") for m in messages])
+        return {"role": "assistant", "content": f"answer {len(seen_histories)}", "tool_calls": None}
+
+    agent = Agent(_Registry([]), tools={}, complete_fn=complete)
+    case = EvalCase(
+        id="convo", module="global", query="and the follow-up?",
+        turns=["first question", "and the follow-up?"],
+    )
+
+    result = await run_case(agent, case)
+
+    assert result.text == "answer 2"
+    final_call = seen_histories[-1]
+    assert any("first question" in content for content in final_call)
+    assert any("answer 1" in content for content in final_call)  # prior assistant turn visible

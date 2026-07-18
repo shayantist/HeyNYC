@@ -45,8 +45,17 @@ class EvalCase:
     language: str = "en"
     grounded_fact: str = ""
     utility_criterion: str = ""
+    # Free-form selection labels: failure-db ids ("F046") and category slugs, so selective
+    # runs can target exactly the cases that pin recorded failures (`--tag F046`).
+    tags: list[str] = field(default_factory=list)
+    # Ordered resident turns for a conversational case. The runner plays every turn through
+    # one Conversation so history flows (the F052 contract); every check, judge, and field
+    # above applies to the FINAL turn's result, and `query` is always that final turn.
+    turns: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not self.turns:
+            self.turns = [self.query]
         if not self.safety_critical:
             self.safety_critical = (
                 self.harm_category != "none"
@@ -55,21 +64,34 @@ class EvalCase:
             )
 
 
-def load_cases(registry: Registry) -> list[EvalCase]:
+def default_global_cases() -> Path:
+    """Repo-level cross-module cases (conversational and multi-module contracts that no
+    single module owns). Optional: the loader tolerates absence."""
+    return Path(__file__).resolve().parent / "global.yaml"
+
+
+def load_cases(registry: Registry, global_path: Optional[Path] = None) -> list[EvalCase]:
     cases: list[EvalCase] = []
+    sources: list[tuple[str, Path]] = []
     for module in registry.modules:
         if not module.eval or module.path is None:
             continue
         path = module.path / module.eval
-        if not path.exists():
-            continue
+        if path.exists():
+            sources.append((module.name, path))
+    global_file = default_global_cases() if global_path is None else Path(global_path)
+    if global_file.exists():
+        sources.append(("global", global_file))
+    for module_name, path in sources:
         raw = yaml.safe_load(path.read_text()) or []
         for entry in raw:
+            turns = list(entry.get("turns", []) or [])
             cases.append(
                 EvalCase(
                     id=entry["id"],
-                    module=module.name,
-                    query=entry["query"],
+                    module=module_name,
+                    query=entry.get("query") or (turns[-1] if turns else ""),
+                    turns=turns,
                     expect_tools=entry.get("expect_tools", []),
                     forbid_tools=entry.get("forbid_tools", []),
                     expect_cite_kinds=entry.get("expect_cite_kinds", []),
@@ -88,9 +110,41 @@ def load_cases(registry: Registry) -> list[EvalCase]:
                     language=entry.get("language", "en"),
                     grounded_fact=entry.get("grounded_fact", ""),
                     utility_criterion=entry.get("utility_criterion", ""),
+                    tags=list(entry.get("tags", []) or []),
                 )
             )
     return cases
+
+
+def select_cases(
+    cases: list[EvalCase],
+    *,
+    module: Optional[str] = None,
+    case_ids: Optional[list[str]] = None,
+    tags: Optional[list[str]] = None,
+    sample: Optional[int] = None,
+    seed: int = 0,
+) -> list[EvalCase]:
+    """One selection path for every eval entry point: module, exact ids, tags, then a
+    deterministic seeded sample. Unknown ids abort loudly rather than silently running less."""
+    import random
+
+    selected = cases
+    if module:
+        selected = [case for case in selected if case.module == module]
+    if case_ids:
+        missing = sorted(set(case_ids) - {case.id for case in selected})
+        if missing:
+            noun = "id" if len(missing) == 1 else "ids"
+            raise SystemExit(f"Unknown eval case {noun}: {', '.join(missing)}")
+        wanted = set(case_ids)
+        selected = [case for case in selected if case.id in wanted]
+    if tags:
+        wanted_tags = set(tags)
+        selected = [case for case in selected if wanted_tags & set(case.tags)]
+    if sample is not None and sample < len(selected):
+        selected = random.Random(seed).sample(selected, sample)
+    return selected
 
 
 # The 8-way adversarial taxonomy (canonical here so both the loader's validation and the judge's

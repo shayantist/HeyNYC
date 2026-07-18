@@ -271,19 +271,18 @@ def test_repl_screening_requires_explicit_command():
 
 
 def test_eval_case_filter_selects_requested_ids_and_rejects_typos():
-    from heynyc.__main__ import _select_eval_cases
-    from heynyc.eval.cases import EvalCase
+    from heynyc.eval.cases import EvalCase, select_cases
 
     cases = [
         EvalCase(id="benefits_snap", module="benefits", query="q"),
         EvalCase(id="events_weekend", module="events", query="q"),
     ]
 
-    assert [case.id for case in _select_eval_cases(cases, ["events_weekend"])] == [
+    assert [case.id for case in select_cases(cases, case_ids=["events_weekend"])] == [
         "events_weekend"
     ]
     with pytest.raises(SystemExit, match="Unknown eval case id: typo"):
-        _select_eval_cases(cases, ["typo"])
+        select_cases(cases, case_ids=["typo"])
 
 
 def test_eval_run_metadata_preserves_usage_cost_and_case_ids():
