@@ -75,6 +75,7 @@ def record_turn(
         "memory_compactions", "memory_model", "memory_input_tokens",
         "memory_output_tokens", "memory_cost_usd", "memory_time_ms",
         "memory_pre_tokens", "memory_post_tokens",
+        "scope_modules", "scope_situations",
     ):
         if key in usage:
             record[key] = usage[key]
@@ -102,7 +103,8 @@ def summarize(records: list[dict]) -> dict:
                 "scope_time_ms": 0.0, "orchestration_time_ms": 0.0,
                 "memory_compactions": 0, "memory_time_ms": 0.0,
                 "n_model_calls": 0, "n_tool_calls": 0, "iterations": 0,
-                "tool_mix": {}, "error_rate": 0.0}
+                "tool_mix": {}, "error_rate": 0.0,
+                "outcome_mix": {}, "scope_module_mix": {}, "scope_situation_mix": {}}
     turns = len(records)
     total_cost = sum(float(r["cost_usd"]) for r in records if r.get("cost_usd") is not None)
     unpriced_turns = sum(1 for r in records if r.get("cost_usd") is None)
@@ -133,4 +135,14 @@ def summarize(records: list[dict]) -> dict:
         "iterations": sum(int(r.get("iterations", 0) or 0) for r in records),
         "tool_mix": dict(tool_mix),
         "error_rate": errors / turns,
+        # Passive routing-drift visibility: what the checklist marked and how turns resolved.
+        "outcome_mix": dict(Counter(
+            r["outcome"] for r in records if r.get("outcome")
+        )),
+        "scope_module_mix": dict(Counter(
+            m for r in records for m in r.get("scope_modules", []) or []
+        )),
+        "scope_situation_mix": dict(Counter(
+            s for r in records for s in r.get("scope_situations", []) or []
+        )),
     }

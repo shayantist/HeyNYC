@@ -101,3 +101,30 @@ def test_summarize_accepts_legacy_records_without_latency_breakdown():
     assert summary["iterations"] == 0
     assert summary["memory_compactions"] == 0
     assert summary["memory_time_ms"] == 0.0
+
+
+def test_record_turn_persists_checklist_and_summarize_aggregates_it(tmp_path):
+    """The scope checklist is only useful if it lands in telemetry and the stats command can
+    show its distribution, alongside outcome rates, so routing drift is visible passively."""
+    from heynyc.core import telemetry
+
+    path = tmp_path / "t.jsonl"
+    for modules, outcome in (
+        (["events", "advisories"], "answered"),
+        (["events"], "answered"),
+        ([], "redirected"),
+    ):
+        telemetry.record_turn(
+            path, session_id="u1", model="m", n_tool_calls=0, tool_names=[],
+            status="success",
+            usage={"scope_modules": modules, "scope_situations": [], "cost_usd": 0.0},
+            extra={"outcome": outcome},
+        )
+
+    records = telemetry.load(path)
+    assert records[0]["scope_modules"] == ["events", "advisories"]
+
+    summary = telemetry.summarize(records)
+    assert summary["outcome_mix"] == {"answered": 2, "redirected": 1}
+    assert summary["scope_module_mix"] == {"events": 2, "advisories": 1}
+    assert summary["scope_situation_mix"] == {}

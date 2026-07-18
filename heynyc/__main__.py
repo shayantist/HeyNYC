@@ -261,6 +261,18 @@ def _render_stats(path) -> None:
     table.add_row("iterations total", str(summary["iterations"]))
     table.add_row("error rate", f"{summary['error_rate'] * 100:.0f}%")
     table.add_row("tool mix", ", ".join(f"{k}×{v}" for k, v in summary["tool_mix"].items()) or "-")
+    table.add_row(
+        "outcome mix",
+        ", ".join(f"{k}×{v}" for k, v in summary["outcome_mix"].items()) or "-",
+    )
+    table.add_row(
+        "checklist modules",
+        ", ".join(f"{k}×{v}" for k, v in summary["scope_module_mix"].items()) or "-",
+    )
+    table.add_row(
+        "checklist situations",
+        ", ".join(f"{k}×{v}" for k, v in summary["scope_situation_mix"].items()) or "-",
+    )
     console.print(table)
 
 
