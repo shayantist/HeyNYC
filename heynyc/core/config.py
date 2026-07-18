@@ -20,6 +20,37 @@ HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
 # truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
 OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))
 
+# Model metadata LiteLLM does not ship. The memory planner fails CLOSED on an unknown
+# context window, so an unmapped model cannot answer a single turn — every reply becomes the
+# `context_limit` fallback. Numbers must be provider-verified on the dated line, never guessed.
+# `max_output_tokens` here is the planner's output RESERVE (we never send max_tokens), kept at a
+# practical answer size rather than the provider's full completion cap.
+EXTRA_MODEL_INFO = {
+    # Verified 2026-07-18 against https://openrouter.ai/api/v1/models: top provider serves
+    # 524,288 ctx / 512,000 completion cap; $0.30/M input, $1.20/M output.
+    # Verified 2026-07-18 against openrouter.ai/api/v1/models.
+    "openrouter/qwen/qwen3.6-35b-a3b": {
+        "max_tokens": 32768, "max_input_tokens": 262144, "max_output_tokens": 32768,
+        "input_cost_per_token": 1.4e-7, "output_cost_per_token": 1e-6,
+        "litellm_provider": "openrouter", "mode": "chat", "supports_function_calling": True,
+    },
+    "openrouter/qwen/qwen3.6-27b": {
+        "max_tokens": 32768, "max_input_tokens": 262144, "max_output_tokens": 32768,
+        "input_cost_per_token": 4.5e-7, "output_cost_per_token": 2.7e-6,
+        "litellm_provider": "openrouter", "mode": "chat", "supports_function_calling": True,
+    },
+    "openrouter/minimax/minimax-m3": {
+        "max_tokens": 32768,
+        "max_input_tokens": 524288,
+        "max_output_tokens": 32768,
+        "input_cost_per_token": 3e-7,
+        "output_cost_per_token": 1.2e-6,
+        "litellm_provider": "openrouter",
+        "mode": "chat",
+        "supports_function_calling": True,
+    },
+}
+
 # Optional hard USD spend ceiling for one agent session (security-audit F2b, OWASP LLM10). Default
 # OFF: unset, blank, 0, or a non-positive/garbage value all mean disabled (None) and behavior is
 # unchanged. When set, the spend guard (heynyc/core/spend.py) halts further model calls once the

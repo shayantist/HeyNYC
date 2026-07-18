@@ -789,6 +789,52 @@ async def test_conversation_threads_user_history_without_stale_assistant_facts(e
     assert len(convo.turns) == 4
 
 
+def test_unmapped_bench_model_gets_registered_context_capacity(empty_registry):
+    """LiteLLM shipping no metadata for a model means `_context_capacity` is None and the
+    memory planner fails CLOSED — every turn dies as `context_limit` before reaching the model
+    (observed: all 20 bench answers empty for `openrouter/minimax/minimax-m3`). Models we bench
+    or serve must be registered from `config.EXTRA_MODEL_INFO` with provider-verified numbers."""
+    agent = Agent(empty_registry, tools={}, model="openrouter/minimax/minimax-m3")
+    capacity = agent._context_capacity()
+    assert capacity is not None and capacity > 100_000
+
+
+def test_reasoning_effort_is_plumbed_and_overrides_the_luna_default():
+    from heynyc.core.agent import _completion_kwargs
+
+    tool = [{"type": "function", "function": {"name": "t", "parameters": {}}}]
+    # Current production defaults, unchanged: mini sends nothing (provider default),
+    # luna is pinned to none on tool turns.
+    assert "reasoning_effort" not in _completion_kwargs("openai/gpt-5.4-mini", [], tool)
+    assert _completion_kwargs("openai/gpt-5.6-luna", [], tool)["reasoning_effort"] == "none"
+    # An explicit effort reaches the call and beats the luna pin — the bench's effort axis.
+    high = _completion_kwargs("openai/gpt-5.4-mini", [], tool, reasoning_effort="xhigh")
+    assert high["reasoning_effort"] == "xhigh"
+    luna = _completion_kwargs("openai/gpt-5.6-luna", [], tool, reasoning_effort="xhigh")
+    assert luna["reasoning_effort"] == "xhigh"
+    # Effort applies on tool-free turns too.
+    bare = _completion_kwargs("openai/gpt-5.4-mini", [], [], reasoning_effort="low")
+    assert bare["reasoning_effort"] == "low"
+
+
+async def test_conversation_turns_are_stamped_with_nyc_time(empty_registry):
+    """F062: turns carry WHEN they happened so the history label can state the sent time and
+    the model judges elapsed time itself, instead of a blanket staleness warning."""
+    from datetime import datetime
+
+    async def recorder(messages, tool_schemas):
+        return _assistant(content="answer")
+
+    agent = Agent(empty_registry, tools={}, complete_fn=recorder)
+    convo = agent.conversation()
+    await convo.send("nearest cooling center?")
+
+    assert len(convo.turns) == 2
+    for turn in convo.turns:
+        sent = datetime.fromisoformat(turn["timestamp"])
+        assert sent.utcoffset() is not None
+
+
 async def test_conversation_recalls_prior_answer_without_reusing_stale_evidence(empty_registry):
     provider_messages = []
 

@@ -2220,8 +2220,10 @@ class Agent:
         memory_limit_tokens: Optional[int] = None,
         memory_token_counter: Optional[MemoryTokenCounter] = None,
         memory_compactor: Optional[MemoryCompactor] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         self.registry = registry
+        self._reasoning_effort = reasoning_effort
         self._embedder = getattr(index, "embedder", None)  # shared with retrieval-using module tools
         self.tools = tools if tools is not None else build_toolbox(registry, index=index)
         self.model = model or DEFAULT_MODEL
@@ -2247,6 +2249,8 @@ class Agent:
         else:
             self._stream_fn = None
             self._uses_litellm = True
+        if self._uses_litellm:
+            _register_extra_model_info()
         self._scope_fn = scope_fn or (self._classify_scope if scope_gate else None)
 
     def _context_capacity(self) -> int | None:
@@ -3358,7 +3362,10 @@ class Agent:
     ) -> AsyncIterator[dict]:
         import litellm
 
-        kwargs = _completion_kwargs(self.model, messages, tool_schemas, forced_tool=forced_tool)
+        kwargs = _completion_kwargs(
+            self.model, messages, tool_schemas, forced_tool=forced_tool,
+            reasoning_effort=self._reasoning_effort,
+        )
 
         async def _open():
             return await litellm.acompletion(**kwargs)
@@ -3405,14 +3412,32 @@ def _is_anthropic(model: str) -> bool:
     return m.startswith("anthropic/") or "claude" in m
 
 
+_extra_model_info_registered = False
+
+
+def _register_extra_model_info() -> None:
+    """Teach LiteLLM the models it doesn't ship metadata for (config.EXTRA_MODEL_INFO).
+    Without this the memory planner fails closed on the unknown context window and the model
+    never receives a single turn. Also makes cost tracking price these models."""
+    global _extra_model_info_registered
+    if _extra_model_info_registered or not config.EXTRA_MODEL_INFO:
+        return
+    import litellm
+
+    litellm.register_model(config.EXTRA_MODEL_INFO)
+    _extra_model_info_registered = True
+
+
 def _completion_kwargs(
     model: str, messages: list[dict], tool_schemas: list[dict], forced_tool: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> dict:
     """Build the kwargs for litellm.acompletion.
 
     GPT-5 models reject temperature != 1 (litellm raises UnsupportedParamsError), so we omit
     temperature for them and let it default; every other model pins temperature=0 for
-    deterministic, grounded output. Tool schemas are attached only when present.
+    deterministic, grounded output. Tool schemas are attached only when present. An explicit
+    `reasoning_effort` (the bench's effort axis) always wins over per-model defaults.
     """
     kwargs: dict = {
         "model": model, "messages": messages,
@@ -3428,6 +3453,8 @@ def _completion_kwargs(
             kwargs["tool_choice"] = {
                 "type": "function", "function": {"name": forced_tool},
             }
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
     if "ollama" in model:
         kwargs["num_ctx"] = config.OLLAMA_NUM_CTX
     return kwargs
