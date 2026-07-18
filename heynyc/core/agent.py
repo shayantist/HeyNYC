@@ -97,6 +97,12 @@ EVENT_CONTEXT_ABSTAIN_FALLBACK = (
     "Tell me a borough or a type like music, sports, family, or museums and I'll try a narrower search."
 )
 
+EVENT_PREPARATION_ABSTAIN_FALLBACK = (
+    "I found current event sources, but I couldn't confirm which event you mean or turn them "
+    "into a reliable plan. Tell me which event you're going to, or its venue or team, and I'll "
+    "pull the current details."
+)
+
 # Deterministic ordinary scope denial (F047). Fail-closed by design: the answer model never runs
 # on a denied turn, so this exact copy is what the resident reads. Keep it warm and concrete, and
 # keep the phrase "I can help with NYC" intact: the eval outcome classifier keys on it to mark the
@@ -119,6 +125,11 @@ class _ScopeDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["allow", "deny", "deny_rights"]
+    # Semantic event-preparation signal (F046/F053 family). The preflight, not a phrase list,
+    # decides whether this turn prepares for a dated public event; the regex predicate below is
+    # only the fallback for callers without the preflight. None means the model did not say,
+    # which must fall back to the regex floor rather than silently disabling the guard.
+    event_preparation: Optional[bool] = None
 
 
 _SCOPE_SYSTEM_PROMPT = """You are the fail-closed scope gate for HeyNYC.
@@ -132,6 +143,19 @@ HeyNYC serves New Yorkers. Treat an ordinary public-service or civic-help reques
 user's NYC situation unless the conversation places it elsewhere. Do not require the user to repeat
 NYC or New York in every turn.
 
+Treat practical event-attendance planning as concerning NYC unless the conversation places the event
+elsewhere. This includes preparing for, getting to, entering, or staying safe at a game, concert,
+festival, parade, watch party, or other public event. Allow the planning turn when the event name is
+abbreviated or ambiguous so the assistant can retrieve or clarify it. Residents often write in texting
+shorthand: read abbreviations like tm, tmrw, tn, or wknd as dates, and read an initial-letter or
+shortened event name as a resolvable public event when the surrounding words ask for practical local
+help. A very short message that pairs a date shorthand with an abbreviated or unexplained event name,
+even just initials, is usually a resident asking for practical local help, not trivia; allow it so the
+assistant can resolve or clarify it. Apply the same reading when the message is nothing but that
+date and abbreviation, with no other words: a bare fragment like a date plus initials is a resident's
+shorthand ask, and the assistant will clarify it, so allow rather than deny. This does not include predictions or
+sports trivia with no practical NYC connection.
+
 State, federal, or global matters are in scope only when the user is asking about their practical
 effect on a New Yorker, an NYC service, or NYC civic life. Unrelated general knowledge, opinion,
 and politics are out of scope. Do not treat an official government source as proof that a question
@@ -139,6 +163,11 @@ is in scope. For an out-of-scope question about human rights, war, political vio
 discrimination, civil liberties, sovereignty, or contested statehood, return deny_rights so the
 assistant can state its civic values without pretending to adjudicate the broader dispute. Judge
 meaning, not keywords, language, country, or viewpoint. If uncertain, deny.
+
+Set event_preparation=true only when the latest turn, read with the conversation, asks how to
+prepare for, get to, attend, watch, or plan around a specific dated public event, in any language,
+shorthand, or date format. Set event_preparation=false for everything else, including predictions,
+trivia, exams, and preparation for a hearing, court date, interview, or appointment.
 Return only the supplied schema."""
 
 SCREEN_SHORTLIST_DISCLOSURE = "This is a phone-friendly shortlist, not an official ranking."
@@ -1733,6 +1762,155 @@ def _is_broad_event_query(user_message: str) -> bool:
     )
 
 
+# Practical get-ready-for-an-event turns (F046): a preparation intent, a public-event noun, and a
+# date reference. The event name may be abbreviated or ambiguous ("WC game"), so the contract is
+# resolve-or-clarify from current sources, never advise from memory. English and Spanish, matching
+# the safety-routing convention used by the other intent regexes in this file.
+_EVENT_PREP_INTENT_RE = re.compile(
+    r"\b(?:prepare|prep|get ready|ready for|bring|wear|pack|plan(?:ning)?|"
+    r"preparar(?:me|nos)?|llevo|llevar|empacar|listos?)\b",
+    re.IGNORECASE,
+)
+_EVENT_PREP_EVENT_RE = re.compile(
+    r"\b(?:game|match|concert|show|festival|parade|watch party|final|semifinal|opening|"
+    r"premiere|race|marathon|gala|rally|ceremony|"
+    r"partido|concierto|desfile|marat[oó]n|ceremonia)\b",
+    re.IGNORECASE,
+)
+# A dated "prepare and bring" turn about a hearing, court date, official interview, or an
+# immigration matter is a high-stakes civic turn, never event planning, even when a word like
+# "show" or "final" doubles as an event noun in it.
+# ponytail: an enumerated carve-out, not a semantic classifier. The semantic scope gate and the
+# high-stakes reminder branches still run first; extend this list when a new collision appears.
+_EVENT_PREP_EXCLUDE_RE = re.compile(
+    r"\b(?:hearing|court|appeal|interview|appointment|immigration|asylum|"
+    r"audiencia|corte|apelaci[oó]n|entrevista|cita|inmigraci[oó]n|asilo)\b",
+    re.IGNORECASE,
+)
+_EVENT_PREP_DATE_RE = re.compile(
+    r"\b(?:today|tonight|tom{1,2}or{1,2}ow|tmrw|tm|tn|weekend|this week|next week|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"hoy|esta noche|ma[ñn]ana|fin de semana|"
+    r"lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)(?:'?s)?\b",
+    re.IGNORECASE,
+)
+
+
+def is_event_preparation_query(user_message: str) -> bool:
+    """A dated practical event-preparation turn that needs identity resolution before advice.
+
+    Public because `heynyc/modules/events/tools.py` uses the same predicate to pick its
+    coordinated retrieval lanes and synthesis rules, keeping the two layers from drifting."""
+    routed = _routing_text(user_message)
+    return bool(
+        _EVENT_PREP_INTENT_RE.search(routed)
+        and _EVENT_PREP_EVENT_RE.search(routed)
+        and _EVENT_PREP_DATE_RE.search(routed)
+        and not _EVENT_PREP_EXCLUDE_RE.search(routed)
+    )
+
+
+_EVENT_PREPARATION_SCOPE_REMINDER = (
+    "This turn asks how to prepare for a specific dated event whose name may be abbreviated or "
+    "ambiguous. Resolve the event identity from current retrieved sources before giving any "
+    "advice: call `whats_on_events` with the event keyword and use the current official and "
+    "editorial context it returns. If the evidence supports one plausible event, state plainly "
+    "which event it is with its date and local time, then build the plan only from cited "
+    "evidence: how to attend or watch it, ticket or reservation status, venue access, transit or "
+    "street impacts, and any material advisory, each with its direct link. If more than one "
+    "event remains plausible, ask one short clarifying question instead of guessing. The event "
+    "happening on the asked date is the answer; a more prominent event on a different date is "
+    "context at most, never the resident's event. Residents "
+    "often use texting shorthand: expand an abbreviated event name to its likely full name for "
+    "the `whats_on_events` keyword instead of searching the raw abbreviation, and retry once "
+    "with a broader keyword if the first search returns nothing relevant. In a follow-up turn, "
+    "keep the event already under discussion instead of re-asking for details the resident "
+    "already gave. State the event's own date plainly, and say so when it is not on the exact "
+    "day the resident asked about. Do not "
+    "give generic packing advice unless a retrieved advisory or forecast supports it. Pure "
+    "predictions and sports trivia remain out of scope. Keep the answer phone-length."
+)
+
+_BULLET_LINE_RE = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+")
+# Imperative advice verbs that mark UNCITED text as smuggled preparation advice rather than a
+# clarifying question ("Wear team colors. Which game do you mean?").
+_PREP_ADVICE_VERB_RE = re.compile(
+    r"\b(?:wear|bring|pack|carry|grab|charge|lleva|llevar|trae|empaca|carga)\b",
+    re.IGNORECASE,
+)
+
+
+def _event_preparation_feedback(
+    user_message: str,
+    text: str,
+    citations: dict[str, dict],
+    available_citation_ids: Optional[set[str]] = None,
+    preparation_turn: Optional[bool] = None,
+) -> Optional[str]:
+    """Reject an event-preparation answer that is neither grounded nor a clarification.
+
+    Deterministic floor for the F046 contract: a preparation answer must carry cited current
+    evidence or ask one clarifying question, and must not carry uncited generic-advice lists.
+    Event-identity quality beyond that floor is judged semantically by the eval suite.
+    `preparation_turn` is the semantic scope-preflight flag; the regex predicate is only the
+    fallback for callers without the preflight."""
+    active = (
+        is_event_preparation_query(user_message)
+        if preparation_turn is None else preparation_turn
+    )
+    if not active:
+        return None
+    available_ids = set(citations) if available_citation_ids is None else available_citation_ids
+    answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
+    cited = [m for m in _CITE_MARKER_RE.finditer(answer_body) if m.group(1) in available_ids]
+    if not cited:
+        # One SHORT clarifying question is the accepted uncited path. A trailing question does
+        # not launder a plan: any bullet list, long body, or advice verb still needs cited
+        # evidence.
+        body = answer_body.strip()
+        if (
+            "?" in body
+            and len(body) <= 280
+            and not _BULLET_LINE_RE.search(body)
+            and not _PREP_ADVICE_VERB_RE.search(body)
+        ):
+            return None
+        return (
+            "<system-reminder>\n"
+            "This is a preparation question about a specific dated event, but your answer has no "
+            "cited current evidence and is not one short clarifying question. Resolve which event "
+            "the resident means from retrieved sources, state it with its date and local time, and "
+            "build the plan from cited evidence with direct links, or ask one short clarifying "
+            "question and stop. Do not give uncited generic preparation advice.\n"
+            "</system-reminder>"
+        )
+    # A filler-led answer opens with uncited generic advice; a long grounded resolution
+    # sentence whose citation lands at its end is fine (observed live), so the lead is judged
+    # by advice content, never by length.
+    lead = answer_body[: cited[0].start()]
+    if len(_BULLET_LINE_RE.findall(lead)) >= 2 or _PREP_ADVICE_VERB_RE.search(lead):
+        return (
+            "<system-reminder>\n"
+            "Your event-preparation answer leads with generic uncited advice before any cited "
+            "fact. Lead with the resolved event: which event it is, with its date and local time, "
+            "from cited evidence. Keep only preparation advice tied to retrieved conditions or "
+            "advisories, and put each option's direct link beside it.\n"
+            "</system-reminder>"
+        )
+    # An uncited packing LIST is filler wherever it sits, including after a citation: any
+    # citation-free run of 2+ advice-verb bullet lines is rejected.
+    for segment in _CITE_STRIP_RE.split(answer_body)[1:]:
+        if len(_BULLET_LINE_RE.findall(segment)) >= 2 and _PREP_ADVICE_VERB_RE.search(segment):
+            return (
+                "<system-reminder>\n"
+                "Your event-preparation answer contains an uncited generic advice list. Keep "
+                "only preparation advice tied to cited retrieved conditions or advisories, with "
+                "the supporting citation beside it, and drop the rest.\n"
+                "</system-reminder>"
+            )
+    return None
+
+
 def _has_citywide_notify_notice(awareness: str) -> bool:
     return "[broad scope confirmed]" in awareness
 
@@ -1982,6 +2160,7 @@ class ScopeResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float | None = None
+    event_preparation: bool | None = None
 
 
 ScopeFn = Callable[[str, list[dict]], Awaitable[ScopeDecision | ScopeResult]]
@@ -2256,15 +2435,8 @@ class Agent:
         }
         if config.HEYNYC_SCOPE_MODEL.startswith("openai/"):
             kwargs["reasoning_effort"] = "low"
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except Exception:
-            logger.exception("scope model call failed closed")
-            return ScopeResult(decision="deny", model=config.HEYNYC_SCOPE_MODEL)
-        message = response.choices[0].message
-        response_usage = getattr(response, "usage", None)
 
-        def usage_value(name: str) -> int:
+        def usage_value(response_usage, name: str) -> int:
             value = (
                 response_usage.get(name, 0)
                 if isinstance(response_usage, dict)
@@ -2272,26 +2444,60 @@ class Agent:
             )
             return int(value or 0)
 
-        input_tokens = usage_value("prompt_tokens")
-        output_tokens = usage_value("completion_tokens")
-        if getattr(message, "refusal", None):
-            decision: ScopeDecision = "deny"
-        else:
-            parsed = getattr(message, "parsed", None)
+        input_tokens = 0
+        output_tokens = 0
+        decision: ScopeDecision = "deny"
+        event_preparation: Optional[bool] = None
+        # One retry on transiently EMPTY structured output (observed live), then fail closed
+        # quietly: an empty reply is not worth a resident-visible traceback.
+        for attempt in range(2):
             try:
-                decision = (
-                    parsed.decision if isinstance(parsed, _ScopeDecision)
-                    else _ScopeDecision.model_validate_json(message.content or "").decision
+                response = await litellm.acompletion(**kwargs)
+            except Exception:
+                logger.exception("scope model call failed closed")
+                return ScopeResult(
+                    decision="deny",
+                    model=config.HEYNYC_SCOPE_MODEL,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=(
+                        priced_cost_usd(config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens)
+                        if input_tokens or output_tokens else None
+                    ),
                 )
+            message = response.choices[0].message
+            response_usage = getattr(response, "usage", None)
+            input_tokens += usage_value(response_usage, "prompt_tokens")
+            output_tokens += usage_value(response_usage, "completion_tokens")
+            if getattr(message, "refusal", None):
+                decision = "deny"
+                break
+            parsed = getattr(message, "parsed", None)
+            content = (message.content or "").strip()
+            if parsed is None and not content:
+                if attempt == 0:
+                    continue
+                logger.warning("scope model returned empty output twice; failing closed")
+                decision = "deny"
+                break
+            try:
+                verdict = (
+                    parsed if isinstance(parsed, _ScopeDecision)
+                    else _ScopeDecision.model_validate_json(content)
+                )
+                decision = verdict.decision
+                event_preparation = verdict.event_preparation
             except Exception:
                 logger.exception("scope model returned invalid structured output; failing closed")
                 decision = "deny"
+            break
         return ScopeResult(
             decision=decision,
             model=config.HEYNYC_SCOPE_MODEL,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=priced_cost_usd(config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens),
+            event_preparation=event_preparation,
         )
 
     def _tool_schemas(self, excluded_tools: Optional[set[str]] = None) -> list[dict]:
@@ -2300,18 +2506,19 @@ class Agent:
 
     def _runtime_scope_reminder(self, user_message: str) -> str:
         """Return the one current-source reminder added to the real request."""
-        if not ("official_sources" in self.tools or "web_search" in self.tools):
-            return ""
-        if _needs_current_lockout_guidance(user_message):
-            return _LOCKOUT_SCOPE_REMINDER
-        if _needs_current_snap_work_rule_guidance(user_message):
-            return _SNAP_WORK_RULE_SCOPE_REMINDER
-        if _needs_current_immigrant_benefits_guidance(user_message):
-            return _IMMIGRANT_BENEFITS_SCOPE_REMINDER
-        if _needs_current_benefits_recovery_guidance(user_message):
-            return _BENEFITS_RECOVERY_SCOPE_REMINDER
-        if _current_civic_law_search(user_message):
-            return _CIVIC_LAW_SCOPE_REMINDER
+        if "official_sources" in self.tools or "web_search" in self.tools:
+            if _needs_current_lockout_guidance(user_message):
+                return _LOCKOUT_SCOPE_REMINDER
+            if _needs_current_snap_work_rule_guidance(user_message):
+                return _SNAP_WORK_RULE_SCOPE_REMINDER
+            if _needs_current_immigrant_benefits_guidance(user_message):
+                return _IMMIGRANT_BENEFITS_SCOPE_REMINDER
+            if _needs_current_benefits_recovery_guidance(user_message):
+                return _BENEFITS_RECOVERY_SCOPE_REMINDER
+            if _current_civic_law_search(user_message):
+                return _CIVIC_LAW_SCOPE_REMINDER
+        if "whats_on_events" in self.tools and is_event_preparation_query(user_message):
+            return _EVENT_PREPARATION_SCOPE_REMINDER
         return ""
 
     async def get_notify_awareness(self) -> str:
@@ -2559,6 +2766,7 @@ class Agent:
             )
             return
 
+        scope_event_preparation: Optional[bool] = None
         if self._scope_fn is not None:
             scope_started = time.perf_counter()
             try:
@@ -2571,6 +2779,7 @@ class Agent:
             turn_usage["scope_time_ms"] = (time.perf_counter() - scope_started) * 1000.0
             if isinstance(scope_result, ScopeResult):
                 scope_decision = scope_result.decision
+                scope_event_preparation = scope_result.event_preparation
                 turn_usage["scope_model"] = scope_result.model
                 turn_usage["scope_input_tokens"] = scope_result.input_tokens
                 turn_usage["scope_output_tokens"] = scope_result.output_tokens
@@ -2613,6 +2822,28 @@ class Agent:
                 )
                 return
 
+        # The semantic preflight flag is authoritative when present; the regex predicate is the
+        # fallback for callers without the preflight (owner ruling: no phrase-list growth).
+        # A deterministically BROAD what's-happening query always keeps the shortlist
+        # machinery: broadness wins over an over-fired prep flag (observed in eval).
+        event_preparation_turn = (
+            scope_event_preparation if scope_event_preparation is not None
+            else is_event_preparation_query(user_message)
+        ) and not _is_broad_event_query(user_message)
+        ctx.event_preparation = event_preparation_turn
+        if (
+            event_preparation_turn
+            and "whats_on_events" in self.tools
+            and _EVENT_PREPARATION_SCOPE_REMINDER not in effective_reminders
+        ):
+            messages.insert(-1, {
+                "role": "user",
+                "content": (
+                    f"<system-reminder>\n{_EVENT_PREPARATION_SCOPE_REMINDER}\n</system-reminder>"
+                ),
+            })
+            yield events.Reminder(summary=_EVENT_PREPARATION_SCOPE_REMINDER)
+
         notify_awareness = prefetched_notify_awareness
         if notify_awareness is None:
             notify_awareness = await self.get_notify_awareness()
@@ -2623,7 +2854,7 @@ class Agent:
                 })
         if (
             initial_forced_tool is None
-            and _is_broad_event_query(user_message)
+            and (_is_broad_event_query(user_message) or event_preparation_turn)
             and _has_citywide_notify_notice(notify_awareness)
             and "nyc_advisories" in self.tools
             and "nyc_advisories" not in set(excluded_tools or ())
@@ -2810,7 +3041,9 @@ class Agent:
                     )
                     messages.append({"role": "user", "content": script_feedback})
                     continue
-                if "whats_on_events" in tools_made and _is_broad_event_query(user_message):
+                if "whats_on_events" in tools_made and (
+                    _is_broad_event_query(user_message) or event_preparation_turn
+                ):
                     text = _attach_event_action_urls(
                         text, citations.mapping(), available_citation_ids=tool_citation_ids,
                     )
@@ -2836,6 +3069,28 @@ class Agent:
                     continue
                 if event_context_feedback:
                     text = EVENT_CONTEXT_ABSTAIN_FALLBACK
+                    assistant["content"] = text
+                # Availability means the turn's citation registry, not the {cite:Sn} markers
+                # seen in tool text: tools may register a citation while referencing it in
+                # another format (observed live with `official_sources`), and invented ids are
+                # already rejected by the unknown-citation guard below.
+                preparation_feedback = _event_preparation_feedback(
+                    user_message, text, citations.mapping(),
+                    preparation_turn=event_preparation_turn,
+                )
+                if preparation_feedback and guard_retries < self.guard_max_retries:
+                    guard_retries += 1
+                    yield events.MessageCompleted(
+                        message_id=message_id, text="", citations=citations.mapping()
+                    )
+                    yield events.Reminder(
+                        summary=("event preparation guard: unresolved or ungrounded plan, "
+                                 f"retrying ({guard_retries}/{self.guard_max_retries})")
+                    )
+                    messages.append({"role": "user", "content": preparation_feedback})
+                    continue
+                if preparation_feedback:
+                    text = EVENT_PREPARATION_ABSTAIN_FALLBACK
                     assistant["content"] = text
                 cited_ids = set(_CITE_MARKER_RE.findall(text))
                 if current_source_required and not (cited_ids & set(citations.mapping())):
@@ -2918,6 +3173,9 @@ class Agent:
                         screen_shortlist_used = True
                     messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_result})
                     tool_citation_ids.update(_CITE_MARKER_RE.findall(tool_result))
+                    # Broad shortlist turns lean on the tool's coordinated lanes; preparation
+                    # turns KEEP free scoped search so the model can resolve the event
+                    # identity when listings alone cannot (F053).
                     if name == "whats_on_events" and _is_broad_event_query(user_message):
                         effective_excluded_tools.update({
                             "index_search", "web_search", "recent_developments",

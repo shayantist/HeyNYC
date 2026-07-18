@@ -110,6 +110,29 @@ def test_requested_window_resolves_this_weekend_from_nyc_date():
     )
 
 
+def test_requested_window_resolves_tomorrow():
+    assert _requested_window("what to prepare for tomorrows wc game", "2026-07-17") == (
+        "2026-07-18", "2026-07-18",
+    )
+    assert _requested_window("what should i bring to the game tmrw", "2026-07-31") == (
+        "2026-08-01", "2026-08-01",
+    )
+    assert _requested_window("what game is happening tomorow", "2026-07-17") == (
+        "2026-07-18", "2026-07-18",
+    )
+    assert _requested_window("events at the department", "2026-07-17") == ("2026-07-17", None)
+
+
+def test_requested_window_resolves_numeric_dates():
+    assert _requested_window("what should i bring to the game on 7/18", "2026-07-17") == (
+        "2026-07-18", "2026-07-18",
+    )
+    # A month/day earlier in the year means the next occurrence.
+    assert _requested_window("the parade on 1/1", "2026-07-17") == ("2027-01-01", "2027-01-01")
+    # Invalid calendar dates fall through to the default window.
+    assert _requested_window("ratio is 19/32 exactly", "2026-07-17") == ("2026-07-17", None)
+
+
 def test_editorial_query_includes_the_resolved_date_window():
     build = getattr(events, "_editorial_query", None)
     assert callable(build)
@@ -292,6 +315,202 @@ async def test_broad_temporal_events_gather_current_city_context_concurrently(mo
     assert "group the rest" in output
     assert "today-only advisory once" in output
     assert "merge sources" in output
+
+
+async def test_tool_context_event_preparation_flag_activates_prep_synthesis(monkeypatch):
+    """The semantic flag from the scope preflight reaches the tool through ToolContext, so a
+    numeric-date phrasing the regex fallback misses still gets identity-first synthesis."""
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_parks(*args, **kwargs):
+        return []
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="what should i bring to the game on 7/18",
+        event_preparation=True,
+    )
+
+    output = await get_tools()[0].handler({}, ctx)
+
+    low = output.lower()
+    assert "identity" in low
+    assert "resolve" in low
+    assert "at most 5" not in output
+
+
+async def test_empty_keyworded_catalog_retries_unkeyworded(monkeypatch):
+    """Observed in the pre-commit eval: a stuffed keyword ('free NYC Parks weekend') matches
+    no listing's full text, so the catalog came back empty while the window alone would have
+    found the weekend rows. On empty, the catalog lanes retry once without the keyword."""
+    keywords_seen = []
+
+    async def fake_ticketmaster(**kwargs):
+        keywords_seen.append(("tm", kwargs.get("keyword")))
+        return []
+
+    async def fake_parks(dataset_id, **kwargs):
+        keywords_seen.append(("parks", kwargs.get("q")))
+        if kwargs.get("q"):
+            return []
+        tomorrow = events.datetime.now(events.NYC_TZ) + events.timedelta(days=1)
+        return [{
+            "title": "Free Yoga on the Lawn", "startdate": tomorrow.strftime("%Y-%m-%d"),
+            "starttime": "10:00 am", "parknames": "Fort Greene Park",
+            "link": {"url": "http://www.nycgovparks.org/events/free-yoga"},
+        }]
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="events tomorrow",
+    )
+
+    output = await get_tools()[0].handler({"keyword": "free NYC Parks weekend"}, ctx)
+
+    assert "Free Yoga on the Lawn" in output
+    assert ("parks", "free NYC Parks weekend") in keywords_seen
+    assert ("parks", None) in keywords_seen
+    # A broadened result set must not silently substitute for what was actually asked:
+    # the model is told to say so and route when the listings cannot satisfy the request.
+    assert "broadened" in output.lower()
+    assert "311" in output
+    # The registered snapshot carries the full row the model will describe, time and source
+    # included, so cited prose stays supported by its evidence.
+    snapshot = next(iter(ctx.citations.mapping().values()))
+    assert "10:00 am" in snapshot["snippet"]
+    assert "NYC Parks" in snapshot["snippet"]
+
+
+async def test_broad_shortlist_query_keeps_shortlist_rules_despite_prep_flag(monkeypatch):
+    """A broad what's-happening query keeps the shortlist voice even when the semantic flag
+    over-fires (observed in the pre-commit eval run)."""
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_parks(*args, **kwargs):
+        return []
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="What free events are happening in NYC parks this weekend?",
+        event_preparation=True,
+    )
+
+    output = await get_tools()[0].handler({}, ctx)
+
+    assert "at most 5" in output
+    assert "Event identity context" not in output
+
+
+async def test_preparation_query_gathers_context_and_requires_event_resolution(monkeypatch):
+    # This pins the tool contract AFTER the model has interpreted the abbreviation: the
+    # scripted call passes keyword="world cup". Model-side interpretation of "WC" is pinned
+    # by the live `events_abbreviated_game_preparation` eval case, not by this unit test.
+    started: set[str] = set()
+    all_started = asyncio.Event()
+
+    async def rendezvous(name: str):
+        started.add(name)
+        if len(started) == 6:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=0.5)
+
+    async def fake_ticketmaster(**kwargs):
+        await rendezvous("ticketmaster")
+        tomorrow = events.datetime.now(events.NYC_TZ) + events.timedelta(days=1)
+        return [{
+            "name": "Catalog Event",
+            "url": "https://example.com/catalog",
+            "dates": {"start": {"localDate": tomorrow.strftime("%Y-%m-%d")}},
+        }]
+
+    async def fake_parks(*args, **kwargs):
+        await rendezvous("parks")
+        return []
+
+    identity_queries = []
+
+    async def web_handler(args, ctx):
+        if "prefer" not in args:
+            # The identity lane prefers the asked date's schedule rows; rows about other
+            # dates (the famous final) must not drown the asked date out.
+            identity_queries.append(args["query"])
+            await rendezvous("identity-web")
+            tomorrow = events.datetime.now(events.NYC_TZ) + events.timedelta(days=1)
+            after = tomorrow + events.timedelta(days=1)
+            return (
+                f"France vs England bronze final schedule on {tomorrow.strftime('%B %-d, %Y')}"
+                "\n\n"
+                f"Famous final row on {after.strftime('%B %-d, %Y')}"
+            )
+        await rendezvous("official-web")
+        tomorrow = events.datetime.now(events.NYC_TZ) + events.timedelta(days=1)
+        cite = ctx.citations.register(
+            "https://www.nyc.gov/current-event",
+            snippet=f"Bronze final watch details on {tomorrow.strftime('%B %-d, %Y')}",
+            title="NYC current event", kind="WEB",
+        )
+        return f"Bronze final watch details on {tomorrow.strftime('%B %-d, %Y')} {{cite:{cite}}}"
+
+    async def index_handler(args, ctx):
+        await rendezvous("official-index")
+        return "Official seasonal event context"
+
+    async def editorial_context(ctx, window_start, window_end):
+        await rendezvous("editorial-guides")
+        return "Current editorial guide context"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_editorial_context", editorial_context, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: (
+        Tool("index_search", "", {}, index_handler),
+        Tool("web_search", "", {}, web_handler),
+    ))
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="What to prepare for tomorrows WC game",
+    )
+
+    output = await get_tools()[0].handler({"keyword": "world cup"}, ctx)
+
+    assert started == {
+        "ticketmaster", "parks", "official-index", "official-web", "editorial-guides",
+        "identity-web",
+    }
+    assert "Catalog Event" in output
+    assert "France vs England bronze final schedule" in output
+    assert "Famous final row" not in output  # other-date rows filtered when dated rows exist
+    # Audited live: searching the resident's prep-phrased sentence returns gardening events
+    # ("prepare" matched a raised-beds workshop). The identity query must be schedule-shaped,
+    # built from the model's keyword interpretation, never the raw prep phrasing.
+    assert identity_queries, "identity lane must run for a preparation turn"
+    assert "world cup" in identity_queries[0].lower()
+    assert "schedule" in identity_queries[0].lower()
+    assert "prepare" not in identity_queries[0].lower()
+    low = output.lower()
+    assert "identity" in low
+    assert "resolve" in low
+    assert "clarif" in low
+    assert "packing" in low or "generic" in low
+    assert "asked date" in low  # anchor on the asked date, not the most famous match
+    assert "at most 5" not in output
 
 
 def test_context_search_uses_configured_editorial_event_guides(monkeypatch):

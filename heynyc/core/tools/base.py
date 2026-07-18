@@ -39,6 +39,7 @@ class ToolContext:
     embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse it (None → default/Hash)
     output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
+    event_preparation: bool = False  # semantic scope-preflight flag: this turn prepares for a dated event
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

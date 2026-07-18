@@ -215,9 +215,12 @@ def _record_agent_turn(session_id: str, model: str, result) -> None:
 
 
 async def _cmd_chat(question: str) -> None:
+    from heynyc.modules.advisories.tools import current_awareness
+
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     agent = Agent(
-        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False), scope_gate=True,
+        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False),
+        notify_awareness=current_awareness, scope_gate=True,
     )
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
@@ -396,9 +399,11 @@ async def _cmd_repl() -> None:
     async def approver(name: str, args: dict) -> bool:
         return _approve_repl_action(console, name, args)
 
+    from heynyc.modules.advisories.tools import current_awareness
+
     agent = Agent(
         registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False),
-        approver=approver, scope_gate=True,
+        approver=approver, notify_awareness=current_awareness, scope_gate=True,
     )
     convo = agent.conversation()
 

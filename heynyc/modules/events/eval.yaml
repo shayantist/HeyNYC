@@ -56,6 +56,41 @@
   capability: attribution
   notes: Must cite + link the source listing, never reproduce a full event description.
 
+- id: events_abbreviated_game_preparation
+  query: "What to prepare for tomorrow's WC game"
+  expect_tools: [whats_on_events]
+  abstain: false
+  capability: scope
+  utility_criterion: >-
+    Treat practical preparation for an upcoming game as local event planning. Resolve the
+    abbreviated event against current sources before advising: state which event it is with its
+    date and local time, or ask one concise clarification if several remain plausible. Give
+    grounded attendance or viewing options, ticket or reservation status, venue access, transit,
+    weather, or safety details with a direct action link. Do not recommend a stale event, claim
+    an unsupported cost or ticket detail, or answer with generic packing filler alone.
+  notes: This pins the general abbreviated-event boundary. It does not authorize predictions or
+    sports trivia and must not hardcode one tournament.
+
+- id: events_abbreviated_parade_preparation
+  query: "How should I get ready for tomorrows parade?"
+  expect_tools: [whats_on_events]
+  abstain: false
+  capability: scope
+  utility_criterion: >-
+    Resolve which parade is actually happening from current sources, or ask one concise
+    clarification when several remain plausible. When resolved, state the event identity with
+    its date and local time, give grounded attendance, access, transit, or advisory details
+    with a direct link, avoid stale events, avoid unsupported cost or ticket claims, and avoid
+    generic packing filler not tied to retrieved conditions.
+  notes: Non-World-Cup generalization of the abbreviated-event contract. Proves the fix is not
+    tournament-specific.
+
+- id: events_prediction_out_of_scope
+  query: "Who will win tomorrow's game?"
+  abstain: true
+  capability: scope
+  notes: A prediction with no practical NYC event-planning need remains out of scope.
+
 - id: events_off_topic_refuse
   query: "Who's going to win the next mayoral election?"
   abstain: true

@@ -150,6 +150,53 @@ async def test_broad_event_turn_forces_citywide_advisory_check_from_awareness(
     assert result.tool_calls_made == ["nyc_advisories"]
 
 
+async def test_event_preparation_turn_forces_citywide_advisory_check_from_awareness(
+    empty_registry, monkeypatch,
+):
+    """A preparation turn must check a live citywide Notify NYC notice exactly like a broad
+    events turn: advisories are part of preparing for tomorrow."""
+    forced = []
+
+    async def awareness():
+        return "- 07/17: Notify NYC - Air Quality Health Advisory - 7/18 [broad scope confirmed]"
+
+    async def advisory(args, ctx):
+        return "Current citywide notice checked"
+
+    async def model_stream(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        if forced_tool:
+            yield {"type": "message", "message": _assistant(
+                tool_calls=[_tool_call(forced_tool, {})],
+            )}
+        else:
+            yield {"type": "message", "message": _assistant(
+                content="Advisory noted for the plan. What game do you mean?",
+            )}
+
+    tool = Tool("nyc_advisories", "", {}, advisory)
+    agent = Agent(
+        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+    )
+    monkeypatch.setattr(agent, "_litellm_stream", model_stream)
+
+    result = await agent.run("What to prepare for tomorrows WC game")
+
+    assert forced == ["nyc_advisories", None]
+    assert result.tool_calls_made == ["nyc_advisories"]
+
+
+def test_repl_and_chat_wire_notify_awareness_like_the_server():
+    """Surface parity (owner-reported): the REPL and one-shot chat must carry the same
+    Notify NYC awareness lane as the SMS/WhatsApp server."""
+    import inspect
+
+    import heynyc.__main__ as cli
+
+    assert "notify_awareness=current_awareness" in inspect.getsource(cli._cmd_repl)
+    assert "notify_awareness=current_awareness" in inspect.getsource(cli._cmd_chat)
+
+
 @pytest.fixture
 def empty_registry():
     return Registry([])
@@ -223,6 +270,18 @@ def test_ordinary_scope_denial_copy_is_warm_and_stays_fail_closed():
     assert copy != values
 
 
+def test_scope_prompt_defaults_practical_event_planning_to_nyc():
+    from heynyc.core.agent import _SCOPE_SYSTEM_PROMPT
+
+    prompt = _SCOPE_SYSTEM_PROMPT.lower()
+
+    assert "event-attendance planning" in prompt
+    assert "unless the conversation places the event" in prompt
+    assert "abbreviated or ambiguous" in prompt
+    assert "sports trivia with no practical" in prompt
+    assert "shorthand" in prompt
+
+
 async def test_rights_sensitive_scope_denial_declares_civic_values(empty_registry):
     async def deny_rights_scope(user_message, history):
         return "deny_rights"
@@ -289,6 +348,158 @@ async def test_default_scope_classifier_rejects_malformed_structured_output(
         "allow", "deny", "deny_rights",
     ]
     assert captured["stream"] is False
+
+
+async def test_default_scope_classifier_reports_event_preparation_flag(
+    empty_registry, monkeypatch,
+):
+    """The semantic scope preflight, not a phrase list, is the primary event-preparation
+    signal (owner ruling: generalize, no hardcoding)."""
+    async def flagged_completion(**kwargs):
+        message = SimpleNamespace(
+            content='{"decision":"allow","event_preparation":true}', refusal=None, parsed=None,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage={"prompt_tokens": 5, "completion_tokens": 2},
+        )
+
+    monkeypatch.setattr("litellm.acompletion", flagged_completion)
+    agent = Agent(empty_registry, tools={})
+
+    result = await agent._classify_scope("what should i bring to the game on 7/18", [])
+
+    assert result.decision == "allow"
+    assert result.event_preparation is True
+
+    from heynyc.core.agent import _SCOPE_SYSTEM_PROMPT
+
+    assert "event_preparation" in _SCOPE_SYSTEM_PROMPT
+
+
+async def test_omitted_scope_flag_falls_back_to_regex_detection(empty_registry):
+    """A scope reply that never mentions event_preparation must not silently disable the
+    preparation guard: absent means unknown, and unknown falls back to the regex floor."""
+    from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK, ScopeResult
+
+    async def flagless_scope(user_message, history):
+        return ScopeResult(decision="allow", model="test")
+
+    packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water")
+    agent = Agent(
+        empty_registry, tools={}, complete_fn=_scripted(packing, packing, packing),
+        scope_fn=flagless_scope,
+    )
+
+    result = await agent.run("What to prepare for tomorrows WC game")
+
+    assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
+
+
+async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
+    from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK, ScopeResult
+
+    uncited = _assistant(content="Bring a pencil, a calculator, and your student ID.")
+
+    async def exam_scope(user_message, history):
+        return ScopeResult(decision="allow", model="test", event_preparation=False)
+
+    exam_agent = Agent(
+        empty_registry, tools={}, complete_fn=_scripted(uncited), scope_fn=exam_scope,
+    )
+    # Regex would match ("bring" + "final" + "tomorrow"), but the semantic flag says this is
+    # not event preparation, so the guard must not reject the answer.
+    result = await exam_agent.run("What should I bring to the final tomorrow?")
+    assert "pencil" in result.text
+
+    async def event_scope(user_message, history):
+        return ScopeResult(decision="allow", model="test", event_preparation=True)
+
+    packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water")
+    event_agent = Agent(
+        empty_registry, tools={}, complete_fn=_scripted(packing, packing, packing),
+        scope_fn=event_scope,
+    )
+    # Regex misses the numeric date, but the semantic flag binds the guard.
+    result = await event_agent.run("What should I bring to the game on 7/18?")
+    assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
+
+
+async def test_broad_shortlist_query_wins_over_semantic_prep_flag(empty_registry):
+    """Observed in the pre-commit eval: nano over-flagged a broad what's-happening query as
+    event preparation, swapping the shortlist synthesis for prep rules. Broadness is
+    deterministic; it must win over the semantic flag."""
+    from heynyc.core.agent import _EVENT_PREPARATION_SCOPE_REMINDER, ScopeResult
+
+    seen = []
+
+    async def flagged_scope(user_message, history):
+        return ScopeResult(decision="allow", model="test", event_preparation=True)
+
+    async def events_tool(args, ctx):
+        return "listings"
+
+    async def complete(messages, tool_schemas):
+        seen.extend(str(m.get("content") or "") for m in messages)
+        return _assistant(content="Here are five options with links.")
+
+    agent = Agent(
+        empty_registry,
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
+        complete_fn=complete, scope_fn=flagged_scope,
+    )
+
+    await agent.run("What free events are happening in NYC parks this weekend?")
+
+    assert not any(_EVENT_PREPARATION_SCOPE_REMINDER in m for m in seen)
+
+
+async def test_default_scope_classifier_retries_once_on_empty_output(
+    empty_registry, monkeypatch,
+):
+    """Observed live: the scope model can return empty content transiently. One retry, then
+    fail closed, and the resident-facing path must never see a traceback for it."""
+    calls = {"n": 0}
+
+    async def flaky_completion(**kwargs):
+        calls["n"] += 1
+        content = "" if calls["n"] == 1 else '{"decision":"allow"}'
+        message = SimpleNamespace(content=content, refusal=None, parsed=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage={"prompt_tokens": 5, "completion_tokens": 1},
+        )
+
+    monkeypatch.setattr("litellm.acompletion", flaky_completion)
+    agent = Agent(empty_registry, tools={})
+
+    result = await agent._classify_scope("tomorrows wc", [])
+
+    assert result.decision == "allow"
+    assert calls["n"] == 2
+    assert (result.input_tokens, result.output_tokens) == (10, 2)
+
+
+async def test_default_scope_classifier_empty_after_retry_fails_closed(
+    empty_registry, monkeypatch,
+):
+    calls = {"n": 0}
+
+    async def empty_completion(**kwargs):
+        calls["n"] += 1
+        message = SimpleNamespace(content="", refusal=None, parsed=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage={"prompt_tokens": 5, "completion_tokens": 0},
+        )
+
+    monkeypatch.setattr("litellm.acompletion", empty_completion)
+    agent = Agent(empty_registry, tools={})
+
+    result = await agent._classify_scope("tomorrows wc", [])
+
+    assert result.decision == "deny"
+    assert calls["n"] == 2
 
 
 async def test_default_scope_classifier_call_error_is_unpriceable_not_free(
@@ -832,6 +1043,259 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         citations,
         ["whats_on_events"],
     ) is not None
+
+
+def test_event_preparation_query_detection():
+    from heynyc.core.agent import is_event_preparation_query
+
+    assert is_event_preparation_query("What to prepare for tomorrows WC game")
+    assert is_event_preparation_query("What should I bring to Saturday's Liberty game?")
+    assert is_event_preparation_query("How do I get ready for the marathon tomorrow?")
+    assert is_event_preparation_query("¿Qué llevo al partido de mañana?")
+    assert is_event_preparation_query("How should I get ready for tomorrows rally?")
+    assert is_event_preparation_query("what should i bring to tomorows game")
+    assert not is_event_preparation_query("Who will win tomorrow's game?")
+    assert not is_event_preparation_query("What free events are happening in NYC this weekend?")
+    assert not is_event_preparation_query("Where is the nearest food pantry?")
+    assert not is_event_preparation_query("How do I get ready for my hearing tomorrow?")
+    assert not is_event_preparation_query(
+        "What should I bring to show at my fair hearing tomorrow?"
+    )
+    assert not is_event_preparation_query(
+        "What should I bring to my citizenship interview tomorrow?"
+    )
+    assert not is_event_preparation_query(
+        "What should I bring to my immigration appointment tomorrow before the game?"
+    )
+
+
+def test_event_preparation_reminder_requires_resolution_before_advice(empty_registry):
+    async def noop(args, ctx):
+        return ""
+
+    agent = Agent(
+        empty_registry,
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, noop)},
+        complete_fn=_scripted(_assistant(content="unused")),
+    )
+
+    reminder = agent._runtime_scope_reminder("What to prepare for tomorrows WC game")
+
+    low = reminder.lower()
+    assert "resolve" in low
+    assert "clarif" in low
+    assert "packing" in low or "generic" in low
+    assert "prediction" in low
+    assert "shorthand" in low
+    assert "keyword" in low
+
+    bare = Agent(empty_registry, tools={}, complete_fn=_scripted(_assistant(content="x")))
+    assert bare._runtime_scope_reminder("What to prepare for tomorrows WC game") == ""
+
+
+def test_event_preparation_feedback_contract():
+    from heynyc.core.agent import _event_preparation_feedback
+
+    query = "What to prepare for tomorrows WC game"
+    citations = {
+        "S1": {"url": "https://www.nycgovparks.org/events/watch-party", "title": "Watch Party"},
+    }
+    filler = (
+        "- Wear team colors\n- Bring a phone charger\n- Carry water and a snack\n"
+        "- Plan for indoor backup\n- Check weather before you head out"
+    )
+
+    assert _event_preparation_feedback(query, filler, citations, {"S1"}) is not None
+
+    filler_with_question = filler + "\nWhat else should I bring?"
+    assert _event_preparation_feedback(query, filler_with_question, citations, {"S1"}) is not None
+
+    filler_led = filler + "\n\nThere is a watch party at Snug Harbor. {cite:S1}"
+    assert _event_preparation_feedback(query, filler_led, citations, {"S1"}) is not None
+
+    prose_filler_led = (
+        "For tomorrow's game the safest prep is to wear team colors or a jersey, bring a phone "
+        "charger or battery pack, carry water and a snack, plan an indoor backup if you'll be "
+        "outside, and check the weather and city alerts before you head out the door. "
+        "There is a watch party at Snug Harbor. {cite:S1}"
+    )
+    assert _event_preparation_feedback(query, prose_filler_led, citations, {"S1"}) is not None
+
+    # A long resolution sentence whose citation lands at its end is not filler (observed live:
+    # the guard must not reject a resolved-candidate-plus-clarification answer, even when the
+    # uncited lead runs long).
+    long_grounded_lead = (
+        "I'm not sure which parade you mean, so here is the one current grounded result.\n\n"
+        "The only grounded parade result I found in the current retrieved city sources is the "
+        "July Falun Dafa Parade on Saturday, July 18, 2026, with a DOT weekend traffic advisory "
+        "saying 6th Avenue between 42nd Street and 56th Street will be closed for the march "
+        "{cite:S1}.\n\n"
+        "If that's the one, I can help you plan around the street closure. If not, send me the "
+        "parade name or neighborhood and I'll look it up."
+    )
+    assert _event_preparation_feedback(query, long_grounded_lead, citations, {"S1"}) is None
+
+    grounded = (
+        "Tomorrow's game is the World Cup bronze final. {cite:S1}\n"
+        "- Watch party at Snug Harbor. {cite:S1}"
+    )
+    assert _event_preparation_feedback(query, grounded, citations, {"S1"}) is None
+
+    clarification = (
+        "Which game do you mean, the bronze final watch party or the final on Sunday?"
+    )
+    assert _event_preparation_feedback(query, clarification, citations, {"S1"}) is None
+
+    advice_smuggled_into_question = "Wear team colors and bring water. Which game do you mean?"
+    assert _event_preparation_feedback(
+        query, advice_smuggled_into_question, citations, {"S1"},
+    ) is not None
+
+    # An uncited packing list does not become acceptable by following a citation.
+    filler_after_citation = (
+        "Air quality advisory is in effect tomorrow. {cite:S1}\n\n"
+        "Packing list:\n- Wear team colors\n- Bring a phone charger\n- Carry water and a snack"
+    )
+    assert _event_preparation_feedback(query, filler_after_citation, citations, {"S1"}) is not None
+
+    # Cited plan bullets with advice tied to cited conditions stay acceptable.
+    cited_plan = (
+        "Tomorrow's game is the bronze final. {cite:S1}\n"
+        "- Watch party at Snug Harbor {cite:S1}\n"
+        "- Heat advisory in effect, so carry water {cite:S1}"
+    )
+    assert _event_preparation_feedback(query, cited_plan, citations, {"S1"}) is None
+
+    assert _event_preparation_feedback("Where is the nearest pantry?", filler, {}, set()) is None
+
+
+async def test_event_preparation_turn_without_grounding_retries_then_abstains(empty_registry):
+    from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK
+
+    async def events_tool(args, ctx):
+        cite = ctx.citations.register(
+            "https://www.nycgovparks.org/events/watch-party",
+            snippet="World Cup Watch Party, Saturday", title="Watch Party", kind="DATA",
+        )
+        return f"- World Cup Watch Party {{cite:{cite}}}"
+
+    packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water and snacks")
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "world cup"})]),
+        packing, packing, packing,
+    )
+    agent = Agent(
+        empty_registry,
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
+        complete_fn=complete, guard_grounding=False,
+    )
+
+    result = await agent.run("What to prepare for tomorrows WC game")
+
+    assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
+    assert "which event" in result.text.lower()
+
+
+async def test_event_preparation_accepts_registry_citations_without_tool_markers(empty_registry):
+    """Observed live: a tool may register a citation while its output references it in a
+    non-marker format ('[S1] ...'). The model's {cite:S1} is still a real registry citation
+    and the guard must not treat the answer as uncited."""
+    async def sources_tool(args, ctx):
+        cite = ctx.citations.register(
+            "https://www.nyc.gov/html/dot/html/motorist/wkndtraf.shtml",
+            snippet="6th Avenue closed 42nd to 56th for the parade",
+            title="NYC DOT Weekend Traffic Advisory", kind="WEB",
+        )
+        return f"[{cite}] NYC DOT Weekend Traffic Advisory: 6th Avenue closed 42nd to 56th"
+
+    answer = (
+        "I'm not sure which parade you mean.\n\n"
+        "The only grounded parade result I found is the July Falun Dafa Parade on Saturday, "
+        "July 18, 2026, with a DOT advisory saying 6th Avenue between 42nd Street and 56th "
+        "Street will be closed {cite:S1}.\n\n"
+        "If that's the one, I can help you plan around the street closure. If not, send me the "
+        "parade name or neighborhood and I'll look it up."
+    )
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "parade"})]),
+        _assistant(content=answer),
+    )
+    agent = Agent(
+        empty_registry,
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, sources_tool)},
+        complete_fn=complete, guard_grounding=False,
+    )
+
+    result = await agent.run("How should I get ready for tomorrows parade?")
+
+    assert "Falun Dafa Parade" in result.text
+    assert result.iterations == 2
+
+
+async def test_event_preparation_turn_keeps_free_web_search_after_events_tool(empty_registry):
+    """F053: on a preparation turn the model must keep its own scoped `web_search` after
+    `whats_on_events`, so it can resolve the event identity when listings alone cannot."""
+    searched = []
+
+    async def events_tool(args, ctx):
+        return "No upcoming NYC events matched"
+
+    async def web_tool(args, ctx):
+        searched.append(args)
+        cite = ctx.citations.register(
+            "https://www.fifa.com/en/match-schedule",
+            snippet="Bronze final Saturday July 18",
+            title="World Cup match schedule", kind="WEB",
+        )
+        return f"Bronze final Saturday July 18 {{cite:{cite}}}"
+
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "world cup"})]),
+        _assistant(tool_calls=[
+            _tool_call("web_search", {"query": "world cup game tomorrow July 18 2026"}, call_id="c2"),
+        ]),
+        _assistant(content="Tomorrow's game is the bronze final, Saturday, July 18. {cite:S1}"),
+    )
+    agent = Agent(
+        empty_registry,
+        tools={
+            "whats_on_events": Tool("whats_on_events", "", {}, events_tool),
+            "web_search": Tool("web_search", "", {}, web_tool),
+        },
+        complete_fn=complete, guard_grounding=False,
+    )
+
+    result = await agent.run("What to prepare for tomorrows WC game")
+
+    assert searched, "web_search must stay available on a preparation turn"
+    assert "bronze final" in result.text
+
+
+async def test_event_preparation_grounded_plan_passes_with_direct_link(empty_registry):
+    async def events_tool(args, ctx):
+        cite = ctx.citations.register(
+            "https://www.nycgovparks.org/events/watch-party",
+            snippet="World Cup Watch Party, Saturday, July 18", title="Watch Party", kind="DATA",
+        )
+        return f"- World Cup Watch Party {{cite:{cite}}}"
+
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "world cup"})]),
+        _assistant(content=(
+            "Tomorrow's game is the World Cup bronze final, France vs England, 5 pm. {cite:S1}\n"
+            "In NYC you can watch at the official watch party. {cite:S1}"
+        )),
+    )
+    agent = Agent(
+        empty_registry,
+        tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
+        complete_fn=complete, guard_grounding=False,
+    )
+
+    result = await agent.run("What to prepare for tomorrows WC game")
+
+    assert "bronze final" in result.text
+    assert "Details: https://www.nycgovparks.org/events/watch-party" in result.text
 
 
 def test_broad_event_feedback_ignores_a_source_url_trailing_slash():

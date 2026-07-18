@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from heynyc.core.agent import is_event_preparation_query
 from heynyc.core.index.corpus import clean_html, fetch_clean
 from heynyc.core.ticketmaster import ticketmaster_events
 from heynyc.core.tools.base import Tool, ToolContext
@@ -105,6 +106,19 @@ def _requested_window(query: str, today: str) -> tuple[str, str | None]:
         )
         end = start + timedelta(days=6 - start.weekday())
         return start.isoformat(), end.isoformat()
+    if re.search(r"\btom{1,2}or{1,2}ow(?:'?s)?\b|\btmrw\b|\btm\b|\bma[ñn]ana\b", low):
+        day = (current + timedelta(days=1)).isoformat()
+        return day, day
+    numeric = re.search(r"\b(\d{1,2})/(\d{1,2})\b", low)
+    if numeric:
+        try:
+            day_date = date(current.year, int(numeric.group(1)), int(numeric.group(2)))
+        except ValueError:
+            day_date = None
+        if day_date is not None:
+            if day_date < current:
+                day_date = day_date.replace(year=current.year + 1)
+            return day_date.isoformat(), day_date.isoformat()
     if "today" in low or "tonight" in low:
         return today, today
     if "this week" in low:
@@ -116,6 +130,37 @@ _NO_RESULTS = (
     "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks). "
     "Don't invent events, tell the user nothing grounded came up and suggest they check the "
     "official source directly."
+)
+
+_SHORTLIST_SYNTHESIS_RULES = (
+    "Synthesis rules: supplement the structured catalog with relevant official web results. "
+    "For every recommended event, copy its direct source URL beside the item and include any "
+    "known date, time, place, and ticket or reservation step. Prefer individual event pages "
+    "over roundup pages. Voice and format: start with one warm sentence about what stands out; "
+    "give at most 5 options by default, each with a short bold title and one light emoji; keep "
+    "the logistics compact; briefly group the rest by category or time of day and offer to list "
+    "them; merge sources that describe the same event into one option; mention any today-only "
+    "advisory once after the event list; finish with one natural "
+    "narrowing question. Do not call an event "
+    "free unless its cited evidence establishes that. Keep "
+    "prior-conversation facts separate from these newly retrieved results."
+)
+
+_PREPARATION_SYNTHESIS_RULES = (
+    "Synthesis rules: this is a preparation question about one specific dated event. First "
+    "resolve which event the resident means from the sources above: state its name, date, and "
+    "local time from cited evidence, or, if more than one event remains plausible, ask one "
+    "short clarifying question and stop. Then give a plan only from cited evidence: how to "
+    "attend or watch it, ticket or reservation status, venue access, transit or street "
+    "impacts, and any material advisory, each with its direct source URL beside it. The event "
+    "happening on the asked date is the answer: name it from the asked date's evidence, even "
+    "when a more prominent event sits on a different date; that other event is context at "
+    "most, never the resident's event. State the "
+    "event's own date plainly, and say so when it is not on the exact day the resident asked "
+    "about. Skip "
+    "generic packing advice unless a retrieved advisory or forecast supports it. Do not guess "
+    "kickoff times, prices, or transit changes. Keep prior-conversation facts separate from "
+    "these newly retrieved results."
 )
 
 
@@ -312,7 +357,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             q=keyword, limit=50, client=ctx.http,
         )
 
-    broad_context = _broad_temporal_query(ctx.query)
+    # The semantic scope-preflight flag arrives via ToolContext; the regex predicate stays as
+    # the fallback for direct tool use without the preflight. A deterministically broad
+    # what's-happening query keeps the shortlist rules even when the flag over-fires.
+    preparation_context = (
+        (ctx.event_preparation or is_event_preparation_query(ctx.query))
+        and not _broad_temporal_query(ctx.query)
+    )
+    broad_context = _broad_temporal_query(ctx.query) or preparation_context
     sources = [
         ("ticketmaster", ticketmaster_source()),
         ("parks", parks_source()),
@@ -348,6 +400,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                     }
                     if tool.name == "recent_developments":
                         tool_args["recency"] = "week"
+                    if tool.name == "web_search" and preparation_context:
+                        # Identity lane (F053/F055): schedule-shaped, never the resident's
+                        # prep phrasing. Audited live: searching the raw sentence returned a
+                        # gardening workshop because "prepare" matched; the model's keyword
+                        # interpretation plus "schedule" plus the dates returns the actual
+                        # event row for the asked date.
+                        sources.append((
+                            "identity_web",
+                            tool.handler(
+                                {"query": _editorial_query(
+                                    f"{keyword} schedule" if keyword else f"{ctx.query} schedule",
+                                    window_start, window_end,
+                                )},
+                                ctx,
+                            ),
+                        ))
                 else:
                     tool_args = {
                         "citywide_only": not bool(borough),
@@ -363,16 +431,47 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     events = [e for e in (_from_ticketmaster(r) for r in raw_tm) if e]
     events += [e for e in (_from_parks(r) for r in raw_parks) if e]
 
-    events = _future_only(events, window_start)
-    if window_end:
-        events = [e for e in events if e.start_date <= window_end]
-    events = _explicitly_free(events, ctx.query)
-    if "tonight" in ctx.query.lower():
-        events = _tonight_only(events, now)
-    if borough:
-        events = [e for e in events if borough in e.borough.lower()] or events
-    events.sort(key=lambda e: e.start_date)
-    events = events[:limit]
+    def _window_filter(rows: list[Event]) -> list[Event]:
+        kept = _future_only(rows, window_start)
+        if window_end:
+            kept = [e for e in kept if e.start_date <= window_end]
+        kept = _explicitly_free(kept, ctx.query)
+        if "tonight" in ctx.query.lower():
+            kept = _tonight_only(kept, now)
+        if borough:
+            kept = [e for e in kept if borough in e.borough.lower()] or kept
+        kept.sort(key=lambda e: e.start_date)
+        return kept[:limit]
+
+    events = _window_filter(events)
+    broadened = False
+    if not events and keyword:
+        # A stuffed keyword phrase can full-text-match nothing while the window alone holds
+        # the rows (observed live). Retry the two catalog lanes once without the keyword and
+        # let the window, free, and borough filters do the selection.
+        retry_tm, retry_parks = await asyncio.gather(
+            asyncio.wait_for(ticketmaster_events(
+                keyword=None, classification=classification, start_datetime=start_dt,
+                size=20, client=ctx.http,
+            ), timeout=_SOURCE_TIMEOUT_S),
+            asyncio.wait_for(query_dataset(
+                PARKS_DATASET_ID,
+                where=(
+                    f"startdate >= '{window_start}'"
+                    + (f" AND startdate <= '{window_end}T23:59:59'" if window_end else "")
+                ),
+                order="startdate", q=None, limit=50, client=ctx.http,
+            ), timeout=_SOURCE_TIMEOUT_S),
+            return_exceptions=True,
+        )
+        retried = [] if isinstance(retry_tm, BaseException) else [
+            e for e in (_from_ticketmaster(r) for r in retry_tm) if e
+        ]
+        retried += [] if isinstance(retry_parks, BaseException) else [
+            e for e in (_from_parks(r) for r in retry_parks) if e
+        ]
+        events = _window_filter(retried)
+        broadened = bool(events)
 
     if not events and not broad_context:
         return _NO_RESULTS
@@ -380,16 +479,28 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     blocks = []
     for ev in events:
         weekday = date.fromisoformat(ev.start_date).strftime("%A")
+        # The snapshot carries the FULL row the model will describe, time and source included,
+        # so cited prose stays supported by its own evidence.
+        snippet_bits = [ev.name, weekday, ev.start_date, ev.start_time, ev.venue, f"({ev.source})"]
         cite = ctx.citations.register(
             ev.url or PARKS_SOURCE_URL,
-            snippet=f"{ev.name}, {weekday}, {ev.start_date} {ev.venue}".strip(),
+            snippet=" ".join(bit for bit in snippet_bits if bit).strip(),
             title=ev.name or "NYC event", kind="DATA", valid_as_of=ev.start_date,
         )
         blocks.append(_event_block(ev, cite))
 
     window = f" for {window_start} through {window_end}" if window_end else ""
     free_scope = " whose official source titles explicitly say free" if "free" in ctx.query.lower() else ""
+    broadened_note = (
+        "These listings came from a BROADENED search after the keyword matched nothing. If the "
+        "resident's request was for something these listings do not actually satisfy, such as a "
+        "private or unlisted gathering or a specific event not shown, say so plainly, do not "
+        "substitute these as the answer, and point to 311 for official help; you may offer them "
+        "separately as public alternatives.\n"
+        if broadened else ""
+    )
     header = (
+        f"{broadened_note}"
         f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks). "
         "Each links to its official page, cite them and don't add events that aren't listed here:\n"
     )
@@ -421,24 +532,31 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
     if isinstance(editorial_context, BaseException):
         editorial_context = "Current editorial event guides unavailable for this lookup."
+    identity_block = ""
+    if preparation_context:
+        identity_context = results.get("identity_web")
+        if identity_context is None or isinstance(identity_context, BaseException):
+            identity_context = "Event identity context unavailable for this lookup."
+        else:
+            # Prefer the asked date's rows from schedule-bearing pages so a more famous
+            # match on another date cannot anchor the answer; fall back to the unfiltered
+            # result when no row carries the date.
+            dated = _windowed_context(str(identity_context), window_start, window_end)
+            identity_context = dated or str(identity_context)
+        identity_block = (
+            "Event identity context (current trusted-web results; use these to resolve which "
+            f"event the resident means):\n{identity_context}\n\n"
+        )
+    synthesis_rules = _PREPARATION_SYNTHESIS_RULES if preparation_context else _SHORTLIST_SYNTHESIS_RULES
     return (
         f"{catalog}\n\n"
         "Newly retrieved current city context for this event-planning question:\n"
+        f"{identity_block}"
         f"Curated official and seasonal context:\n{index_context}\n\n"
         f"Official event and seasonal context:\n{web_context}\n\n"
         f"Current editorial event guides:\n{editorial_context}\n\n"
         f"Current editorial and news discovery:\n{recent_context}\n\n"
-        "Synthesis rules: supplement the structured catalog with relevant official web results. "
-        "For every recommended event, copy its direct source URL beside the item and include any "
-        "known date, time, place, and ticket or reservation step. Prefer individual event pages "
-        "over roundup pages. Voice and format: start with one warm sentence about what stands out; "
-        "give at most 5 options by default, each with a short bold title and one light emoji; keep "
-        "the logistics compact; briefly group the rest by category or time of day and offer to list "
-        "them; merge sources that describe the same event into one option; mention any today-only "
-        "advisory once after the event list; finish with one natural "
-        "narrowing question. Do not call an event "
-        "free unless its cited evidence establishes that. Keep "
-        "prior-conversation facts separate from these newly retrieved results."
+        f"{synthesis_rules}"
     )
 
 
