@@ -454,6 +454,57 @@ async def test_broad_shortlist_query_wins_over_semantic_prep_flag(empty_registry
     assert not any(_EVENT_PREPARATION_SCOPE_REMINDER in m for m in seen)
 
 
+async def test_scope_classifier_returns_module_checklist(empty_registry, monkeypatch):
+    """The checklist preflight (RULED 2026-07-18): the scope call also marks which service
+    MODULES a turn touches, multi-select, by meaning. Unknown names are dropped fail-safe,
+    and this boundary is behavior-neutral: the checklist is recorded, nothing routes off it."""
+    from pathlib import Path
+
+    from heynyc.core.registry import Registry as _Registry
+
+    captured = {}
+
+    async def flagged_completion(**kwargs):
+        captured.update(kwargs)
+        message = SimpleNamespace(
+            content='{"decision":"allow","modules":["events","advisories","not_a_module"]}',
+            refusal=None, parsed=None,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage={"prompt_tokens": 5, "completion_tokens": 3},
+        )
+
+    monkeypatch.setattr("litellm.acompletion", flagged_completion)
+    registry = _Registry.discover(Path("heynyc/modules"))
+    agent = Agent(registry, tools={})
+
+    result = await agent._classify_scope("whats the wc game and will it storm", [])
+
+    assert result.decision == "allow"
+    assert result.modules == ("events", "advisories")  # unknown names dropped fail-safe
+    system_text = captured["messages"][0]["content"]
+    assert "events:" in system_text  # module list with meaning-based definitions
+    assert "advisories:" in system_text
+
+
+async def test_scope_module_checklist_is_recorded_not_routed(empty_registry):
+    from heynyc.core.agent import ScopeResult
+
+    async def checklist_scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test", modules=("events", "food_pantries"),
+        )
+
+    complete = _scripted(_assistant(content="An answer."))
+    agent = Agent(empty_registry, tools={}, complete_fn=complete, scope_fn=checklist_scope)
+
+    result = await agent.run("whats happening and wheres food")
+
+    assert result.text == "An answer."
+    assert result.usage.get("scope_modules") == ["events", "food_pantries"]
+
+
 async def test_default_scope_classifier_retries_once_on_empty_output(
     empty_registry, monkeypatch,
 ):

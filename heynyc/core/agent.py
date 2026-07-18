@@ -130,6 +130,11 @@ class _ScopeDecision(BaseModel):
     # only the fallback for callers without the preflight. None means the model did not say,
     # which must fall back to the regex floor rather than silently disabling the guard.
     event_preparation: Optional[bool] = None
+    # The module CHECKLIST (RULED 2026-07-18): which service modules this turn touches,
+    # multi-select by meaning in any language, names drawn from the module registry. This is
+    # a checklist, never a router: nothing is handed off, and unknown names are dropped
+    # fail-safe. Behavior-neutral in this boundary; recorded for observability and matrices.
+    modules: list[str] = []
 
 
 _SCOPE_SYSTEM_PROMPT = """You are the fail-closed scope gate for HeyNYC.
@@ -2161,6 +2166,7 @@ class ScopeResult:
     output_tokens: int = 0
     cost_usd: float | None = None
     event_preparation: bool | None = None
+    modules: tuple[str, ...] = ()
 
 
 ScopeFn = Callable[[str, list[dict]], Awaitable[ScopeDecision | ScopeResult]]
@@ -2422,10 +2428,28 @@ class Agent:
             if message.get("role") in {"user", "assistant"}
         ]
         transcript.append({"role": "user", "content": user_message})
+        # The module checklist section: names plus meaning-based definitions from the
+        # registry (top-level modules), assembled at call time so adding a module extends
+        # the checklist with zero core changes. Definitions are meaning, never word lists.
+        module_lines = "\n".join(
+            f"{module.name}: {' '.join(str(module.description or '').split())[:140]}"
+            for module in self.registry.modules
+            if getattr(module, "parent", None) is None
+        )
+        checklist_section = (
+            "\n\nAlso return modules: the list of service modules this turn touches, chosen "
+            "only from the list below, judged by meaning in any language, empty when none "
+            "apply. This is a checklist for grounding, not a route: pick every module whose "
+            "sources could help.\n" + module_lines +
+            "\n\nThe modules checklist NEVER changes the decision. Decide allow, deny, or "
+            "deny_rights exactly as instructed above; in particular, a short follow-up whose "
+            "in-scope meaning comes from the conversation, including a practical local "
+            "reframe right after a denied question, is still allowed."
+        ) if module_lines else ""
         kwargs = {
             "model": config.HEYNYC_SCOPE_MODEL,
             "messages": [
-                {"role": "system", "content": _SCOPE_SYSTEM_PROMPT},
+                {"role": "system", "content": _SCOPE_SYSTEM_PROMPT + checklist_section},
                 {"role": "user", "content": json.dumps(transcript, ensure_ascii=False)},
             ],
             "response_format": _ScopeDecision,
@@ -2448,6 +2472,11 @@ class Agent:
         output_tokens = 0
         decision: ScopeDecision = "deny"
         event_preparation: Optional[bool] = None
+        checked_modules: tuple[str, ...] = ()
+        known_modules = {
+            module.name for module in self.registry.modules
+            if getattr(module, "parent", None) is None
+        }
         # One retry on transiently EMPTY structured output (observed live), then fail closed
         # quietly: an empty reply is not worth a resident-visible traceback.
         for attempt in range(2):
@@ -2487,6 +2516,9 @@ class Agent:
                 )
                 decision = verdict.decision
                 event_preparation = verdict.event_preparation
+                checked_modules = tuple(
+                    name for name in verdict.modules if name in known_modules
+                )
             except Exception:
                 logger.exception("scope model returned invalid structured output; failing closed")
                 decision = "deny"
@@ -2498,6 +2530,7 @@ class Agent:
             output_tokens=output_tokens,
             cost_usd=priced_cost_usd(config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens),
             event_preparation=event_preparation,
+            modules=checked_modules,
         )
 
     def _tool_schemas(self, excluded_tools: Optional[set[str]] = None) -> list[dict]:
@@ -2706,6 +2739,7 @@ class Agent:
             "scope_output_tokens": 0,
             "scope_model": "",
             "scope_cost_usd": None,
+            "scope_modules": [],
         }
 
         def _usage() -> dict:
@@ -2780,6 +2814,7 @@ class Agent:
             if isinstance(scope_result, ScopeResult):
                 scope_decision = scope_result.decision
                 scope_event_preparation = scope_result.event_preparation
+                turn_usage["scope_modules"] = list(scope_result.modules)
                 turn_usage["scope_model"] = scope_result.model
                 turn_usage["scope_input_tokens"] = scope_result.input_tokens
                 turn_usage["scope_output_tokens"] = scope_result.output_tokens
