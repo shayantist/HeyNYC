@@ -19,3 +19,23 @@ def test_demo_launcher_uses_stable_domain_and_production_sender():
     assert 'stop_group "${SERVER_PID:-}"' in text
     assert 'kill -0 "$NGROK_PID"' in text
     subprocess.run(["sh", "-n", script], check=True)
+
+
+def test_demo_launcher_verifies_public_endpoint_and_required_env():
+    """F059: the owner's pilot served a healthy local process while the tunnel had silently
+    failed to bind the reserved domain. The launcher must verify the PUBLIC endpoint after
+    starting ngrok, keep verifying it while supervising, and fail loudly at the top with the
+    names of any missing required env instead of trusting the parent shell."""
+    script = Path(__file__).parents[1] / "scripts" / "serve_demo.sh"
+    text = script.read_text()
+
+    # Required-env gate, by name, before anything starts.
+    for name in ("HEYNYC_PII_KEY", "HEYNYC_PII_SALT", "TWILIO_AUTH_TOKEN", "OPENAI_API_KEY"):
+        assert name in text
+    assert "missing" in text.lower()
+
+    # Public-endpoint gate after ngrok starts, and continuous public verification while
+    # supervising, so a dead tunnel kills the stack noisily instead of serving silence.
+    assert text.count("https://$DOMAIN/health") >= 2
+    assert "public endpoint" in text.lower()
+    subprocess.run(["sh", "-n", script], check=True)
