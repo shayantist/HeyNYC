@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from .manifest import DatasetBinding, ServiceModule
+from .manifest import DatasetBinding, ServiceModule, SituationHint
 
 # Trust-tier ordering for web_search ranking; higher = more trusted. (§10.4)
 # `news` is the currency layer's subordinate tier: it ranks BELOW gov/authoritative and
@@ -122,6 +122,16 @@ class Registry:
             for binding in module.datasets:
                 bindings[binding.category] = binding
         return bindings
+
+    def situation_hints(self) -> dict[str, tuple[str, SituationHint]]:
+        """{situation name: (module name, hint)} across every module's manifest. The scope
+        preflight lists these definitions on its checklist; a checked situation contributes
+        its manifest-declared retrieval config to the turn."""
+        hints: dict[str, tuple[str, SituationHint]] = {}
+        for module in self.modules:
+            for hint in module.situations:
+                hints[hint.name] = (module.name, hint)
+        return hints
 
     def allowlist(self) -> list[str]:
         """Base allowlist plus every module's additions, deduped and sorted.

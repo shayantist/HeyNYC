@@ -48,6 +48,27 @@ class DatasetBinding(BaseModel):
         return self
 
 
+class SituationHint(BaseModel):
+    """A module-owned high-stakes situation (RULED 2026-07-18: checklist, not router).
+
+    The scope preflight checks situations by their meaning-based `definition` in any
+    language; a checked situation contributes its forced-search config, reminder, and tool
+    focus to the SAME single-agent turn. All data lives here in the module's manifest, never
+    as core constants; legacy core regexes remain only as preflight-absent fallbacks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    definition: str  # meaning-based, Bedrock denied-topics style: never a word list
+    query: str = ""  # forced-first retrieval query
+    urls: list[str] = Field(default_factory=list)  # declared official pages
+    reminder: str = ""  # the runtime scope reminder for this situation
+    high_stakes: bool = False  # forces the first retrieval call before answering
+    # Tool focus applied ONLY when this module is the turn's sole checked module; a
+    # cross-module turn never loses capability (prioritize, never narrow).
+    focus_tools: list[str] = Field(default_factory=list)
+
+
 class ServiceModule(BaseModel):
     """A single city service, loaded from a manifest.yaml."""
 
@@ -70,6 +91,8 @@ class ServiceModule(BaseModel):
     # Submodule hint (events topics): the Ticketmaster `keyword` the agent should pass to
     # whats_on_events for this topic. Advisory metadata; the prompt blurb drives the call.
     ticketmaster_keyword: Optional[str] = None
+    # Module-owned high-stakes situations for the scope preflight checklist.
+    situations: list[SituationHint] = Field(default_factory=list)
 
     # Populated by the loader, not from YAML.
     path: Optional[Path] = Field(default=None, exclude=True)

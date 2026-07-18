@@ -2047,7 +2047,12 @@ async def test_immigration_and_benefits_forces_current_eligibility_search(empty_
     assert "llama al 311" in prompt
 
 
-async def test_active_lockout_forces_current_official_housing_search(empty_registry):
+async def test_active_lockout_forces_current_official_housing_search():
+    """The regex fallback still forces the lockout search with no preflight, reading its
+    query, reminder, and tool focus from the housing manifest (migration boundary 2)."""
+    from pathlib import Path
+
+    registry = Registry.discover(Path("heynyc/modules"))
     seen = {}
 
     async def search(args, ctx):
@@ -2065,7 +2070,7 @@ async def test_active_lockout_forces_current_official_housing_search(empty_regis
         "benefits_search": Tool(name="benefits_search", description="x", parameters={},
                                 handler=lambda args, ctx: "benefits"),
     }
-    agent = Agent(empty_registry, tools=tools)
+    agent = Agent(registry, tools=tools)
     calls = []
     responses = [
         _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
@@ -3211,3 +3216,99 @@ def test_build_messages_keeps_reply_language_instruction_next_to_latest_turn():
 
     assert messages[-1]["content"] == "আমার স্ন্যাপ বেনিফিট কি চলে যাবে?"
     assert "same language as the resident's latest message" in str(messages[0]["content"])
+
+
+async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatch):
+    """Signal path for a high-stakes situation: the preflight checks `active_lockout`, and
+    the forced first search, reminder, and tool focus all come from the housing manifest."""
+    from pathlib import Path
+
+    from heynyc.core.agent import ScopeResult
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    seen = {}
+
+    async def search(args, ctx):
+        seen["query"] = args["query"]
+        return "current official illegal-lockout guidance"
+
+    tools = {
+        "web_search": Tool("web_search", "x",
+                           {"type": "object", "properties": {"query": {"type": "string"}}},
+                           search),
+        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+    }
+
+    async def situation_scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test",
+            modules=("housing",), situations=("active_lockout",),
+        )
+
+    calls = []
+    responses = [
+        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(content="Call 911 now."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        calls.append((forced_tool, [s["function"]["name"] for s in tool_schemas], messages))
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent = Agent(registry, tools=tools, scope_fn=situation_scope)
+    monkeypatch.setattr(agent, "_litellm_stream", fake_litellm)
+
+    # Deliberately NO lockout keywords: the semantic signal alone must carry it.
+    result = await agent.run("mi casera me dejo afuera esta noche")
+
+    assert result.tool_calls_made == ["web_search"]
+    assert calls[0][0] == "web_search"
+    assert "lockout" in seen["query"]
+    assert "housing_guidance" in calls[0][1]
+    assert "benefits_search" not in calls[0][1]  # single-module turn keeps the manifest focus
+    prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
+    assert "911" in prompt
+
+
+async def test_cross_module_situation_turn_never_narrows_tools(monkeypatch):
+    """RULED guardrail: prioritize, never narrow, on a cross-module turn."""
+    from pathlib import Path
+
+    from heynyc.core.agent import ScopeResult
+
+    registry = Registry.discover(Path("heynyc/modules"))
+
+    async def search(args, ctx):
+        return "guidance"
+
+    tools = {
+        "web_search": Tool("web_search", "x",
+                           {"type": "object", "properties": {"query": {"type": "string"}}},
+                           search),
+        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+    }
+
+    async def cross_scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test",
+            modules=("housing", "benefits"), situations=("active_lockout",),
+        )
+
+    calls = []
+    responses = [
+        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(content="Call 911 now, and your SNAP question is safe to handle after."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        calls.append([s["function"]["name"] for s in tool_schemas])
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent = Agent(registry, tools=tools, scope_fn=cross_scope)
+    monkeypatch.setattr(agent, "_litellm_stream", fake_litellm)
+
+    await agent.run("me dejaron afuera y tambien perdi mis cupones")
+
+    assert "benefits_search" in calls[0]  # capability is never removed on a cross-module turn

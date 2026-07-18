@@ -81,3 +81,24 @@ def test_source_tiers_aggregates_highest_trust_wins():
     tiers = Registry([a, b]).source_tiers()
     assert tiers["nyctourism.com"] == ("authoritative", "events")   # lowercased
     assert tiers["eventbrite.com"][0] == "editorial"                 # editorial(2) beats community(1)
+
+
+def test_housing_manifest_declares_the_active_lockout_situation():
+    """Migration boundary 2: situation hints are module-owned manifest DATA (definition,
+    forced-search config, reminder, tool focus), never core constants."""
+    from pathlib import Path
+
+    from heynyc.core.registry import Registry
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    hints = registry.situation_hints()
+
+    assert "active_lockout" in hints
+    module_name, hint = hints["active_lockout"]
+    assert module_name == "housing"
+    assert hint.high_stakes is True
+    assert "lockout" in hint.query
+    assert any("311" in url or "nyc.gov" in url for url in hint.urls)
+    assert "911" in hint.reminder
+    assert "housing_guidance" in hint.focus_tools
+    assert len(hint.definition.split()) >= 8  # meaning, not a keyword
