@@ -36,7 +36,7 @@ from .spend import SpendGuard
 from .telemetry import priced_cost_usd
 from .tools import Tool, ToolContext, build_toolbox
 from .tools.geo import maps_link
-from .tools.notify_nyc import is_broad_recent_scope, is_citywide_area
+from .tools.notify_nyc import is_citywide_area
 
 logger = logging.getLogger("heynyc.agent")
 
@@ -1902,10 +1902,6 @@ def _event_preparation_feedback(
     return None
 
 
-def _has_citywide_notify_notice(awareness: str) -> bool:
-    return "[broad scope confirmed]" in awareness
-
-
 _URGENT_NOTIFY_TITLE_RE = re.compile(
     r"\b(?:advisory|warning|emergency|alert)\b", re.IGNORECASE,
 )
@@ -1942,7 +1938,9 @@ def _urls_in(text: str) -> set[str]:
 def _is_broad_notify_citation(citation: dict) -> bool:
     url = str(citation.get("url") or "").lower()
     if urlparse(url).path.lower().endswith("/notifynyc/home/recentmessages"):
-        return is_broad_recent_scope(str(citation.get("snippet") or ""))
+        # F061: recent notes carry no structured area field, and parsing their prose broke on
+        # real borough-list spellings — fail OPEN and let the model judge from the full text.
+        return True
     snapshot = citation.get("provenance", {}).get("snapshot", {})
     return _is_notify_url(url) and is_citywide_area(str(snapshot.get("areaDesc") or ""))
 
@@ -2927,12 +2925,14 @@ class Agent:
         if (
             initial_forced_tool is None
             and (_is_broad_event_query(user_message) or event_preparation_turn)
-            and _has_citywide_notify_notice(notify_awareness)
+            and bool(notify_awareness)
             and "nyc_advisories" in self.tools
             and "nyc_advisories" not in set(excluded_tools or ())
         ):
+            # F061: keyed on the EXISTENCE of same-day notifications, never on parsing their
+            # wording — the full report comes back cited and the model judges what's material.
             initial_forced_tool = "nyc_advisories"
-            initial_forced_args = {"citywide_only": True}
+            initial_forced_args = {}
 
         if forced_tool and forced_tool not in self.tools:
             message_id = "m0"

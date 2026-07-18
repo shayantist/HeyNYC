@@ -457,7 +457,30 @@ async def test_current_awareness_fetches_recent_messages_each_turn(monkeypatch):
     assert calls == 2
 
 
-def test_recent_awareness_is_compact_and_requires_detail_lookup():
+def test_recent_awareness_carries_notice_text_without_scope_parsing():
+    """F061 (RULED 2026-07-18): no deterministic parsing of the feed's area formatting — today's
+    five flood notices spelled areas as "BK/SI/MN/QN", "BK, QN", "parts of NYC", and "The Bronx",
+    and any pattern keyed to that spelling breaks the day the feed changes it. The index carries
+    each notice's full text and the MODEL judges scope and severity from meaning."""
+    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
+        notify_nyc.RecentNote(
+            title="Notify NYC - Flash Flood Warning",
+            body="Flash Flood Warning for BK, QN til 3:30 PM. Move to higher ground.",
+            issued="2026-07-16T13:25:40-04:00", issued_raw="07/16/2026 13:25:40",
+            source_url=RECENT_MESSAGES_URL, guid="ffw",
+        ),
+    ])
+
+    text = advisory_tools._recent_awareness(feed, date(2026, 7, 16))
+
+    assert "Flash Flood Warning for BK, QN til 3:30 PM. Move to higher ground." in text
+    assert "broad scope confirmed" not in text
+
+
+def test_recent_awareness_carries_full_text_and_fail_open_safety_policy():
+    """F061 (RULED 2026-07-18): the model, not a regex, decides what to surface — so the index
+    carries each notice's full text, safety notices fail OPEN with their area stated even when
+    no resident location is known, and only narrow low-stakes notices keep the overlap rule."""
     render = getattr(advisory_tools, "_recent_awareness", None)
     assert callable(render)
     feed = notify_nyc.RecentFeed(confirmed=True, notes=[
@@ -482,27 +505,14 @@ def test_recent_awareness_is_compact_and_requires_detail_lookup():
     text = render(feed, date(2026, 7, 16))
 
     assert "Air Quality Health Advisory" in text
-    assert "Air Quality Health Advisory (NYC) [broad scope confirmed]" in text
     assert "FDNY Activity" in text
     assert "Old notice" not in text
-    assert "unhealthy for everyone" not in text
-    assert "call `nyc_advisories`" in text
-    assert "known location" in text
-
-
-def test_recent_awareness_does_not_mark_untagged_local_notice_as_broad():
-    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
-        notify_nyc.RecentNote(
-            title="Notify NYC - Street Closure", body="Avoid one block near 12 Main Street.",
-            issued="2026-07-16T09:00:00-04:00", issued_raw="07/16/2026 09:00:00",
-            source_url=RECENT_MESSAGES_URL, guid="local",
-        ),
-    ])
-
-    text = advisory_tools._recent_awareness(feed, date(2026, 7, 16))
-
-    assert "Street Closure" in text
-    assert "broad scope confirmed" not in text
+    assert "unhealthy for everyone in all or part of NYC" in text  # full text, model judges meaning
+    assert "call `nyc_advisories`" in text                         # cite discipline survives
+    assert "immediate personal safety" in text                     # safety notices fail open
+    assert "hasn't shared a location" in text
+    assert "known location" in text                                # narrow class keeps overlap rule
+    assert "already ended" in text                                 # expiry checked against now
 
 
 async def test_nyc_advisories_falls_back_to_recent_when_cap_empty():
@@ -565,7 +575,10 @@ async def test_nyc_advisories_combines_cap_and_recent_without_exact_duplicates()
     assert out.count(fireworks_title) == 1
 
 
-async def test_nyc_advisories_citywide_view_omits_explicit_borough_notices():
+async def test_nyc_advisories_reports_borough_notices_alongside_citywide():
+    """F061 (RULED 2026-07-18): the tool never area-filters by parsing notice prose — today's
+    borough-list flood warnings would have been filtered OUT of a "citywide" view. Every active
+    notice returns, cited, and the model judges relevance from the full text."""
     recent_json = json.dumps([
         {
             "pubDate": "07/16/2026 08:59:23",
@@ -581,11 +594,13 @@ async def test_nyc_advisories_citywide_view_omits_explicit_borough_notices():
     client = _combo_client(rss=_rss(), recent_json=recent_json)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
-    out = await get_tools()[0].handler({"citywide_only": True}, ctx)
+    out = await get_tools()[0].handler({"citywide_only": True}, ctx)  # stale arg is ignored
     await client.aclose()
 
     assert "Air Quality Health Advisory" in out
-    assert "Three Alarm Fire" not in out
+    assert "Three Alarm Fire" in out
+    schema = get_tools()[0].parameters["properties"]
+    assert "citywide_only" not in schema
 
 
 # --- the shipped module stays valid (mirrors test_module_food_pantries) ----

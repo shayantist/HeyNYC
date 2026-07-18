@@ -103,30 +103,22 @@ async def test_model_call_aborts_when_current_request_exceeds_verified_capacity(
     assert "safely fit" in result.text.lower()
 
 
-def test_citywide_notify_awareness_ignores_borough_only_notices():
-    from heynyc.core.agent import _has_citywide_notify_notice
-
-    assert _has_citywide_notify_notice(
-        "- 07/16: Notify NYC - Air Quality Health Advisory - 7/16 [broad scope confirmed]"
-    )
-    assert not _has_citywide_notify_notice(
-        "- 07/16: Notify NYC - FDNY Activity - 5th Ave (BK)\n"
-        "- 07/16: Notify NYC - Untagged local street closure"
-    )
-
-
-async def test_broad_event_turn_forces_citywide_advisory_check_from_awareness(
+async def test_broad_event_turn_forces_advisory_check_when_notifications_exist(
     empty_registry, monkeypatch,
 ):
+    """F061 (RULED 2026-07-18): the trigger is the EXISTENCE of same-day notifications, never a
+    parse of their wording — today's borough-list flood warnings carried no citywide phrase and
+    the old tag check silently disabled this path. No args: the tool returns everything and the
+    model judges relevance from full text."""
     forced = []
     received_args = []
 
     async def awareness():
-        return "- 07/16: Notify NYC - Citywide current notice [broad scope confirmed]"
+        return "- 07/18: Notify NYC - Flash Flood Warning\n  For BK, QN til 3:30 PM."
 
     async def advisory(args, ctx):
         received_args.append(args)
-        return "Current citywide notice checked"
+        return "Current notifications checked"
 
     async def model_stream(messages, tool_schemas, forced_tool=None):
         forced.append(forced_tool)
@@ -146,19 +138,46 @@ async def test_broad_event_turn_forces_citywide_advisory_check_from_awareness(
     result = await agent.run("What events are happening in NYC this weekend?")
 
     assert forced == ["nyc_advisories", None]
-    assert received_args == [{"citywide_only": True}]
+    assert received_args == [{}]
     assert result.tool_calls_made == ["nyc_advisories"]
 
 
-async def test_event_preparation_turn_forces_citywide_advisory_check_from_awareness(
+async def test_broad_event_turn_skips_advisory_check_on_a_quiet_day(
     empty_registry, monkeypatch,
 ):
-    """A preparation turn must check a live citywide Notify NYC notice exactly like a broad
+    forced = []
+
+    async def awareness():
+        return ""
+
+    async def advisory(args, ctx):
+        return "should never run"
+
+    async def model_stream(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        yield {"type": "message", "message": _assistant(content="Current plans checked.")}
+
+    tool = Tool("nyc_advisories", "", {}, advisory)
+    agent = Agent(
+        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+    )
+    monkeypatch.setattr(agent, "_litellm_stream", model_stream)
+
+    result = await agent.run("What events are happening in NYC this weekend?")
+
+    assert forced == [None]
+    assert result.tool_calls_made == []
+
+
+async def test_event_preparation_turn_forces_advisory_check_from_awareness(
+    empty_registry, monkeypatch,
+):
+    """A preparation turn must check live Notify NYC notifications exactly like a broad
     events turn: advisories are part of preparing for tomorrow."""
     forced = []
 
     async def awareness():
-        return "- 07/17: Notify NYC - Air Quality Health Advisory - 7/18 [broad scope confirmed]"
+        return "- 07/17: Notify NYC - Air Quality Health Advisory - 7/18\n  Unhealthy air today."
 
     async def advisory(args, ctx):
         return "Current citywide notice checked"

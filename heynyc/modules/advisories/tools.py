@@ -31,8 +31,6 @@ from heynyc.core.tools.notify_nyc import (
     RecentNote,
     active_advisories,
     fetch_recent_advisories,
-    is_broad_recent_scope,
-    is_citywide_area,
 )
 
 OFFICIAL = "Notify NYC (nyc.gov/notifynyc) or call 311"
@@ -134,16 +132,22 @@ def _recent_awareness(feed, today: date) -> str:
     if not feed.confirmed or not notes:
         return ""
     lines = [
-        "Current Notify NYC awareness index. These titles are discovery hints, not evidence for "
-        "a user-facing claim. If one materially affects the resident's question, call "
-        "`nyc_advisories` for its full text and citation. Mention a location-specific notice only "
-        "when the conversation gives a known location that overlaps it:",
+        "Today's Notify NYC notifications (NYC Emergency Management), full text below. They are "
+        "discovery hints, not evidence for a user-facing claim: if one materially affects the "
+        "resident's question, call `nyc_advisories` for its citable record. Judge each notice by "
+        "its meaning:",
+        "- A notice about immediate personal safety: surface it proactively even when you do not "
+        "know where the resident is — state its area and let them judge (\"if you're in the "
+        "Bronx...\"). Never withhold a safety notice because the resident hasn't shared a location.",
+        "- A narrow, low-stakes notice (one street, one facility): mention it only when the "
+        "resident's known location or question overlaps it.",
+        "- Compare any end time a notice states against the current time; do not urge action on "
+        "one that has already ended.",
     ]
-    lines.extend(
-        f"- {note.issued_raw}: {note.title}"
-        f"{' [broad scope confirmed]' if is_broad_recent_scope(note.body) else ''}"
-        for note in notes
-    )
+    for note in notes:
+        lines.append(f"- {note.issued_raw}: {note.title}")
+        if note.body:
+            lines.append(f"  {note.body[:300]}")
     return "\n".join(lines)
 
 
@@ -232,15 +236,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         active_advisories(ctx.http, now=now, lang=lang),
         fetch_recent_advisories(ctx.http),
     )
+    # F061: no area filter that parses notice prose — the feed spells areas however it likes
+    # ("BK/SI/MN/QN", "parts of NYC"), so every active notice returns and the model judges
+    # relevance from the full cited text.
     cap_advisories = feed.advisories
     recent_notes = recent.notes
-    if args.get("citywide_only"):
-        cap_advisories = [
-            advisory for advisory in cap_advisories if is_citywide_area(advisory.area_desc)
-        ]
-        recent_notes = [
-            note for note in recent_notes if is_broad_recent_scope(note.body)
-        ]
 
     if feed.confirmed and cap_advisories:
         cap_titles = {
@@ -298,13 +298,6 @@ def get_tools() -> list[Tool]:
                         "'Chinese'), pass the language the user is writing in. The feed carries "
                         "official city translations for ~12 languages; defaults to English, and "
                         "falls back to English for any alert with no variant in that language.",
-                    },
-                    "citywide_only": {
-                        "type": "boolean",
-                        "description": (
-                            "For a citywide planning summary with no known resident location, omit "
-                            "notices explicitly tagged for one borough. Defaults to false."
-                        ),
                     },
                 },
             },

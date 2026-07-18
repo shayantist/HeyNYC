@@ -391,14 +391,7 @@ class RecentFeed:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_BROAD_SCOPE_RE = re.compile(
-    r"\b(?:everyone|all new yorkers|all or part of nyc|citywide)\b", re.IGNORECASE,
-)
 _NYC_BOROUGHS = ("bronx", "brooklyn", "manhattan", "queens", "staten island")
-
-
-def is_broad_recent_scope(text: str) -> bool:
-    return bool(_BROAD_SCOPE_RE.search(text or ""))
 
 
 def is_citywide_area(area: str) -> bool:
