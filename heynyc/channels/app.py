@@ -68,6 +68,7 @@ def build_deps(agent: Agent) -> Deps:
     )
     return Deps(
         agent=agent, store=store, sessions_dir=data / "sessions", salt=config.HEYNYC_PII_SALT,
+        user_daily_spend_cap=config.HEYNYC_USER_DAILY_SPEND_CAP,
         telemetry_path=telemetry.default_path(config.HEYNYC_DATA_DIR), feedback_path=data / "feedback.jsonl",
         locks=KeyedLocks(), semaphore=asyncio.Semaphore(config.CHANNEL_MAX_CONCURRENCY),
         drafts=DraftStore(data / "drafts"),

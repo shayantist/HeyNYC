@@ -26,6 +26,10 @@ class ChannelStore:
             )
         self._db.execute("CREATE TABLE IF NOT EXISTS rate (user_key TEXT, ts REAL)")
         self._db.execute("CREATE INDEX IF NOT EXISTS rate_key ON rate (user_key, ts)")
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS spend "
+            "(user_key TEXT, day TEXT, spent_usd REAL, PRIMARY KEY (user_key, day))"
+        )
         self._db.commit()
 
     def seen(self, message_id: str, user_key: str = "") -> bool:
@@ -39,6 +43,22 @@ class ChannelStore:
         )
         self._db.commit()
         return cur.rowcount == 0
+
+    def daily_spend(self, user_key: str, day: str) -> float:
+        """This user's accumulated model cost for `day` (an ISO date string)."""
+        row = self._db.execute(
+            "SELECT spent_usd FROM spend WHERE user_key = ? AND day = ?", (user_key, day)
+        ).fetchone()
+        return float(row[0]) if row else 0.0
+
+    def add_spend(self, user_key: str, day: str, amount: float) -> None:
+        """Accrue one turn's model cost to the user's daily tally (upsert)."""
+        self._db.execute(
+            "INSERT INTO spend (user_key, day, spent_usd) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_key, day) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd",
+            (user_key, day, float(amount)),
+        )
+        self._db.commit()
 
     def allow(self, user_key: str) -> bool:
         now = time.time()

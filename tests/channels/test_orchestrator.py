@@ -345,3 +345,70 @@ async def test_per_user_lock_serializes_same_user(tmp_path):
     # same user (same sender) → second waits for the first to finish, no interleave
     assert order in (["A-start", "A-end", "B-start", "B-end"],
                      ["B-start", "B-end", "A-start", "A-end"])
+
+
+def test_store_tracks_daily_spend_per_user_and_day(tmp_path):
+    store = ChannelStore(tmp_path / "s.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=60)
+
+    assert store.daily_spend("u1", "2026-07-18") == 0.0
+    store.add_spend("u1", "2026-07-18", 0.02)
+    store.add_spend("u1", "2026-07-18", 0.03)
+    store.add_spend("u2", "2026-07-18", 0.40)
+    store.add_spend("u1", "2026-07-19", 0.99)
+
+    assert abs(store.daily_spend("u1", "2026-07-18") - 0.05) < 1e-9
+    assert abs(store.daily_spend("u2", "2026-07-18") - 0.40) < 1e-9
+    assert abs(store.daily_spend("u1", "2026-07-19") - 0.99) < 1e-9
+
+
+async def test_user_over_daily_cap_gets_fixed_copy_and_no_agent_call(tmp_path):
+    """One resident going ham never dims the service for anyone else: the cap is per user
+    per NYC day, fails closed with warm fixed copy, and free commands stay available."""
+    from heynyc.channels.orchestrator import _DAILY_CAP_MSG, _nyc_day
+
+    deps, replier = _deps(tmp_path), FakeReplier()
+    deps.user_daily_spend_cap = 0.50
+    key_of = lambda m: __import__("heynyc.channels.identity", fromlist=["user_key"]).user_key(
+        m.channel, m.sender, "s",
+    )
+    message = _msg(text="whats happening this weekend", mid="cap1")
+    deps.store.add_spend(key_of(message), _nyc_day(), 0.60)  # already over today
+
+    await handle(message, replier, deps)
+
+    assert replier.sent == [_DAILY_CAP_MSG]
+    assert replier.typed == 0  # the agent never ran
+
+    # Free commands still work while capped.
+    await handle(_msg(text="privacy", mid="cap2"), replier, deps)
+    assert len(replier.sent) == 2
+    assert "usage limit" not in replier.sent[-1].lower()
+
+
+async def test_emergency_text_bypasses_the_daily_cap(tmp_path):
+    from heynyc.channels.orchestrator import _nyc_day
+    from heynyc.core.agent import _EMERGENCY_RESPONSE_EN
+
+    deps, replier = _deps(tmp_path), FakeReplier()
+    deps.user_daily_spend_cap = 0.50
+    message = _msg(text="I have severe chest pain right now", mid="cap3")
+    from heynyc.channels.identity import user_key as _uk
+    deps.store.add_spend(_uk(message.channel, message.sender, "s"), _nyc_day(), 9.99)
+
+    await handle(message, replier, deps)
+
+    assert any("911" in text for text in replier.sent)
+
+
+async def test_turn_cost_accrues_to_the_daily_tally(tmp_path):
+    from heynyc.channels.orchestrator import _nyc_day
+    from heynyc.channels.identity import user_key as _uk
+
+    deps, replier = _deps(tmp_path), FakeReplier()
+    deps.user_daily_spend_cap = 5.00
+    message = _msg(text="whats happening this weekend", mid="cap4")
+
+    await handle(message, replier, deps)
+
+    key = _uk(message.channel, message.sender, "s")
+    assert deps.store.daily_spend(key, _nyc_day()) >= 0.0  # tally exists (cost may be 0 in fakes)

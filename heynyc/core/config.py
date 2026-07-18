@@ -33,6 +33,10 @@ def _parse_spend_cap(raw: str) -> float | None:
 
 
 HEYNYC_SPEND_CAP = _parse_spend_cap(os.getenv("HEYNYC_SPEND_CAP", ""))
+# Per-resident, per-NYC-day model-cost ceiling for the messaging channels. Fails closed
+# with fixed copy for that resident only; everyone else is unaffected (owner ruling: one
+# resident going ham never dims the service). Off when unset.
+HEYNYC_USER_DAILY_SPEND_CAP = _parse_spend_cap(os.getenv("HEYNYC_USER_DAILY_SPEND_CAP", ""))
 
 # Multilingual translate-at-edge pipeline (heynyc/core/multilingual.py), reason in English, translate
 # only the verified answer at the edge (OTI Gap 2, Local Law 30 language access). OFF by default and

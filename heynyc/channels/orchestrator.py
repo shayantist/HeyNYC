@@ -47,6 +47,17 @@ _NEW_MESSAGE = (
     "Started a new conversation. I won't use the earlier chat as context. "
     "This does not delete stored records."
 )
+_DAILY_CAP_MSG = (
+    "You've reached today's usage limit for this number, so I have to pause until midnight. "
+    "For city help right now call 311, or 911 in an emergency, and I'll be ready again tomorrow."
+)
+
+
+def _nyc_day() -> str:
+    """The current NYC calendar date; the per-resident daily cap resets at NYC midnight."""
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
 
 
 @dataclass
@@ -60,6 +71,9 @@ class Deps:
     locks: KeyedLocks
     semaphore: asyncio.Semaphore
     drafts: Optional[DraftStore] = None   # per-user structured form drafts (None → no persistence)
+    # Per-resident, per-NYC-day model-cost ceiling (owner ruling: one resident going ham never
+    # dims the service for anyone else). None → off. Emergencies always bypass it.
+    user_daily_spend_cap: Optional[float] = None
 
 
 def is_flag(text: str) -> bool:
@@ -163,6 +177,16 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
             if is_help(msg.text):   # greeting / "what can you do" → the grounded capability menu
                 await replier.send_text(deps.agent.registry.welcome_text())
                 return
+            # Per-resident daily cost cap, after the free commands (they stay available while
+            # capped) and only when the deterministic emergency backstop would not fire: a
+            # crisis message always reaches the zero-cost emergency path.
+            if (
+                deps.user_daily_spend_cap is not None
+                and _emergency_backstop(msg.text) is None
+                and deps.store.daily_spend(key, _nyc_day()) >= deps.user_daily_spend_cap
+            ):
+                await replier.send_text(_DAILY_CAP_MSG)
+                return
             await replier.indicate_typing()
             art_dir = Path(tempfile.mkdtemp(prefix="heynyc-art-"))   # per-request, orchestrator-owned
             try:
@@ -191,6 +215,8 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 for path in artifacts:
                     await replier.send_document(path, caption="Your draft SNAP application (LDSS-4826)")
                 session.commit(pending)
+                turn_cost = result.usage.get("cost_usd")
+                deps.store.add_spend(key, _nyc_day(), float(turn_cost) if turn_cost else 0.0)
                 analytics.record_interaction(
                     telemetry_path=deps.telemetry_path, model=deps.agent.model,
                     user_key=key, channel=msg.channel, result=result,
