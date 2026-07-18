@@ -31,6 +31,34 @@ def _tool_call(name, args, call_id="c1"):
     return {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
 
 
+def test_history_preserves_prior_assistant_turns_for_continuity():
+    """F052: the model must see what it already said and asked (full multi-turn contract),
+    with stale citation markers stripped; the unknown-citation and grounding guards remain
+    the deterministic stale-evidence backstop."""
+    from heynyc.core.agent import _history_messages
+
+    history = [
+        {"role": "user", "content": "What to prepare for tomorrows WC game"},
+        {
+            "role": "assistant",
+            "content": (
+                "Do you mean the bronze final watch party {cite:S1} or the final on Sunday?"
+            ),
+            "citations": {"S1": {"url": "https://example.gov/wp", "kind": "DATA"}},
+        },
+    ]
+
+    messages = _history_messages(history)
+
+    assert messages[0] == {"role": "user", "content": "What to prepare for tomorrows WC game"}
+    text = messages[1]["content"]
+    assert "bronze final watch party" in text
+    assert "final on Sunday?" in text
+    assert "{cite:" not in text
+    assert "citations" not in messages[1]
+    assert "stale" in text.lower() or "earlier" in text.lower()
+
+
 def test_history_does_not_register_prior_assistant_citations_as_current_evidence():
     from heynyc.core.agent import _history_messages
 

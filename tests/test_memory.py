@@ -131,7 +131,10 @@ async def test_compaction_cannot_invent_any_continuity_field(field, value):
         )
 
 
-def test_prior_assistant_facts_and_urls_are_not_model_context():
+def test_prior_assistant_turns_are_labeled_historical_context():
+    """F052 (RULED 2026-07-17): prior assistant turns stay readable for continuity, labeled as
+    possibly stale, with citation markers stripped; the unknown-citation and grounding guards
+    are the deterministic stale-evidence backstop."""
     history = [{
         "role": "assistant",
         "content": "The office closes at 5 p.m. https://example.gov/old {cite:S1}",
@@ -139,8 +142,9 @@ def test_prior_assistant_facts_and_urls_are_not_model_context():
 
     messages = _history_messages(history)
 
-    assert "5 p.m." not in messages[0]["content"]
-    assert "https://" not in messages[0]["content"]
+    assert "5 p.m." in messages[0]["content"]
+    assert "{cite:" not in messages[0]["content"]
+    assert "may be stale" in messages[0]["content"].lower()
     assert "retrieve current evidence" in messages[0]["content"].lower()
 
 

@@ -264,8 +264,11 @@ async def test_channel_followup_survives_fresh_dependencies(tmp_path):
 
     assert any(message.get("content") == "My first question" for message in seen)
     assert any(message.get("content") == "What about that?" for message in seen)
-    assert all(message.get("content") != "Here you go." for message in seen)
-    assert any("Prior assistant factual text" in str(message.get("content")) for message in seen)
+    assert any(
+        "Earlier assistant reply" in str(message.get("content"))
+        and "Here you go." in str(message.get("content"))
+        for message in seen
+    )
 
 
 async def test_screen_command_forces_and_executes_the_screener_through_the_channel(tmp_path):

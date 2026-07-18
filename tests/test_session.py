@@ -174,7 +174,7 @@ async def test_late_awareness_is_measured_before_memory_planning(tmp_path: Path)
 
     def count(messages, schemas):
         text = " ".join(str(message.get("content") or "") for message in messages)
-        if "citywide alert" in text and text.count("Prior assistant factual text") >= 2:
+        if "citywide alert" in text and text.count("Earlier assistant reply") >= 2:
             return 11
         return 9
 

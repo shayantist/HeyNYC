@@ -1700,18 +1700,23 @@ def _routing_query(user_message: str, history: Optional[list[dict]]) -> str:
 
 
 def _history_messages(history: Optional[list[dict]]) -> list[dict]:
-    """Return provider-safe dialogue history without treating old citations as current evidence."""
-    messages = [
-        {"role": message.get("role"), "content": message.get("content")}
-        for message in history or []
-    ]
-    for message in messages:
-        if message["role"] != "assistant":
-            continue
-        message["content"] = (
-            "[Prior assistant factual text and links omitted. Use the resident's surrounding "
-            "messages for conversational context and retrieve current evidence before answering.]"
-        )
+    """Return provider-safe dialogue history with prior assistant turns readable (F052).
+
+    The model keeps full conversational continuity, what it already said, asked, or proposed,
+    per the standard multi-turn chat contract. Stale-evidence safety stays deterministic and
+    downstream: citation MARKERS are stripped here because every turn's registry reuses the
+    same S-number ids, and the unknown-citation and grounding guards already check each new
+    answer against the current turn's captured sources."""
+    messages = []
+    for message in history or []:
+        content = str(message.get("content") or "")
+        if message.get("role") == "assistant":
+            content = (
+                "[Earlier assistant reply, kept for conversational continuity. Its facts and "
+                "links may be stale: retrieve current evidence before restating any of them.]\n"
+                + _CITE_STRIP_RE.sub("", content)
+            )
+        messages.append({"role": message.get("role"), "content": content})
     return messages
 
 
