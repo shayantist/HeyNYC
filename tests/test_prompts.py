@@ -24,6 +24,18 @@ def test_system_prompt_injects_current_nyc_datetime():
     assert "GROUND EVERYTHING" in prompt
 
 
+def test_system_prompt_teaches_orient_then_verify():
+    """RULED (2026-07-18): when a reference is ambiguous or abbreviated, the first tool call
+    is one broad allowlisted web_search with a short noun-phrase query, orient, then gather
+    citable evidence. Audited live: searching the resident's whole sentence returns garbage."""
+    prompt = build_system_prompt(Registry([]))
+    low = prompt.lower()
+    assert "orient" in low
+    assert "noun-phrase" in low or "noun phrase" in low
+    assert "whole sentence" in low or "full sentence" in low
+    assert "then" in low and "evidence" in low
+
+
 def test_system_prompt_includes_active_recency_check():
     # The freshness guard goes from passive date-stamping to an ACTIVE recency check: on
     # time-sensitive law/policy/rights questions the agent must run recent_developments and

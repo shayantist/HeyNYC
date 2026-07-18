@@ -210,3 +210,62 @@ def test_recent_developments_description_warns_on_contested_legal_matter():
     assert "struck down" in desc and "annulled" in desc
     assert "currently stands" in desc
     assert "never name the court" in desc
+
+
+def test_rewrite_query_strips_scaffolding_and_errand_verbs():
+    """Audited live (F055): searching the resident's prep-phrased sentence returned a
+    gardening workshop because 'prepare' matched. The shared rewrite stage normalizes every
+    caller's query, the layer where Gemini and ChatGPT put query understanding."""
+    from heynyc.core.tools.web_search import _rewrite_query
+
+    assert _rewrite_query("what to prepare for tomorrow wc game July 18, 2026") == (
+        "tomorrow wc game July 18, 2026"
+    )
+    # Civic action verbs are content, never stripped.
+    assert _rewrite_query("how do I appeal a SNAP denial") == "appeal a SNAP denial"
+    # Nested scaffolding strips iteratively, leading articles too.
+    assert _rewrite_query("can you tell me where is the nearest food pantry") == (
+        "nearest food pantry"
+    )
+    # Already search-shaped queries pass through untouched.
+    assert _rewrite_query("world cup match schedule July 18 2026") == (
+        "world cup match schedule July 18 2026"
+    )
+    assert _rewrite_query(
+        "NYC Section 8 source of income discrimination court ruling 2026"
+    ) == "NYC Section 8 source of income discrimination court ruling 2026"
+    # Over-stripping falls back to the original instead of searching almost nothing.
+    assert _rewrite_query("what to do") == "what to do"
+
+
+async def test_handler_sends_rewritten_query_and_reports_it():
+    seen = []
+
+    async def fake_search(query, domains, recency=None):
+        seen.append(query)
+        return [{"title": "Official", "url": "https://www.nyc.gov/wc", "snippet": "row"}]
+
+    tool = web_search_tools(ALLOW, search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    out = await tool.handler(
+        {"query": "what to prepare for tomorrow wc game July 18, 2026"}, ctx,
+    )
+
+    assert seen == ["tomorrow wc game July 18, 2026"]
+    # The model sees the effective query, mirroring vendors exposing their search queries.
+    assert 'Searched as: "tomorrow wc game July 18, 2026"' in out
+
+
+async def test_handler_does_not_annotate_unchanged_queries():
+    seen = []
+
+    async def fake_search(query, domains, recency=None):
+        seen.append(query)
+        return [{"title": "Official", "url": "https://www.nyc.gov/wc", "snippet": "row"}]
+
+    tool = web_search_tools(ALLOW, search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    out = await tool.handler({"query": "world cup schedule"}, ctx)
+
+    assert seen == ["world cup schedule"]
+    assert "Searched as" not in out

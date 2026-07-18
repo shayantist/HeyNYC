@@ -8,6 +8,7 @@ default uses Tavily (which supports include_domains) and degrades gracefully to
 """
 from __future__ import annotations
 
+import re
 from typing import Awaitable, Callable, Optional
 from urllib.parse import urlparse
 
@@ -24,6 +25,46 @@ SearchFn = Callable[..., Awaitable[list[dict]]]
 
 # Tavily's time_range accepts exactly these; anything else falls back to "year".
 _RECENCY_WINDOWS = ("day", "week", "month", "year")
+
+
+# Server-side query normalization, the layer where Gemini and ChatGPT put query understanding
+# (their search backends rescue lazy queries; Tavily does not). Question scaffolding and errand
+# verbs mislead lexical match: audited live, "what to prepare for tomorrow wc game" returned a
+# gardening workshop because "prepare" matched. Civic action verbs (apply, appeal, renew,
+# report) are content and are never stripped.
+# ponytail: English scaffolding only; add Spanish scaffolding when a measured non-English
+# retrieval failure shows the need.
+_QUERY_PREFIX_RE = re.compile(
+    r"^\s*(?:what(?:'s| is| are| should i| to| do i)?|how (?:do|can|should) i|how to|"
+    r"can you|could you|please|tell me|show me|find me|give me|"
+    r"i (?:need|want)(?: to)?|where (?:is|are|can i)|when (?:is|are|does)|"
+    r"is there|are there|the|a|an)\b[\s,:]*",
+    re.IGNORECASE,
+)
+_QUERY_ERRAND_RE = re.compile(
+    r"\b(?:prepare(?: for)?|get ready(?: for)?|ready for|bring(?: to)?|wear(?: to)?|"
+    r"pack(?: for)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_query(query: str) -> str:
+    """Normalize a query to the noun phrases and dates lexical search matches on.
+
+    Applies to EVERY caller through the shared handler: the model's tool calls, the events
+    module's internal lanes, and any future module. Falls back to the original whenever
+    stripping guts the query, so a short or already search-shaped query passes untouched."""
+    text = query.strip()
+    for _ in range(6):
+        stripped = _QUERY_PREFIX_RE.sub("", text, count=1).strip()
+        if stripped == text:
+            break
+        text = stripped
+    text = _QUERY_ERRAND_RE.sub(" ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,.?!")
+    if len(text) < 6 or len(text.split()) < 2:
+        return query.strip()
+    return text
 
 
 def _domain_allowed(url: str, allowlist: list[str]) -> bool:
@@ -125,9 +166,11 @@ def _make_handler(
     """Build a search handler over `domains`, tagging + ranking results by trust tier."""
     async def _handler(args: dict, ctx: ToolContext) -> str:
         prefer = args.get("prefer") or []
+        raw_query = str(args["query"]).strip()
+        query = _rewrite_query(raw_query)
         # `recency` only exists on the recent_developments schema; web_search never sets it (None),
         # and its untimed backend ignores it regardless.
-        results = await search(args["query"], domains, recency=args.get("recency"))
+        results = await search(query, domains, recency=args.get("recency"))
         # Defense in depth: drop anything outside this tool's domain set even if the provider slipped it in.
         results = [r for r in results if r.get("url") and _domain_allowed(r["url"], domains)]
         if not results:
@@ -145,7 +188,10 @@ def _make_handler(
             blocks.append(
                 f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{r.get('snippet','')[:400]}"
             )
-        return "\n\n".join(blocks)
+        # Mirror the vendors' exposed search queries: when the query was rewritten, say so,
+        # so the model can refine its next search instead of re-sending the same sentence.
+        header = f'Searched as: "{query}".\n\n' if query != raw_query else ""
+        return header + "\n\n".join(blocks)
 
     return _handler
 
@@ -205,6 +251,10 @@ def web_search_tools(
             description=(
                 "Search trusted NYC web sources (nyc.gov, nyctourism.com, official event sites, etc.) "
                 "for fresh or long-tail info not in the index, e.g. a specific event this weekend. "
+                "Also your ORIENTATION tool: when a resident reference is ambiguous or abbreviated, "
+                "call this FIRST with a short noun-phrase query (the reference plus at most a date "
+                "or NYC, never their whole sentence) to identify what they mean before choosing "
+                "other tools. "
                 "Restricted to an allowlist and ranked by source trust; results are tagged "
                 "authoritative/editorial/community. Treat community-tagged (⚠️) results as unconfirmed "
                 "and tell the user to verify. Pass `prefer` to boost the active topic's official "
