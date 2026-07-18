@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import pii_crypto
-from .agent import Agent, AgentResult, Conversation
+from .agent import Agent, AgentResult, Conversation, turn_timestamp
 from .citations import used_citations
 from .memory import ContextCapacityError, ContinuityRecord, continuity_reminder
 
@@ -160,13 +160,14 @@ class Session:
                 "record": pending.continuity.model_dump(),
             })
         messages = [
-            {"role": "user", "content": pending.user_message},
+            {"role": "user", "content": pending.user_message, "timestamp": turn_timestamp()},
             {
                 "role": "assistant",
                 "content": pending.result.text,
                 "citations": used_citations(
                     pending.result.text, pending.result.citations,
                 ),
+                "timestamp": turn_timestamp(),
             },
         ]
         self.convo.turns.extend(messages)

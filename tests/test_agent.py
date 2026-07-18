@@ -849,6 +849,8 @@ def test_build_messages_routes_with_the_immediately_prior_exchange():
 
     assert "Preserve the tool's distinction between activated cooling centers" in system_text
     assert "Interpret the latest message using the conversation" in system_text
+    # F062: follow-ups pick up mid-conversation instead of re-announcing settled facts.
+    assert "never re-announce what the conversation has already established" in system_text
 
 
 async def test_notify_awareness_is_checked_for_every_turn(empty_registry):

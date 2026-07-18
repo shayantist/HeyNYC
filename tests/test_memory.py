@@ -146,6 +146,29 @@ def test_prior_assistant_turns_are_labeled_historical_context():
     assert "{cite:" not in messages[0]["content"]
     assert "may be stale" in messages[0]["content"].lower()
     assert "retrieve current evidence" in messages[0]["content"].lower()
+    # F062: the label must also mark the turn as SHARED context the resident already read, so
+    # follow-ups build on it instead of re-introducing it ("You're probably asking about...").
+    assert "shared context" in messages[0]["content"].lower()
+    assert "re-introduce" in messages[0]["content"].lower()
+
+
+def test_stamped_prior_turns_carry_their_sent_time_instead_of_blanket_staleness():
+    """F062 (owner, 2026-07-18): a reply from a minute ago is not 'stale' like one from last
+    week. When a turn carries its `timestamp`, the label states WHEN it was sent and the
+    model weighs it against the current date line — no blanket may-be-stale framing."""
+    history = [{
+        "role": "assistant",
+        "content": "The office closes at 5 p.m. {cite:S1}",
+        "timestamp": "2026-07-15T09:30:00-04:00",
+    }]
+
+    messages = _history_messages(history)
+
+    content = messages[0]["content"]
+    assert "sent 2026-07-15 09:30 ET" in content
+    assert "shared context" in content.lower()
+    assert "retrieve current evidence" in content.lower()
+    assert "may be stale" not in content.lower()
 
 
 def test_prior_assistant_facts_are_not_used_to_build_the_system_prompt():

@@ -100,6 +100,23 @@ async def test_prepared_turn_is_not_visible_or_persisted_until_committed(tmp_pat
     assert path.exists()
 
 
+async def test_committed_turns_are_stamped_and_stamps_survive_reload(tmp_path: Path):
+    """F062: the sent time persists with each turn so a resumed session (hours or days later)
+    labels prior replies with when they were actually sent."""
+    from datetime import datetime
+
+    path = tmp_path / "stamped.jsonl"
+    agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("ok"))
+    session = Session(agent=agent, id="stamped", path=path)
+    await session.send("q1")
+
+    resumed = Session.load(agent, "stamped", path)
+    assert len(resumed.turns) == 2
+    for turn in resumed.turns:
+        sent = datetime.fromisoformat(turn["timestamp"])
+        assert sent.utcoffset() is not None
+
+
 async def test_new_reset_boundary_preserves_audit_file_but_clears_model_history(tmp_path: Path):
     path = tmp_path / "reset.jsonl"
     agent = Agent(Registry([]), tools={}, complete_fn=_const_complete("answer"))

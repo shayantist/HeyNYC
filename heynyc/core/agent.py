@@ -14,6 +14,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import AsyncIterator, Awaitable, Callable, Literal, Optional
 from urllib.parse import urlparse
 
@@ -30,7 +31,7 @@ from .memory import (
     prepare_context,
 )
 from .pii_redaction import redact_pii
-from .prompts import build_system_prompt_tiers
+from .prompts import NYC_TZ, build_system_prompt_tiers
 from .registry import Registry
 from .spend import SpendGuard
 from .telemetry import priced_cost_usd
@@ -1736,13 +1737,39 @@ def _history_messages(history: Optional[list[dict]]) -> list[dict]:
     for message in history or []:
         content = str(message.get("content") or "")
         if message.get("role") == "assistant":
-            content = (
-                "[Earlier assistant reply, kept for conversational continuity. Its facts and "
-                "links may be stale: retrieve current evidence before restating any of them.]\n"
-                + _CITE_STRIP_RE.sub("", content)
-            )
+            sent = _sent_phrase(str(message.get("timestamp") or ""))
+            if sent:
+                label = (
+                    f"[Earlier assistant reply, {sent}. The resident already read it: treat "
+                    "what it establishes as shared context and do not re-introduce or "
+                    "re-explain it. Weigh that time against the current date: retrieve "
+                    "current evidence before restating anything that may have changed since.]\n"
+                )
+            else:
+                label = (
+                    "[Earlier assistant reply. The resident already read it: treat what it "
+                    "establishes as shared context and do not re-introduce or re-explain it. "
+                    "Its facts and links may be stale: retrieve current evidence before "
+                    "restating any of them.]\n"
+                )
+            content = label + _CITE_STRIP_RE.sub("", content)
         messages.append({"role": message.get("role"), "content": content})
     return messages
+
+
+def _sent_phrase(timestamp: str) -> str:
+    """`sent 2026-07-15 09:30 ET` from a turn's ISO timestamp, or "" when absent/unreadable."""
+    try:
+        sent = datetime.fromisoformat(timestamp).astimezone(NYC_TZ)
+    except ValueError:
+        return ""
+    return f"sent {sent.strftime('%Y-%m-%d %H:%M')} ET"
+
+
+def turn_timestamp() -> str:
+    """The ISO NYC-time stamp recorded on each committed turn (F062: the history label states
+    when a reply was sent, so the model weighs real elapsed time instead of a blanket warning)."""
+    return datetime.now(NYC_TZ).isoformat(timespec="seconds")
 
 
 def _is_broad_event_query(user_message: str) -> bool:
@@ -3443,11 +3470,12 @@ class Conversation:
                                       reminders=reminders, output_dir=output_dir, drafts=drafts,
                                       forced_tool=forced_tool, forced_tool_args=forced_tool_args,
                                       excluded_tools=excluded_tools)
-        self.turns.append({"role": "user", "content": user_message})
+        self.turns.append({"role": "user", "content": user_message, "timestamp": turn_timestamp()})
         self.turns.append({
             "role": "assistant",
             "content": result.text,
             "citations": used_citations(result.text, result.citations),
+            "timestamp": turn_timestamp(),
         })
         return result
 
@@ -3463,11 +3491,12 @@ class Conversation:
             if isinstance(event, events.Done) and event.result is not None:
                 final_result = event.result
             yield event
-        self.turns.append({"role": "user", "content": user_message})
+        self.turns.append({"role": "user", "content": user_message, "timestamp": turn_timestamp()})
         self.turns.append({
             "role": "assistant",
             "content": final_result.text if final_result else "",
             "citations": used_citations(
                 final_result.text, final_result.citations,
             ) if final_result else {},
+            "timestamp": turn_timestamp(),
         })
