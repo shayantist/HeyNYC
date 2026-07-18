@@ -97,10 +97,15 @@ EVENT_CONTEXT_ABSTAIN_FALLBACK = (
     "Tell me a borough or a type like music, sports, family, or museums and I'll try a narrower search."
 )
 
+# Deterministic ordinary scope denial (F047). Fail-closed by design: the answer model never runs
+# on a denied turn, so this exact copy is what the resident reads. Keep it warm and concrete, and
+# keep the phrase "I can help with NYC" intact: the eval outcome classifier keys on it to mark the
+# turn `redirected` (see `heynyc/eval/trace.py::_SCOPE_MARKERS`).
 OUT_OF_SCOPE_FALLBACK = (
-    "I'm built to help with NYC services and civic life, so I'm not the right source for that "
-    "broader question. If it affects you in NYC, tell me the concrete local need and I'll help "
-    "find an official, grounded next step."
+    "Honestly, that one's outside what I know well enough to answer, so I'd rather not guess. "
+    "I can help with NYC services and benefits, food, housing, health care, getting around, "
+    "city events, and city alerts. If any part of this touches your life in NYC, tell me that "
+    "part and I'll help you find a grounded next step."
 )
 RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK = (
     "HeyNYC stands for equal dignity and safety, including Palestinian and Jewish safety, "

@@ -193,13 +193,34 @@ async def test_scope_denial_stops_before_main_model_or_tools(empty_registry):
 
     result = await agent.run("Is Taiwan independent?")
 
+    from heynyc.core.agent import OUT_OF_SCOPE_FALLBACK
+
+    assert result.text == OUT_OF_SCOPE_FALLBACK
     assert "NYC" in result.text
-    assert "not the right source" in result.text
     assert result.iterations == 0
     assert result.tool_calls_made == []
     assert result.citations == {}
     assert model_calls == 0
     assert tool_calls == 0
+
+
+def test_ordinary_scope_denial_copy_is_warm_and_stays_fail_closed():
+    from heynyc.core.agent import (
+        OUT_OF_SCOPE_FALLBACK,
+        RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK,
+    )
+    from heynyc.eval.trace import classify_outcome
+
+    copy = OUT_OF_SCOPE_FALLBACK
+    assert "I'm built to" not in copy
+    assert "NYC" in copy
+    assert "tell me" in copy.lower()
+    assert "equal dignity" not in copy
+    assert classify_outcome(copy, "success") == "redirected"
+
+    values = RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK
+    assert "equal dignity" in values
+    assert copy != values
 
 
 async def test_rights_sensitive_scope_denial_declares_civic_values(empty_registry):
