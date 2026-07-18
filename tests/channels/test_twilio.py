@@ -144,6 +144,57 @@ def test_to_inbound_maps_twilio_params():
     assert m.text == "hi" and m.message_id == "SM1" and m.profile_name == "Ada"
 
 
+def test_to_inbound_distinguishes_sms_from_whatsapp():
+    m = to_inbound({
+        "From": "+15551234567",
+        "To": "+18882120042",
+        "Body": "hi",
+        "MessageSid": "SM2",
+    })
+
+    assert m.channel == "sms_twilio"
+
+
+def test_twilio_router_uses_recipient_as_reply_sender_and_rejects_missing_addresses(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from heynyc.channels import twilio
+
+    routed = []
+
+    class Validator:
+        def validate(self, url, params, signature):
+            return True
+
+    class Replier:
+        def __init__(self, client, from_, to, message_id):
+            routed.append((from_, to, message_id))
+
+    monkeypatch.setattr("twilio.request_validator.RequestValidator", lambda token: Validator())
+    monkeypatch.setattr("twilio.rest.Client", lambda sid, token: object())
+    monkeypatch.setattr(twilio, "TwilioReplier", Replier)
+    monkeypatch.setattr(twilio, "dispatch", lambda coro: coro.close())
+
+    app = FastAPI()
+    app.include_router(twilio.make_twilio_router(object()))
+    with TestClient(app) as client:
+        accepted = client.post("/webhook/twilio", data={
+            "From": "+15551234567",
+            "To": "+18882120042",
+            "Body": "hi",
+            "MessageSid": "SM2",
+        })
+        missing_to = client.post("/webhook/twilio", data={
+            "From": "+15551234567",
+            "Body": "hi",
+            "MessageSid": "SM3",
+        })
+
+    assert accepted.status_code == 200
+    assert missing_to.status_code == 400
+    assert routed == [("+18882120042", "+15551234567", "SM2")]
+
+
 def test_to_inbound_maps_twilio_media_without_downloading_it():
     m = to_inbound({
         "From": "whatsapp:+1555",

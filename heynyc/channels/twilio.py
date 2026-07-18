@@ -13,7 +13,6 @@ from .base import InboundMessage, dispatch
 from .format import _split
 from .orchestrator import Deps, handle
 
-CHANNEL = "whatsapp_twilio"
 _TYPING_URL = "https://messaging.twilio.com/v3/Indicators/Typing.json"
 _TEXT_LIMIT = 1600
 _PAGE_PREFIX_RESERVE = 16
@@ -87,9 +86,10 @@ def to_inbound(params: dict) -> InboundMessage:
         for index in range(count)
         if params.get(f"MediaUrl{index}")
     ]
+    sender = params.get("From", "")
     return InboundMessage(
-        channel=CHANNEL,
-        sender=params.get("From", ""),
+        channel="whatsapp_twilio" if sender.startswith("whatsapp:") else "sms_twilio",
+        sender=sender,
         text=params.get("Body", "") or "",
         message_id=params.get("MessageSid", ""),
         profile_name=params.get("ProfileName", "") or "",
@@ -124,9 +124,16 @@ def make_twilio_router(deps: Deps):
         signature = request.headers.get("X-Twilio-Signature", "")
         if not validator.validate(public_url(request), params, signature):
             return Response(status_code=403)
+        sender = params.get("From")
+        recipient = params.get("To")
+        if not sender or not recipient:
+            return Response(status_code=400)
         inbound = to_inbound(params)
         replier = TwilioReplier(
-            client, from_=config.TWILIO_FROM, to=inbound.sender, message_id=inbound.message_id
+            client,
+            from_=recipient,
+            to=sender,
+            message_id=inbound.message_id,
         )
         dispatch(handle(inbound, replier, deps))   # 200 returns fast; agent runs out-of-band
         return Response(status_code=200)
