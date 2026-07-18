@@ -39,3 +39,18 @@ def test_demo_launcher_verifies_public_endpoint_and_required_env():
     assert text.count("https://$DOMAIN/health") >= 2
     assert "public endpoint" in text.lower()
     subprocess.run(["sh", "-n", script], check=True)
+
+
+def test_health_watch_logs_public_endpoint_and_notifies_on_transitions():
+    """F059 follow-up: the dead-man watcher checks the PUBLIC endpoint, appends a timestamped
+    log line, and notifies only on down/up transitions, never every tick."""
+    script = Path(__file__).parents[1] / "scripts" / "health_watch.sh"
+    text = script.read_text()
+
+    assert "https://$DOMAIN/health" in text
+    assert "health.log" in text
+    assert "health.state" in text
+    assert "display notification" in text
+    assert 'if [ "$status" = "FAIL" ] && [ "$prev" = "OK" ]' in text
+    assert 'if [ "$status" = "OK" ] && [ "$prev" = "FAIL" ]' in text
+    subprocess.run(["sh", "-n", script], check=True)
