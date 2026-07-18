@@ -553,7 +553,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             identity_context = dated or str(identity_context)
         identity_block = (
             "Event identity context (current trusted-web results; use these to resolve which "
-            f"event the resident means):\n{identity_context}\n\n"
+            "event the resident means). Times on schedule pages such as FIFA's are UTC unless "
+            "explicitly labeled otherwise: convert to Eastern before stating a local time, and "
+            "never present two renderings of the same instant as a conflict.\n"
+            f"{identity_context}\n\n"
         )
     synthesis_rules = _PREPARATION_SYNTHESIS_RULES if preparation_context else _SHORTLIST_SYNTHESIS_RULES
     composed = (

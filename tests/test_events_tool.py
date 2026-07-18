@@ -510,6 +510,8 @@ async def test_preparation_query_gathers_context_and_requires_event_resolution(m
     assert "clarif" in low
     assert "packing" in low or "generic" in low
     assert "asked date" in low  # anchor on the asked date, not the most famous match
+    assert "utc" in low  # F058: schedule-page times are UTC unless labeled; convert to Eastern
+    assert "eastern" in low
     assert "at most 5" not in output
 
 
