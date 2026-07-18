@@ -20,12 +20,21 @@ from heynyc.core.agent import is_event_preparation_query
 from heynyc.core.index.corpus import clean_html, fetch_clean
 from heynyc.core.ticketmaster import ticketmaster_events
 from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.datasets import query_dataset
+from heynyc.core.tools.datasets import query_dataset, row_url
 from heynyc.core.tools.notify_nyc import _safe_fromstring
 from heynyc.core.tools.official_sources import _relevant_chunks
 
 PARKS_DATASET_ID = "w3wp-dpdi"  # NYC Parks Public Events (clean, upcoming, free/park-focused)
 PARKS_SOURCE_URL = "https://www.nycgovparks.org/events"
+# NYC Permitted Event Information: the public street life (street fairs, farmers markets, block
+# parties, parades, plaza events) the Parks/Ticketmaster lanes structurally miss. The bulk of the
+# dataset is sport field/court reservations (agency "Parks Department"); the street events we want
+# are the "Street Activity Permit Office" agency slice, minus film/TV production load-ins.
+PERMITTED_DATASET_ID = "tvpp-9vvx"
+PERMITTED_AGENCY = "Street Activity Permit Office"
+PERMITTED_SOURCE_URL = (
+    "https://data.cityofnewyork.us/City-Government/NYC-Permitted-Event-Information/tvpp-9vvx"
+)
 NYC_TZ = ZoneInfo("America/New_York")
 _SOURCE_TIMEOUT_S = 8.0
 SECRET_NYC_WEEKEND_URL = "https://secretnyc.co/what-to-do-this-weekend-nyc/"
@@ -40,7 +49,7 @@ class Event:
     venue: str
     borough: str
     url: str
-    source: str  # "Ticketmaster" | "NYC Parks"
+    source: str  # "Ticketmaster" | "NYC Parks" | "NYC Permitted Events"
     tier: str    # authoritative | editorial | community
 
 
@@ -90,9 +99,46 @@ def _from_parks(raw: dict) -> Optional[Event]:
     )
 
 
+def _from_permitted(raw: dict) -> Optional[Event]:
+    name = raw.get("event_name") or ""
+    # No status column exists on this permit dataset, so mirror the Parks/Ticketmaster
+    # cancellation discipline off the name: a permit marked cancelled/postponed is not happening.
+    if name.lower().startswith(("cancelled", "canceled", "postponed")):
+        return None
+    start_date = _iso_date(raw.get("start_date_time"))
+    if not start_date:
+        return None
+    raw_start = str(raw.get("start_date_time") or "")
+    start_time = raw_start[11:16] if len(raw_start) >= 16 else ""  # "HH:MM" from the ISO stamp
+    row_id = str(raw.get(":id") or "")
+    return Event(
+        name=name, start_date=start_date, start_time=start_time,
+        venue=raw.get("event_location") or "", borough=raw.get("event_borough") or "",
+        url=row_url(PERMITTED_DATASET_ID, row_id) if row_id else PERMITTED_SOURCE_URL,
+        source="NYC Permitted Events", tier="authoritative",
+    )
+
+
 def _future_only(events: list[Event], today: str) -> list[Event]:
     """Keep only events on/after `today` (ISO YYYY-MM-DD string compare is correct here)."""
     return [e for e in events if e.start_date >= today]
+
+
+def _shortlist(events: list[Event], limit: int) -> list[Event]:
+    """Cap the merged lanes without letting append order (Ticketmaster, then Parks, then
+    permitted) saturate the cap. A broad weekend query collapses ~70 Ticketmaster+Parks rows
+    onto the window's one or two dates; a plain stable date sort then breaks every tie by lane
+    order and `[:limit]` truncates the last-appended permitted lane to zero. Instead rank each
+    event within its own source by date, then order by that rank so every source's soonest
+    events compete before any source's later ones (ties break on date)."""
+    seen: dict[str, int] = {}
+    ranked: list[tuple[int, str, Event]] = []
+    for event in sorted(events, key=lambda e: e.start_date):
+        rank = seen.get(event.source, 0)
+        seen[event.source] = rank + 1
+        ranked.append((rank, event.start_date, event))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [event for _, _, event in ranked[:limit]]
 
 
 def _requested_window(query: str, today: str) -> tuple[str, str | None]:
@@ -127,7 +173,8 @@ def _requested_window(query: str, today: str) -> tuple[str, str | None]:
 
 
 _NO_RESULTS = (
-    "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks). "
+    "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
+    "NYC Permitted Events). "
     "Don't invent events, tell the user nothing grounded came up and suggest they check the "
     "official source directly."
 )
@@ -368,6 +415,36 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             q=keyword, limit=50, client=ctx.http,
         )
 
+    # Select the public street-event slice by the dataset's own agency/type FIELDS (never by
+    # matching event names): the "Street Activity Permit Office" agency drops the ~6.5k/week Parks
+    # sport reservations, and excluding "Production Event" drops the film/TV load-ins.
+    # ponytail: window is start-date-in-window (mirrors the Parks lane). A season-long single
+    # permit that started before the window (a summer-long farmers market) is missed; most rows
+    # are per-occurrence so this catches ~89% of active street events. Add overlap logic only if
+    # the season-permit miss proves material.
+    permitted_where = (
+        f"event_agency = '{PERMITTED_AGENCY}' AND event_type != 'Production Event' "
+        f"AND start_date_time >= '{window_start}'"
+        + (f" AND start_date_time <= '{window_end}T23:59:59'" if window_end else "")
+    )
+
+    async def permitted_source():
+        rows = await query_dataset(
+            PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
+            q=keyword, limit=50, client=ctx.http,
+        )
+        # A stuffed keyword full-text-matches zero permit names ("street fairs farmers
+        # markets" vs "Inwood Greenmarket") while Ticketmaster still returns rows, so the
+        # all-lanes-empty retry never fires (observed live 2026-07-18). The agency+window
+        # WHERE already bounds this slice to the week's public street events, so retry
+        # once unkeyworded and let the shortlist and the model select.
+        if not rows and keyword:
+            rows = await query_dataset(
+                PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
+                limit=50, client=ctx.http,
+            )
+        return rows
+
     # The semantic scope-preflight flag arrives via ToolContext; the regex predicate stays as
     # the fallback for direct tool use without the preflight. A deterministically broad
     # what's-happening query keeps the shortlist rules even when the flag over-fires.
@@ -379,6 +456,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     sources = [
         ("ticketmaster", ticketmaster_source()),
         ("parks", parks_source()),
+        ("permitted", permitted_source()),
     ]
     if broad_context:
         sources.append(("editorial_guides", _editorial_context(ctx, window_start, window_end)))
@@ -439,8 +517,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     results = dict(zip((name for name, _ in sources), gathered))
     raw_tm = [] if isinstance(results["ticketmaster"], BaseException) else results["ticketmaster"]
     raw_parks = [] if isinstance(results["parks"], BaseException) else results["parks"]
+    raw_permitted = [] if isinstance(results["permitted"], BaseException) else results["permitted"]
     events = [e for e in (_from_ticketmaster(r) for r in raw_tm) if e]
     events += [e for e in (_from_parks(r) for r in raw_parks) if e]
+    events += [e for e in (_from_permitted(r) for r in raw_permitted) if e]
 
     def _window_filter(rows: list[Event]) -> list[Event]:
         kept = _future_only(rows, window_start)
@@ -451,8 +531,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             kept = _tonight_only(kept, now)
         if borough:
             kept = [e for e in kept if borough in e.borough.lower()] or kept
-        kept.sort(key=lambda e: e.start_date)
-        return kept[:limit]
+        return _shortlist(kept, limit)
 
     events = _window_filter(events)
     broadened = False
@@ -460,7 +539,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         # A stuffed keyword phrase can full-text-match nothing while the window alone holds
         # the rows (observed live). Retry the two catalog lanes once without the keyword and
         # let the window, free, and borough filters do the selection.
-        retry_tm, retry_parks = await asyncio.gather(
+        retry_tm, retry_parks, retry_permitted = await asyncio.gather(
             asyncio.wait_for(ticketmaster_events(
                 keyword=None, classification=classification, start_datetime=start_dt,
                 size=20, client=ctx.http,
@@ -473,6 +552,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 ),
                 order="startdate", q=None, limit=50, client=ctx.http,
             ), timeout=_SOURCE_TIMEOUT_S),
+            asyncio.wait_for(query_dataset(
+                PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
+                q=None, limit=50, client=ctx.http,
+            ), timeout=_SOURCE_TIMEOUT_S),
             return_exceptions=True,
         )
         retried = [] if isinstance(retry_tm, BaseException) else [
@@ -480,6 +563,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         ]
         retried += [] if isinstance(retry_parks, BaseException) else [
             e for e in (_from_parks(r) for r in retry_parks) if e
+        ]
+        retried += [] if isinstance(retry_permitted, BaseException) else [
+            e for e in (_from_permitted(r) for r in retry_permitted) if e
         ]
         events = _window_filter(retried)
         broadened = bool(events)
@@ -512,7 +598,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
     header = (
         f"{broadened_note}"
-        f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks). "
+        f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
+        "NYC Permitted Events, the Street Activity Permit Office feed of street fairs, farmers "
+        "markets, block parties, parades, and plaza events). "
         "Each links to its official page, cite them and don't add events that aren't listed here:\n"
     )
     catalog = header + "\n".join(blocks) if blocks else _NO_RESULTS
@@ -588,7 +676,9 @@ def get_tools() -> list[Tool]:
             name="whats_on_events",
             description=(
                 "Find upcoming NYC events (concerts, sports, festivals, free park events, watch "
-                "parties) from live Ticketmaster, NYC Parks, current editorial guides, and trusted "
+                "parties, plus street fairs, farmers markets, block parties, parades, and plaza "
+                "events from the city permitted-events feed) from live Ticketmaster, NYC Parks, "
+                "NYC Permitted Events, current editorial guides, and trusted "
                 "web sources. Pass `keyword` (e.g. "
                 "'world cup', 'jazz'), optional `classification` (Music/Sports/Arts & Theatre), "
                 "and optional `borough`. Returns grounded, dated, linked listings, future events "

@@ -85,6 +85,49 @@ def test_from_parks_drops_malformed_date():
     assert _from_parks({"title": "Bad upstream row", "startdate": "not-a-date"}) is None
 
 
+def test_from_permitted_maps_sapo_fields():
+    raw = {
+        "event_id": "914332",
+        "event_name": "HHFM Jacobi Hospital Market",
+        "start_date_time": "2026-07-18T08:00:00.000",
+        "end_date_time": "2026-07-18T15:00:00.000",
+        "event_agency": "Street Activity Permit Office",
+        "event_type": "Farmers Market",
+        "event_borough": "Bronx",
+        "event_location": "PELHAM PARKWAY SOUTH between WILSON AVENUE and EASTCHESTER ROAD",
+        ":id": "row-7m8x~wksu-hgwb",
+    }
+    ev = events._from_permitted(raw)
+    assert ev.name == "HHFM Jacobi Hospital Market"
+    assert ev.start_date == "2026-07-18"
+    assert ev.start_time == "08:00"  # HH:MM lifted from the ISO start_date_time
+    assert ev.venue == "PELHAM PARKWAY SOUTH between WILSON AVENUE and EASTCHESTER ROAD"
+    assert ev.borough == "Bronx"
+    assert ev.source == "NYC Permitted Events" and ev.tier == "authoritative"
+    # DATA citation points at the re-fetchable Socrata row permalink for this dataset.
+    assert "tvpp-9vvx" in ev.url and "row-7m8x~wksu-hgwb" in ev.url
+
+
+def test_from_permitted_drops_dateless_and_mirrors_cancellation_discipline():
+    assert events._from_permitted({"event_name": "No date"}) is None
+    assert events._from_permitted({"event_name": "Bad", "start_date_time": "nope"}) is None
+    # The permit dataset carries no status column, so mirror the Parks/Ticketmaster discipline:
+    # a permit whose name marks it cancelled/postponed is not recommended as happening.
+    for name in ("CANCELLED: Block Party", "Canceled Street Fair", "POSTPONED Parade"):
+        assert events._from_permitted({
+            "event_name": name, "start_date_time": "2026-07-19T10:00:00.000",
+        }) is None
+
+
+def test_from_permitted_falls_back_to_dataset_page_without_row_id():
+    ev = events._from_permitted({
+        "event_name": None, "start_date_time": "2026-07-19T10:00:00.000",
+    })
+    assert ev is not None
+    assert ev.name == ""
+    assert ev.url == events.PERMITTED_SOURCE_URL
+
+
 def test_future_only_filters_past():
     past = Event("old", "2026-06-01", "", "", "", "u", "NYC Parks", "authoritative")
     future = Event("new", "2026-07-19", "", "", "", "u", "NYC Parks", "authoritative")
@@ -588,3 +631,172 @@ async def test_filtered_lane_citations_are_pruned(monkeypatch):
     assert kept_ids, "windowed-in citation survives"
     assert not orphan_ids, "windowed-out citation is pruned"
     assert "Kept row" in output
+
+
+async def test_whats_on_events_includes_permitted_street_events():
+    """The permitted-events lane surfaces a Street Activity Permit Office row (street fair /
+    farmers market) our Ticketmaster + Parks lanes structurally miss, cited to its Socrata row."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "ticketmaster" in request.url.host:
+            return httpx.Response(200, json={"_embedded": {"events": []}})
+        if events.PERMITTED_DATASET_ID in request.url.path:
+            return httpx.Response(200, json=[{
+                "event_id": "931866",
+                "event_name": "Inwood Greenmarket",
+                "start_date_time": "2099-07-18T08:00:00.000",
+                "end_date_time": "2099-07-18T15:00:00.000",
+                "event_agency": "Street Activity Permit Office",
+                "event_type": "Farmers Market",
+                "event_borough": "Manhattan",
+                "event_location": "ISHAM STREET between COOPER STREET and SEAMAN AVENUE",
+                ":id": "row-abcd-1234",
+            }])
+        return httpx.Response(200, json=[])  # Parks: empty
+
+    citations = CitationRegistry()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ctx = ToolContext(
+            citations=citations, registry=Registry([]), http=client, query="any street fairs",
+        )
+        out = await get_tools()[0].handler({}, ctx)
+
+    assert "Inwood Greenmarket" in out
+    assert "NYC Permitted Events" in out
+    assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
+
+
+async def test_permitted_lane_filters_sport_noise_by_agency_field_not_event_name(monkeypatch):
+    """Hard rule: cut the ~6.5k/week sport-reservation noise by the dataset's own agency/type
+    fields, never by keyword-matching event names."""
+    captured: dict[str, object] = {}
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id == events.PERMITTED_DATASET_ID:
+            captured["where"] = kwargs.get("where")
+        return []
+
+    async def fake_tm(**kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_tm)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="any street fairs",
+    )
+
+    await get_tools()[0].handler({}, ctx)
+
+    where = captured["where"]
+    assert "event_agency" in where and "Street Activity Permit Office" in where
+    assert "Production Event" in where          # exclude the production/load-in noise by type
+    assert "event_name" not in where            # never keyword-match event names
+
+
+async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_parks(monkeypatch):
+    """Live gap: a broad no-keyword weekend query collapses ~70 Ticketmaster+Parks rows onto the
+    weekend's one or two dates, so a plain date sort (stable, last-appended lane loses) truncates
+    the permitted lane to zero before the cap. The merged shortlist must seat at least one
+    permitted street-event row alongside the Ticketmaster and Parks rows."""
+    today = events.datetime.now(events.NYC_TZ).strftime("%Y-%m-%d")
+    window_start, _window_end = events._requested_window("what's happening this weekend", today)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "ticketmaster" in request.url.host:
+            # Enough same-date rows to saturate the default cap of 12 on their own.
+            return httpx.Response(200, json={"_embedded": {"events": [
+                {
+                    "name": f"Ticketmaster Show {i}",
+                    "url": f"https://www.ticketmaster.com/event/{i}",
+                    "dates": {"start": {"localDate": window_start, "localTime": "20:00:00"}},
+                    "_embedded": {"venues": [{"name": "Arena", "city": {"name": "New York"}}]},
+                }
+                for i in range(12)
+            ]}})
+        if events.PERMITTED_DATASET_ID in request.url.path:
+            return httpx.Response(200, json=[{
+                "event_id": "931866",
+                "event_name": "Inwood Greenmarket",
+                "start_date_time": f"{window_start}T08:00:00.000",
+                "event_agency": "Street Activity Permit Office",
+                "event_type": "Farmers Market",
+                "event_borough": "Manhattan",
+                "event_location": "ISHAM STREET between COOPER STREET and SEAMAN AVENUE",
+                ":id": "row-abcd-1234",
+            }])
+        # Parks: two same-date rows.
+        return httpx.Response(200, json=[
+            {"title": "Parks Concert", "startdate": f"{window_start}T00:00:00.000",
+             "starttime": "10:00 am", "parknames": "Central Park",
+             "link": {"url": "http://www.nycgovparks.org/events/a"}},
+            {"title": "Parks Movie Night", "startdate": f"{window_start}T00:00:00.000",
+             "starttime": "8:00 pm", "parknames": "Prospect Park",
+             "link": {"url": "http://www.nycgovparks.org/events/b"}},
+        ])
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+
+    citations = CitationRegistry()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ctx = ToolContext(
+            citations=citations, registry=Registry([]), http=client,
+            query="what's happening this weekend",
+        )
+        out = await get_tools()[0].handler({}, ctx)
+
+    assert "Inwood Greenmarket" in out          # permitted row competes despite the cap
+    assert "Ticketmaster Show" in out            # alongside Ticketmaster
+    assert "Parks" in out                        # and Parks
+    assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
+
+
+async def test_stuffed_keyword_zeroing_permitted_lane_falls_back_unkeyworded(monkeypatch):
+    """Live gap (2026-07-18): the model's stuffed keyword ("street fairs farmers markets")
+    full-text-matches ZERO permit names ("Inwood Greenmarket") while Ticketmaster still returns
+    rows — so the all-lanes-empty retry never fires and street events vanish. The permitted lane
+    must retry once WITHOUT the keyword; its agency+window filters already bound the slice."""
+    today = events.datetime.now(events.NYC_TZ).strftime("%Y-%m-%d")
+    window_start, _window_end = events._requested_window("this weekend", today)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "ticketmaster" in request.url.host:
+            return httpx.Response(200, json={"_embedded": {"events": [{
+                "name": "Street Beats Concert",
+                "url": "https://www.ticketmaster.com/event/1",
+                "dates": {"start": {"localDate": window_start, "localTime": "20:00:00"}},
+                "_embedded": {"venues": [{"name": "Arena", "city": {"name": "New York"}}]},
+            }]}})
+        if events.PERMITTED_DATASET_ID in request.url.path:
+            if request.url.params.get("$q"):
+                return httpx.Response(200, json=[])   # stuffed keyword matches no permit name
+            return httpx.Response(200, json=[{
+                "event_id": "931866",
+                "event_name": "Inwood Greenmarket",
+                "start_date_time": f"{window_start}T08:00:00.000",
+                "event_agency": "Street Activity Permit Office",
+                "event_type": "Farmers Market",
+                "event_borough": "Manhattan",
+                "event_location": "ISHAM STREET between COOPER STREET and SEAMAN AVENUE",
+                ":id": "row-abcd-1234",
+            }])
+        return httpx.Response(200, json=[])          # Parks: nothing for this keyword
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+
+    citations = CitationRegistry()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ctx = ToolContext(
+            citations=citations, registry=Registry([]), http=client,
+            query="any street fairs or farmers markets in nyc this weekend?",
+        )
+        out = await get_tools()[0].handler({"keyword": "street fairs farmers markets"}, ctx)
+
+    assert "Inwood Greenmarket" in out
+    assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
