@@ -36,6 +36,16 @@ def test_system_prompt_teaches_orient_then_verify():
     assert "then" in low and "evidence" in low
 
 
+def test_system_prompt_bans_internal_jargon_in_replies():
+    """Observed live: the assistant told a resident about its 'grounded NYC match-related
+    item'. Plumbing words stay out of resident-facing copy."""
+    prompt = build_system_prompt(Registry([]))
+    low = prompt.lower()
+    assert "grounded" in low  # the internal rules still use the concept
+    assert "never say" in low or "plumbing" in low or "internal words" in low
+    assert '"grounded"' in prompt  # the ban names the exact word residents saw
+
+
 def test_system_prompt_includes_active_recency_check():
     # The freshness guard goes from passive date-stamping to an ACTIVE recency check: on
     # time-sensitive law/policy/rights questions the agent must run recent_developments and
