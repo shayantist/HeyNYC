@@ -138,7 +138,7 @@ async def test_broad_event_turn_forces_advisory_check_when_notifications_exist(
     result = await agent.run("What events are happening in NYC this weekend?")
 
     assert forced == ["nyc_advisories", None]
-    assert received_args == [{}]
+    assert received_args == [{"incidental": True}]
     assert result.tool_calls_made == ["nyc_advisories"]
 
 

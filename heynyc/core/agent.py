@@ -2965,7 +2965,9 @@ class Agent:
             # F061: keyed on the EXISTENCE of same-day notifications, never on parsing their
             # wording — the full report comes back cited and the model judges what's material.
             initial_forced_tool = "nyc_advisories"
-            initial_forced_args = {}
+            # `incidental` marks this as OUR check, not the resident's question: an empty
+            # result then returns nothing at all instead of prose for the model to narrate
+            initial_forced_args = {"incidental": True}
 
         if forced_tool and forced_tool not in self.tools:
             message_id = "m0"

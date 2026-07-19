@@ -457,13 +457,17 @@ async def test_current_awareness_fetches_recent_messages_each_turn(monkeypatch):
     assert calls == 2
 
 
-def test_no_active_result_tells_the_model_to_stay_silent_unless_asked():
+async def test_incidental_check_with_nothing_active_returns_nothing_to_narrate():
     """F067: a preparation turn's forced advisories check came back empty and the model narrated
     the null result ("One important update: ... no active advisories") as if it were news. The
-    empty result must instruct: report plainly ONLY when the resident asked about alerts;
-    otherwise say nothing about the check at all."""
-    assert "asked about alerts" in advisory_tools.NO_ACTIVE
-    assert "say nothing" in advisory_tools.NO_ACTIVE
+    agent tags its own forced checks `incidental`; an incidental check finding nothing returns
+    an EMPTY result, so there is nothing to narrate. A resident who asked still gets NO_ACTIVE."""
+    rss = _rss(_item("Old (English)", "NYCEM [English]", "g-old", "expired.xml"))
+    client = _client(rss, {"expired.xml": CAP_EXPIRED})
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"incidental": True}, ctx)
+    await client.aclose()
+    assert out == ""
 
 
 def test_recent_awareness_carries_notice_text_without_scope_parsing():

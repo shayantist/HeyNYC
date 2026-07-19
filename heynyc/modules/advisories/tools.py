@@ -39,11 +39,10 @@ NYC_TZ = ZoneInfo("America/New_York")
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
 # state may tell the user there are no active advisories.
 NO_ACTIVE = (
-    "The Notify NYC feed was reached and read, and it shows no advisories active right now. If the "
-    "resident asked about alerts or advisories, tell them plainly there are no active Notify NYC advisories at the moment "
-    f"(this is the public Notify NYC feed, not the whole picture) and point them to {OFFICIAL}. If "
-    "this check was incidental to another question, say nothing about it — an empty check is not "
-    "news and never an 'update'. Do NOT invent an advisory."
+    "The Notify NYC feed was reached and read, and it shows no advisories active right now. Tell the "
+    "user there are no active Notify NYC advisories at the moment (this is the public Notify NYC feed, "
+    f"not the whole picture) and point them to {OFFICIAL}. Do NOT invent an advisory. Offer to check "
+    "again."
 )
 
 # DEGRADED / FAIL-SAFE: the feed was unreachable, errored, empty, or unreadable. We could NOT confirm
@@ -260,6 +259,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     if feed.confirmed:
         if recent.confirmed and recent_notes:
             return _render_recent_additions(ctx, recent_notes)
+        # F067: our own forced game-day/prep check finding nothing is not news — return
+        # nothing so there is no null result for the model to narrate as an "update".
+        # A resident who actually asked gets the plain NO_ACTIVE answer.
+        if args.get("incidental"):
+            return ""
         return NO_ACTIVE
 
     # CAP feed DEGRADED (unreachable / empty body / unreadable), so do NOT trust its emptiness as an
