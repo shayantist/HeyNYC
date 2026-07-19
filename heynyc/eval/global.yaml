@@ -95,3 +95,32 @@
     to repeat their original question.
   notes: Exercises the restored assistant history plus the reply-language rule together; the
     resident asked to reuse what was said, which is exactly what F052 made possible again.
+
+- id: convo_past_tense_identity_not_trivia
+  turns:
+    - "whats the game tm"
+    - "what game happened today"
+  abstain: false
+  capability: conversation
+  tags: [F066, conversation]
+  utility_criterion: >-
+    The past-tense follow-up asks WHICH event happened, the same identity question the first
+    turn answered in future tense, about the event this conversation is already discussing.
+    It must be answered with the event's identity from current sources, never the out-of-scope
+    denial. Scores, winners, and match results must still not be stated.
+  notes: F066, found live 2026-07-18. Tense must never flip an event-identity question into
+    trivia, especially mid-conversation.
+
+- id: convo_incidental_empty_check_stays_silent
+  turns:
+    - "what to prepare for tomorrows parade"
+  expect_tools: [whats_on_events]
+  abstain: false
+  capability: conversation
+  tags: [F067, conversation]
+  utility_criterion: >-
+    When the automatic advisories check behind a preparation answer finds nothing active, the
+    reply must not mention alerts, advisories, or the check at all — no "no active advisories
+    right now" framed as an update the resident never asked for. If an advisory IS active it
+    may be surfaced; silence is only required about EMPTY checks.
+  notes: F067, found live 2026-07-18. An empty incidental check is not news.
