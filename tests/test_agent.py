@@ -2789,6 +2789,67 @@ def test_lockout_backstop_distinguishes_owner_request_from_active_tenant():
     assert _lockout_grounded_backstop("Estoy afuera", {"S1": citations["S1"]}) is None
 
 
+async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeypatch):
+    """F063: the scope model over-flags a plain no-heat complaint as `active_lockout`, but the
+    deterministic Call-911 lockout backstop must NOT replace the model's grounded no-heat answer.
+    The ordinary no-heat path (a 311 heat complaint) has to reach the model."""
+    from pathlib import Path
+
+    from heynyc.core.agent import ScopeResult
+
+    registry = Registry.discover(Path("heynyc/modules"))
+
+    async def official_sources(args, ctx):
+        # The forced active_lockout retrieval captures the two sources the backstop keys on.
+        ctx.citations.register(
+            "https://portal.311.nyc.gov/article/?kanumber=KA-02518",
+            snippet="Illegal Eviction or Lockout", title="NYC311", kind="DOC",
+        )
+        ctx.citations.register(
+            "https://home4.nyc.gov/site/hpd/services-and-information/"
+            "tenants-rights-and-responsibilities.page",
+            snippet="Tenants' Rights and Responsibilities", title="HPD", kind="DOC",
+        )
+        return "current official illegal-lockout guidance"
+
+    tools = {
+        "official_sources": Tool(
+            "official_sources", "x",
+            {"type": "object", "properties": {
+                "urls": {"type": "array", "items": {"type": "string"}},
+                "query": {"type": "string"}}},
+            official_sources,
+        ),
+        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+    }
+
+    async def scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test",
+            modules=("housing",), situations=("active_lockout",),
+        )
+
+    responses = [
+        _assistant(tool_calls=[_tool_call("official_sources", {"urls": ["x"], "query": "heat"})]),
+        _assistant(content=("File a 311 heat complaint. NYC heat season runs October 1 to "
+                            "May 31 {cite:S1}.")),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent = Agent(registry, tools=tools, scope_fn=scope)
+    monkeypatch.setattr(agent, "_litellm_stream", fake_litellm)
+
+    result = await agent.run(
+        "It's January and my landlord turned off the heat in my apartment. What do I do?"
+    )
+
+    assert not result.text.startswith("Call 911 right now to report the illegal lockout")
+    assert "311" in result.text
+
+
 def test_immigrant_benefits_answer_requires_current_program_distinctions():
     from heynyc.core.agent import _required_scope_feedback
 

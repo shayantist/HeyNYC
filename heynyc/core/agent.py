@@ -2921,8 +2921,15 @@ class Agent:
             if high is not None:
                 _module_name, hint = high
                 if hint.name == "active_lockout":
-                    lockout_turn = True  # the deterministic lockout floors key off this
                     current_source_required = True
+                    # F063: the manifest active_lockout definition is broad enough that the
+                    # scope model flags a plain no-heat complaint. Engage the deterministic
+                    # lockout FLOOR (the Call-911 feedback + backstop) only when the message
+                    # itself reads as an active lockout or coercive shutoff, never on the
+                    # broader essential-services reading, so an ordinary no-heat turn keeps the
+                    # forced official retrieval but reaches the model for its grounded answer.
+                    if _needs_current_lockout_guidance(user_message):
+                        lockout_turn = True  # the deterministic lockout floors key off this
                 if initial_forced_tool is None and has_current_source and hint.query:
                     initial_forced_tool, initial_forced_args = _current_source_call(
                         self.tools, hint.query, tuple(hint.urls),
