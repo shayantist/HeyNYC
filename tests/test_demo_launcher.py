@@ -8,7 +8,8 @@ def test_demo_launcher_uses_stable_domain_and_production_sender():
 
     assert "nonepiscopal-inspiredly-sarai.ngrok-free.dev" in text
     assert "whatsapp:+18882120042" in text
-    assert 'HEYNYC_MODEL="openai/gpt-5.4-mini"' in text
+    assert 'HEYNYC_MODEL="openai/gpt-5.6-luna"' in text
+    assert 'HEYNYC_REASONING_EFFORT="medium"' in text  # the benched config, never a default
     assert "--port 8791" in text
     assert " 8791" in text
     assert "127.0.0.1:8791/health" in text

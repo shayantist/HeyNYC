@@ -2223,7 +2223,9 @@ class Agent:
         reasoning_effort: Optional[str] = None,
     ):
         self.registry = registry
-        self._reasoning_effort = reasoning_effort
+        self._reasoning_effort = (
+            reasoning_effort if reasoning_effort is not None else config.HEYNYC_REASONING_EFFORT
+        )
         self._embedder = getattr(index, "embedder", None)  # shared with retrieval-using module tools
         self.tools = tools if tools is not None else build_toolbox(registry, index=index)
         self.model = model or DEFAULT_MODEL
@@ -3447,8 +3449,6 @@ def _completion_kwargs(
         kwargs["temperature"] = 0.0
     if tool_schemas:
         kwargs["tools"] = tool_schemas
-        if "gpt-5.6-luna" in model:
-            kwargs["reasoning_effort"] = "none"
         if forced_tool:
             kwargs["tool_choice"] = {
                 "type": "function", "function": {"name": forced_tool},

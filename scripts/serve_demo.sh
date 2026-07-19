@@ -7,7 +7,10 @@ cd "$(dirname "$0")/.."
 DOMAIN="${HEYNYC_NGROK_DOMAIN:-nonepiscopal-inspiredly-sarai.ngrok-free.dev}"
 export TWILIO_WHATSAPP_FROM="whatsapp:+18882120042"
 export TWILIO_FROM="$TWILIO_WHATSAPP_FROM"
-export HEYNYC_MODEL="openai/gpt-5.4-mini"
+# RULED 2026-07-18: luna-medium is the benched production configuration (model-comparison.md);
+# at low/none luna loses exactly the clock-reading and thread-holding that justify its cost
+export HEYNYC_MODEL="openai/gpt-5.6-luna"
+export HEYNYC_REASONING_EFFORT="medium"
 
 # Load the ignored .env when present so `sh scripts/serve_demo.sh` just works; the parent
 # shell's own exports still win because .env values only fill what sourcing sets.

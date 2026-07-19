@@ -803,10 +803,10 @@ def test_reasoning_effort_is_plumbed_and_overrides_the_luna_default():
     from heynyc.core.agent import _completion_kwargs
 
     tool = [{"type": "function", "function": {"name": "t", "parameters": {}}}]
-    # Current production defaults, unchanged: mini sends nothing (provider default),
-    # luna is pinned to none on tool turns.
+    # RULED 2026-07-18: the luna none pin is DEAD — it made a luna switch pointless (mini
+    # behavior at luna prices, measured). No model gets an implicit effort; explicit only.
     assert "reasoning_effort" not in _completion_kwargs("openai/gpt-5.4-mini", [], tool)
-    assert _completion_kwargs("openai/gpt-5.6-luna", [], tool)["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in _completion_kwargs("openai/gpt-5.6-luna", [], tool)
     # An explicit effort reaches the call and beats the luna pin — the bench's effort axis.
     high = _completion_kwargs("openai/gpt-5.4-mini", [], tool, reasoning_effort="xhigh")
     assert high["reasoning_effort"] == "xhigh"
@@ -815,6 +815,23 @@ def test_reasoning_effort_is_plumbed_and_overrides_the_luna_default():
     # Effort applies on tool-free turns too.
     bare = _completion_kwargs("openai/gpt-5.4-mini", [], [], reasoning_effort="low")
     assert bare["reasoning_effort"] == "low"
+
+
+def test_agent_inherits_reasoning_effort_from_config(empty_registry, monkeypatch):
+    """The deployment sets HEYNYC_REASONING_EFFORT beside HEYNYC_MODEL so production runs the
+    BENCHED configuration (luna-medium), not a provider default nobody measured."""
+    from heynyc.core import config as core_config
+
+    async def complete(messages, tool_schemas):
+        return _assistant(content="ok")
+
+    monkeypatch.setattr(core_config, "HEYNYC_REASONING_EFFORT", "medium")
+    agent = Agent(empty_registry, tools={}, complete_fn=complete)
+    assert agent._reasoning_effort == "medium"
+    explicit = Agent(
+        empty_registry, tools={}, complete_fn=complete, reasoning_effort="low",
+    )
+    assert explicit._reasoning_effort == "low"
 
 
 async def test_conversation_turns_are_stamped_with_nyc_time(empty_registry):
@@ -1925,15 +1942,6 @@ def test_completion_kwargs_omits_temperature_for_gpt5_models():
 
     kw = _completion_kwargs("openai/gpt-5-mini", messages=[], tool_schemas=[])
     assert "temperature" not in kw
-
-
-def test_completion_kwargs_disables_luna_reasoning_for_chat_tools():
-    from heynyc.core.agent import _completion_kwargs
-
-    schema = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
-    kw = _completion_kwargs("openai/gpt-5.6-luna", messages=[], tool_schemas=schema)
-
-    assert kw["reasoning_effort"] == "none"
 
 
 def test_completion_kwargs_pins_temperature_zero_for_non_gpt5():

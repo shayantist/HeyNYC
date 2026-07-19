@@ -14,6 +14,11 @@ HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
 # Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
 # the resident-answer model; deployments can override it independently.
 HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.4-nano")
+# Reasoning effort for the ANSWER model, set beside HEYNYC_MODEL so production runs the benched
+# configuration (2026-07-18: luna-medium is the measured recommendation; at low/none luna loses
+# the clock-reading and thread-holding that justify its cost). Unset means the provider default,
+# and it is never sent for models where the deployment leaves it blank.
+HEYNYC_REASONING_EFFORT = os.getenv("HEYNYC_REASONING_EFFORT") or None
 # Structured continuity compaction runs only when measured context pressure requires it.
 HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
 # Context window for self-hosted Ollama models. Ollama defaults to ~2-4K tokens, which silently
