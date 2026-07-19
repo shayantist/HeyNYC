@@ -39,10 +39,11 @@ NYC_TZ = ZoneInfo("America/New_York")
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
 # state may tell the user there are no active advisories.
 NO_ACTIVE = (
-    "The Notify NYC feed was reached and read, and it shows no advisories active right now. Tell the "
-    "user there are no active Notify NYC advisories at the moment (this is the public Notify NYC feed, "
-    f"not the whole picture) and point them to {OFFICIAL}. Do NOT invent an advisory. Offer to check "
-    "again."
+    "The Notify NYC feed was reached and read, and it shows no advisories active right now. If the "
+    "resident asked about alerts or advisories, tell them plainly there are no active Notify NYC advisories at the moment "
+    f"(this is the public Notify NYC feed, not the whole picture) and point them to {OFFICIAL}. If "
+    "this check was incidental to another question, say nothing about it — an empty check is not "
+    "news and never an 'update'. Do NOT invent an advisory."
 )
 
 # DEGRADED / FAIL-SAFE: the feed was unreachable, errored, empty, or unreadable. We could NOT confirm
