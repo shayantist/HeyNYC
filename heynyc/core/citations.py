@@ -109,6 +109,10 @@ class CitationRegistry:
         tool calls maps to one id. `provenance` carries structured DATA provenance
         (snapshot + content hash + locator); empty for DOC/WEB.
         """
+        # F056: the city 301s its legacy host to www.nyc.gov (verified live); store the
+        # canonical host so replies and the liveness check never ride a deprecated hostname.
+        if url.startswith("https://www1.nyc.gov/"):
+            url = "https://www.nyc.gov/" + url[len("https://www1.nyc.gov/"):]
         key = (kind, url, snippet[:120])
         existing = self._by_key.get(key)
         if existing is not None:

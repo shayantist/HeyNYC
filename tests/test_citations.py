@@ -175,3 +175,14 @@ def test_discard_removes_citations_without_reusing_ids():
     s3 = registry.register("https://c.example", snippet="new after discard")
     assert s3 != s2
     assert registry.mapping()[s3]["url"] == "https://c.example"
+
+
+def test_legacy_nyc_gov_hosts_normalize_at_registration():
+    """F056: the city 301s www1.nyc.gov to www.nyc.gov (verified live 2026-07-19); registering
+    the legacy host stores the canonical one so residents and the liveness check never ride a
+    deprecated hostname. Only the exact legacy host is rewritten, never path or query."""
+    registry = CitationRegistry()
+    cid = registry.register("https://www1.nyc.gov/site/hra/help/snap.page?x=1")
+    assert registry.mapping()[cid]["url"] == "https://www.nyc.gov/site/hra/help/snap.page?x=1"
+    other = registry.register("https://home4.nyc.gov/site/hpd/x.page")
+    assert registry.mapping()[other]["url"] == "https://home4.nyc.gov/site/hpd/x.page"
