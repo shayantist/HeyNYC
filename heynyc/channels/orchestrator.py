@@ -209,7 +209,7 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                     )
                     return
                 result = pending.result
-                for chunk in render(result):
+                for chunk in render(result, msg.channel):
                     await replier.send_text(chunk)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
                 for path in artifacts:

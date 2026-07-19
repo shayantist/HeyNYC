@@ -57,6 +57,39 @@ async def test_happy_path_replies_types_and_records(tmp_path):
     assert (tmp_path / "t.jsonl").exists()
 
 
+async def test_sms_channel_renders_plain_text_but_persists_raw_generation(tmp_path):
+    """SMS gets plain text (markdown stripped), while the audit trail keeps the raw model text
+    with its markup intact. Pins the ordering: grounding/generation produces the raw turn, which
+    is what's persisted; rendering is a deterministic presentation layer downstream of it."""
+    deps = _deps(tmp_path, reply="**Cooling centers** are open Saturday.")
+    replier = FakeReplier()
+    msg = InboundMessage(channel="sms_twilio", sender="+1555", text="cooling?", message_id="sms1")
+
+    await handle(msg, replier, deps)
+
+    assert replier.sent == ["Cooling centers are open Saturday."]   # no markdown delimiters on SMS
+    # audit keeps the raw generation (decoded through the same path the app persists it)
+    from heynyc.core.session import _decode_line
+
+    turns = [
+        _decode_line(line)
+        for line in next((tmp_path / "sessions").glob("*.jsonl")).read_text().splitlines()
+        if line.strip()
+    ]
+    assistant = next(turn for turn in turns if turn.get("role") == "assistant")
+    assert assistant["content"] == "**Cooling centers** are open Saturday."
+
+
+async def test_whatsapp_channel_keeps_native_markup(tmp_path):
+    deps = _deps(tmp_path, reply="**Cooling centers** are open Saturday.")
+    replier = FakeReplier()
+    msg = InboundMessage(channel="whatsapp_meta", sender="+1556", text="cooling?", message_id="wa1")
+
+    await handle(msg, replier, deps)
+
+    assert replier.sent == ["*Cooling centers* are open Saturday."]  # native WhatsApp bold
+
+
 async def test_delivery_failure_does_not_persist_generated_turn(tmp_path):
     class FailingReplier(FakeReplier):
         async def send_text(self, text):

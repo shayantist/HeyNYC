@@ -186,3 +186,73 @@ def test_twilio_sized_split_keeps_each_source_url_intact():
 
     assert all(len(chunk) <= 1600 for chunk in chunks)
     assert all(any(url in chunk for chunk in chunks) for url in urls)
+
+
+# --- channel-aware rendering --------------------------------------------------------------------
+
+def test_sms_channel_strips_markdown_to_plain_text():
+    text = (
+        "**🏠 Housing**\n"
+        "## Map links\n"
+        "- [Morningside Library](https://maps.google.com/?q=40.8,-73.9)\n"
+        "~~old~~ info"
+    )
+
+    assert render(FakeResult(text), "sms_twilio") == [
+        "🏠 Housing\n"
+        "Map links\n"
+        "- Morningside Library: https://maps.google.com/?q=40.8,-73.9\n"
+        "old info"
+    ]
+
+
+def test_whatsapp_channel_keeps_native_bold_markup():
+    # The explicit WhatsApp channel and the default both keep native *bold*.
+    assert render(FakeResult("**Housing**"), "whatsapp_twilio") == ["*Housing*"]
+    assert render(FakeResult("**Housing**")) == ["*Housing*"]
+
+
+def test_body_replaces_cited_socrata_row_json_with_official_dataset_page():
+    permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc123.json"
+    r = FakeResult(
+        f"- Street Fair, Saturday {{cite:S1}}\n  Details: {permalink}",
+        {"S1": {"url": permalink, "title": "Street Fair", "kind": "DATA"}},
+    )
+
+    for channel in ("sms_twilio", "whatsapp_meta"):
+        joined = "\n".join(render(r, channel))
+        answer = joined.split("Sources:")[0]
+        assert "https://data.cityofnewyork.us/d/tvpp-9vvx" in answer  # official page in the body
+        assert permalink not in answer                               # raw JSON permalink gone
+        assert "abc123.json" in joined                               # footer keeps the row permalink
+    # the stored citation record is never rewritten
+    assert r.citations["S1"]["url"] == permalink
+
+
+def test_body_debraces_stray_brace_wrapped_link():
+    permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json"
+    r = FakeResult(
+        f"See [Details]({{{permalink}}}) {{cite:S1}}",  # [Details]({<permalink>}) observed live
+        {"S1": {"url": permalink, "title": "T", "kind": "DATA"}},
+    )
+
+    answer = render(r, "sms_twilio")[0].split("Sources:")[0]
+    assert "{" not in answer and "}" not in answer
+    assert "Details: https://data.cityofnewyork.us/d/tvpp-9vvx" in answer
+
+
+def test_render_is_presentation_only_and_preserves_the_audit_record():
+    permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json"
+    r = FakeResult(
+        f"**Street Fair** is Saturday {{cite:S1}}. Details: {permalink}",
+        {"S1": {"url": permalink, "title": "Street Fair", "kind": "DATA"}},
+    )
+    original_text, original_citations = r.text, {k: dict(v) for k, v in r.citations.items()}
+
+    render(r, "sms_twilio")
+    render(r, "whatsapp_meta")
+
+    assert r.text == original_text                 # raw generation untouched by rendering
+    assert r.citations == original_citations       # citation mapping (permalinks) untouched
+    assert "{cite:S1}" in r.text                   # audit markers survive
+    assert r.citations["S1"]["url"] == permalink   # row-addressed permalink stays in the record
