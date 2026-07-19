@@ -164,7 +164,10 @@ even just initials, is usually a resident asking for practical local help, not t
 assistant can resolve or clarify it. Apply the same reading when the message is nothing but that
 date and abbreviation, with no other words: a bare fragment like a date plus initials is a resident's
 shorthand ask, and the assistant will clarify it, so allow rather than deny. This does not include predictions or
-sports trivia with no practical NYC connection.
+sports trivia with no practical NYC connection. An event-identity question — which event is, was,
+or will be happening — is in scope regardless of TENSE, especially about an event this conversation
+already discussed; asking what game happened today is identity, not trivia. Results, scores, and
+winner questions remain out of scope.
 
 State, federal, or global matters are in scope only when the user is asking about their practical
 effect on a New Yorker, an NYC service, or NYC civic life. Unrelated general knowledge, opinion,
