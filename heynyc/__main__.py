@@ -314,40 +314,90 @@ def _feedback_path() -> Path:
     return config.HEYNYC_DATA_DIR / "feedback.jsonl"
 
 
-def _render_feedback(path) -> None:
+def _sessions_dir() -> Path:
+    return config.HEYNYC_DATA_DIR / "sessions"
+
+
+def _channel_store():
+    """Open the same channel store the server writes flag pointers into (read-only use here)."""
+    from heynyc.channels.store import ChannelStore
+
+    return ChannelStore(
+        config.HEYNYC_DATA_DIR / "channels.sqlite3", rate_limit=config.CHANNEL_RATE_LIMIT,
+        window_s=config.CHANNEL_RATE_WINDOW_S, dedup_ttl_s=config.CHANNEL_DEDUP_TTL_S,
+    )
+
+
+def _flagged_exchange(sessions_dir: Path, user_key: str, turn_index: int):
+    """The one consented exchange a pointer references (the flagged assistant turn + the user turn
+    before it), decrypted locally from the session JSONL exactly like the session tooling. None if
+    the session was purged by retention or the pointer no longer resolves to an assistant turn."""
+    from heynyc.core.session import _decode_line
+
+    path = sessions_dir / f"{user_key}.jsonl"
+    if not path.exists():
+        return None
+    turns: list[dict] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        message = _decode_line(line)
+        if message.get("_type") == "reset":
+            turns.clear()
+        elif message.get("role") in {"user", "assistant"}:
+            turns.append(message)
+    if not (0 <= turn_index < len(turns)) or turns[turn_index].get("role") != "assistant":
+        return None
+    user_turn = turns[turn_index - 1] if turn_index >= 1 and turns[turn_index - 1].get("role") == "user" else None
+    return user_turn, turns[turn_index]
+
+
+def _render_feedback(path, store=None, sessions_dir=None) -> None:
+    from datetime import timezone
+
     from rich.console import Console
     from rich.table import Table
 
     from heynyc.channels import analytics
 
-    summary = analytics.summarize_feedback(analytics.load_feedback(path))
     console = Console()
-    if not summary["total"]:
-        console.print(f"No feedback yet at {path}. Residents flag a wrong answer with `wrong` / `/wrong <note>`.")
+    summary = analytics.summarize_feedback(analytics.load_feedback(path))
+    if summary["total"]:
+        console.print(f"[bold]HeyNYC feedback[/]: {summary['total']} flag(s) from {summary['users']} user(s)")
+        console.print("flags: " + (", ".join(f"{k}×{v}" for k, v in summary["by_flag"].items()) or "-"))
+        console.print("channels: " + (", ".join(f"{k}×{v}" for k, v in summary["by_channel"].items()) or "-"))
+
+        if summary["top_queries"]:
+            repeats = Table(title="repeat-flagged queries (a systematic error signal)")
+            repeats.add_column("times", justify="right")
+            repeats.add_column("flagged query")
+            for query, count in summary["top_queries"]:
+                if count > 1:
+                    repeats.add_row(str(count), query)
+            if repeats.row_count:
+                console.print(repeats)
+
+    # Triage view: each confirmed pointer joined to its session file and decrypted, showing exactly
+    # the one exchange the resident consented to share (no surrounding context turns).
+    pointers = store.flags() if store is not None else []
+    if not summary["total"] and not pointers:
+        console.print(f"No feedback yet at {path}. Residents flag a wrong answer with REPORT (then confirm).")
         return
-    console.print(f"[bold]HeyNYC feedback[/]: {summary['total']} flag(s) from {summary['users']} user(s)")
-    console.print("flags: " + (", ".join(f"{k}×{v}" for k, v in summary["by_flag"].items()) or "-"))
-    console.print("channels: " + (", ".join(f"{k}×{v}" for k, v in summary["by_channel"].items()) or "-"))
-
-    if summary["top_queries"]:
-        repeats = Table(title="repeat-flagged queries (a systematic error signal)")
-        repeats.add_column("times", justify="right")
-        repeats.add_column("flagged query")
-        for query, count in summary["top_queries"]:
-            if count > 1:
-                repeats.add_row(str(count), query)
-        if repeats.row_count:
-            console.print(repeats)
-
-    recent = Table(title="most recent flags")
-    recent.add_column("when", style="dim")
-    recent.add_column("flag")
-    recent.add_column("flagged query")
-    recent.add_column("reason (redacted)")
-    for rec in summary["recent"]:
-        recent.add_row(rec.get("ts", "")[:19], rec.get("flag", ""),
-                       rec.get("user_query", "") or "-", rec.get("note", "") or "-")
-    console.print(recent)
+    if not pointers:
+        return
+    console.print()
+    console.print(f"[bold]Flagged exchanges for triage[/]: {len(pointers)} (decrypted locally, one exchange each)")
+    for rec in pointers:
+        when = datetime.fromtimestamp(rec["ts"], timezone.utc).isoformat()[:19] if rec.get("ts") else ""
+        console.print(f"\n[dim]{when}[/]  flag=[bold]{rec.get('flag', '')}[/]  user={rec['user_key'][:12]}…")
+        exchange = _flagged_exchange(sessions_dir, rec["user_key"], rec["turn_index"]) if sessions_dir else None
+        if exchange is None:
+            console.print("  [dim](session unavailable: purged by retention or pointer no longer resolves)[/]")
+            continue
+        user_turn, assistant_turn = exchange
+        console.print(f"  [green]resident:[/] {(user_turn or {}).get('content', '') or '-'}")
+        console.print(f"  [cyan]heynyc:[/] {assistant_turn.get('content', '')}")
 
 
 def _append_segment(segments: list, kind: str, text: str) -> None:
@@ -714,7 +764,7 @@ def main() -> None:
         _render_outcomes(telemetry.default_path(config.HEYNYC_DATA_DIR),
                          outcomes.default_path(config.HEYNYC_DATA_DIR))
     elif args.command == "feedback":
-        _render_feedback(_feedback_path())
+        _render_feedback(_feedback_path(), store=_channel_store(), sessions_dir=_sessions_dir())
     elif args.command == "eval":
         asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
                               module=args.module, case_ids=args.case_ids,

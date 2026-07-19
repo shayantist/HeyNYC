@@ -176,31 +176,66 @@ def _msg(text, mid):
     return InboundMessage(channel="whatsapp_meta", sender="+1555", text=text, message_id=mid)
 
 
-async def test_slash_wrong_with_note_flags_without_agent_and_redacts(tmp_path, monkeypatch):
+async def test_report_then_yes_flags_one_exchange_and_stays_pii_free(tmp_path, monkeypatch):
+    """The consent-gated flag: REPORT offers a confirmation, YES writes a content-free POINTER
+    (user_key + turn position) into the channel store and the redacted aggregate record. Scope is
+    exactly the last exchange, and the raw sender / phone never touch the store or the log."""
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     deps = _deps(tmp_path)
-    # 1) a normal turn so there's a last answer to flag
     await handle(_msg("when do cooling centers open?", "q1"), FakeReplier(), deps)
-    # 2) the resident flags it, with a PII-bearing free-text reason
-    flagger = FakeReplier()
-    await handle(_msg("/wrong the hours are stale, call me at 212-555-1234", "f1"), flagger, deps)
 
-    assert flagger.typed == 0                       # no agent run, short-circuit like is_help
-    assert flagger.sent and "flag" in flagger.sent[0].lower()   # fixed acknowledgment
+    # 1) REPORT: consent copy only, nothing recorded
+    r1 = FakeReplier()
+    await handle(_msg("/wrong the hours are stale, call me at 212-555-1234", "f1"), r1, deps)
+    assert r1.typed == 0
+    assert "yes" in r1.sent[0].lower()
+    assert not (tmp_path / "fb.jsonl").exists() and deps.store.flags() == []
 
-    raw = (tmp_path / "fb.jsonl").read_text()
+    # 2) YES: the flag is written
+    r2 = FakeReplier()
+    await handle(_msg("yes", "f2"), r2, deps)
+    assert r2.sent == ["Sent. A human will review that one exchange."]
+
+    key = user_key("whatsapp_meta", "+1555", "s")
+    flags = deps.store.flags()
+    assert len(flags) == 1 and flags[0]["user_key"] == key      # keyed off the salted user_key
+
+    # the pointer references EXACTLY the last exchange (one user turn + one assistant turn)
+    from heynyc.core.session import _decode_line
+
+    turns = [
+        _decode_line(line)
+        for line in (tmp_path / "sessions" / f"{key}.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    idx = flags[0]["turn_index"]
+    assert turns[idx]["role"] == "assistant"
+    assert turns[idx - 1]["role"] == "user" and turns[idx - 1]["content"] == "when do cooling centers open?"
+
+    # the store holds a pointer only: no raw sender, no phone, no free-text reason
+    store_bytes = (tmp_path / "ch.sqlite3").read_bytes()
+    assert b"+1555" not in store_bytes and b"212-555-1234" not in store_bytes
+    assert b"hours are stale" not in store_bytes
+    # the redacted aggregate record was still written, without the pre-consent free-text note
     rec = analytics.load_feedback(tmp_path / "fb.jsonl")[0]
-    # keyed off the salted user_key, never the raw phone number
-    assert rec["user_key"] == user_key("whatsapp_meta", "+1555", "s")
-    assert "+1555" not in raw and "212-555-1234" not in raw
-    assert "hours are stale" in rec["note"]         # the actionable complaint is preserved
-    assert rec["user_query"] == "when do cooling centers open?"
+    assert rec["user_query"] == "when do cooling centers open?" and rec["note"] == ""
+    assert "212-555-1234" not in (tmp_path / "fb.jsonl").read_text()
 
 
 async def test_flag_with_nothing_to_flag_yet(tmp_path):
     deps = _deps(tmp_path)
     r = FakeReplier()
-    await handle(_msg("/wrong", "f0"), r, deps)     # no prior turn
+    await handle(_msg("/wrong", "f0"), r, deps)     # no prior turn, nothing to confirm
     assert r.typed == 0
-    assert not (tmp_path / "fb.jsonl").exists()
+    assert not (tmp_path / "fb.jsonl").exists() and deps.store.flags() == []
     assert "ask me something" in r.sent[0].lower()
+
+
+def test_report_command_is_advertised_for_discovery():
+    """A resident must be able to find the command: the PRIVACY story mentions it, and so does the
+    onboarding/help copy that also points at NEW."""
+    from heynyc.channels.orchestrator import _privacy_message
+
+    assert "report" in _privacy_message("whatsapp_meta").lower()
+    welcome = Registry.discover(config.MODULES_DIR).welcome_text().lower()
+    assert "report" in welcome

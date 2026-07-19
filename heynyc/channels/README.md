@@ -12,7 +12,7 @@ One **channel-agnostic core** with thin per-provider **adapters**:
 base.py          InboundMessage + Replier port, dispatch() fire-and-forget seam, KeyedLocks
 identity.py      user_key(channel, sender, salt) — the PII boundary
 store.py         sqlite dedup + per-user rate-limit (crash-aware, no Redis)
-format.py        render(result) -> WhatsApp chunks (strip {cite:Sn}, Sources footer, 4096 split)
+format.py        render(result, channel) -> channel-appropriate chunks (SMS plain / WhatsApp native, strip {cite:Sn}, Sources footer, 4096 split)
 orchestrator.py  handle(msg, replier, deps) — dedup → rate → lock → run agent → reply → record
 analytics.py     pseudonymous interaction log + user-flag feedback log
 meta.py          Meta WhatsApp Cloud API adapter (pywa)
@@ -80,9 +80,12 @@ Install the deps with `uv sync --extra whatsapp` (the messaging deps live in the
 
 ## Flagging a bad answer
 
-A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, or 👎 to flag the previous reply.
-That turn is written to `.data/feedback.jsonl` (keyed by `user_key`) for human review — shaped to
-feed the agent-as-judge rubric later.
+A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, or 👎 to flag the previous
+reply. Nothing is shared until they confirm: the command stages a pointer and replies with consent
+copy naming exactly what a human will see (that one exchange, nothing else); only YES writes the
+flag, anything else cancels and is handled as a normal message. Confirmed flags are pointers only
+(no message content) joined to the encrypted session by `heynyc feedback` for local triage; the
+redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error view.
 
 ## v1 scope
 

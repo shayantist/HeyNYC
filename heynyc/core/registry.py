@@ -282,6 +282,9 @@ class Registry:
             "Just tell me what you need, I'll reply in your language, using the city's official "
             "translation where there is one and translating the rest as best I can.",
             "",
+            "If I get something wrong, reply REPORT and, once you confirm, I'll share that one "
+            "exchange with a person to review.",
+            "",
             "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
             "double-check anything important against the official source.",
         ]

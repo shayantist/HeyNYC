@@ -26,9 +26,21 @@ from .identity import user_key
 from .store import ChannelStore
 
 _FLAG_TOKENS = {"wrong", "report", "incorrect", "bad answer", "👎"}
-# Slash forms may carry a free-text reason: `/wrong the hours are outdated`. The note is redacted
-# at write time (analytics.record_feedback) since it is user free text and can hold a phone/address.
+# Slash forms may carry a free-text reason: `/wrong the hours are outdated`. is_flag still matches
+# them, but the pre-consent reason is NOT persisted: the confirmation promises only the last
+# exchange is shared, so the reviewer sees exactly that and nothing else.
 _FLAG_COMMANDS = ("/wrong", "/report")
+_CONFIRM_TOKENS = {"yes", "y"}
+# Consent is required, not implied: a flag is only recorded after the resident confirms, and the
+# confirmation states exactly what a human will see (the last exchange, nothing else). English-only
+# fixed copy, same documented language caveat as the other deterministic command replies.
+_FLAG_CONFIRM_MSG = (
+    "This will share your last exchange (your message and my reply) with a human reviewer to "
+    "improve the service. Nothing else from this conversation is shared. "
+    "Reply YES to send, or anything else to cancel."
+)
+_FLAG_SENT_MSG = "Sent. A human will review that one exchange."
+_FLAG_NOTHING_MSG = "Nothing to flag yet, ask me something first."
 _HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
 _RATE_LIMIT_MSG = "You're sending a lot at once, give me a moment and try again shortly. 🙏"
@@ -86,7 +98,8 @@ def is_flag(text: str) -> bool:
 
 def flag_note(text: str) -> str:
     """The free-text reason after a `/wrong` / `/report` command, else '' (bare tokens carry none).
-    Returned raw; PII is redacted at write time in analytics.record_feedback."""
+    Not persisted under the consent gate (the confirmation shares only the last exchange), kept as a
+    pure parser for the CLI / future reason-capture behind explicit consent."""
     t = text.strip()
     low = t.lower()
     for cmd in _FLAG_COMMANDS:
@@ -103,6 +116,12 @@ def is_help(text: str) -> bool:
 def is_screen(text: str) -> bool:
     """The exact explicit action command, never a guess from ordinary conversation."""
     return text.strip().lower() in {"/screen", "/screen all"}
+
+
+def is_confirm(text: str) -> bool:
+    """An affirmative reply to a pending confirmation (the flag consent gate). Only matched while a
+    confirmation is actually pending, so a stray 'yes' in normal chat is a plain turn."""
+    return text.strip().lower().rstrip("!?. ") in _CONFIRM_TOKENS
 
 
 def is_new(text: str) -> bool:
@@ -123,8 +142,9 @@ def _privacy_message(channel: str) -> str:
         f"Messages needed for a reply go to the configured AI model provider and {delivery} "
         "delivers the reply. HeyNYC uses a pseudonymous sender key, not your raw phone number, in "
         "its own session and operational logs. Do not send an SSN or other sensitive ID in chat. "
-        "Send NEW to start without earlier model context. Self-service deletion is not yet available "
-        "in this pilot."
+        "Send NEW to start without earlier model context. If I get something wrong, reply REPORT "
+        "and, after you confirm, that one exchange is shared with a human reviewer, nothing else. "
+        "Self-service deletion is not yet available in this pilot."
     )
 
 
@@ -157,6 +177,14 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
     async with deps.locks.get(key):           # serialize one user's messages
         async with deps.semaphore:            # bound global concurrency / LLM spend
             session = Session.load(deps.agent, key, deps.sessions_dir / f"{key}.jsonl")
+            # Flag consent gate: a prior REPORT staged a pointer awaiting confirmation. This
+            # message either confirms it (YES → record the flag) or cancels it and is then handled
+            # as an ordinary turn. Popped either way, so a non-YES reply expires the pending flag.
+            staged = deps.store.pop_pending_flag(key)
+            if staged is not None and is_confirm(msg.text):
+                _confirm_flag(msg, key, session, staged, deps)
+                await replier.send_text(_FLAG_SENT_MSG)
+                return
             if msg.media:
                 emergency_response = _emergency_backstop(msg.text)
                 if emergency_response:
@@ -233,19 +261,41 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 shutil.rmtree(art_dir, ignore_errors=True)
 
 
+def _flag_token(text: str) -> str:
+    """The bounded command/token the resident used (`report`, `👎`, `/wrong`, ...), never the
+    free-text reason. Safe to store: it is a control word, not message content."""
+    low = text.strip().lower()
+    return next((cmd for cmd in _FLAG_COMMANDS if low.startswith(cmd)), text.strip())
+
+
 async def _handle_flag(msg, key, session, replier, deps) -> None:
-    agent_text = _last(session.turns, "assistant")
-    if not agent_text:
-        await replier.send_text("Nothing to flag yet, ask me something first.")
-        return
-    # The flag TOKEN (bare word or the slash command) is bounded and safe to store verbatim; the
-    # optional NOTE and the flagged query are resident free text and are redacted at write time.
-    note = flag_note(msg.text)
-    flag = msg.text.strip() if not note else next(
-        (c for c in _FLAG_COMMANDS if msg.text.strip().lower().startswith(c)), msg.text.strip()
+    """Step one of the consent-gated flag: stage a POINTER to the last exchange and ask the
+    resident to confirm. Nothing is recorded until they reply YES (see the gate in handle)."""
+    turn_index = max(
+        (i for i, turn in enumerate(session.turns) if turn.get("role") == "assistant"),
+        default=-1,
     )
+    if turn_index < 0:
+        await replier.send_text(_FLAG_NOTHING_MSG)
+        return
+    deps.store.set_pending_flag(key, turn_index, _flag_token(msg.text))
+    await replier.send_text(_FLAG_CONFIRM_MSG)
+
+
+def _confirm_flag(msg, key, session, staged, deps) -> None:
+    """Record the consented flag: a content-free POINTER for triage (the encrypted session JSONL
+    holds the turns), plus the pre-existing redacted aggregate record. Scope is exactly the one
+    exchange the resident agreed to share, so the pre-consent free-text reason is dropped."""
+    turn_index = staged["turn_index"]
+    turns = session.turns
+    agent_text = turns[turn_index].get("content", "") if 0 <= turn_index < len(turns) else ""
+    user_query = (
+        turns[turn_index - 1].get("content", "")
+        if 0 < turn_index < len(turns) and turns[turn_index - 1].get("role") == "user"
+        else ""
+    )
+    deps.store.add_flag(user_key=key, turn_index=turn_index, flag=staged["flag"])
     analytics.record_feedback(
         deps.feedback_path, user_key=key, channel=msg.channel, message_id=msg.message_id,
-        flag=flag, note=note, user_query=_last(session.turns, "user"), agent_text=agent_text,
+        flag=staged["flag"], note="", user_query=user_query, agent_text=agent_text,
     )
-    await replier.send_text("Thanks, I've flagged that answer for a human to review. 🙏")

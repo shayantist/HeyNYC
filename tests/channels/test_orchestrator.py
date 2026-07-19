@@ -205,14 +205,51 @@ async def test_rate_limit_blocks_with_a_notice(tmp_path):
     assert r2.typed == 0 and len(r2.sent) == 1   # a polite "slow down" only
 
 
-async def test_flag_writes_feedback_and_skips_agent(tmp_path):
+async def test_report_asks_to_confirm_and_writes_nothing_until_yes(tmp_path):
+    """Consent is required, not implied: REPORT/👎 only offers a confirmation stating what a
+    human will see. Nothing is recorded (no feedback log, no pointer) until the resident says YES."""
     deps = _deps(tmp_path)
     await handle(_msg(text="when do cooling centers open?", mid="q1"), FakeReplier(), deps)
-    flagger = FakeReplier()
-    await handle(_msg(text="wrong", mid="f1"), flagger, deps)
-    assert flagger.typed == 0
+
+    r1 = FakeReplier()
+    await handle(_msg(text="report", mid="f1"), r1, deps)
+    assert r1.typed == 0                                   # no agent run, deterministic free lane
+    assert "yes" in r1.sent[0].lower() and "human" in r1.sent[0].lower()
+    assert not (tmp_path / "fb.jsonl").exists()            # nothing shared yet
+    assert deps.store.flags() == []                        # no pointer yet
+
+    r2 = FakeReplier()
+    await handle(_msg(text="YES", mid="f2"), r2, deps)
+    assert r2.typed == 0
+    assert r2.sent == ["Sent. A human will review that one exchange."]
+    assert len(deps.store.flags()) == 1                    # exactly one pointer, on confirm
     assert (tmp_path / "fb.jsonl").exists()
-    assert "flagged" in flagger.sent[0].lower()
+
+
+async def test_non_yes_after_report_cancels_and_is_processed_as_a_normal_turn(tmp_path):
+    deps = _deps(tmp_path)
+    await handle(_msg(text="when do cooling centers open?", mid="q1"), FakeReplier(), deps)
+    await handle(_msg(text="report", mid="f1"), FakeReplier(), deps)
+
+    r = FakeReplier()
+    await handle(_msg(text="what about SNAP?", mid="q2"), r, deps)
+    assert r.typed == 1                    # the non-YES message ran the agent normally
+    assert deps.store.flags() == []        # the pending flag was cancelled, nothing recorded
+
+
+def test_store_stages_confirms_and_lists_flag_pointers(tmp_path):
+    store = ChannelStore(tmp_path / "s.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=60)
+    assert store.pop_pending_flag("u1") is None
+    store.set_pending_flag("u1", 3, "report")
+    store.set_pending_flag("u1", 5, "/wrong")     # a fresh REPORT replaces the un-confirmed one
+    staged = store.pop_pending_flag("u1")
+    assert staged["turn_index"] == 5 and staged["flag"] == "/wrong"
+    assert store.pop_pending_flag("u1") is None   # consumed once
+    assert store.flags() == []
+    store.add_flag("u1", 5, "/wrong")
+    flags = store.flags()
+    assert len(flags) == 1
+    assert flags[0]["user_key"] == "u1" and flags[0]["turn_index"] == 5 and flags[0]["flag"] == "/wrong"
 
 
 def test_is_flag():

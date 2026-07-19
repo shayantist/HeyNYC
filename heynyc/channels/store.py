@@ -30,6 +30,20 @@ class ChannelStore:
             "CREATE TABLE IF NOT EXISTS spend "
             "(user_key TEXT, day TEXT, spent_usd REAL, PRIMARY KEY (user_key, day))"
         )
+        # A confirmed flag is a POINTER, not a copy: (user_key -> session file) + turn_index
+        # (position of the flagged assistant turn). The encrypted session JSONL holds the turns;
+        # `heynyc feedback` joins on user_key and decrypts locally. No message content lives here.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS flag "
+            "(user_key TEXT NOT NULL, turn_index INTEGER NOT NULL, flag TEXT NOT NULL DEFAULT '', "
+            "ts REAL NOT NULL)"
+        )
+        # Consent gate: a REPORT stages one pending pointer per user until they reply YES.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS flag_pending "
+            "(user_key TEXT PRIMARY KEY, turn_index INTEGER NOT NULL, flag TEXT NOT NULL DEFAULT '', "
+            "ts REAL NOT NULL)"
+        )
         self._db.commit()
 
     def seen(self, message_id: str, user_key: str = "") -> bool:
@@ -59,6 +73,46 @@ class ChannelStore:
             (user_key, day, float(amount)),
         )
         self._db.commit()
+
+    def set_pending_flag(self, user_key: str, turn_index: int, flag: str = "") -> None:
+        """Stage a flag awaiting the resident's YES (one pending per user; a fresh REPORT replaces
+        an un-confirmed one). Pointer only: turn position + a bounded command token, no free text."""
+        self._db.execute(
+            "INSERT INTO flag_pending (user_key, turn_index, flag, ts) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_key) DO UPDATE SET "
+            "turn_index = excluded.turn_index, flag = excluded.flag, ts = excluded.ts",
+            (user_key, int(turn_index), flag, time.time()),
+        )
+        self._db.commit()
+
+    def pop_pending_flag(self, user_key: str) -> dict | None:
+        """Read and clear this user's staged flag (consume-once). None if nothing is staged."""
+        row = self._db.execute(
+            "SELECT turn_index, flag, ts FROM flag_pending WHERE user_key = ?", (user_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        self._db.execute("DELETE FROM flag_pending WHERE user_key = ?", (user_key,))
+        self._db.commit()
+        return {"turn_index": int(row[0]), "flag": row[1], "ts": float(row[2])}
+
+    def add_flag(self, user_key: str, turn_index: int, flag: str = "") -> None:
+        """Record a confirmed pointer to a flagged exchange (append-only). No message content."""
+        self._db.execute(
+            "INSERT INTO flag (user_key, turn_index, flag, ts) VALUES (?, ?, ?, ?)",
+            (user_key, int(turn_index), flag, time.time()),
+        )
+        self._db.commit()
+
+    def flags(self) -> list[dict]:
+        """Confirmed flag pointers, newest first, for the owner's `heynyc feedback` triage view."""
+        rows = self._db.execute(
+            "SELECT user_key, turn_index, flag, ts FROM flag ORDER BY ts DESC"
+        ).fetchall()
+        return [
+            {"user_key": r[0], "turn_index": int(r[1]), "flag": r[2], "ts": float(r[3])}
+            for r in rows
+        ]
 
     def allow(self, user_key: str) -> bool:
         now = time.time()
