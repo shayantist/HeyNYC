@@ -335,6 +335,20 @@ async def test_low_confidence_match_flagged():
     assert point.low_confidence is True
 
 
+async def test_named_neighborhood_low_provider_confidence_is_not_flagged():
+    # F064: a borough-qualified neighborhood name resolves to a usable centroid. A provider
+    # confidence below the address-tuned floor must NOT flag it low_confidence and push the
+    # resident for cross streets. (Intersection confidence discipline is untouched.)
+    forg = _fake_forgiving(
+        GeoPoint(40.7654, -73.8318, "Flushing, Queens, NY", confidence=0.5, match_type="mapbox")
+    )
+    point = await geocode(
+        "Flushing, Queens", forgiving=forg, borough_contains=_fake_borough_contains(True)
+    )
+    assert point is not None
+    assert point.low_confidence is False
+
+
 async def test_forgiving_fallback_when_geosearch_empty():
     forg = _fake_forgiving(GeoPoint(40.75, -73.99, "Apollo Theater, Harlem", match_type="nominatim"))
 

@@ -429,7 +429,12 @@ async def geocode(
             if not await borough_contains(point, borough, client):
                 point = None
         if point is not None and _gate_low_confidence(point):
-            point.low_confidence = True
+            # F064: a borough-qualified neighborhood name (not an intersection) resolves to a
+            # usable centroid; don't push the resident for cross streets just because the provider
+            # scores a neighborhood below the address-tuned floor. Intersection discipline (the
+            # identity check below and the Mapbox confidence gate for intersections) is unchanged.
+            if not (_looks_like_named_area(text) and not _looks_like_intersection(text)):
+                point.low_confidence = True
         if point is not None and _looks_like_intersection(text):
             if not _intersection_identity_matches(text, point.label):
                 point.low_confidence = True
