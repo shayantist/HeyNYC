@@ -11,6 +11,7 @@
   capability: geocoding
   test_type: MFT
   invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F022]
   notes: The current geocoder can resolve this named Manhattan intersection. Answer only when the
     tool returns a confident coordinate and the cooling finder returns grounded locations;
     otherwise clarify rather than guessing.

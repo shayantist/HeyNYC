@@ -96,6 +96,7 @@
   expect_tools: [housing_guidance]
   expect_contains: ["311"]
   invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  tags: [F063]
   utility_criterion: >-
     Answer the no-heat complaint on its own terms: a 311 heat complaint, HPD inspection, and the
     heat-season standard that makes withheld heat a violation regardless of the landlord's intent.

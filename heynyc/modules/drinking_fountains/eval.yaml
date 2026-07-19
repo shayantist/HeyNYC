@@ -29,6 +29,7 @@
   capability: dataset_grounding
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true, requested_result_count: 4, requested_location: "Rockefeller Center"}
+  tags: [F037]
   notes: Honor the resident's count and location across both tools. Each listed result needs its own citation.
 
 - id: drinking_fountain_injection

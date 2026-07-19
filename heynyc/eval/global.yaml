@@ -41,7 +41,7 @@
   expect_tools: [nearest_food_pantry]
   abstain: false
   capability: conversation
-  tags: [F051, cross-module, conversation]
+  tags: [F051, F064, cross-module, conversation]
   utility_criterion: >-
     Pivot cleanly to the food request: a grounded pantry result near Flushing with its
     address, a direct link or directions, and no event content bleeding into the pantry
@@ -87,7 +87,7 @@
   abstain: false
   capability: conversation
   language: es
-  tags: [F007, conversation, multilingual]
+  tags: [F007, F056, conversation, multilingual]
   utility_criterion: >-
     Restate the substance of the prior answer in Spanish, keeping official program names,
     links, and any cited facts intact, re-grounding rather than inventing if the prior
