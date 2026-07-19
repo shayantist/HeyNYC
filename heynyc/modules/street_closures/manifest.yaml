@@ -1,0 +1,42 @@
+name: street_closures
+category: transit
+# Meaning-based routing, not a keyword list: the signal comes from this description and the
+# examples below (prompts.route_modules content-token match), never a curated phrase list.
+description: >-
+  Check scheduled NYC street closures near a place for game-day or travel planning,
+  grounded in DOT's construction street-closure schedule (NYC Open Data). Planned
+  construction only: it does not cover a crash, a parade, a police closure, alternate
+  side parking, or live traffic. Read-only.
+examples:
+  - "Are any streets closed near Yankee Stadium this Saturday?"
+  - "Is there construction closing streets near Union Square right now?"
+datasets:
+  - id: i6b5-j7bu
+    category: street_closure
+    title: NYC Open Data - Street Closures due to Construction Activities by Block
+allowlist:
+  - data.cityofnewyork.us
+  - 511ny.org
+  - nyc.gov
+seeds:
+  - https://www.nyc.gov/html/dot/html/motorist/weektraf.shtml
+tools: tools.py
+prompt: |
+  For "are streets closed near <place>?", "is <street> closed for construction?", or planning
+  travel/parking around a game or event, call street_closures. Pass near=<one NYC address or
+  landmark> and, when the resident names a day (a game day, "this Saturday"), on=<that date as
+  YYYY-MM-DD>; it defaults to today. Report ONLY the closures the tool returns, keep each one's
+  closed segment, purpose, scheduled window, and citation, and cite every closure {cite:Sn}. Do not
+  invent a closure, a street, a purpose, or a date.
+  HONEST LIMITS, state them, never paper over them:
+    - This is DOT's PLANNED construction schedule. It will not show a sudden crash, a parade, a
+      demonstration, or a police closure. For live traffic and incidents, route the resident to
+      511NY (511ny.org) or nyc.gov/dot, and 511.
+    - It does not answer alternate-side-parking suspension status or the DOT traffic-advisory feed
+      (those are not in this data). If asked, say so plainly and point to nyc.gov/dot and 311; do
+      not guess.
+    - Scheduled work can start late, finish early, or shift, so treat the dates as the plan of
+      record, not a guarantee.
+  If nothing is scheduled near the place on that date, say so plainly and route to 511NY / nyc.gov
+  /dot; never manufacture a closure to fill the gap.
+eval: eval.yaml

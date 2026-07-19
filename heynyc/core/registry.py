@@ -32,6 +32,7 @@ _SERVICE_NAMES = {
     "events": "Events",
     "housing_connect": "Housing Connect",
     "nyc311_status": "311 service requests",
+    "street_closures": "Street closures",
     "wic": "WIC",
     "childcare": "Child care",
     "workers": "Worker rights",
