@@ -44,6 +44,9 @@ def test_system_prompt_bans_internal_jargon_in_replies():
     assert "grounded" in low  # the internal rules still use the concept
     assert "never say" in low or "plumbing" in low or "internal words" in low
     assert '"grounded"' in prompt  # the ban names the exact word residents saw
+    # Luna-medium runs long for SMS (2026-07-18 review): the voice caps answer size.
+    assert "text-message sized" in low
+    assert "at most five short options" in low
 
 
 def test_system_prompt_includes_active_recency_check():

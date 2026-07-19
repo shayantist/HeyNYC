@@ -44,7 +44,7 @@ _SOURCE_LABELS = {
     "benefits": "NYC Benefits & Programs dataset + Screening API",
     "food_pantries": "NYC FoodHelp finder",
     "advisories": "Notify NYC / NYC Emergency Management feed",
-    "events": "Ticketmaster + NYC Parks",
+    "events": "Ticketmaster + NYC Parks + NYC permitted street events",
     "housing_connect": "NYC Open Data (vy5i-a666)",
     "wic": "NY State WIC directory (Health Data NY)",
     "childcare": "NYC Open Data (gy3q-4tzp)",
