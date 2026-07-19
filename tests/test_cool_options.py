@@ -217,3 +217,88 @@ def test_cooling_schedule_checks_second_interval():
     now = datetime(2026, 7, 15, 18, 0, tzinfo=ZoneInfo("America/New_York"))
 
     assert cooling._open_now(record, now) is True
+
+
+@pytest.mark.asyncio
+async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch):
+    # F068: 8:30 PM Saturday, the only open center is a Petco 2 miles away while
+    # closer library/senior centers are closed. The output must state, in data
+    # terms, how many closer centers are closed now and the soonest reopening.
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        if url == cooling.COOL_OPTIONS_URL:
+            return []
+        return [
+            {
+                "OBJECTID": 1,
+                "NYCEM_ID": "CC_PETCO",
+                "FACILITY_NAME": "Petco 86th Lexington",
+                "ADDRESS": "147 E 86TH ST",
+                "lat": 40.7870,  # ~2 miles north of origin
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "cc_sat_open1": "09:00 AM",
+                "cc_sat_close1": "09:00 PM",
+            },
+            {
+                "OBJECTID": 2,
+                "NYCEM_ID": "CC_LIB",
+                "FACILITY_NAME": "Morningside Library",
+                "ADDRESS": "2900 BROADWAY",
+                "lat": 40.7609,  # ~0.2 miles away
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "cc_sat_open1": "10:00 AM",
+                "cc_sat_close1": "05:00 PM",
+                "cc_mon_open1": "09:00 AM",  # reopens Monday
+                "cc_mon_close1": "05:00 PM",
+            },
+            {
+                "OBJECTID": 3,
+                "NYCEM_ID": "CC_SR",
+                "FACILITY_NAME": "Hamilton Senior Center",
+                "ADDRESS": "141 W 140TH ST",
+                "lat": 40.7623,  # ~0.3 miles away
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "cc_sat_open1": "09:00 AM",
+                "cc_sat_close1": "04:00 PM",
+                "cc_sun_open1": "09:00 AM",  # reopens Sunday, the soonest
+                "cc_sun_close1": "05:00 PM",
+            },
+        ]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 18, 20, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "Columbia University", "kind": "cooling_center", "limit": 1}, ctx
+    )
+
+    assert "Petco 86th Lexington" in output
+    # Only Petco is listed (limit 1), so the summary line must carry the rest.
+    assert "Morningside Library" not in output
+    assert "2 closer" in output
+    assert "closed right now" in output
+    assert "Sunday 09:00 AM" in output
+
+
+def test_cooling_next_open_skips_todays_passed_intervals():
+    record = {
+        "cc_sat_open1": "09:00 AM",
+        "cc_sat_close1": "04:00 PM",
+        "cc_sun_open1": "09:00 AM",
+    }
+    now = datetime(2026, 7, 18, 20, 30, tzinfo=ZoneInfo("America/New_York"))  # Saturday
+
+    assert cooling._next_open(record, now) == (1, 540, "Sunday 09:00 AM")

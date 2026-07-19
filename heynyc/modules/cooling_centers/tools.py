@@ -71,6 +71,28 @@ def _open_now(record: dict, now: datetime) -> bool | None:
     return False if known else None
 
 
+def _next_open(record: dict, now: datetime) -> tuple[int, int, str] | None:
+    """Earliest scheduled reopening from `now`: (days_ahead, open_minute, 'Day HH:MM AM').
+
+    Scans the row's own cc_<day>_open<interval> fields forward up to a week; skips
+    intervals that already opened earlier today. Returns None if none are known.
+    """
+    current = now.hour * 60 + now.minute
+    best: tuple[int, int, str] | None = None
+    for offset in range(7):
+        weekday = (now.weekday() + offset) % 7
+        day = _DAYS[weekday]
+        for interval in (1, 2):
+            opened = _minutes(record.get(f"cc_{day}_open{interval}"))
+            if opened is None or (offset == 0 and opened <= current):
+                continue
+            time_text = str(record.get(f"cc_{day}_open{interval}")).strip()
+            candidate = (offset, opened, f"{_DAY_NAMES[weekday]} {time_text}")
+            if best is None or candidate[:2] < best[:2]:
+                best = candidate
+    return best
+
+
 def _value(record: dict, mixed: str, upper: str) -> str:
     return str(record.get(mixed) or record.get(upper) or "").strip()
 
@@ -201,10 +223,34 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         )
     )
 
+    # F068: when the nearest open site is farther than sites that are closed right
+    # now, say so in data terms so the answer is framed honestly instead of reading
+    # "nearest option is a pet store 2 miles away" with no context.
+    nearest_open = next((item for item in unique if item["open_now"] is True), None)
+    closer_closed = (
+        [
+            item
+            for item in unique
+            if item["open_now"] is False and item["distance_m"] < nearest_open["distance_m"]
+        ]
+        if nearest_open
+        else []
+    )
+
     limit = _requested_result_limit(args.get("limit", 3), ctx.query)
     selected = unique[:limit]
     day_name = _DAY_NAMES[now.weekday()]
     lines = [f"NYC Cool Options near {origin.label}:", _resolution_note(near, origin)]
+    if closer_closed:
+        count = len(closer_closed)
+        note = (
+            f"{count} closer {'option is' if count == 1 else 'options are'} "
+            "scheduled closed right now"
+        )
+        reopenings = [r for item in closer_closed if (r := _next_open(item["record"], now))]
+        if reopenings:
+            note += f"; the soonest reopens {min(reopenings)[2]}"
+        lines.append(note + ".")
     for index, item in enumerate(selected, 1):
         cite = _citation(ctx, item)
         distance = miles(item["distance_m"])
