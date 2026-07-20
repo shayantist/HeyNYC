@@ -11,6 +11,7 @@ export TWILIO_FROM="$TWILIO_WHATSAPP_FROM"
 # at low/none luna loses exactly the clock-reading and thread-holding that justify its cost
 export HEYNYC_MODEL="openai/gpt-5.6-luna"
 export HEYNYC_REASONING_EFFORT="medium"
+export HEYNYC_SCOPE_MODEL="openai/gpt-5.4-mini"
 
 # Load the ignored .env when present so `sh scripts/serve_demo.sh` just works; the parent
 # shell's own exports still win because .env values only fill what sourcing sets.
