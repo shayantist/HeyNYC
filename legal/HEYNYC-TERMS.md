@@ -1,6 +1,6 @@
 # HeyNYC Terms of Use
 
-**Effective date:** July 16, 2026
+**Effective date:** July 20, 2026
 
 These Terms govern your use of HeyNYC, an automated civic-information service operated by [Reach4Help](https://reach4help.org/). By texting HeyNYC or otherwise using the service, you agree to these Terms.
 
@@ -14,7 +14,7 @@ HeyNYC is an independent nonprofit project. It is not the City of New York, is n
 
 You enroll by following the opt-in instructions presented with the HeyNYC phone number. Messages are automated and conversational. Message frequency varies based on the messages you send. Message and data rates may apply.
 
-For SMS, reply **HELP** for help or **STOP** to stop messages. Twilio documents the [standard opt-out keywords and confirmation behavior](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out). After STOP, you may need to reply **START** or **UNSTOP** before HeyNYC can respond again. On WhatsApp, you can stop messaging HeyNYC or use WhatsApp's block controls. Consent to receive texts is not a condition of any purchase, donation, benefit, or government service. HeyNYC does not send marketing or proactive subscription messages under the current pilot.
+For SMS, reply **HELP** for help or **STOP** to stop messages. In any chat, **PRIVACY** explains data practices, **REPORT** flags your last exchange for human review after you confirm, and **DELETE MY DATA** erases your conversation records after you confirm; the [Privacy Notice](HEYNYC-PRIVACY.md) describes each. Twilio documents the [standard opt-out keywords and confirmation behavior](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out). After STOP, you may need to reply **START** or **UNSTOP** before HeyNYC can respond again. On WhatsApp, you can stop messaging HeyNYC or use WhatsApp's block controls. Consent to receive texts is not a condition of any purchase, donation, benefit, or government service. HeyNYC does not send marketing or proactive subscription messages under the current pilot.
 
 ## 3. Important limitations
 
