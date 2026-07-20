@@ -23,6 +23,10 @@ HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.4-mini")
 # the clock-reading and thread-holding that justify its cost). Unset means the provider default,
 # and it is never sent for models where the deployment leaves it blank.
 HEYNYC_REASONING_EFFORT = os.getenv("HEYNYC_REASONING_EFFORT") or None
+# OpenAI service tier for unattended workloads: "flex" is roughly half price with best-effort
+# capacity (requests can be rejected with a retryable capacity error). Set it for eval sweeps,
+# NEVER for the resident-facing pilot. Unset sends nothing and behavior is unchanged.
+HEYNYC_SERVICE_TIER = os.getenv("HEYNYC_SERVICE_TIER") or None
 # Structured continuity compaction runs only when measured context pressure requires it.
 HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
 # Context window for self-hosted Ollama models. Ollama defaults to ~2-4K tokens, which silently

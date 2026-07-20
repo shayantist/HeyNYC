@@ -920,6 +920,17 @@ def test_reasoning_effort_is_plumbed_and_overrides_the_luna_default():
     assert bare["reasoning_effort"] == "low"
 
 
+def test_service_tier_reaches_completion_kwargs_only_when_configured(monkeypatch):
+    """Flex processing (~half price, best-effort capacity) for unattended eval runs: opt-in via
+    HEYNYC_SERVICE_TIER, never sent when unset so production latency is untouched."""
+    from heynyc.core import config as core_config
+    from heynyc.core.agent import _completion_kwargs
+
+    assert "service_tier" not in _completion_kwargs("openai/gpt-5.4-mini", [], [])
+    monkeypatch.setattr(core_config, "HEYNYC_SERVICE_TIER", "flex")
+    assert _completion_kwargs("openai/gpt-5.4-mini", [], [])["service_tier"] == "flex"
+
+
 def test_agent_inherits_reasoning_effort_from_config(empty_registry, monkeypatch):
     """The deployment sets HEYNYC_REASONING_EFFORT beside HEYNYC_MODEL so production runs the
     BENCHED configuration (luna-medium), not a provider default nobody measured."""

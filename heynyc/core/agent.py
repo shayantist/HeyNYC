@@ -3071,6 +3071,10 @@ class Agent:
                         turn_usage["output_tokens"] += call_out
                         turn_usage["answer_input_tokens"] += call_in
                         turn_usage["answer_output_tokens"] += call_out
+                        turn_usage["cached_input_tokens"] = (
+                            turn_usage.get("cached_input_tokens", 0)
+                            + int(chunk.get("cached_input_tokens", 0) or 0)
+                        )
                         self._spend.record(self.model, call_in, call_out)  # accrue toward the cap
                     elif chunk["type"] == "message":
                         assistant = chunk["message"]
@@ -3408,8 +3412,10 @@ class Agent:
         usage: Optional[dict] = None
         async for chunk in stream:
             if getattr(chunk, "usage", None):
+                details = getattr(chunk.usage, "prompt_tokens_details", None)
                 usage = {"input_tokens": chunk.usage.prompt_tokens,
-                         "output_tokens": chunk.usage.completion_tokens}
+                         "output_tokens": chunk.usage.completion_tokens,
+                         "cached_input_tokens": int(getattr(details, "cached_tokens", 0) or 0)}
             if not chunk.choices:  # include_usage emits a final choices-less chunk
                 continue
             delta = chunk.choices[0].delta
@@ -3485,6 +3491,8 @@ def _completion_kwargs(
             }
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    if config.HEYNYC_SERVICE_TIER:
+        kwargs["service_tier"] = config.HEYNYC_SERVICE_TIER
     if "ollama" in model:
         kwargs["num_ctx"] = config.OLLAMA_NUM_CTX
     return kwargs
