@@ -360,8 +360,8 @@ async def test_broad_temporal_events_gather_current_city_context_concurrently(mo
     assert "merge sources" in output
 
 
-async def test_tool_context_event_preparation_flag_activates_prep_synthesis(monkeypatch):
-    """The semantic flag from the scope preflight reaches the tool through ToolContext, so a
+async def test_tool_context_event_turn_preparation_activates_prep_synthesis(monkeypatch):
+    """The semantic tri-state from the scope preflight reaches the tool through ToolContext, so a
     numeric-date phrasing the regex fallback misses still gets identity-first synthesis."""
     async def fake_ticketmaster(**kwargs):
         return []
@@ -379,7 +379,7 @@ async def test_tool_context_event_preparation_flag_activates_prep_synthesis(monk
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]),
         query="what should i bring to the game on 7/18",
-        event_preparation=True,
+        event_turn="preparation",
     )
 
     output = await get_tools()[0].handler({}, ctx)
@@ -388,6 +388,38 @@ async def test_tool_context_event_preparation_flag_activates_prep_synthesis(monk
     assert "identity" in low
     assert "resolve" in low
     assert "at most 5" not in output
+
+
+async def test_tool_context_event_turn_discovery_gathers_broad_context_by_meaning(monkeypatch):
+    """F058: a discovery turn the tool-side regex misses ('is there a game today' has no
+    what's-on/happening term) still runs the coordinated broad lanes and keeps the shortlist
+    voice, because the preflight tri-state is authoritative when present."""
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_parks(*args, **kwargs):
+        return []
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial, raising=False)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    # The tool-side broad regex does not fire on this phrasing.
+    assert not events._broad_temporal_query("is there a game today")
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="is there a game today",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler({}, ctx)
+
+    # Shortlist synthesis (broad context), not identity-first preparation synthesis.
+    assert "at most 5" in output
+    assert "Event identity context" not in output
 
 
 async def test_empty_keyworded_catalog_retries_unkeyworded(monkeypatch):
@@ -433,9 +465,9 @@ async def test_empty_keyworded_catalog_retries_unkeyworded(monkeypatch):
     assert "NYC Parks" in snapshot["snippet"]
 
 
-async def test_broad_shortlist_query_keeps_shortlist_rules_despite_prep_flag(monkeypatch):
-    """A broad what's-happening query keeps the shortlist voice even when the semantic flag
-    over-fires (observed in the pre-commit eval run)."""
+async def test_broad_query_falls_back_to_shortlist_rules_without_a_preflight(monkeypatch):
+    """Without a preflight (direct tool use, ctx.event_turn is None), the tool-side broad regex
+    is the fallback: a broad what's-happening query keeps the shortlist voice, not prep rules."""
     async def fake_ticketmaster(**kwargs):
         return []
 
@@ -452,7 +484,6 @@ async def test_broad_shortlist_query_keeps_shortlist_rules_despite_prep_flag(mon
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]),
         query="What free events are happening in NYC parks this weekend?",
-        event_preparation=True,
     )
 
     output = await get_tools()[0].handler({}, ctx)
