@@ -774,6 +774,9 @@ def test_crisis_language_routes_by_dominant_non_latin_script():
     assert _crisis_language("لم أعد أريد أن أعيش، أنا في خطر") == "ar"
     # Urdu shares the Arabic script but uses Perso-Urdu letters -> routes to ur, not ar.
     assert _crisis_language("میں اب مزید جینا نہیں چاہتا، میں بہت تکلیف میں ہوں") == "ur"
+    # F074: a code-switched crisis message leads with an English trigger (making Latin the majority
+    # script) yet must still route to the person's own-language script for the in-language floor.
+    assert _crisis_language("I want to end my life 我不想活了") == "zh"
     # Latin scripts (English, Spanish, French, Polish) carry no deterministic single-language
     # signal here, so the router abstains and the English floor path is used.
     assert _crisis_language("I'm going to kill myself") is None
@@ -801,6 +804,30 @@ def test_emergency_backstop_appends_verified_pointer_for_non_latin_script():
     # Inverse: a benign non-Latin message must NOT trigger any crisis floor (the composer is only
     # consulted once a self-harm trigger has already fired, so ordinary Chinese returns None).
     assert _emergency_backstop("请问最近的地铁站在哪里？") is None
+
+
+async def test_live_path_serves_verified_zh_lines_for_codeswitched_crisis(empty_registry):
+    # F074 regression, through the LIVE agent path (no monkeypatching of the crisis chain). The
+    # deterministic floor short-circuits before the answer model, so this stub must NEVER fire.
+    from heynyc.core.agent import _IMMINENT_SELF_HARM_RESPONSE_EN
+    from heynyc.core.crisis_lines import CRISIS_LINES
+
+    async def unsafe_model(messages, tool_schemas):
+        raise AssertionError("a crisis message must never reach the answer model")
+
+    agent = Agent(empty_registry, tools={}, complete_fn=unsafe_model)
+
+    # zh-dominant first-person crisis message: agent-level output carries the verified Chinese lines.
+    result = await agent.run("I want to end my life 我不想活了 我真的撑不下去了")
+    assert CRISIS_LINES["zh"].lifeline_988 in result.text
+    assert CRISIS_LINES["zh"].emergency_911 in result.text
+    assert "988" in result.text and "911" in result.text
+    assert result.iterations == 0
+    assert result.tool_calls_made == []
+
+    # English stays BYTE-IDENTICAL through the same live path.
+    english = await agent.run("I'm going to kill myself")
+    assert english.text == _IMMINENT_SELF_HARM_RESPONSE_EN
 
 
 async def test_empty_final_answer_falls_back_to_safe_refusal(empty_registry):

@@ -746,7 +746,12 @@ _SPANISH_CASHLESS_DIRECT_RE = re.compile(
 )
 
 
-def _dominant_non_latin_script(text: str) -> Optional[str]:
+def _dominant_non_latin_script(text: str, *, require_majority: bool = True) -> Optional[str]:
+    # require_majority=True (reply-language feedback): the non-Latin script must be MOST of the
+    # letters. require_majority=False (crisis routing): the most-frequent non-Latin script wins even
+    # when Latin leads, because a code-switched crisis message ("I want to die 我不想活了") pairs an
+    # English trigger phrase with the person's own-language despair, and the own-language script is
+    # what the verified in-language floor must serve.
     scripts: dict[str, int] = {}
     letter_count = 0
     for char in text:
@@ -759,7 +764,7 @@ def _dominant_non_latin_script(text: str) -> Optional[str]:
     if not scripts:
         return None
     script, user_count = max(scripts.items(), key=lambda item: item[1])
-    if user_count < 2 or user_count * 2 < letter_count:
+    if user_count < 2 or (require_majority and user_count * 2 < letter_count):
         return None
     return script
 
@@ -1633,13 +1638,15 @@ _SCRIPT_TO_CRISIS_LANG = {"CYRILLIC": "ru", "CJK": "zh", "BENGALI": "bn", "HANGU
 
 
 def _crisis_language(user_message: str) -> Optional[str]:
-    """Route the crisis floor to an LL30 language by DOMINANT non-Latin script, deterministically.
+    """Route the crisis floor to an LL30 language by the most-present non-Latin script.
 
-    Latin-script languages (English, Spanish, French, Polish, Haitian Creole) return None: Spanish
-    keeps its own regex path in `_emergency_backstop`, and the other Latin LL30 languages carry no
-    deterministic single-language signal here, so they take the honest English floor. Semantic
-    crisis DETECTION across languages is the scope preflight (phase 2), separate from this floor."""
-    script = _dominant_non_latin_script(_routing_text(user_message))
+    Deterministic. Uses require_majority=False so a code-switched crisis message that leads with an
+    English trigger phrase ("I want to end my life 我不想活了") still routes to the person's own-language
+    script. Latin-script languages (English, Spanish, French, Polish, Haitian Creole) return None:
+    Spanish keeps its own regex path in `_emergency_backstop`, and the other Latin LL30 languages
+    carry no deterministic single-language signal here, so they take the honest English floor.
+    Semantic crisis DETECTION across languages is the scope preflight (phase 2), separate from this."""
+    script = _dominant_non_latin_script(_routing_text(user_message), require_majority=False)
     if script is None:
         return None
     if script == "ARABIC":
