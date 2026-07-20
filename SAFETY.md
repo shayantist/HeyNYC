@@ -1,6 +1,6 @@
 # HeyNYC safety
 
-_Last updated: 2026-07-17 (conversation continuity and privacy controls)._
+_Last updated: 2026-07-20 (evaluation pointers deduplicated; content unchanged)._
 
 HeyNYC helps New Yorkers find, understand, and apply for government services. It answers questions about benefits, housing, food, and immigration, the places where a confident wrong answer can cost someone money, their home, or their immigration status. So the bar here isn't "usually right." The bar is: **every fact is grounded in an official source and cited, or the assistant says it doesn't know.** This doc is how we try to hit that bar and, just as importantly, where we still fall short. It's written to be read by a skeptic.
 
@@ -23,15 +23,10 @@ Two boundaries fall out of this design:
 
 Every service module ships with its own eval, and a module isn't "done" until that eval is green.
 The offline pytest suite exercises deterministic code, injected tools, and scripted traces without
-calling a model. The live `heynyc eval` command runs the configured model through the real agent and
-then applies the deterministic floor below to the captured trace:
-
-- **attribution:** every asserted specific carries a citation.
-- **faithfulness:** the cited snippet actually appears in a span the agent retrieved.
-- **grounding:** specifics (address / date / dollar / eligibility) trace to a tool or retriever output.
-- **link-liveness** and other structural checks.
-
-The two are complementary. A green offline suite does not prove that the current model selected the
+calling a model. The live `heynyc eval` command runs the configured model through the real agent,
+then applies the deterministic floor (attribution, faithfulness, grounding, link liveness, and the
+other structural checks defined in [`heynyc/eval/README.md`](heynyc/eval/README.md)) to the
+captured trace. The two are complementary. A green offline suite does not prove that the current model selected the
 right tools, stayed in language, or produced a useful answer. Live testing is selective and
 risk-triggered to control spend: changed modules and failure cases run after scoped changes, a
 compact cross-cutting set gates prompt, model, routing, memory, and guard changes, and the full

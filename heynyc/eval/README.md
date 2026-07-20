@@ -171,53 +171,33 @@ Plus `verdicts.md` — the same, human-readable. The deterministic `report.json`
 semantic verdict never auto-blocks (it isn't reproducible and varies by judging agent) but it's the
 authority humans review pre-deploy, and it supersedes the gate's coarse keyword abstention flags.
 
-## Where things live
-
-- **Cases** — each service owns its `eval.yaml` (e.g. `heynyc/modules/benefits/eval.yaml`): the
-  contract for that module. Cases follow the CheckList matrix (capability × {MFT, INV, DIR}) with an
-  OWASP/AILuminate `harm_category`.
-- **Checks** — this directory: `checks.py` (legacy + structural), `invariants.py` (outcome
-  invariants), `trace.py` (OpenInference traces), `report.py` (the gate), `judges.py` (the opt-in
-  PAID `--api-judge`; the free default Agent judge needs no code, just the traces), `runner.py`.
-
-## How we evaluate, and where the method comes from
-
-Dated 2026-07-20. The short version: two tiers of checks, live over offline, and every failure
-becomes a permanent test.
-
-- **Two-tier gate.** Deterministic checks (citation grounding, faithfulness floors, link
-  liveness, tool sanity, language, PII) run on every case; a semantic tier (utility criteria,
-  judge review) covers what string checks cannot, like whether an answer addresses the right
-  emergency. The split follows the layered-evaluation practice in the [NIST AI Risk Management
-  Framework](https://airc.nist.gov/airmf-resources/airmf/5-sec-core/) MEASURE function.
-- **Live over offline.** Offline suites prove code contracts; only live runs prove behavior, so
-  behavioral changes run focused live cases before they ship, and reliability on hard cases is
-  measured as a rate over repeated runs (the pass^k discipline from
-  [tau-bench](https://arxiv.org/abs/2406.12045)), never a single sample.
-- **Failure-driven regression.** Every observed resident-facing failure gets a database row and
-  a tagged regression case in the same change as its fix, and each session re-runs the newest
-  failures plus a random sample of older ones, so fixes keep passing the history that produced
-  them instead of overfitting to the latest bug.
-- **Inverse coverage.** Every deterministic safety response (fallbacks, backstops, canned
-  denials) needs a test proving it does NOT fire on the neighboring normal question — a safety
-  floor without that fence becomes the next failure.
-- **Model comparisons** run the full agent path with saved traces and an independent
-  qualitative review of every answer, because raw pass counts hide unsafe-but-well-cited
-  answers; the public accountability shape follows the UK [Algorithmic Transparency Recording
-  Standard](https://www.gov.uk/government/collections/algorithmic-transparency-recording-standard-hub).
-
 ## Where cases live and how they are tagged
 
-Two homes, one corpus: each module owns its cases in `heynyc/modules/<module>/eval.yaml`, and
-cross-module or conversational cases live in `heynyc/eval/global.yaml`. The loader flattens both,
-so every selector works across the whole corpus regardless of file.
+Two homes, one corpus. Each module owns its cases in `heynyc/modules/<module>/eval.yaml` (the
+contract for that module, following the CheckList matrix of capability x {MFT, INV, DIR} with an
+OWASP/AILuminate `harm_category`). Cross-module and conversational cases live in
+`heynyc/eval/global.yaml`. The loader flattens both, so every selector works across the whole
+corpus regardless of file. The checks themselves live in this directory: `checks.py`,
+`invariants.py`, `trace.py`, `report.py`, `judges.py` (the opt-in paid `--api-judge`), `runner.py`.
 
 Fields describe a case's contract (capability, harm_category, abstain, turns). Tags describe its
 memberships, and they stack: `F###` ties a case to its row in the failure database (the internal
-register of observed failures, each row naming the case or test that pins it), `conversation`
-marks the multi-turn suite, and the competitive lanes are `general-chat` (a frontier chatbot
-answers this well, we measure the gap) and `must-win` (live city data, high-stakes accuracy,
-in-language and crisis behavior: losing these to a generic chatbot is an existential failure).
+register of observed resident-facing failures; every failure gets a row plus a tagged regression
+case in the same change as its fix, and each session re-runs the newest failures plus a random
+sample of older ones so fixes keep passing the history that produced them). `conversation` marks
+the multi-turn suite. The competitive lanes are `general-chat` (a frontier chatbot answers this
+well, we measure the gap) and `must-win` (live city data, high-stakes accuracy, in-language and
+crisis behavior: losing these to a generic chatbot is an existential failure).
+
+Two more standing rules. Every deterministic safety response (a fallback, backstop, or canned
+denial) needs inverse coverage, a test proving it does not fire on the neighboring normal
+question. And model comparisons run the full agent path with saved traces plus an independent
+qualitative review of every answer, because raw pass counts hide unsafe-but-well-cited answers
+(accountability shape per the UK [Algorithmic Transparency Recording
+Standard](https://www.gov.uk/government/collections/algorithmic-transparency-recording-standard-hub);
+the tier split and risk-based cadence above follow the [NIST AI RMF](https://airc.nist.gov/airmf-resources/airmf/5-sec-core/)
+MEASURE function, and repeat-run reliability is the pass^k discipline from
+[tau-bench](https://arxiv.org/abs/2406.12045)).
 
 Audit the whole corpus in one view with `heynyc eval --list` (one line per case: id, source,
 flags, tags), then run any slice with `--tag`, `--module`, or `--case`.

@@ -47,6 +47,7 @@ HeyNYC is an alpha release. The messaging pilot can run from an operator-managed
 - **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
 - **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. Texting `DELETE MY DATA` and confirming erases the resident's transcript, any draft, and any pending report flags in chat; see the [privacy notice](legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
 - **Not yet shipped:** a resident web UI, durable hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
+- **Known limitations:** intersection geocoding can be wrong, so HeyNYC echoes the resolved address and asks for confirmation. Some city datasets are thin (the SNAP-center list has weekday hours but no phone numbers), and HeyNYC says so rather than filling the gap.
 
 The assistant gives best-effort answers in the user's language when configured, but multilingual behavior is not a verified production capability. It does not decide eligibility or submit applications. When evidence is insufficient, it abstains and routes to 311 or the relevant agency.
 
@@ -93,18 +94,10 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 | --- | --- |
 | [SAFETY.md](SAFETY.md) | How the AI stays grounded and safe: guardrails, red-team results, abstention, and data freshness. |
 | [SECURITY.md](SECURITY.md) | How to report a security vulnerability through the private disclosure policy. |
-| [Privacy Notice](legal/HEYNYC-PRIVACY.md) | What the HeyNYC pilot handles, stores, and shares. |
+| [PRIVACY.md](PRIVACY.md) | Plain-language: what happens to your messages. The formal [Privacy Notice](legal/HEYNYC-PRIVACY.md) controls. |
 | [Terms of Use](legal/HEYNYC-TERMS.md) | Pilot limitations, messaging terms, and user responsibilities. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to add a module or contribute. |
 | [CHANGELOG.md](CHANGELOG.md) | The running day-to-day log of what shipped. |
-
-## Status and known limitations
-
-The standalone Python package includes the agent core, geo, RAG, and scoped web-search retrieval tools, the modules above, the live deterministic grounding guard, and the SMS/WhatsApp adapters. It has an offline test suite and has had prior live verification against selected NYC APIs. A web chat UI, hosted deployment, authenticated browser actions, and production multilingual verification are future work.
-
-- **Intersection geocoding can be wrong.** NYC GeoSearch can misplace an intersection, so HeyNYC echoes the resolved address and asks for confirmation.
-- **Some datasets are thin.** For example, the SNAP-center list has regular weekday hours but no phone numbers or holiday exceptions. HeyNYC labels the hours as listed and points people to ACCESS HRA or 311 when the source cannot answer more.
-
 
 ## How we test it
 
@@ -113,7 +106,7 @@ Every case, gate, and failure-driven regression is documented in [heynyc/eval/RE
 ## FAQ
 
 **Do people read my messages?**
-No one reads your conversations in the normal course of things. Your messages are processed by our AI provider to generate answers and carried by the SMS/WhatsApp network like any text you send, stored encrypted on our side, and looked at by a human in exactly two cases: you explicitly send an exchange to us with the REPORT command (you'll be asked to confirm what's shared first, and it's only that one exchange), or a safety or abuse situation requires it. You can delete your data yourself: text DELETE MY DATA and confirm, and it erases your conversation transcript, any in-progress draft, and any pending report flags (only PII-free aggregate stats and an anonymized daily spend record for abuse control are kept). Text NEW instead to just start a fresh conversation the assistant no longer sees. We say "we don't read them as policy" rather than "we can't" because the second claim wouldn't be true of any service like this, and we'd rather be straight with you. Full policy in [PRIVACY.md](PRIVACY.md).
+No one reads your conversations in the normal course of things. A human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. Text DELETE MY DATA and confirm to erase your transcript, draft, and pending flags yourself. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal notice is the [Privacy Notice](legal/HEYNYC-PRIVACY.md).
 
 **How do I know it isn't making things up?**
 Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you. When the source doesn't back a claim, the answer is regenerated or HeyNYC says it can't confirm. When it can't ground an answer, it says so and points you to 311 or the official page instead of guessing.
@@ -127,4 +120,4 @@ Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urd
 **Something was wrong or unhelpful. What do I do?**
 Text REPORT (or just 👎) after the bad answer. You'll be asked to confirm before that one exchange is shared with a human reviewer.
 
-_Last updated: 2026-07-18_
+_Last updated: 2026-07-20_

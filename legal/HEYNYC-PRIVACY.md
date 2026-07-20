@@ -49,7 +49,7 @@ What the current code demonstrates:
 
 What is not implemented yet:
 
-- In-chat `DELETE MY DATA`; [`NEW` starts a fresh conversation and `PRIVACY` explains current practices](../heynyc/channels/orchestrator.py), while deletion currently requires email
+- (Shipped 2026-07-20, after this notice's effective date: in-chat `DELETE MY DATA` now deletes the conversation transcript, draft, and pending report flags after confirmation; `NEW` and `PRIVACY` work as before. Email deletion remains available.)
 - A settled retention and deletion policy for longer-lived pseudonymous telemetry
 - Live semantic acceptance of memory compaction across long multilingual conversations
 - An external privacy, security, accessibility, or standards-compliance audit
@@ -71,7 +71,7 @@ Using HeyNYC does not create an account with a government agency. Under the proj
 
 ## 7. Your choices
 
-You can stop SMS messages by replying **STOP**. Reply **HELP** for messaging help. STOP is a messaging opt-out, not a deletion request. You can also stop using the service at any time.
+You can stop SMS messages by replying **STOP**. Reply **HELP** for messaging help. STOP is a messaging opt-out, not a deletion request. Text **DELETE MY DATA** and confirm to erase your conversation transcript, draft, and pending report flags in chat. You can also stop using the service at any time.
 
 To request access to or deletion of information held directly by Reach4Help, email [privacy@reach4help.org](mailto:privacy@reach4help.org). Include enough information for us to locate the relevant record without sending sensitive identifiers by email. Reach4Help may need to retain limited information for security, legal compliance, or an unresolved request. Requests concerning a messaging, model, or government provider may also be subject to that provider's procedures.
 
