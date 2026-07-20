@@ -179,3 +179,29 @@ authority humans review pre-deploy, and it supersedes the gate's coarse keyword 
 - **Checks** — this directory: `checks.py` (legacy + structural), `invariants.py` (outcome
   invariants), `trace.py` (OpenInference traces), `report.py` (the gate), `judges.py` (the opt-in
   PAID `--api-judge`; the free default Agent judge needs no code, just the traces), `runner.py`.
+
+## How we evaluate, and where the method comes from
+
+Dated 2026-07-20. The short version: two tiers of checks, live over offline, and every failure
+becomes a permanent test.
+
+- **Two-tier gate.** Deterministic checks (citation grounding, faithfulness floors, link
+  liveness, tool sanity, language, PII) run on every case; a semantic tier (utility criteria,
+  judge review) covers what string checks cannot, like whether an answer addresses the right
+  emergency. The split follows the layered-evaluation practice in the [NIST AI Risk Management
+  Framework](https://airc.nist.gov/airmf-resources/airmf/5-sec-core/) MEASURE function.
+- **Live over offline.** Offline suites prove code contracts; only live runs prove behavior, so
+  behavioral changes run focused live cases before they ship, and reliability on hard cases is
+  measured as a rate over repeated runs (the pass^k discipline from
+  [tau-bench](https://arxiv.org/abs/2406.12045)), never a single sample.
+- **Failure-driven regression.** Every observed resident-facing failure gets a database row and
+  a tagged regression case in the same change as its fix, and each session re-runs the newest
+  failures plus a random sample of older ones, so fixes keep passing the history that produced
+  them instead of overfitting to the latest bug.
+- **Inverse coverage.** Every deterministic safety response (fallbacks, backstops, canned
+  denials) needs a test proving it does NOT fire on the neighboring normal question — a safety
+  floor without that fence becomes the next failure.
+- **Model comparisons** run the full agent path with saved traces and an independent
+  qualitative review of every answer, because raw pass counts hide unsafe-but-well-cited
+  answers; the public accountability shape follows the UK [Algorithmic Transparency Recording
+  Standard](https://www.gov.uk/government/collections/algorithmic-transparency-recording-standard-hub).
