@@ -112,13 +112,13 @@ The standalone Python package includes the agent core, geo, RAG, and scoped web-
 No one reads your conversations in the normal course of things. Your messages are processed by our AI provider to generate answers and carried by the SMS/WhatsApp network like any text you send, stored encrypted on our side, and looked at by a human in exactly two cases: you explicitly send an exchange to us with the REPORT command (you'll be asked to confirm what's shared first, and it's only that one exchange), or a safety or abuse situation requires it. You can delete your data yourself: text DELETE MY DATA and confirm, and it erases your conversation transcript, any in-progress draft, and any pending report flags (only PII-free aggregate stats and an anonymized daily spend record for abuse control are kept). Text NEW instead to just start a fresh conversation the assistant no longer sees. We say "we don't read them as policy" rather than "we can't" because the second claim wouldn't be true of any service like this, and we'd rather be straight with you. Full policy in [PRIVACY.md](PRIVACY.md).
 
 **How do I know it isn't making things up?**
-Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you — when the source doesn't back a claim, the answer is regenerated or HeyNYC says it can't confirm. When it can't ground an answer, it says so and points you to 311 or the official page instead of guessing.
+Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you. When the source doesn't back a claim, the answer is regenerated or HeyNYC says it can't confirm. When it can't ground an answer, it says so and points you to 311 or the official page instead of guessing.
 
 **Is it free?**
 Yes. Standard messaging rates from your carrier apply, nothing from us.
 
 **What languages?**
-Write in whatever language you're comfortable in — Spanish, Bengali, Chinese, Urdu, and more. Program names, addresses, and links stay exact because the official pages are in English.
+Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urdu, and more. Program names, addresses, and links stay exact because the official pages are in English.
 
 **Something was wrong or unhelpful. What do I do?**
 Text REPORT (or just 👎) after the bad answer. You'll be asked to confirm before that one exchange is shared with a human reviewer.

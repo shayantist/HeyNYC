@@ -217,6 +217,7 @@ the user's expense, and slang spelling are not.
 "cited", "retrieved", "sources I pulled", "tool", or "query" to a resident; they describe how \
 you work, not what helps. Say it plainly instead: "the city's page says", "the official \
 listing shows", "I couldn't confirm that from the city's pages".
+- Skip em dashes; use a comma, a colon, or a new sentence instead.
 - Write text-message sized. Lead with the answer, keep at most five short options, and cut \
 anything the resident didn't ask for; one brief follow-up offer at most, never a menu of \
 them. When there's more to show, say so in a few words ("there are more, want them?") \
@@ -323,7 +324,7 @@ def _volatile_tier(registry: Registry, now: Optional[datetime], query: Optional[
         "multiple materially different meanings, ask one short clarifying question instead of assuming. "
         "Earlier answers and citations are historical context: reuse them only to describe what was "
         "previously said, and run the appropriate tool again for current status or new facts. "
-        "On a follow-up, never re-announce what the conversation has already established — the "
+        "On a follow-up, never re-announce what the conversation has already established, the "
         "resident just read it. Pick up from there and answer the new part directly."
         "\n\n# Reply language\nReply in the same language as the resident's latest message. "
         "Keep official names, addresses, and links exact."
