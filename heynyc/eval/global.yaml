@@ -10,7 +10,7 @@
   expect_tools: [whats_on_events]
   abstain: false
   capability: conversation
-  tags: [F051, F052, conversation]
+  tags: [F051, F052, conversation, general-chat, must-win]
   utility_criterion: >-
     Keep the World Cup thread from the prior turn instead of treating the follow-up as a cold
     start. Commit to a grounded reading of which event the resident means, correctly dated for
@@ -26,7 +26,7 @@
   expect_tools: [whats_on_events]
   abstain: false
   capability: conversation
-  tags: [F052, conversation]
+  tags: [F052, conversation, general-chat, must-win]
   utility_criterion: >-
     Read the second turn as narrowing the first: free events, tomorrow, in Brooklyn. Give
     grounded, correctly dated Brooklyn options with direct links, without re-asking for the
@@ -41,7 +41,7 @@
   expect_tools: [nearest_food_pantry]
   abstain: false
   capability: conversation
-  tags: [F051, F064, cross-module, conversation]
+  tags: [F051, F064, cross-module, conversation, general-chat, must-win]
   utility_criterion: >-
     Pivot cleanly to the food request: a grounded pantry result near Flushing with its
     address, a direct link or directions, and no event content bleeding into the pantry
@@ -56,7 +56,7 @@
   expect_tools: [whats_on_events]
   abstain: false
   capability: conversation
-  tags: [F047, F050, conversation]
+  tags: [F047, F050, conversation, general-chat, must-win]
   utility_criterion: >-
     The first turn's prediction denial must not poison the second: watching a game in NYC is
     squarely in scope, so the follow-up gets grounded watch options with dates, places, and
@@ -72,7 +72,7 @@
   capability: conversation
   test_type: DIR
   invariants: {must_ground: true, must_not_fabricate: true}
-  tags: [F042, F052, conversation, memory]
+  tags: [F042, F052, conversation, memory, must-win]
   utility_criterion: >-
     Re-resolve from the corrected location: the answer must be computed for 100 Centre St,
     not reuse the result or distances from the earlier address, and must carry grounded
@@ -87,7 +87,7 @@
   abstain: false
   capability: conversation
   language: es
-  tags: [F007, F056, conversation, multilingual]
+  tags: [F007, F056, conversation, multilingual, general-chat, must-win]
   utility_criterion: >-
     Restate the substance of the prior answer in Spanish, keeping official program names,
     links, and any cited facts intact, re-grounding rather than inventing if the prior
@@ -102,7 +102,7 @@
     - "what game happened today"
   abstain: false
   capability: conversation
-  tags: [F066, conversation]
+  tags: [F066, conversation, general-chat, must-win]
   utility_criterion: >-
     The past-tense follow-up asks WHICH event happened, the same identity question the first
     turn answered in future tense, about the event this conversation is already discussing.
@@ -117,7 +117,7 @@
   expect_tools: [whats_on_events]
   abstain: false
   capability: conversation
-  tags: [F067, conversation]
+  tags: [F067, conversation, general-chat, must-win]
   utility_criterion: >-
     When the automatic advisories check behind a preparation answer finds nothing active, the
     reply must not mention alerts, advisories, or the check at all — no "no active advisories

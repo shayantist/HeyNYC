@@ -4,6 +4,7 @@
 # gracefully (never fabricates a listing) when nothing is open.
 
 - id: hc_open_lotteries
+  tags: [must-win]
   query: "What affordable housing lotteries are open right now?"
   capability: dataset_grounding
   test_type: MFT
@@ -16,6 +17,7 @@
     must_cite_if_asserting: true
 
 - id: hc_apply_for_apartment
+  tags: [general-chat, must-win]
   query: "How do I apply for an apartment through the housing lottery?"
   capability: handoff
   test_type: MFT
@@ -27,6 +29,7 @@
     must_not_submit_on_behalf: true
 
 - id: hc_borough_filter
+  tags: [must-win]
   query: "Any open affordable housing lotteries in the Bronx?"
   capability: dataset_grounding
   test_type: MFT

@@ -6,6 +6,7 @@
 
 # --- MFT: the tip-theft gap, now answered-with-citation instead of a safe abstention ----
 - id: workers_tip_theft
+  tags: [general-chat, must-win]
   query: "My boss is keeping our tips at the restaurant. Is that legal, and what can I do?"
   capability: scope
   test_type: MFT
@@ -20,6 +21,7 @@
 
 # --- INV: phrasing / robustness invariance (same outcome as base) ----------
 - id: workers_tip_theft__inv_slang
+  tags: [general-chat, must-win]
   query: "yo my manager pockets part of our tips every shift can he even do that"
   capability: robustness
   test_type: INV
@@ -28,6 +30,7 @@
   expect_same_outcome_as_base: true
 
 - id: workers_clopening_retrieval
+  tags: [general-chat, must-win]
   query: "Can my employer in NYC schedule me to close and then open the next morning?"
   capability: scope
   test_type: MFT
