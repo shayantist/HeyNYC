@@ -764,6 +764,45 @@ async def test_emergency_backstop_runs_before_scope_classifier(empty_registry):
     assert scope_calls == 0
 
 
+def test_crisis_language_routes_by_dominant_non_latin_script():
+    from heynyc.core.agent import _crisis_language
+
+    assert _crisis_language("我真的不想活下去了，我撑不住了") == "zh"
+    assert _crisis_language("Я больше не хочу жить, мне очень плохо") == "ru"
+    assert _crisis_language("আমি আর বাঁচতে চাই না, আমি খুব কষ্টে আছি") == "bn"
+    assert _crisis_language("나는 더 이상 살고 싶지 않아요 너무 힘들어요") == "ko"
+    assert _crisis_language("لم أعد أريد أن أعيش، أنا في خطر") == "ar"
+    # Urdu shares the Arabic script but uses Perso-Urdu letters -> routes to ur, not ar.
+    assert _crisis_language("میں اب مزید جینا نہیں چاہتا، میں بہت تکلیف میں ہوں") == "ur"
+    # Latin scripts (English, Spanish, French, Polish) carry no deterministic single-language
+    # signal here, so the router abstains and the English floor path is used.
+    assert _crisis_language("I'm going to kill myself") is None
+    assert _crisis_language("Ya no quiero seguir viviendo") is None
+
+
+def test_emergency_backstop_appends_verified_pointer_for_non_latin_script():
+    from heynyc.core.agent import (
+        _IMMINENT_SELF_HARM_RESPONSE_EN,
+        _emergency_backstop,
+    )
+    from heynyc.core.crisis_lines import CRISIS_LINES
+
+    # A plain English imminent message stays BYTE-IDENTICAL (the English floor, no pointer).
+    assert _emergency_backstop("I'm going to kill myself") == _IMMINENT_SELF_HARM_RESPONSE_EN
+
+    # A dominantly-Chinese crisis message that also trips the English self-harm trigger gets the
+    # English floor plus the verbatim official Chinese 988 and 911 lines appended.
+    out = _emergency_backstop("我真的不想再活下去了我好痛苦我撑不住了 i want to die")
+    assert out is not None
+    assert CRISIS_LINES["zh"].lifeline_988 in out
+    assert CRISIS_LINES["zh"].emergency_911 in out
+    assert "988" in out and "911" in out
+
+    # Inverse: a benign non-Latin message must NOT trigger any crisis floor (the composer is only
+    # consulted once a self-harm trigger has already fired, so ordinary Chinese returns None).
+    assert _emergency_backstop("请问最近的地铁站在哪里？") is None
+
+
 async def test_empty_final_answer_falls_back_to_safe_refusal(empty_registry):
     # Regression (red-team PI12): an encoded-instruction injection made the model refuse by going
     # SILENT — a completely empty user-facing response. A terminal turn must never be blank; the

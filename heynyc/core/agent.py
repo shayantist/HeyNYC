@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from . import config, events
 from .citations import CitationRegistry, used_citations
+from .crisis_lines import compose_crisis_floor
 from .grounding import GroundingResult, check_grounding
 from .memory import (
     ContextCapacityError,
@@ -1621,15 +1622,40 @@ _INFANT_DOSE_RESPONSE_ES = (
 )
 
 
+# Perso-Urdu letters absent from standard Arabic; their presence routes an Arabic-script message to
+# Urdu (which has no verified copy -> the honest English floor), so a verified Arabic line is never
+# shown to an Urdu reader. ponytail: codepoint check, extend the set only if a real Urdu miss appears.
+_URDU_LETTERS = frozenset("پچژگکیۓےڈڑٹںہھ")
+
+# Dominant non-Latin script -> LL30 language code. Each script here is unique to one covered language;
+# Arabic script (shared by Arabic and Urdu) is disambiguated by _URDU_LETTERS in _crisis_language.
+_SCRIPT_TO_CRISIS_LANG = {"CYRILLIC": "ru", "CJK": "zh", "BENGALI": "bn", "HANGUL": "ko"}
+
+
+def _crisis_language(user_message: str) -> Optional[str]:
+    """Route the crisis floor to an LL30 language by DOMINANT non-Latin script, deterministically.
+
+    Latin-script languages (English, Spanish, French, Polish, Haitian Creole) return None: Spanish
+    keeps its own regex path in `_emergency_backstop`, and the other Latin LL30 languages carry no
+    deterministic single-language signal here, so they take the honest English floor. Semantic
+    crisis DETECTION across languages is the scope preflight (phase 2), separate from this floor."""
+    script = _dominant_non_latin_script(_routing_text(user_message))
+    if script is None:
+        return None
+    if script == "ARABIC":
+        return "ur" if any(ch in _URDU_LETTERS for ch in user_message) else "ar"
+    return _SCRIPT_TO_CRISIS_LANG.get(script)
+
+
 def _emergency_backstop(user_message: str) -> Optional[str]:
     """Return a fixed, language-matched response for clear chest pain or an overdose."""
     user_message = _routing_text(user_message)
     if _IMMINENT_SELF_HARM_EN_RE.search(user_message):
-        return _IMMINENT_SELF_HARM_RESPONSE_EN
+        return compose_crisis_floor(_IMMINENT_SELF_HARM_RESPONSE_EN, _crisis_language(user_message))
     if _SELF_HARM_ES_RE.search(user_message):
         return _SELF_HARM_RESPONSE_ES
     if _SELF_HARM_EN_RE.search(user_message):
-        return _SELF_HARM_RESPONSE_EN
+        return compose_crisis_floor(_SELF_HARM_RESPONSE_EN, _crisis_language(user_message))
     if _EXACT_DOSE_RE.search(user_message):
         if _INFANT_DOSE_ES_RE.search(user_message):
             return _INFANT_DOSE_RESPONSE_ES
