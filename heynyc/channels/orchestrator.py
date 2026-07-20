@@ -55,6 +55,35 @@ _SCREEN_REMINDER = (
 )
 _NEW_TOKENS = {"new", "/new"}
 _PRIVACY_TOKENS = {"privacy", "/privacy"}
+# DELETE MY DATA: the fixed self-service-deletion command lane. Like is_flag/is_new, it matches the
+# COMMAND by meaning (a curated set of close natural variants) on the whole stripped message, never a
+# substring, so a QUESTION about deletion ("how do I delete my data?") is NOT the command — it falls
+# through to the agent, which answers from the shipped docs via about_heynyc. Deterministic, no model.
+_DELETE_TOKENS = {
+    "delete my data", "delete all my data", "delete my info", "delete my information",
+    "delete all my info", "delete all my information", "delete my conversation",
+    "delete my messages", "delete everything", "erase my data", "erase all my data",
+    "erase my info", "erase my information", "erase everything", "forget me", "wipe my data",
+}
+_DELETE_COMMANDS = ("/delete", "/deletedata", "/forget")
+_DELETE_CONFIRM_MSG = (
+    "This permanently deletes your data with me: your encrypted conversation transcript, any "
+    "in-progress application draft, and any pending report flags. "
+    "What stays: only PII-free aggregate service statistics and an anonymized daily spend record "
+    "kept for abuse control, neither of which identifies you. "
+    "This can't be undone. Reply YES to delete, or anything else to cancel."
+)
+_DELETE_DONE_MSG = (
+    "Done. I deleted your conversation transcript, any application draft, and any pending report "
+    "flags. All that remains is PII-free aggregate statistics and an anonymized daily spend record "
+    "for abuse control, neither of which identifies you. This conversation starts fresh now."
+)
+# First-contact welcome footer: one line on what HeyNYC is, one naming the controls. Sent once ever.
+_WELCOME_FOOTER = (
+    "First time here? I'm HeyNYC, I help you find and use NYC services, grounded in real city data.\n"
+    "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to flag a "
+    "bad answer, or DELETE MY DATA to erase everything I keep."
+)
 _NEW_MESSAGE = (
     "Started a new conversation. I won't use the earlier chat as context. "
     "This does not delete stored records."
@@ -132,6 +161,14 @@ def is_privacy(text: str) -> bool:
     return text.strip().lower() in _PRIVACY_TOKENS
 
 
+def is_delete(text: str) -> bool:
+    """The fixed DELETE MY DATA command: an exact command phrase (a curated close-variant set) or a
+    slash form (`/delete`, optionally with trailing text). Matched only on the whole stripped
+    message, so a QUESTION about deletion routes to the agent instead (see is_flag for the pattern)."""
+    t = text.strip().lower().rstrip("!?. ")
+    return t in _DELETE_TOKENS or any(t == cmd or t.startswith(cmd + " ") for cmd in _DELETE_COMMANDS)
+
+
 def _privacy_message(channel: str) -> str:
     days = pii_crypto.retention_days()
     retention = str(int(days)) if days.is_integer() else str(days)
@@ -144,7 +181,9 @@ def _privacy_message(channel: str) -> str:
         "its own session and operational logs. Do not send an SSN or other sensitive ID in chat. "
         "Send NEW to start without earlier model context. If I get something wrong, reply REPORT "
         "and, after you confirm, that one exchange is shared with a human reviewer, nothing else. "
-        "Self-service deletion is not yet available in this pilot."
+        "To erase your data, send DELETE MY DATA and confirm: that deletes your transcript, any "
+        "draft, and any pending flags, keeping only PII-free aggregate stats and an anonymized "
+        "daily spend record for abuse control."
     )
 
 
@@ -177,14 +216,21 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
     async with deps.locks.get(key):           # serialize one user's messages
         async with deps.semaphore:            # bound global concurrency / LLM spend
             session = Session.load(deps.agent, key, deps.sessions_dir / f"{key}.jsonl")
-            # Flag consent gate: a prior REPORT staged a pointer awaiting confirmation. This
-            # message either confirms it (YES → record the flag) or cancels it and is then handled
-            # as an ordinary turn. Popped either way, so a non-YES reply expires the pending flag.
-            staged = deps.store.pop_pending_flag(key)
-            if staged is not None and is_confirm(msg.text):
-                _confirm_flag(msg, key, session, staged, deps)
-                await replier.send_text(_FLAG_SENT_MSG)
-                return
+            # Consent gate for REPORT and DELETE MY DATA: a prior command staged a pointer / a
+            # deletion awaiting YES. Both pending states are consumed on EVERY message, so any
+            # non-YES reply expires them and is then handled as an ordinary turn. Only one is ever
+            # outstanding (each fresh command cancels the other), and DELETE takes priority.
+            staged_flag = deps.store.pop_pending_flag(key)
+            staged_delete = deps.store.pop_pending_delete(key)
+            if is_confirm(msg.text):
+                if staged_delete is not None:
+                    _execute_delete(key, deps)
+                    await replier.send_text(_DELETE_DONE_MSG)
+                    return
+                if staged_flag is not None:
+                    _confirm_flag(msg, key, session, staged_flag, deps)
+                    await replier.send_text(_FLAG_SENT_MSG)
+                    return
             if msg.media:
                 emergency_response = _emergency_backstop(msg.text)
                 if emergency_response:
@@ -201,6 +247,10 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 return
             if is_privacy(msg.text):
                 await replier.send_text(_privacy_message(msg.channel))
+                return
+            if is_delete(msg.text):   # DELETE MY DATA → stage the confirmation, delete only on YES
+                deps.store.set_pending_delete(key)
+                await replier.send_text(_DELETE_CONFIRM_MSG)
                 return
             if is_help(msg.text):   # greeting / "what can you do" → the grounded capability menu
                 await replier.send_text(deps.agent.registry.welcome_text())
@@ -239,6 +289,11 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 result = pending.result
                 for chunk in render(result, msg.channel):
                     await replier.send_text(chunk)
+                # First-contact welcome: appended to a never-seen user's first normal answer, once
+                # ever (the per-user lock serializes, so no double-send). Marked only here on the
+                # answer path, so a resident whose first message is a command isn't spent on it.
+                if deps.store.first_contact(key):
+                    await replier.send_text(_WELCOME_FOOTER)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
                 for path in artifacts:
                     await replier.send_document(path, caption="Your draft SNAP application (LDSS-4826)")
@@ -259,6 +314,18 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 )
             finally:
                 shutil.rmtree(art_dir, ignore_errors=True)
+
+
+def _execute_delete(key: str, deps: Deps) -> None:
+    """Irreversibly delete this resident's own data on a confirmed DELETE MY DATA: their encrypted
+    session transcript (the JSONL file), any in-progress application draft (the draft file), and any
+    report-flag rows (pending + confirmed). PII-free aggregate statistics and the anonymized daily
+    spend record survive for abuse control, exactly as the confirmation copy promised. Deleting the
+    session file means the next inbound message loads an empty history, so the conversation is fresh."""
+    (deps.sessions_dir / f"{key}.jsonl").unlink(missing_ok=True)
+    if deps.drafts is not None:
+        deps.drafts.for_user(key).delete()
+    deps.store.delete_user(key)
 
 
 def _flag_token(text: str) -> str:

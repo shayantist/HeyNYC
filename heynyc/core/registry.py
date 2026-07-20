@@ -283,7 +283,8 @@ class Registry:
             "translation where there is one and translating the rest as best I can.",
             "",
             "If I get something wrong, reply REPORT and, once you confirm, I'll share that one "
-            "exchange with a person to review.",
+            "exchange with a person to review. Send PRIVACY for how your info is handled, or "
+            "DELETE MY DATA to erase everything I keep.",
             "",
             "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
             "double-check anything important against the official source.",

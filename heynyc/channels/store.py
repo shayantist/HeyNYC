@@ -44,6 +44,15 @@ class ChannelStore:
             "(user_key TEXT PRIMARY KEY, turn_index INTEGER NOT NULL, flag TEXT NOT NULL DEFAULT '', "
             "ts REAL NOT NULL)"
         )
+        # Consent gate for DELETE MY DATA: one pending deletion per user until they reply YES.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS delete_pending (user_key TEXT PRIMARY KEY, ts REAL NOT NULL)"
+        )
+        # First-contact marker: a durable once-EVER flag so a never-seen user gets the welcome
+        # footer exactly once (the `seen` table is TTL-pruned, so it can't answer "ever").
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS welcomed (user_key TEXT PRIMARY KEY, ts REAL NOT NULL)"
+        )
         self._db.commit()
 
     def seen(self, message_id: str, user_key: str = "") -> bool:
@@ -103,6 +112,46 @@ class ChannelStore:
             (user_key, int(turn_index), flag, time.time()),
         )
         self._db.commit()
+
+    def set_pending_delete(self, user_key: str) -> None:
+        """Stage a DELETE MY DATA awaiting the resident's YES (one pending per user; a fresh
+        DELETE replaces an un-confirmed one). No content: the presence of a row is the whole state."""
+        self._db.execute(
+            "INSERT INTO delete_pending (user_key, ts) VALUES (?, ?) "
+            "ON CONFLICT(user_key) DO UPDATE SET ts = excluded.ts",
+            (user_key, time.time()),
+        )
+        self._db.commit()
+
+    def pop_pending_delete(self, user_key: str) -> dict | None:
+        """Read and clear this user's staged deletion (consume-once). None if nothing is staged."""
+        row = self._db.execute(
+            "SELECT ts FROM delete_pending WHERE user_key = ?", (user_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        self._db.execute("DELETE FROM delete_pending WHERE user_key = ?", (user_key,))
+        self._db.commit()
+        return {"ts": float(row[0])}
+
+    def delete_user(self, user_key: str) -> None:
+        """Erase this resident's own control-plane rows on DELETE MY DATA: their flag pointers
+        (pending + confirmed) and any staged deletion. The daily `spend` record is deliberately
+        KEPT (anonymized, abuse control), matching the survivor promised in the confirmation copy.
+        The transcript and drafts (the actual PII) are files, deleted by the channel, not here."""
+        self._db.execute("DELETE FROM flag WHERE user_key = ?", (user_key,))
+        self._db.execute("DELETE FROM flag_pending WHERE user_key = ?", (user_key,))
+        self._db.execute("DELETE FROM delete_pending WHERE user_key = ?", (user_key,))
+        self._db.commit()
+
+    def first_contact(self, user_key: str) -> bool:
+        """True exactly once per user, EVER (the first call), then False. Marks and returns
+        atomically so the first-contact welcome footer fires once and never again."""
+        cur = self._db.execute(
+            "INSERT OR IGNORE INTO welcomed (user_key, ts) VALUES (?, ?)", (user_key, time.time())
+        )
+        self._db.commit()
+        return cur.rowcount == 1
 
     def flags(self) -> list[dict]:
         """Confirmed flag pointers, newest first, for the owner's `heynyc feedback` triage view."""

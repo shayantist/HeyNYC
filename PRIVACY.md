@@ -8,7 +8,9 @@ HeyNYC answers questions about NYC services over SMS and WhatsApp. Here is what 
 
 **Who reads it.** No person reads conversations in the normal course of operating the service. A human sees an exchange in exactly two cases: you send it to us with the REPORT command, which asks you to confirm first and shares only that one exchange; or a safety or abuse situation requires review. We state this as policy rather than impossibility, because the operator of any encrypted service holds its keys, and we would rather be straight about that.
 
-**Your controls.** NEW starts a fresh conversation the assistant no longer sees earlier messages of (the audit record is retained). PRIVACY returns this policy in short form. REPORT flags your last exchange for human review, with your confirmation. Self-service deletion is not yet available in this pilot; it is on the roadmap, and until then the honest description of DELETE MY DATA is a pending design decision, not a shipped feature.
+**Operator access.** The people who run HeyNYC decrypt a real resident's conversation in exactly two cases: you sent an exchange to us with REPORT and confirmed, or a specific safety or abuse review requires it. Debugging and development use the operators' own test conversations, never yours. Curiosity is not a case.
+
+**Your controls.** NEW starts a fresh conversation the assistant no longer sees earlier messages of (the audit record is retained). PRIVACY returns this policy in short form. REPORT flags your last exchange for human review, with your confirmation. DELETE MY DATA erases your data: after you confirm, it deletes your encrypted conversation transcript, any in-progress application draft, and any pending report flags. What survives is only PII-free aggregate service statistics and an anonymized daily spend record kept for abuse control, neither of which identifies you. It cannot be undone.
 
 **Spend and abuse limits.** Per-person daily usage caps protect the service without cutting anyone off from the deterministic emergency guidance, which always works.
 

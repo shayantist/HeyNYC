@@ -78,6 +78,11 @@ class UserDrafts:
             del data[program]
             self._write(data)
 
+    def delete(self) -> None:
+        """Irreversibly delete this user's entire draft file (every program). The DELETE MY DATA
+        hook: unlike `clear(program)`, it removes the file itself so no empty shell lingers."""
+        self._path.unlink(missing_ok=True)
+
 
 class DraftStore:
     """JSON-file-per-user draft store. `for_user(key)` returns a bound `UserDrafts`."""

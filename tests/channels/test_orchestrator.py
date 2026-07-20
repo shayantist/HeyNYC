@@ -2,9 +2,12 @@ import asyncio
 import pytest
 from heynyc.channels.base import InboundMessage, KeyedLocks
 from heynyc.channels.orchestrator import (
+    _WELCOME_FOOTER,
     Deps,
     handle,
+    is_delete,
     is_flag,
+    is_help,
     is_new,
     is_privacy,
     is_screen,
@@ -28,6 +31,12 @@ class FakeReplier:
 
     async def send_document(self, path, caption=""):
         return None
+
+
+def _answers(replier):
+    """Sent messages minus the once-ever first-contact welcome footer, so a test that asserts on
+    the ANSWER stays focused on it and isn't perturbed by the new first-contact greeting."""
+    return [s for s in replier.sent if s != _WELCOME_FOOTER]
 
 
 def _agent(reply="Here you go."):
@@ -67,7 +76,7 @@ async def test_sms_channel_renders_plain_text_but_persists_raw_generation(tmp_pa
 
     await handle(msg, replier, deps)
 
-    assert replier.sent == ["Cooling centers are open Saturday."]   # no markdown delimiters on SMS
+    assert _answers(replier) == ["Cooling centers are open Saturday."]   # no markdown delimiters on SMS
     # audit keeps the raw generation (decoded through the same path the app persists it)
     from heynyc.core.session import _decode_line
 
@@ -87,7 +96,7 @@ async def test_whatsapp_channel_keeps_native_markup(tmp_path):
 
     await handle(msg, replier, deps)
 
-    assert replier.sent == ["*Cooling centers* are open Saturday."]  # native WhatsApp bold
+    assert _answers(replier) == ["*Cooling centers* are open Saturday."]  # native WhatsApp bold
 
 
 async def test_delivery_failure_does_not_persist_generated_turn(tmp_path):
@@ -194,7 +203,7 @@ async def test_duplicate_message_is_ignored(tmp_path):
     deps, replier = _deps(tmp_path), FakeReplier()
     await handle(_msg(mid="dup"), replier, deps)
     await handle(_msg(mid="dup"), replier, deps)   # same message_id
-    assert len(replier.sent) == 1
+    assert replier.sent.count("Here you go.") == 1   # the duplicate produced no second answer
 
 
 async def test_rate_limit_blocks_with_a_notice(tmp_path):
@@ -237,6 +246,115 @@ async def test_non_yes_after_report_cancels_and_is_processed_as_a_normal_turn(tm
     assert deps.store.flags() == []        # the pending flag was cancelled, nothing recorded
 
 
+def test_is_delete_matches_the_command_not_a_question_about_deletion():
+    # The fixed command lane matches "DELETE MY DATA" and close natural variants by meaning,
+    # deterministically. A QUESTION about deletion is NOT the command (it routes to the agent,
+    # which answers from the shipped docs) — same discipline as is_flag vs "what's wrong...".
+    assert is_delete("DELETE MY DATA")
+    assert is_delete("  delete my data ")
+    assert is_delete("delete all my data")
+    assert is_delete("erase my data")
+    assert is_delete("delete my information")
+    assert is_delete("/delete")
+    assert not is_delete("how do I delete my data?")
+    assert not is_delete("can you delete my account someday")
+    assert not is_delete("what happens to my data")
+
+
+def _drafts_deps(tmp_path, **kw):
+    from heynyc.core.drafts import DraftStore
+
+    deps = _deps(tmp_path, **kw)
+    deps.drafts = DraftStore(tmp_path / "drafts")
+    return deps
+
+
+async def test_delete_asks_to_confirm_stating_what_goes_and_survives_before_any_yes(tmp_path):
+    """Mirrors REPORT: DELETE MY DATA only STAGES a confirmation that states what will be deleted
+    and what survives. Deterministic free lane (no agent run); nothing is deleted until YES."""
+    deps = _drafts_deps(tmp_path)
+    await handle(_msg(text="when do cooling centers open?", mid="d0"), FakeReplier(), deps)
+    session_file = next((tmp_path / "sessions").glob("*.jsonl"))
+
+    r = FakeReplier()
+    await handle(_msg(text="DELETE MY DATA", mid="d1"), r, deps)
+
+    assert r.typed == 0                                   # deterministic, no model call
+    copy = r.sent[0].lower()
+    assert "yes" in copy                                  # only YES executes
+    assert "transcript" in copy and "draft" in copy       # what WILL be deleted
+    assert "spend" in copy and ("aggregate" in copy or "statistics" in copy)  # what SURVIVES
+    assert session_file.exists()                          # nothing deleted yet
+
+
+async def test_delete_removes_session_draft_and_flags_and_next_message_starts_fresh(tmp_path):
+    deps = _drafts_deps(tmp_path)
+    from heynyc.channels.identity import user_key as _uk
+    key = _uk("whatsapp_meta", "+1555", "s")
+
+    # Build real state: a committed conversation, a confirmed flag pointer, a draft, and spend.
+    await handle(_msg(text="when do cooling centers open?", mid="s1"), FakeReplier(), deps)
+    await handle(_msg(text="report", mid="s2"), FakeReplier(), deps)
+    await handle(_msg(text="YES", mid="s3"), FakeReplier(), deps)   # confirm the flag pointer
+    deps.drafts.for_user(key).merge("snap", {"name": "Jane Doe"})
+    deps.store.add_spend(key, "2026-07-20", 0.09)
+
+    session_file = tmp_path / "sessions" / f"{key}.jsonl"
+    draft_file = tmp_path / "drafts" / f"{key}.json"
+    assert session_file.exists() and draft_file.exists()
+    assert len(deps.store.flags()) == 1
+
+    await handle(_msg(text="DELETE MY DATA", mid="d1"), FakeReplier(), deps)
+    r = FakeReplier()
+    await handle(_msg(text="YES", mid="d2"), r, deps)
+
+    assert r.typed == 0
+    done = r.sent[0].lower()
+    assert "delet" in done and "spend" in done              # ack confirms + restates survivors
+    assert not session_file.exists()                        # transcript actually gone
+    assert not draft_file.exists()                          # draft actually gone
+    assert deps.store.flags() == []                         # flag rows gone
+    assert abs(deps.store.daily_spend(key, "2026-07-20") - 0.09) < 1e-9  # spend survives
+
+    # The next message starts fresh: no earlier turn reaches the model.
+    seen = []
+
+    async def complete_fn(messages, tool_schemas):
+        seen.extend(messages)
+        return {"role": "assistant", "content": "Fresh answer", "tool_calls": None}
+
+    deps.agent = Agent(Registry([]), tools={}, complete_fn=complete_fn, model="fake")
+    await handle(_msg(text="hello again", mid="d3"), FakeReplier(), deps)
+    assert not any("cooling centers" in str(m.get("content", "")) for m in seen)
+
+
+async def test_non_yes_after_delete_cancels_and_runs_as_a_normal_turn(tmp_path):
+    deps = _drafts_deps(tmp_path)
+    await handle(_msg(text="when do cooling centers open?", mid="c0"), FakeReplier(), deps)
+    session_file = next((tmp_path / "sessions").glob("*.jsonl"))
+    await handle(_msg(text="DELETE MY DATA", mid="c1"), FakeReplier(), deps)
+
+    r = FakeReplier()
+    await handle(_msg(text="what about SNAP?", mid="c2"), r, deps)
+    assert r.typed == 1                # the non-YES message ran the agent normally
+    assert session_file.exists()       # the pending deletion was cancelled, nothing removed
+
+
+async def test_first_contact_appends_a_welcome_footer_exactly_once(tmp_path):
+    deps = _deps(tmp_path)
+
+    r1 = FakeReplier()
+    await handle(_msg(text="when do cooling centers open?", mid="w1"), r1, deps)
+    footer = " ".join(r1.sent)
+    assert "HeyNYC" in footer                                  # one line on what HeyNYC is
+    for command in ("HELP", "PRIVACY", "REPORT", "DELETE MY DATA"):
+        assert command in footer                               # names every control, once
+
+    r2 = FakeReplier()
+    await handle(_msg(text="what about SNAP?", mid="w2"), r2, deps)
+    assert "DELETE MY DATA" not in " ".join(r2.sent)           # never welcomed twice
+
+
 def test_store_stages_confirms_and_lists_flag_pointers(tmp_path):
     store = ChannelStore(tmp_path / "s.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=60)
     assert store.pop_pending_flag("u1") is None
@@ -255,6 +373,16 @@ def test_store_stages_confirms_and_lists_flag_pointers(tmp_path):
 def test_is_flag():
     assert is_flag("wrong") and is_flag("  Report ") and is_flag("👎")
     assert not is_flag("what's wrong with my application?")
+
+
+def test_is_help_menu_only_matches_greetings_not_a_help_word_mid_question():
+    # The capability menu answers a bare greeting / "what can you do", never an ordinary
+    # question that merely contains the word "help" or a greeting token.
+    assert is_help("hi") and is_help("  Menu ") and is_help("what can you do?")
+    assert is_help("HELP") and is_help("/help")
+    assert not is_help("hey what's the nearest cooling center")
+    assert not is_help("can you help me find a food pantry")
+    assert not is_help("i need help with my SNAP application")
 
 
 def test_is_screen_only_matches_the_explicit_action_command():
@@ -298,8 +426,8 @@ async def test_privacy_command_is_deterministic_and_does_not_run_agent(tmp_path)
     assert "encrypted" in text
     assert "30 days" in text
     assert "ai model" in text
-    assert "delete my data" not in text
-    assert "not yet available" in text
+    assert "delete my data" in text          # self-service deletion now exists, name the command
+    assert "not yet available" not in text   # the pending-design language is gone
     assert not list((tmp_path / "sessions").glob("*.jsonl"))
 
 
@@ -388,7 +516,7 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
         {"persons": [], "show_all": False},
         {"persons": [], "show_all": True},
     ]
-    assert replier.sent == [
+    assert _answers(replier) == [
         "Reply /screen when ready", "Reply /screen when ready", "Reply /screen when ready",
     ]
 
@@ -396,6 +524,10 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
 async def test_per_user_lock_serializes_same_user(tmp_path):
     order = []
     deps = _deps(tmp_path)
+    from heynyc.channels.identity import user_key as _uk
+    # Consume the once-ever welcome up front so the first-contact footer doesn't add an extra
+    # send and perturb the serialization order this test isolates.
+    deps.store.first_contact(_uk("whatsapp_meta", "+1555", "s"))
 
     class SlowReplier(FakeReplier):
         def __init__(self, tag):
