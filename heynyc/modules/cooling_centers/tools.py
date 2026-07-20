@@ -129,6 +129,18 @@ def _item(record: dict, *, active: bool) -> dict | None:
     else:
         item_type = str(record.get("Space_type") or "cool option").strip().lower()
         source = COOL_OPTIONS_URL
+    # F072: the audience a row itself declares, so an older-adults-only center is never handed to a
+    # parent as if it were all-ages. The active feed types this in FACILITY_TYPE (Older Adult Center
+    # / Library / Other); the Cool_Options feed marks it in Age_restriction (Yes/No). We surface the
+    # row's own value (language-independent data) and let the model phrase it in any language.
+    facility_type = _value(record, "Facility_type", "FACILITY_TYPE")
+    age_restriction = str(record.get("Age_restriction") or "").strip()
+    if active:
+        audience = facility_type
+        age_restricted = facility_type.lower() == "older adult center"
+    else:
+        audience = "Age-restricted" if age_restriction.lower() == "yes" else facility_type
+        age_restricted = age_restriction.lower() == "yes"
     return {
         "record": record,
         "source": source,
@@ -138,6 +150,8 @@ def _item(record: dict, *, active: bool) -> dict | None:
         "accessible": str(record.get("Accessible") or "").strip(),
         "pet_friendly": _value(record, "Pet_friendly", "PET_FRIENDLY"),
         "type": item_type,
+        "audience": audience,
+        "age_restricted": age_restricted,
         "lat": lat,
         "lon": lon,
         "active": active,
@@ -257,6 +271,11 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         lines.append(
             f"{index}. {item['name']}, {item['type']}, {distance:.2f} miles {{cite:{cite}}}"
         )
+        if item["age_restricted"]:
+            # F072: prominent, language-independent restriction data (the row's own audience);
+            # the model translates "Older Adult Center" / "age-restricted" naturally.
+            label = item["audience"] or "Age-restricted"
+            lines.append(f"   Audience: {label} (age-restricted, not open to all ages)")
         if item["address"]:
             lines.append(f"   {item['address']}")
         hours = str(item["record"].get(day_name) or "").strip()
@@ -277,6 +296,32 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         if item["phone"]:
             lines.append(f"   Phone: {item['phone']}")
         lines.append(f"   Map: {maps_link(item['lat'], item['lon'])}")
+
+    # F072: when the shown results are dominated by age-restricted (older-adult) centers, say so and
+    # point to an all-ages option the tool can cite. Driven by the rows' declared audience, not the
+    # query wording, so it holds in any language and never leaves a parent with only senior centers.
+    restricted_shown = [item for item in selected if item["age_restricted"]]
+    if restricted_shown and len(restricted_shown) * 2 >= len(selected):
+        shown_ids = {id(item) for item in selected}
+        all_ages = next(
+            (item for item in unique
+             if not item["age_restricted"]
+             and item["open_now"] is not False
+             and id(item) not in shown_ids),
+            None,
+        )
+        note = (
+            "Some of these are age-restricted older-adult centers. Public libraries, pools, and "
+            "spray showers are open to all ages, including children and families."
+        )
+        if all_ages is not None:
+            cite = _citation(ctx, all_ages)
+            note += (
+                f" The nearest all-ages option here is {all_ages['name']}, {all_ages['type']}, "
+                f"{miles(all_ages['distance_m']):.2f} miles {{cite:{cite}}}."
+            )
+        lines.append(note)
+
     lines.append("Hours and policies can change. The City advises calling ahead before visiting.")
     if general_failed:
         lines.append("The general Cool Options feed was unavailable for this lookup.")

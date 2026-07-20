@@ -37,6 +37,22 @@
   invariants: {must_ground: true, must_not_fabricate: true}
   notes: Plain street address — the reliable geocoding path.
 
+- id: cooling_kids_all_ages
+  query: "Where can I take my kids to cool off near Fordham Road in the Bronx today?"
+  capability: dataset_grounding
+  test_type: MFT
+  expect_tools: [cool_options_lookup]
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F072]
+  utility_criterion: >-
+    Serve a parent asking about children. Any older-adult (Older Adult Center / age-restricted) result
+    must be flagged as age-restricted, not offered as if all-ages, and the answer must surface an
+    all-ages option (a library, pool, or spray shower) from the tool output. Fail if the reply hands
+    the parent only older-adults-only senior centers with no all-ages alternative (the F072 failure).
+  notes: Regression for F072, where a parent was given two "older adults only" senior centers and no
+    pools/spray showers. The tool annotates each row with its declared audience and, when older-adult
+    rows dominate, cites an all-ages lane; the model must carry both through in natural phrasing.
+
 # --- INV: phrasing/robustness invariance (same outcome as base) ------------
 - id: cooling_nearest_columbia__inv_slang
   query: "yo where can i not die of heat near 116th & broadway in manhattan"

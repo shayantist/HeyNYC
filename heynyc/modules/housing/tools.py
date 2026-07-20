@@ -309,8 +309,35 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             ),
         ),
     ),
+    # no_water is a DIFFERENT problem from no_heat. A cold-water outage or no running water at all
+    # is a water-service failure (a required service, and possibly a water-main issue), NOT the
+    # hot-water temperature standard. F070: a resident asking about NO COLD water was handed the
+    # hot-water 120°F standard. The resident's own noun decides which topic the model picks; this
+    # keeps the frames separate so the model never answers the opposite question.
+    "no_water": (
+        "No cold water or no water at all, a water-service problem (this is not the hot-water standard):",
+        (
+            _Fact(
+                url="https://www.nyc.gov/site/hpd/services-and-information/tenants-rights-and-responsibilities.page",
+                title="Tenants' Rights and Responsibilities, NYC HPD",
+                snippet=("in New York City building owners must provide and maintain heat, hot and cold "
+                         "water; no cold water or no running water is a failure to provide an essential "
+                         "service; keep a record and if service is not restored file a complaint, and a "
+                         "tenant can bring a case in Housing Court to get an order to correct"),
+                body=("This is a water-service problem, not the hot-water temperature standard. In New "
+                      "York City building owners must provide and maintain heat, hot and cold water, and "
+                      "good lighting, so no cold water, or no running water at all, is a failure to "
+                      "provide an essential service. Let the landlord know and keep a record of your "
+                      "attempts to get repairs; if service is not restored you can file a complaint "
+                      "(call 311, the same way you would report no heat), and a tenant can also bring a "
+                      "case against the property owner in Housing Court to get an order to correct the "
+                      "condition. If a whole building or the block suddenly has no water at all, that can "
+                      "be a water-main problem affecting the area, report it through 311."),
+            ),
+        ),
+    ),
     "no_heat": (
-        "No heat / no hot water, the standard, the law, and how to escalate:",
+        "No heat or no HOT water, the heat-season standard, the law, and how to escalate:",
         (
             _Fact(
                 url="https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page",
@@ -422,7 +449,10 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
 _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("right_to_counsel", ("counsel", "lawyer", "attorney", "legal", "represent", "housing court",
                           "eviction help", "sued", "taken to court")),
-    ("no_heat", ("heat", "hot water", "cold", "boiler", "radiator", "temperature", "freezing")),
+    # No bare "cold" here: it inverted a COLD-water outage into the hot-water frame (F070). The
+    # model routes by the resident's noun via the tool description; this fallback stays for clean
+    # heat words only. no_water is intentionally NOT keyworded, the model passes its canonical key.
+    ("no_heat", ("heat", "hot water", "boiler", "radiator", "temperature", "freezing")),
     ("shelter", ("shelter", "homeless", "nowhere", "no place", "sleep tonight", "intake", "path",
                  "afic", "kicked out", "nowhere to stay")),
     ("source_of_income", ("voucher", "section 8", "cityfheps", "source of income",
@@ -447,10 +477,11 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded guidance for that topic. Use housing_guidance with topic = "
-                "'right_to_counsel' (free eviction lawyer), 'no_heat' (no heat / no hot water), "
-                "'shelter' (shelter intake tonight), or 'source_of_income' (a landlord refusing a "
-                "voucher, Section 8 / CityFHEPS). For a building's HPD record use "
-                "hpd_building_lookup; for anything else, point the user to 311.")
+                "'right_to_counsel' (free eviction lawyer), 'no_heat' (no heat / no HOT water), "
+                "'no_water' (no COLD water / no running water at all), 'shelter' (shelter intake "
+                "tonight), or 'source_of_income' (a landlord refusing a voucher, Section 8 / "
+                "CityFHEPS). For a building's HPD record use hpd_building_lookup; for anything else, "
+                "point the user to 311.")
     intro, facts = _GUIDANCE[topic]
     lines = [intro]
     for fact in facts:
@@ -525,13 +556,17 @@ def get_tools() -> list[Tool]:
         Tool(
             name="housing_guidance",
             description=(
-                "Return NYC's official, grounded guidance for four high-stakes housing situations, "
+                "Return NYC's official, grounded guidance for five high-stakes housing situations, "
                 "each WITH a citation to the official source page: `right_to_counsel` (the FREE "
-                "lawyer for an eviction case + how to connect), `no_heat` (no heat / no hot water, the "
-                "heat-season temperature standard + how to file), `shelter` (where to go for shelter "
+                "lawyer for an eviction case + how to connect), `no_heat` (no heat, or no HOT water, "
+                "the heat-season temperature standard + how to file), `no_water` (no COLD water, or "
+                "no running water at all, a water-service outage), `shelter` (where to go for shelter "
                 "intake tonight, families with children / pregnant vs. single adults), and "
                 "`source_of_income` (a landlord refusing a Section 8 / CityFHEPS voucher, the NYC "
-                "source-of-income protection). Pass `topic` = one of those four (free text like "
+                "source-of-income protection). Let the resident's OWN words pick the water topic: "
+                "heat or hot water -> `no_heat`; cold water or no water at all -> `no_water`. They are "
+                "different problems (the hot-water 120-degree standard vs. a water-service failure), so "
+                "never answer one with the other. Pass `topic` = one of those five (free text like "
                 "'landlord shut off the heat', 'need a lawyer for eviction', or 'they won't take my "
                 "voucher' is mapped to the right topic). ALWAYS use this instead of stating a shelter "
                 "address, phone number, temperature standard, or eligibility figure from your own "

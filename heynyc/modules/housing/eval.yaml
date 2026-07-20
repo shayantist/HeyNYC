@@ -106,6 +106,33 @@
     complaint; heat season Oct 1–May 31; daytime minimum 68°F when below 55°F outside, 62°F overnight;
     hot water 120°F year-round. No temperature or date stated from the model's own knowledge.
 
+- id: housing_no_cold_water
+  query: "Is it normal that my building has no cold water today?"
+  capability: scope
+  test_type: MFT
+  expect_tools: [housing_guidance]
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  tags: [F070]
+  utility_criterion: >-
+    Answer the COLD-water outage on its own terms: cold water is a required service the owner must
+    provide, how to report it (311 / HPD complaint, Housing Court), and that a whole-block outage can
+    be a water-main problem. Fail if the answer serves the hot-water frame instead, for example the
+    120°F hot-water minimum or the heat-season temperature standard, which is the opposite question.
+  notes: Must call housing_guidance(topic="no_water"), never no_heat. Regression for F070, where a
+    cold-water complaint was answered with the hot-water 120°F standard. The resident's own noun
+    decides the frame, so this holds in any language (the matched Spanish/Bengali case must pass too).
+
+- id: housing_no_cold_water__es
+  query: "¿Es normal que mi edificio no tenga agua fría hoy?"
+  capability: robustness
+  test_type: INV
+  base: housing_no_cold_water
+  perturbation: translate
+  expect_same_outcome_as_base: true
+  tags: [F070]
+  notes: The original F070 failure was this Spanish query answered with the hot-water 120°F standard.
+    Cross-language acid test, the cold-water frame must survive translation, never invert to hot water.
+
 - id: housing_shelter_family
   query: "I have two kids and we have nowhere to sleep tonight. Where do we go?"
   capability: scope
