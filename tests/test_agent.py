@@ -369,14 +369,14 @@ async def test_default_scope_classifier_rejects_malformed_structured_output(
     assert captured["stream"] is False
 
 
-async def test_default_scope_classifier_reports_event_preparation_flag(
+async def test_default_scope_classifier_reports_event_turn_signal(
     empty_registry, monkeypatch,
 ):
-    """The semantic scope preflight, not a phrase list, is the primary event-preparation
-    signal (owner ruling: generalize, no hardcoding)."""
+    """The semantic scope preflight, not a phrase list, is the primary event signal (F058,
+    owner ruling: generalize, no hardcoding). It is now a tri-state: none/discovery/preparation."""
     async def flagged_completion(**kwargs):
         message = SimpleNamespace(
-            content='{"decision":"allow","event_preparation":true}', refusal=None, parsed=None,
+            content='{"decision":"allow","event_turn":"preparation"}', refusal=None, parsed=None,
         )
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
@@ -389,11 +389,29 @@ async def test_default_scope_classifier_reports_event_preparation_flag(
     result = await agent._classify_scope("what should i bring to the game on 7/18", [])
 
     assert result.decision == "allow"
-    assert result.event_preparation is True
+    assert result.event_turn == "preparation"
 
     from heynyc.core.agent import _SCOPE_SYSTEM_PROMPT
 
-    assert "event_preparation" in _SCOPE_SYSTEM_PROMPT
+    assert "event_turn" in _SCOPE_SYSTEM_PROMPT
+
+
+def test_scope_decision_schema_accepts_event_turn_tristate():
+    """F058: the scope schema carries a closed tri-state event signal. Absent parses as None,
+    which the run flow reads as 'preflight did not say' and falls back to the regex floor."""
+    import pydantic
+
+    from heynyc.core.agent import _ScopeDecision
+
+    assert _ScopeDecision.model_validate_json(
+        '{"decision":"allow","event_turn":"discovery"}'
+    ).event_turn == "discovery"
+    assert _ScopeDecision.model_validate_json(
+        '{"decision":"allow","event_turn":"preparation"}'
+    ).event_turn == "preparation"
+    assert _ScopeDecision.model_validate_json('{"decision":"allow"}').event_turn is None
+    with pytest.raises(pydantic.ValidationError):
+        _ScopeDecision.model_validate_json('{"decision":"allow","event_turn":"maybe"}')
 
 
 async def test_omitted_scope_flag_falls_back_to_regex_detection(empty_registry):
@@ -421,18 +439,18 @@ async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
     uncited = _assistant(content="Bring a pencil, a calculator, and your student ID.")
 
     async def exam_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_preparation=False)
+        return ScopeResult(decision="allow", model="test", event_turn="none")
 
     exam_agent = Agent(
         empty_registry, tools={}, complete_fn=_scripted(uncited), scope_fn=exam_scope,
     )
-    # Regex would match ("bring" + "final" + "tomorrow"), but the semantic flag says this is
+    # Regex would match ("bring" + "final" + "tomorrow"), but the semantic signal says this is
     # not event preparation, so the guard must not reject the answer.
     result = await exam_agent.run("What should I bring to the final tomorrow?")
     assert "pencil" in result.text
 
     async def event_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_preparation=True)
+        return ScopeResult(decision="allow", model="test", event_turn="preparation")
 
     packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water")
     event_agent = Agent(
@@ -444,16 +462,16 @@ async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
     assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
 
 
-async def test_broad_shortlist_query_wins_over_semantic_prep_flag(empty_registry):
-    """Observed in the pre-commit eval: nano over-flagged a broad what's-happening query as
-    event preparation, swapping the shortlist synthesis for prep rules. Broadness is
-    deterministic; it must win over the semantic flag."""
+async def test_discovery_event_turn_gets_no_preparation_reminder(empty_registry):
+    """F058: a discovery turn ('what's happening', 'is there a game today') reaches the events
+    lanes but is NOT a preparation turn, so the identity-resolution preparation reminder that
+    prep turns get must not be injected."""
     from heynyc.core.agent import _EVENT_PREPARATION_SCOPE_REMINDER, ScopeResult
 
     seen = []
 
-    async def flagged_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_preparation=True)
+    async def discovery_scope(user_message, history):
+        return ScopeResult(decision="allow", model="test", event_turn="discovery")
 
     async def events_tool(args, ctx):
         return "listings"
@@ -465,12 +483,97 @@ async def test_broad_shortlist_query_wins_over_semantic_prep_flag(empty_registry
     agent = Agent(
         empty_registry,
         tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
-        complete_fn=complete, scope_fn=flagged_scope,
+        complete_fn=complete, scope_fn=discovery_scope,
     )
 
     await agent.run("What free events are happening in NYC parks this weekend?")
 
     assert not any(_EVENT_PREPARATION_SCOPE_REMINDER in m for m in seen)
+
+
+async def test_discovery_event_turn_forces_advisory_check_by_meaning(
+    empty_registry, monkeypatch,
+):
+    """F058: 'is there a game today' is discovery by MEANING. The broad-events regex misses it
+    (no 'event'/'happening'/'what's on' term), but the semantic event_turn=discovery signal
+    still routes it to the same forced same-day advisory check that broad queries get."""
+    from heynyc.core.agent import ScopeResult, _is_broad_event_query
+
+    # The demoted regex genuinely does not consider this broad; the semantic signal must.
+    assert not _is_broad_event_query("is there a game today")
+
+    forced = []
+    received_args = []
+
+    async def awareness():
+        return "- 07/20: Notify NYC - Flash Flood Warning\n  For the Bronx til 3:30 PM."
+
+    async def advisory(args, ctx):
+        received_args.append(args)
+        return "Current notifications checked"
+
+    async def discovery_scope(user_message, history):
+        return ScopeResult(decision="allow", model="test", event_turn="discovery")
+
+    async def model_stream(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        if forced_tool:
+            yield {"type": "message", "message": _assistant(
+                tool_calls=[_tool_call(forced_tool, {})],
+            )}
+        else:
+            yield {"type": "message", "message": _assistant(
+                content="No match shows in NYC today.",
+            )}
+
+    tool = Tool("nyc_advisories", "", {}, advisory)
+    agent = Agent(
+        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+        scope_fn=discovery_scope,
+    )
+    monkeypatch.setattr(agent, "_litellm_stream", model_stream)
+
+    result = await agent.run("is there a game today")
+
+    assert forced == ["nyc_advisories", None]
+    assert received_args == [{"incidental": True}]
+    assert result.tool_calls_made == ["nyc_advisories"]
+
+
+def test_broad_event_feedback_honors_discovery_turn_signal():
+    """F058: the broad-events context guard now takes the resolved discovery signal. When the
+    preflight marks a turn discovery, the guard fires even though the regex would not; when the
+    preflight says it is not discovery, the guard stays silent even on a regex-broad message."""
+    from heynyc.core.agent import _broad_event_context_feedback, _is_broad_event_query
+
+    citations = {
+        "S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
+            "snippet": (
+                "Air quality is unhealthy for everyone in all or part of NYC. "
+                "Limit strenuous outdoor activity."
+            ),
+        },
+    }
+
+    assert not _is_broad_event_query("is there a game today")
+    # Discovery by meaning: the guard must fire despite the regex miss.
+    assert _broad_event_context_feedback(
+        "is there a game today",
+        "The event search returned one result. {cite:S1}",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+        discovery_turn=True,
+    ) is not None
+    # Preflight says not-discovery: the guard stays silent even on a regex-broad message.
+    assert _broad_event_context_feedback(
+        "What free events are happening in NYC this weekend?",
+        "The event search returned one result. {cite:S1}",
+        citations,
+        ["nyc_advisories", "whats_on_events"],
+        discovery_turn=False,
+    ) is None
 
 
 async def test_scope_classifier_returns_module_checklist(empty_registry, monkeypatch):

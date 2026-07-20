@@ -445,14 +445,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             )
         return rows
 
-    # The semantic scope-preflight flag arrives via ToolContext; the regex predicate stays as
-    # the fallback for direct tool use without the preflight. A deterministically broad
-    # what's-happening query keeps the shortlist rules even when the flag over-fires.
-    preparation_context = (
-        (ctx.event_preparation or is_event_preparation_query(ctx.query))
-        and not _broad_temporal_query(ctx.query)
-    )
-    broad_context = _broad_temporal_query(ctx.query) or preparation_context
+    # The semantic scope-preflight tri-state arrives via ToolContext and is authoritative when
+    # present; the broad-temporal and preparation regexes are the fallback for direct tool use
+    # without a preflight (F058: the regex is demoted, never deleted).
+    if ctx.event_turn is not None:
+        preparation_context = ctx.event_turn == "preparation"
+        discovery_context = ctx.event_turn == "discovery"
+    else:
+        preparation_context = (
+            is_event_preparation_query(ctx.query) and not _broad_temporal_query(ctx.query)
+        )
+        discovery_context = _broad_temporal_query(ctx.query)
+    broad_context = discovery_context or preparation_context
     sources = [
         ("ticketmaster", ticketmaster_source()),
         ("parks", parks_source()),

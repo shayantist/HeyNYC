@@ -13,7 +13,11 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
 # Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
 # the resident-answer model; deployments can override it independently.
-HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.4-nano")
+# RULED 2026-07-20 (the F058 tier decision): mini, not nano. Nano's ceiling was measured, not
+# assumed — with the tri-state event signal in the prompt, nano held classification (7/7) but
+# dropped the denial-reframe from its 8/9 baseline to 5/8 across three prompt-shape revisions;
+# mini-as-scope holds both (7/7 and 7/8) for roughly +$0.40 per thousand turns.
+HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.4-mini")
 # Reasoning effort for the ANSWER model, set beside HEYNYC_MODEL so production runs the benched
 # configuration (2026-07-18: luna-medium is the measured recommendation; at low/none luna loses
 # the clock-reading and thread-holding that justify its cost). Unset means the provider default,

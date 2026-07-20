@@ -126,11 +126,13 @@ class _ScopeDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["allow", "deny", "deny_rights"]
-    # Semantic event-preparation signal (F046/F053 family). The preflight, not a phrase list,
-    # decides whether this turn prepares for a dated public event; the regex predicate below is
-    # only the fallback for callers without the preflight. None means the model did not say,
-    # which must fall back to the regex floor rather than silently disabling the guard.
-    event_preparation: Optional[bool] = None
+    # Semantic event signal (F046/F053/F058 family), a tri-state read by meaning, not a phrase
+    # list: "preparation" plans around one dated event (resolve identity before advice),
+    # "discovery" browses what is on or which event is happening (broad-shortlist treatment),
+    # "none" is neither. The broad-events and preparation regexes below are only the fallback
+    # for callers without the preflight. None means the model did not say, which must fall back
+    # to those regex floors rather than silently disabling the guards.
+    event_turn: Optional[Literal["none", "discovery", "preparation"]] = None
     # The module CHECKLIST (RULED 2026-07-18): which service modules this turn touches,
     # multi-select by meaning in any language, names drawn from the module registry. This is
     # a checklist, never a router: nothing is handed off, and unknown names are dropped
@@ -175,13 +177,17 @@ and politics are out of scope. Do not treat an official government source as pro
 is in scope. For an out-of-scope question about human rights, war, political violence, identity,
 discrimination, civil liberties, sovereignty, or contested statehood, return deny_rights so the
 assistant can state its civic values without pretending to adjudicate the broader dispute. Judge
-meaning, not keywords, language, country, or viewpoint. If uncertain, deny.
+meaning, not keywords, language, country, or viewpoint. If uncertain, deny. A short follow-up that
+is in scope when read with the conversation stays allowed, including a practical NYC reframe right
+after you denied the previous turn: decide it from the conversation, not from the prior denial.
 
-Set event_preparation=true only when the latest turn, read with the conversation, asks how to
-prepare for, get to, attend, watch, or plan around a specific dated public event, in any language,
-shorthand, or date format. Set event_preparation=false for everything else, including predictions,
-trivia, exams, and preparation for a hearing, court date, interview, or appointment.
-Return only the supplied schema."""
+Set event_turn only when the turn is actually about a dated public NYC event, read with the
+conversation, in any language or shorthand: "preparation" to plan around one specific dated public
+event (get to, attend, watch, or stay safe at it, so its identity must be resolved before advice);
+"discovery" to browse what is on, whether something is happening, or which event is or was
+happening, without naming one event to plan around (whether there is a game today, and
+what-happened identity questions, are discovery); "none" whenever the turn is not about attending a
+public event. Return only the supplied schema."""
 
 SCREEN_SHORTLIST_DISCLOSURE = "This is a phone-friendly shortlist, not an official ranking."
 
@@ -2095,10 +2101,14 @@ def _broad_event_context_feedback(
     citations: dict[str, dict],
     tools_made: list[str],
     available_citation_ids: Optional[set[str]] = None,
+    discovery_turn: Optional[bool] = None,
 ) -> Optional[str]:
     if "whats_on_events" not in tools_made:
         return None
-    if not _is_broad_event_query(user_message):
+    # `discovery_turn` is the resolved semantic scope-preflight signal; the broad-events regex
+    # is only the fallback for callers without the preflight (mirrors `_event_preparation_feedback`).
+    active = _is_broad_event_query(user_message) if discovery_turn is None else discovery_turn
+    if not active:
         return None
 
     available_ids = set(citations) if available_citation_ids is None else available_citation_ids
@@ -2179,7 +2189,7 @@ class ScopeResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float | None = None
-    event_preparation: bool | None = None
+    event_turn: str | None = None
     modules: tuple[str, ...] = ()
     situations: tuple[str, ...] = ()
 
@@ -2500,7 +2510,7 @@ class Agent:
         input_tokens = 0
         output_tokens = 0
         decision: ScopeDecision = "deny"
-        event_preparation: Optional[bool] = None
+        event_turn: Optional[str] = None
         checked_modules: tuple[str, ...] = ()
         checked_situations: tuple[str, ...] = ()
         known_modules = {
@@ -2546,7 +2556,7 @@ class Agent:
                     else _ScopeDecision.model_validate_json(content)
                 )
                 decision = verdict.decision
-                event_preparation = verdict.event_preparation
+                event_turn = verdict.event_turn
                 checked_modules = tuple(
                     name for name in verdict.modules if name in known_modules
                 )
@@ -2563,7 +2573,7 @@ class Agent:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=priced_cost_usd(config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens),
-            event_preparation=event_preparation,
+            event_turn=event_turn,
             modules=checked_modules,
             situations=checked_situations,
         )
@@ -2840,7 +2850,7 @@ class Agent:
             )
             return
 
-        scope_event_preparation: Optional[bool] = None
+        scope_event_turn: Optional[str] = None
         scope_modules: tuple[str, ...] = ()
         scope_situations: tuple[str, ...] = ()
         if self._scope_fn is not None:
@@ -2855,7 +2865,7 @@ class Agent:
             turn_usage["scope_time_ms"] = (time.perf_counter() - scope_started) * 1000.0
             if isinstance(scope_result, ScopeResult):
                 scope_decision = scope_result.decision
-                scope_event_preparation = scope_result.event_preparation
+                scope_event_turn = scope_result.event_turn
                 scope_modules = scope_result.modules
                 scope_situations = scope_result.situations
                 turn_usage["scope_modules"] = list(scope_result.modules)
@@ -2902,15 +2912,22 @@ class Agent:
                 )
                 return
 
-        # The semantic preflight flag is authoritative when present; the regex predicate is the
-        # fallback for callers without the preflight (owner ruling: no phrase-list growth).
-        # A deterministically BROAD what's-happening query always keeps the shortlist
-        # machinery: broadness wins over an over-fired prep flag (observed in eval).
-        event_preparation_turn = (
-            scope_event_preparation if scope_event_preparation is not None
-            else is_event_preparation_query(user_message)
-        ) and not _is_broad_event_query(user_message)
-        ctx.event_preparation = event_preparation_turn
+        # The semantic preflight tri-state is authoritative when present; the broad-events and
+        # preparation regexes are the preflight-absent fallback only (F058, owner ruling: no
+        # phrase-list growth, the regex is demoted, never deleted, until its retirement matrix
+        # passes). When the preflight speaks, discovery vs preparation is its call, so broadness
+        # no longer has to override an over-fired boolean: they are distinct signals now.
+        if scope_event_turn is not None:
+            event_turn = scope_event_turn
+        elif is_event_preparation_query(user_message) and not _is_broad_event_query(user_message):
+            event_turn = "preparation"
+        elif _is_broad_event_query(user_message):
+            event_turn = "discovery"
+        else:
+            event_turn = "none"
+        event_preparation_turn = event_turn == "preparation"
+        event_discovery_turn = event_turn == "discovery"
+        ctx.event_turn = event_turn
         # A checked high-stakes SITUATION contributes its manifest-declared retrieval config
         # to this same turn (RULED: checklist, never a router). One mandatory-first fetch at
         # most; tool focus applies only on a single-module turn (prioritize, never narrow).
@@ -2967,7 +2984,7 @@ class Agent:
                 })
         if (
             initial_forced_tool is None
-            and (_is_broad_event_query(user_message) or event_preparation_turn)
+            and (event_discovery_turn or event_preparation_turn)
             and bool(notify_awareness)
             and "nyc_advisories" in self.tools
             and "nyc_advisories" not in set(excluded_tools or ())
@@ -3159,7 +3176,7 @@ class Agent:
                     messages.append({"role": "user", "content": script_feedback})
                     continue
                 if "whats_on_events" in tools_made and (
-                    _is_broad_event_query(user_message) or event_preparation_turn
+                    event_discovery_turn or event_preparation_turn
                 ):
                     text = _attach_event_action_urls(
                         text, citations.mapping(), available_citation_ids=tool_citation_ids,
@@ -3172,6 +3189,7 @@ class Agent:
                 event_context_feedback = _broad_event_context_feedback(
                     user_message, text, citations.mapping(), tools_made,
                     available_citation_ids=tool_citation_ids,
+                    discovery_turn=event_discovery_turn,
                 )
                 if event_context_feedback and guard_retries < self.guard_max_retries:
                     guard_retries += 1
@@ -3293,7 +3311,7 @@ class Agent:
                     # Broad shortlist turns lean on the tool's coordinated lanes; preparation
                     # turns KEEP free scoped search so the model can resolve the event
                     # identity when listings alone cannot (F053).
-                    if name == "whats_on_events" and _is_broad_event_query(user_message):
+                    if name == "whats_on_events" and event_discovery_turn:
                         effective_excluded_tools.update({
                             "index_search", "web_search", "recent_developments",
                         })
