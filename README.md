@@ -106,6 +106,10 @@ The standalone Python package includes the agent core, geo, RAG, and scoped web-
 - **Some datasets are thin.** For example, the SNAP-center list has regular weekday hours but no phone numbers or holiday exceptions. HeyNYC labels the hours as listed and points people to ACCESS HRA or 311 when the source cannot answer more.
 
 
+## How we test it
+
+Every case, gate, and failure-driven regression is documented in [heynyc/eval/README.md](heynyc/eval/README.md), including the methodology and where it comes from; [SAFETY.md](SAFETY.md) covers the deterministic guardrails those evals run behind.
+
 ## FAQ
 
 **Do people read my messages?**

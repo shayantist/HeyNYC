@@ -349,3 +349,19 @@ def test_stats_summary_renders(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "1" in out          # one turn
     assert "benefits_search" in out
+
+
+def test_case_listing_renders_one_greppable_row_per_case():
+    """The audit surface: every case in the corpus on one line: id, source file, flags, tags."""
+    from heynyc.eval.cases import render_case_listing
+    from heynyc.core import config
+    from heynyc.core.registry import Registry
+
+    registry = Registry.discover(config.MODULES_DIR)
+    out = render_case_listing(registry)
+    lines = [l for l in out.splitlines() if l.strip()]
+    assert len(lines) > 200                      # the whole corpus, one row each
+    assert any("housing_no_heat" in l and "F063" in l for l in lines)
+    assert any("convo_past_tense_identity_not_trivia" in l and "global" in l for l in lines)
+    header = lines[0]
+    assert "id" in header and "tags" in header

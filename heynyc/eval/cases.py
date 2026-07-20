@@ -200,3 +200,21 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
             )
         )
     return cases
+
+
+def render_case_listing(registry, global_path=None) -> str:
+    """The corpus on one greppable line per case: id, source, flags, tags.
+
+    The audit surface for "what do we actually test": cases live in each module's eval.yaml
+    plus the global file, and this flattens them exactly as the loader runs them."""
+    cases = load_cases(registry, global_path)
+    rows = [f"{'id':<44} {'source':<18} {'flags':<28} tags"]
+    for c in cases:
+        flags = ",".join(filter(None, [
+            "abstain" if c.abstain else "",
+            c.capability,
+            c.harm_category if c.harm_category != "none" else "",
+            "multi-turn" if len(getattr(c, "turns", None) or []) > 1 else "",
+        ]))
+        rows.append(f"{c.id:<44} {c.module:<18} {flags:<28} {' '.join(c.tags)}")
+    return "\n".join(rows)

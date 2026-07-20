@@ -726,6 +726,8 @@ def main() -> None:
     ev.add_argument("--sample", type=int, default=None,
                     help="run a deterministic random sample of N cases (after other filters)")
     ev.add_argument("--seed", type=int, default=0, help="seed for --sample (default 0)")
+    ev.add_argument("--list", dest="list_cases", action="store_true",
+                    help="print every case on one line (id, source, flags, tags) and exit")
     ev.add_argument("--all", dest="run_all_cases", action="store_true",
                     help="confirm running the FULL live case set (large changes only)")
     bench = sub.add_parser("bench", help="run the eval cases across several candidate models and compare")
@@ -767,6 +769,11 @@ def main() -> None:
     elif args.command == "feedback":
         _render_feedback(_feedback_path(), store=_channel_store(), sessions_dir=_sessions_dir())
     elif args.command == "eval":
+        if args.list_cases:
+            from heynyc.eval.cases import render_case_listing
+            registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
+            print(render_case_listing(registry))
+            return
         asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
                               module=args.module, case_ids=args.case_ids,
                               tags=args.tags, sample=args.sample, seed=args.seed,

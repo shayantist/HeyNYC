@@ -205,3 +205,19 @@ becomes a permanent test.
   qualitative review of every answer, because raw pass counts hide unsafe-but-well-cited
   answers; the public accountability shape follows the UK [Algorithmic Transparency Recording
   Standard](https://www.gov.uk/government/collections/algorithmic-transparency-recording-standard-hub).
+
+## Where cases live and how they are tagged
+
+Two homes, one corpus: each module owns its cases in `heynyc/modules/<module>/eval.yaml`, and
+cross-module or conversational cases live in `heynyc/eval/global.yaml`. The loader flattens both,
+so every selector works across the whole corpus regardless of file.
+
+Fields describe a case's contract (capability, harm_category, abstain, turns). Tags describe its
+memberships, and they stack: `F###` ties a case to its row in the failure database (the internal
+register of observed failures, each row naming the case or test that pins it), `conversation`
+marks the multi-turn suite, and the competitive lanes are `general-chat` (a frontier chatbot
+answers this well, we measure the gap) and `must-win` (live city data, high-stakes accuracy,
+in-language and crisis behavior: losing these to a generic chatbot is an existential failure).
+
+Audit the whole corpus in one view with `heynyc eval --list` (one line per case: id, source,
+flags, tags), then run any slice with `--tag`, `--module`, or `--case`.
