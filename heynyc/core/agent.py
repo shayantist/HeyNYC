@@ -201,21 +201,9 @@ _SNAP_WORK_RULE_RE = re.compile(
     r"regla(?:s)? de trabajo|requisito(?:s)? de trabajo|empleo|voluntari[oa]s?)\b",
     re.IGNORECASE,
 )
-_SNAP_WORK_RULE_SEARCH_QUERY = (
-    "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits "
-    "fair hearing current"
-)
-_SNAP_WORK_RULE_URLS = (
-    "https://www.nyc.gov/main/services/snap-benefits/abawd",
-    "https://access.nyc.gov/snap-work-requirements/",
-    "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page",
-    "https://otda.ny.gov/hearings/request/",
-)
-_SNAP_WORK_RULE_SCOPE_REMINDER = (
-    "This turn is about SNAP work-rule recovery. Use current official SNAP guidance, the human "
-    "or fair-hearing path, and immediate food help if requested. Do not call or mention unrelated "
-    "service modules unless the user separately asked for them. Keep the answer phone-length."
-)
+# SNAP work-rule retrieval config, reminder, and tool focus live in the benefits module's
+# manifest (`situations: snap_work_rules`), read via `registry.situation_hints()`. The two
+# regexes above remain only as the preflight-absent fallback trigger for that situation.
 _BENEFITS_PROBLEM_RE = re.compile(
     r"\b(?:denied|rejected|cut off|stopp(?:ed|ing)|closed|terminated|appeal(?:ing)?|"
     r"owe|overpayment|repay(?:ment)?|bill(?:ing)?|dispute|"
@@ -671,11 +659,6 @@ _CIVIC_LAW_SCOPE_REMINDER = (
     "Do not turn a general rule into a definitive ruling on the user's individual case. Keep the "
     "answer phone-length."
 )
-_SNAP_WORK_RULE_BASE_TOOLS = frozenset({
-    "official_sources", "web_search", "recent_developments", "benefits_search",
-    "nearest_food_pantry",
-    "geocode", "nearest", "screen_eligibility", "prepare_snap_application",
-})
 _EXPLICIT_HOUSING_RE = re.compile(
     r"\b(?:rent|evict(?:ion|ed|ing)?|landlord|housing|shelter|voucher|section 8|cityfheps)\b",
     re.IGNORECASE,
@@ -1423,18 +1406,6 @@ def _current_source_call(tools: dict[str, Tool], query: str, urls: tuple[str, ..
     return "web_search", {"query": query}
 
 
-def _snap_work_rule_allowed_tools(user_message: str) -> set[str]:
-    """Keep the recovery turn focused while preserving explicitly requested cross-module help."""
-    allowed = set(_SNAP_WORK_RULE_BASE_TOOLS)
-    if _EXPLICIT_HOUSING_RE.search(user_message):
-        allowed.update({"hpd_building_lookup", "hpd_litigation_lookup", "housing_guidance"})
-    if _EXPLICIT_CLINIC_RE.search(user_message):
-        allowed.update({"find_clinic", "health_coverage_guidance"})
-    if _EXPLICIT_WORKER_RE.search(user_message):
-        allowed.add("worker_rights_guidance")
-    return allowed
-
-
 def _benefits_recovery_allowed_tools(user_message: str) -> set[str]:
     """Keep a benefits recovery turn out of unrelated modules unless the resident asks."""
     allowed = {
@@ -1466,8 +1437,20 @@ def _civic_law_allowed_tools() -> set[str]:
 # An actual SSN-like value crosses the channel's safe intake boundary. Stop before the model can
 # echo it or ask for more identifiers. Application help may resume through the official path or a
 # later turn that does not contain the sensitive identifier.
-_SENSITIVE_SSN_RE = re.compile(
-    r"\b\d{3}-?\d{2}-?\d{4}\b|\bmy\s+ssn\b|\bmi\s+n[uú]mero\s+de\s+seguro\s+social\b",
+# A nine-digit run (bare or 3-2-4 dashed) is the SSN shape, but it is ALSO the shape of a 311
+# service-request, benefits-case, or confirmation number a resident legitimately quotes to ask for
+# help. Grouping alone cannot tell them apart (case numbers come dashed too), so a benign ID context
+# suppresses ONLY the bare-number trigger, never an explicit SSN mention.
+_SENSITIVE_SSN_NUMBER_RE = re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b")
+_SENSITIVE_SSN_PHRASE_RE = re.compile(
+    r"\bmy\s+ssn\b|\bmi\s+n[uú]mero\s+de\s+seguro\s+social\b", re.IGNORECASE
+)
+_EXPLICIT_SSN_MENTION_RE = re.compile(
+    r"\bssn\b|social security number|n[uú]mero de seguro social", re.IGNORECASE
+)
+_BENIGN_IDENTIFIER_CONTEXT_RE = re.compile(
+    r"\b(?:complaint|case|confirmation|reference|tracking|ticket|"
+    r"service request|sr|311)\b",
     re.IGNORECASE,
 )
 _SENSITIVE_ID_SPANISH_RE = re.compile(
@@ -1486,7 +1469,18 @@ _SENSITIVE_ID_RESPONSE_ES = (
 
 
 def _sensitive_identifier_backstop(user_message: str) -> Optional[str]:
-    if not _SENSITIVE_SSN_RE.search(user_message):
+    phrase = _SENSITIVE_SSN_PHRASE_RE.search(user_message)
+    has_number = _SENSITIVE_SSN_NUMBER_RE.search(user_message)
+    if not phrase and not has_number:
+        return None
+    # A number introduced as a 311/case/complaint/confirmation ID is not an SSN. Suppress only when
+    # the trigger is the bare number, no "my ssn" phrase, and no explicit SSN mention anywhere.
+    if (
+        has_number
+        and not phrase
+        and not _EXPLICIT_SSN_MENTION_RE.search(user_message)
+        and _BENIGN_IDENTIFIER_CONTEXT_RE.search(user_message)
+    ):
         return None
     if _SENSITIVE_ID_SPANISH_RE.search(user_message):
         return _SENSITIVE_ID_RESPONSE_ES
@@ -2588,8 +2582,9 @@ class Agent:
             lockout_entry = self.registry.situation_hints().get("active_lockout")
             if lockout_entry is not None and _needs_current_lockout_guidance(user_message):
                 return lockout_entry[1].reminder
-            if _needs_current_snap_work_rule_guidance(user_message):
-                return _SNAP_WORK_RULE_SCOPE_REMINDER
+            snap_entry = self.registry.situation_hints().get("snap_work_rules")
+            if snap_entry is not None and _needs_current_snap_work_rule_guidance(user_message):
+                return snap_entry[1].reminder
             if _needs_current_immigrant_benefits_guidance(user_message):
                 return _IMMIGRANT_BENEFITS_SCOPE_REMINDER
             if _needs_current_benefits_recovery_guidance(user_message):
@@ -2681,6 +2676,8 @@ class Agent:
         has_current_source = "official_sources" in self.tools or "web_search" in self.tools
         lockout_entry = self.registry.situation_hints().get("active_lockout")
         lockout_hint = lockout_entry[1] if lockout_entry is not None else None
+        snap_entry = self.registry.situation_hints().get("snap_work_rules")
+        snap_hint = snap_entry[1] if snap_entry is not None else None
         if (
             initial_forced_tool is None
             and has_current_source
@@ -2694,11 +2691,12 @@ class Agent:
         elif (
             initial_forced_tool is None
             and has_current_source
+            and snap_hint is not None
             and _needs_current_snap_work_rule_guidance(user_message)
         ):
             snap_work_rule_turn = True
             initial_forced_tool, initial_forced_args = _current_source_call(
-                self.tools, _SNAP_WORK_RULE_SEARCH_QUERY, _SNAP_WORK_RULE_URLS,
+                self.tools, snap_hint.query, tuple(snap_hint.urls),
             )
         elif (
             initial_forced_tool is None

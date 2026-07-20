@@ -214,12 +214,36 @@ _PREPARATION_SYNTHESIS_RULES = (
 )
 
 
-def _event_block(ev: Event, cite: str) -> str:
+_TIME_FORMATS = ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M")
+
+
+def _parse_start_time(text: str):
+    """Best-effort local wall-clock time from an event's free-form start_time, else None."""
+    for fmt in _TIME_FORMATS:
+        try:
+            return datetime.strptime(text.strip(), fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _started_today(ev: Event, now: datetime) -> bool:
+    """F065: True when ev is dated today and its known local start time is already past `now`, so a
+    finished event is not offered as still attendable. Data-shaped and language-independent: only
+    start_date and start_time the tool already holds, compared to the NYC clock."""
+    if ev.start_date != now.date().isoformat() or not ev.start_time.strip():
+        return False
+    parsed = _parse_start_time(ev.start_time)
+    return parsed is not None and parsed < now.replace(tzinfo=None).time()
+
+
+def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     weekday = date.fromisoformat(ev.start_date).strftime("%A")
     when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
     where = f" @ {ev.venue}" if ev.venue else ""
+    started = "; already started or ended earlier today" if now and _started_today(ev, now) else ""
     details = f"\n  Details: {ev.url}" if ev.url else ""
-    return f"- {ev.name}{where}, {when} ({ev.source}) {{cite:{cite}}}{details}"
+    return f"- {ev.name}{where}, {when}{started} ({ev.source}) {{cite:{cite}}}{details}"
 
 
 def _explicitly_free(events: list[Event], query: str) -> list[Event]:
@@ -232,13 +256,7 @@ def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
     cutoff = max(now.replace(tzinfo=None).time(), datetime.strptime("17:00", "%H:%M").time())
     kept = []
     for event in events:
-        parsed = None
-        for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M"):
-            try:
-                parsed = datetime.strptime(event.start_time.strip(), fmt).time()
-                break
-            except ValueError:
-                continue
+        parsed = _parse_start_time(event.start_time)
         if event.start_date == now.date().isoformat() and parsed is not None and parsed >= cutoff:
             kept.append(event)
     return kept
@@ -588,7 +606,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             snippet=" ".join(bit for bit in snippet_bits if bit).strip(),
             title=ev.name or "NYC event", kind="DATA", valid_as_of=ev.start_date,
         )
-        blocks.append(_event_block(ev, cite))
+        blocks.append(_event_block(ev, cite, now))
 
     window = f" for {window_start} through {window_end}" if window_end else ""
     free_scope = " whose official source titles explicitly say free" if "free" in ctx.query.lower() else ""

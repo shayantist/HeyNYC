@@ -64,6 +64,30 @@ def test_record_turn_preserves_memory_compaction_accounting(tmp_path: Path):
     assert rec["memory_post_tokens"] == 700
 
 
+def test_record_turn_passes_through_cached_input_tokens(tmp_path: Path):
+    # The agent already computes prompt-cache reads (usage["cached_input_tokens"]); telemetry must
+    # not drop them, so `heynyc stats` can show cache effectiveness.
+    rec = telemetry.record_turn(
+        tmp_path / "telemetry.jsonl", session_id="s1", model="answer/model",
+        usage={"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 64},
+        n_tool_calls=0, tool_names=[], status="success",
+    )
+    assert rec["cached_input_tokens"] == 64
+
+
+def test_summarize_sums_cached_input_tokens():
+    records = [
+        {"cost_usd": 0.01, "input_tokens": 100, "output_tokens": 50, "latency_ms": 100.0,
+         "cached_input_tokens": 40, "tool_names": [], "status": "success"},
+        {"cost_usd": 0.02, "input_tokens": 200, "output_tokens": 80, "latency_ms": 200.0,
+         "cached_input_tokens": 25, "tool_names": [], "status": "success"},
+    ]
+    s = telemetry.summarize(records)
+    assert s["cached_input_tokens"] == 65
+    # Legacy records without the field aggregate to zero, never KeyError.
+    assert telemetry.summarize([])["cached_input_tokens"] == 0
+
+
 def test_summarize_aggregates():
     records = [
         {"cost_usd": 0.01, "input_tokens": 100, "output_tokens": 50, "latency_ms": 100.0,

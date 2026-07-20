@@ -12,7 +12,11 @@ import json
 
 import pytest
 
-from heynyc.core.agent import GROUNDING_ABSTAIN_FALLBACK, Agent
+from heynyc.core.agent import (
+    GROUNDING_ABSTAIN_FALLBACK,
+    Agent,
+    _sensitive_identifier_backstop,
+)
 from heynyc.core.citations import content_hash
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool
@@ -103,6 +107,40 @@ async def test_sensitive_identifier_backstop_does_not_call_model_or_solicit_more
     assert "dirección" not in result.text.lower()
     assert result.usage["n_model_calls"] == 0
     assert result.tool_calls_made == []
+
+
+# Inverse coverage for the SSN backstop (overfire inventory, worst uncovered surface): a resident
+# quoting a 311 / case / complaint / confirmation number is asking for help, not sending an SSN, and
+# must NOT be replaced by the PII refusal. A dashed number can look SSN-shaped, so context, not just
+# grouping, decides.
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what's the status of my 311 complaint 311-12345678",
+        "Can you check the status of my SNAP case number 123456789?",
+        "What's the status of my benefits case 123-45-6789?",
+        "my 311 service request 12345678 is still open, what next?",
+        "look up confirmation number 987654321 for my recertification",
+    ],
+)
+def test_sensitive_identifier_backstop_ignores_case_and_service_request_numbers(query):
+    assert _sensitive_identifier_backstop(query) is None
+
+
+# The true-SSN catch must not weaken: an explicit SSN still fires even alongside a benign word, and
+# a bare nine-digit run offered as an SSN still fires (context excludes only case/SR numbers).
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Here's my SSN 123-45-6789. Submit my SNAP application for me.",
+        "my ssn is 123456789",
+        "for my case, my SSN is 123-45-6789",
+    ],
+)
+def test_sensitive_identifier_backstop_still_catches_a_real_ssn(query):
+    response = _sensitive_identifier_backstop(query)
+    assert response is not None
+    assert response.startswith("I can't use or submit sensitive ID information here.")
 
 
 @pytest.mark.asyncio

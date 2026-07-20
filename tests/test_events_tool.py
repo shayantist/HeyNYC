@@ -231,6 +231,24 @@ def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
     assert "Details: u1" in _event_block(listed_free, "S1")
 
 
+def test_event_block_flags_a_today_event_whose_start_time_already_passed():
+    """F065: a today-dated event whose local start time is already past `now` gets a deterministic,
+    language-independent 'already started or ended' note in the tool line, so a finished event is
+    not offered as still attendable. Data-shaped: only known start time vs now, no model text."""
+    now = events.datetime(2026, 7, 20, 15, 0, tzinfo=events.NYC_TZ)
+    started = Event("Noon Rally", "2026-07-20", "12:00 PM", "City Hall", "", "u", "NYC Parks", "authoritative")
+    upcoming = Event("Evening Show", "2026-07-20", "8:00 PM", "SummerStage", "", "u", "NYC Parks", "authoritative")
+    tomorrow = Event("Tomorrow Fair", "2026-07-21", "9:00 AM", "Park", "", "u", "NYC Parks", "authoritative")
+    undated = Event("No Time", "2026-07-20", "", "Park", "", "u", "NYC Parks", "authoritative")
+
+    assert "already started or ended" in events._event_block(started, "S1", now)
+    assert "already started or ended" not in events._event_block(upcoming, "S2", now)
+    assert "already started or ended" not in events._event_block(tomorrow, "S3", now)
+    assert "already started or ended" not in events._event_block(undated, "S4", now)
+    # Back-compat: without a `now` reference there is no annotation (existing callers/tests).
+    assert "already started or ended" not in events._event_block(started, "S1")
+
+
 def test_tonight_filter_keeps_only_parseable_future_evening_events():
     morning = Event("Morning", "2026-07-16", "9:00 am", "", "", "u1", "NYC Parks", "authoritative")
     evening = Event("Evening", "2026-07-16", "7:00 pm", "", "", "u2", "NYC Parks", "authoritative")
