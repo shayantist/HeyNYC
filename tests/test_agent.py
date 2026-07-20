@@ -2089,7 +2089,12 @@ def test_completion_kwargs_can_force_one_named_tool():
     }
 
 
-async def test_snap_work_rule_query_forces_current_official_search(empty_registry):
+async def test_snap_work_rule_query_forces_current_official_search():
+    """The regex fallback still forces the SNAP work-rule search with no preflight, reading its
+    query, reminder, and tool focus from the benefits manifest (demoted, not deleted)."""
+    from pathlib import Path
+
+    registry = Registry.discover(Path("heynyc/modules"))
     forced = []
     first_messages = []
     schemas_seen = []
@@ -2108,7 +2113,7 @@ async def test_snap_work_rule_query_forces_current_official_search(empty_registr
         name="housing_guidance", description="x", parameters={},
         handler=lambda args, ctx: "unrelated",
     )
-    agent = Agent(empty_registry, tools={"web_search": tool, "housing_guidance": unrelated})
+    agent = Agent(registry, tools={"web_search": tool, "housing_guidance": unrelated})
     responses = [
         _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
         _assistant(content="Use the current HRA instructions."),
@@ -3118,20 +3123,18 @@ def test_snap_work_rule_matcher_does_not_capture_general_food_search():
     assert not _needs_current_snap_work_rule_guidance("Where is my nearest food pantry?")
 
 
-def test_snap_work_rule_tool_fence_preserves_explicit_cross_module_requests():
-    from heynyc.core.agent import _snap_work_rule_allowed_tools
+def test_snap_work_rule_focus_is_manifest_owned_and_excludes_unrelated_modules():
+    """The deterministic fallback now focuses on the manifest `focus_tools` (like active_lockout),
+    which keep the recovery core and leave out unrelated-module tools such as housing_guidance."""
+    from pathlib import Path
 
-    base = _snap_work_rule_allowed_tools("My SNAP work rule notice mentions a health condition")
-    assert "housing_guidance" not in base
-    assert "find_clinic" not in base
+    from heynyc.core.registry import Registry
 
-    housing = _snap_work_rule_allowed_tools("My SNAP work rule and eviction both need help")
-    clinic = _snap_work_rule_allowed_tools("My SNAP work rule and finding a clinic both need help")
-    worker = _snap_work_rule_allowed_tools("My SNAP work rule and unpaid wages both need help")
-
-    assert "housing_guidance" in housing
-    assert "find_clinic" in clinic
-    assert "worker_rights_guidance" in worker
+    focus = Registry.discover(Path("heynyc/modules")).situation_hints()["snap_work_rules"][1].focus_tools
+    assert "benefits_search" in focus
+    assert "nearest_food_pantry" in focus
+    assert "housing_guidance" not in focus
+    assert "find_clinic" not in focus
 
 
 async def test_forced_tool_applies_only_to_first_model_iteration(empty_registry):
@@ -3562,3 +3565,145 @@ async def test_cross_module_situation_turn_never_narrows_tools(monkeypatch):
     await agent.run("me dejaron afuera y tambien perdi mis cupones")
 
     assert "benefits_search" in calls[0]  # capability is never removed on a cross-module turn
+
+
+async def test_checked_snap_work_rule_situation_forces_manifest_retrieval(monkeypatch):
+    """Signal path for the SNAP work-rules family: the preflight checks `snap_work_rules`, and the
+    forced first search, reminder, and tool focus all come from the benefits manifest, with NO
+    deterministic work-rule keywords in the message (the semantic signal alone carries it)."""
+    from pathlib import Path
+
+    from heynyc.core.agent import ScopeResult
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    seen = {}
+
+    async def search(args, ctx):
+        seen["query"] = args["query"]
+        return "current official HRA guidance"
+
+    tools = {
+        "web_search": Tool("web_search", "x",
+                           {"type": "object", "properties": {"query": {"type": "string"}}},
+                           search),
+        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+    }
+
+    async def situation_scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test",
+            modules=("benefits",), situations=("snap_work_rules",),
+        )
+
+    calls = []
+    responses = [
+        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(content="Ask HRA for a fair hearing."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        calls.append((forced_tool, [s["function"]["name"] for s in tool_schemas], messages))
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent = Agent(registry, tools=tools, scope_fn=situation_scope)
+    monkeypatch.setattr(agent, "_litellm_stream", fake_litellm)
+
+    # Deliberately NO SNAP or work-rule keywords the regex could catch: "ayuda de comida" is not a
+    # dataset term, so only the semantic situation signal can carry this turn.
+    result = await agent.run("Van a quitarme la ayuda de comida por no cumplir las horas")
+
+    assert result.tool_calls_made == ["web_search"]
+    assert calls[0][0] == "web_search"
+    assert "SNAP" in seen["query"] and "fair hearing" in seen["query"]
+    assert "benefits_search" in calls[0][1]
+    assert "housing_guidance" not in calls[0][1]  # single-module turn keeps the manifest focus
+    prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
+    assert "fair-hearing path" in prompt  # the manifest reminder fired
+
+
+async def test_cross_module_snap_work_rule_situation_never_narrows_tools(monkeypatch):
+    """RULED guardrail: a cross-module SNAP work-rule turn keeps capability, never narrows."""
+    from pathlib import Path
+
+    from heynyc.core.agent import ScopeResult
+
+    registry = Registry.discover(Path("heynyc/modules"))
+
+    async def search(args, ctx):
+        return "guidance"
+
+    tools = {
+        "web_search": Tool("web_search", "x",
+                           {"type": "object", "properties": {"query": {"type": "string"}}},
+                           search),
+        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+    }
+
+    async def cross_scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test",
+            modules=("benefits", "housing"), situations=("snap_work_rules",),
+        )
+
+    calls = []
+    responses = [
+        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(content="Fair hearing for SNAP, and Homebase can help with the eviction."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        calls.append([s["function"]["name"] for s in tool_schemas])
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent = Agent(registry, tools=tools, scope_fn=cross_scope)
+    monkeypatch.setattr(agent, "_litellm_stream", fake_litellm)
+
+    # "cupones" (not "cupones de alimentos") and "me quieren desalojar" avoid every deterministic
+    # regex, so only the semantic cross-module signal drives the turn.
+    await agent.run("perdi mis cupones por las horas y tambien me quieren desalojar")
+
+    assert "housing_guidance" in calls[0]  # capability is never removed on a cross-module turn
+
+
+async def test_ordinary_snap_apply_question_does_not_trigger_work_rule_machinery(monkeypatch):
+    """INVERSE fence: an ordinary how-do-I-apply-for-SNAP question, with no work-rule situation
+    checked, forces no retrieval, adds no work-rule reminder, and narrows no tools."""
+    from pathlib import Path
+
+    from heynyc.core.agent import ScopeResult
+
+    registry = Registry.discover(Path("heynyc/modules"))
+
+    tools = {
+        "web_search": Tool("web_search", "x",
+                           {"type": "object", "properties": {"query": {"type": "string"}}},
+                           lambda a, c: "x"),
+        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+    }
+
+    async def plain_scope(user_message, history):
+        return ScopeResult(
+            decision="allow", model="test",
+            modules=("benefits",), situations=(),  # ordinary apply, no situation
+        )
+
+    calls = []
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        calls.append((forced_tool, [s["function"]["name"] for s in tool_schemas], messages))
+        yield {"type": "message", "message": _assistant(content="Apply at access.nyc.gov.")}
+
+    agent = Agent(registry, tools=tools, scope_fn=plain_scope)
+    monkeypatch.setattr(agent, "_litellm_stream", fake_litellm)
+
+    await agent.run("How do I apply for SNAP food stamps in NYC?")
+
+    assert calls[0][0] is None  # no forced first retrieval
+    assert "housing_guidance" in calls[0][1]  # nothing narrowed
+    assert "benefits_search" in calls[0][1]
+    prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
+    # The work-rule reminder is unique to the situation and must never fire on a plain apply turn.
+    assert "This turn is about SNAP work-rule recovery" not in prompt

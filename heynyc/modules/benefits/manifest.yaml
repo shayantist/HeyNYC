@@ -29,6 +29,38 @@ examples:
   - "Are there NYC programs to help pay my rent?"
 tools: tools.py
 eval: eval.yaml
+situations:
+  - name: snap_work_rules
+    definition: >-
+      The resident's SNAP or food-stamp benefits are ending, being reduced, cut off, or
+      sanctioned because of a work requirement or a time limit on food benefits for adults
+      expected to work, they are being told they must prove work, job-training, or volunteer
+      hours to keep food benefits, they need an exemption from that requirement, or they are
+      trying to get food benefits restored after losing them to a work-rule penalty, including
+      through a conciliation conference or a fair hearing. This covers the person losing the
+      benefit and someone helping them recover it, in any language.
+    high_stakes: true
+    query: "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits fair hearing current"
+    urls:
+      - https://www.nyc.gov/main/services/snap-benefits/abawd
+      - https://access.nyc.gov/snap-work-requirements/
+      - https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page
+      - https://otda.ny.gov/hearings/request/
+    reminder: >-
+      This turn is about SNAP work-rule recovery. Use current official SNAP guidance, the human
+      or fair-hearing path, and immediate food help if requested. Do not call or mention
+      unrelated service modules unless the user separately asked for them. Keep the answer
+      phone-length.
+    focus_tools:
+      - official_sources
+      - web_search
+      - recent_developments
+      - benefits_search
+      - nearest_food_pantry
+      - geocode
+      - nearest
+      - screen_eligibility
+      - prepare_snap_application
 seeds:
   - https://access.nyc.gov
   - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml

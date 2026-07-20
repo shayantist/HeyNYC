@@ -352,6 +352,37 @@ async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
     assert "{cite:S1}" in out and "{cite:S2}" in out
 
 
+async def test_guidance_no_water_grounds_cold_water_service_not_hot_standard():
+    # F070: "no cold water" / "no water at all" is a water-service problem, not the hot-water
+    # 120°F standard. The topic frames it correctly (owner must provide cold water, file a
+    # complaint, Housing Court) and NEVER returns the hot-water temperature standard.
+    out, citations = await _run_guidance("no_water")
+    low = out.lower()
+    assert "cold water" in low
+    assert "120" not in out                        # the F070 inversion must not reappear
+    assert "311" in out
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    cite = mapping["S1"]
+    assert cite["kind"] == "DOC"
+    assert "tenants-rights-and-responsibilities" in cite["url"]
+    assert "{cite:S1}" in out
+
+
+async def test_guidance_no_heat_still_returns_hot_water_standard():
+    # F070 fence: the hot-water/heat topic keeps the existing 120°F heat-season standard;
+    # only cold-water/no-water is reframed, not heat.
+    out, _ = await _run_guidance("no_heat")
+    assert "120" in out and "68" in out
+
+
+async def test_guidance_cold_water_freetext_does_not_return_hot_water_standard():
+    # F070: the ambiguous "cold" keyword no longer inverts a cold-water complaint into the
+    # hot-water standard. Ungrounded free text abstains rather than mis-framing.
+    out, _ = await _run_guidance("my building has no cold water today")
+    assert "120" not in out
+
+
 async def test_guidance_shelter_grounds_both_intakes_and_cites_each():
     out, citations = await _run_guidance("shelter")
     # families → PATH, single adults → the 30th Street / Franklin intake sites
@@ -413,7 +444,7 @@ async def test_guidance_unknown_topic_abstains_without_citation():
 async def test_guidance_citation_snippets_are_backed_by_the_returned_facts():
     """Mirror the eval's faithfulness check offline: every citation snippet's tokens are ≥60%
     covered by the tool's own output, so a DOC citation can never outrun the fact it cites."""
-    for topic in ("right_to_counsel", "no_heat", "shelter", "source_of_income"):
+    for topic in ("right_to_counsel", "no_heat", "no_water", "shelter", "source_of_income"):
         out, citations = await _run_guidance(topic)
         haystack = set(_TOKEN_RE.findall(out.lower()))
         for cid, c in citations.mapping().items():

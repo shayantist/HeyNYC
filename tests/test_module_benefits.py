@@ -206,14 +206,16 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
 
 
 def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence():
-    from heynyc.core.agent import _BENEFITS_RECOVERY_URLS, _SNAP_WORK_RULE_URLS
+    from heynyc.core.agent import _BENEFITS_RECOVERY_URLS
 
     hra_faq = "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page"
     reg = Registry.discover(config.MODULES_DIR)
     benefits = next(module for module in reg.modules if module.name == "benefits")
 
     assert hra_faq in benefits.seeds
-    assert hra_faq in _SNAP_WORK_RULE_URLS
+    # SNAP work-rule retrieval URLs are now manifest-owned (`situations: snap_work_rules`).
+    snap_urls = reg.situation_hints()["snap_work_rules"][1].urls
+    assert hra_faq in snap_urls
     assert hra_faq in _BENEFITS_RECOVERY_URLS
 
 

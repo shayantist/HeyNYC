@@ -104,6 +104,36 @@ def test_housing_manifest_declares_the_active_lockout_situation():
     assert len(hint.definition.split()) >= 8  # meaning, not a keyword
 
 
+def test_benefits_manifest_declares_the_snap_work_rules_situation():
+    """SNAP work-rules family (ABAWD time limits, work-requirement sanctions, fair-hearing
+    recovery) is a benefits-module-owned manifest situation, exactly like active_lockout:
+    meaning-based definition, forced-search config, reminder, tool focus, high stakes."""
+    from pathlib import Path
+
+    from heynyc.core.registry import Registry
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    hints = registry.situation_hints()
+
+    assert "snap_work_rules" in hints
+    module_name, hint = hints["snap_work_rules"]
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert "SNAP" in hint.query and "fair hearing" in hint.query
+    assert any(
+        host in url
+        for url in hint.urls
+        for host in ("nyc.gov", "access.nyc.gov", "otda.ny.gov")
+    )
+    assert "fair-hearing" in hint.reminder
+    assert "benefits_search" in hint.focus_tools
+    # Meaning-based, never a keyword list (the Bengali acid test): the definition must read as a
+    # description of the situation, not as SNAP/work terms.
+    assert len(hint.definition.split()) >= 8
+    lowered = hint.definition.lower()
+    assert "food" in lowered and "restore" in lowered
+
+
 def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
     """RULED 2026-07-18: retrieval pools are stakes-tiered, and the stakes declaration lives in
     each module's OWN manifest (`official_only`, default true), enforced by the schema at load —

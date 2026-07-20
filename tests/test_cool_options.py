@@ -293,6 +293,99 @@ async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch
     assert "Sunday 09:00 AM" in output
 
 
+@pytest.mark.asyncio
+async def test_older_adult_centers_annotated_and_all_ages_note(monkeypatch):
+    # F072: a parent asking where to take kids must not be handed only "older adults only"
+    # senior centers with no all-ages option. Rows the dataset itself types "Older Adult
+    # Center" carry their restriction as language-independent data the model can translate,
+    # and when such rows dominate the shown results the tool surfaces an all-ages option it
+    # can cite (here the library), plus the pools/spray-showers/libraries category note.
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        if url == cooling.COOL_OPTIONS_URL:
+            return []
+        return [
+            {"OBJECTID": 1, "NYCEM_ID": "CC_OA1", "FACILITY_NAME": "Carter Older Adult Center",
+             "ADDRESS": "1 E 100 ST", "lat": 40.7595, "lon": -73.9780, "Finder_status": "OPEN",
+             "FACILITY_TYPE": "Older Adult Center",
+             "cc_wed_open1": "09:00 AM", "cc_wed_close1": "05:00 PM"},
+            {"OBJECTID": 2, "NYCEM_ID": "CC_OA2", "FACILITY_NAME": "Dyckman Older Adult Center",
+             "ADDRESS": "2 E 100 ST", "lat": 40.7600, "lon": -73.9780, "Finder_status": "OPEN",
+             "FACILITY_TYPE": "Older Adult Center",
+             "cc_wed_open1": "09:00 AM", "cc_wed_close1": "05:00 PM"},
+            {"OBJECTID": 3, "NYCEM_ID": "CC_LIB", "FACILITY_NAME": "Morningside Library",
+             "ADDRESS": "2900 BROADWAY", "lat": 40.7640, "lon": -73.9780, "Finder_status": "OPEN",
+             "FACILITY_TYPE": "Library",
+             "cc_wed_open1": "09:00 AM", "cc_wed_close1": "08:00 PM"},
+        ]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "Central Park", "kind": "cooling_center", "limit": 2}, ctx
+    )
+
+    # The two nearest are older-adult centers; each carries its declared restriction as data.
+    assert "Older Adult Center" in output
+    assert "age-restricted" in output.lower()
+    # They dominate the shown results, so an all-ages lane is surfaced and cited (the library),
+    # with the general all-ages category note.
+    assert "all ages" in output.lower()
+    assert "nearest all-ages option" in output.lower()
+    assert "Morningside Library" in output
+
+
+@pytest.mark.asyncio
+async def test_all_ages_results_get_no_restriction_note(monkeypatch):
+    # F072 inverse (the fence on the other side): all-ages results (libraries) get no
+    # age-restriction annotation and no older-adult steering note.
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        if url == cooling.COOL_OPTIONS_URL:
+            return []
+        return [
+            {"OBJECTID": 1, "NYCEM_ID": "L1", "FACILITY_NAME": "Aguilar Library",
+             "ADDRESS": "1 E 110 ST", "lat": 40.7595, "lon": -73.9780, "Finder_status": "OPEN",
+             "FACILITY_TYPE": "Library",
+             "cc_wed_open1": "09:00 AM", "cc_wed_close1": "08:00 PM"},
+            {"OBJECTID": 2, "NYCEM_ID": "L2", "FACILITY_NAME": "Harlem Library",
+             "ADDRESS": "9 W 124 ST", "lat": 40.7600, "lon": -73.9780, "Finder_status": "OPEN",
+             "FACILITY_TYPE": "Library",
+             "cc_wed_open1": "09:00 AM", "cc_wed_close1": "08:00 PM"},
+        ]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 13, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "Central Park", "kind": "cooling_center", "limit": 2}, ctx
+    )
+
+    assert "age-restricted" not in output.lower()
+    assert "all-ages option" not in output.lower()
+
+
 def test_cooling_next_open_skips_todays_passed_intervals():
     record = {
         "cc_sat_open1": "09:00 AM",

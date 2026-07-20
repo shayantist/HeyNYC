@@ -2741,8 +2741,8 @@ class Agent:
         if lockout_turn and lockout_hint is not None:
             allowed = set(lockout_hint.focus_tools)
             effective_excluded_tools.update(name for name in self.tools if name not in allowed)
-        elif snap_work_rule_turn:
-            allowed = _snap_work_rule_allowed_tools(user_message)
+        elif snap_work_rule_turn and snap_hint is not None:
+            allowed = set(snap_hint.focus_tools)
             effective_excluded_tools.update(name for name in self.tools if name not in allowed)
         elif immigrant_benefits_turn:
             allowed = _immigrant_benefits_allowed_tools()
@@ -2935,16 +2935,18 @@ class Agent:
             high = next((entry for entry in checked_hints if entry[1].high_stakes), None)
             if high is not None:
                 _module_name, hint = high
-                if hint.name == "active_lockout":
-                    current_source_required = True
-                    # F063: the manifest active_lockout definition is broad enough that the
-                    # scope model flags a plain no-heat complaint. Engage the deterministic
-                    # lockout FLOOR (the Call-911 feedback + backstop) only when the message
-                    # itself reads as an active lockout or coercive shutoff, never on the
-                    # broader essential-services reading, so an ordinary no-heat turn keeps the
-                    # forced official retrieval but reaches the model for its grounded answer.
-                    if _needs_current_lockout_guidance(user_message):
-                        lockout_turn = True  # the deterministic lockout floors key off this
+                # A checked high-stakes situation must ground its answer in a current source, so
+                # the terminal-answer citation guard applies even when only the semantic signal
+                # fired (mirrors the deterministic high-stakes turns).
+                current_source_required = True
+                # F063: the manifest active_lockout definition is broad enough that the scope
+                # model flags a plain no-heat complaint. Engage the deterministic lockout FLOOR
+                # (the Call-911 feedback + backstop) only when the message itself reads as an
+                # active lockout or coercive shutoff, never on the broader essential-services
+                # reading, so an ordinary no-heat turn keeps the forced official retrieval but
+                # reaches the model for its grounded answer.
+                if hint.name == "active_lockout" and _needs_current_lockout_guidance(user_message):
+                    lockout_turn = True  # the deterministic lockout floors key off this
                 if initial_forced_tool is None and has_current_source and hint.query:
                     initial_forced_tool, initial_forced_args = _current_source_call(
                         self.tools, hint.query, tuple(hint.urls),
