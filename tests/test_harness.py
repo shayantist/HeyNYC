@@ -415,3 +415,10 @@ def test_unwrap_docs_joins_prose_and_preserves_structure():
     assert "```\ncode stays\nwrapped\n```" in out
     assert "A hard break  \nstays broken." in out
     assert out.count("# Title") == 1
+
+    # Badge lines (the README idiom of stacked image links) are deliberate structure, not
+    # fixed-width wrapping; they must never be joined into one line.
+    badges = "[![CI](https://x/ci.svg)](https://x/ci)\n[![License](https://x/l.svg)](LICENSE)\n\nprose here\nwrapped once.\n"
+    out2 = unwrap_text(badges)
+    assert "[![CI](https://x/ci.svg)](https://x/ci)\n[![License](https://x/l.svg)](LICENSE)" in out2
+    assert "prose here wrapped once." in out2

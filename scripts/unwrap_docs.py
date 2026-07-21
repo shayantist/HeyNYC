@@ -25,6 +25,7 @@ _SPECIAL = re.compile(
     r"|^\s*[-=]{3,}\s*$"      # setext underlines / rules
     r"|^\s*<"                 # HTML blocks
     r"|^\s*\[[^\]]+\]:"       # link reference definitions
+    r"|^\s*\[!\["             # badge/image-link lines (stacked README badges are structure)
 )
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
