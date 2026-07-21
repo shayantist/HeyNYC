@@ -214,3 +214,23 @@ def _ConsoleReplierFor(deps, console):
     from heynyc.channels.console import ConsoleReplier
 
     return ConsoleReplier(console, deps.sessions_dir.parent / "repl-artifacts")
+
+
+def test_sink_prints_persistent_tool_line_above_settled_reply():
+    """The transient live view vanishes on Done; the tools a turn used stay visible as one dim
+    line printed before the settled reply (owner ask: see what tools ran, after the fact)."""
+    from heynyc.core import events as ev
+    from heynyc.channels.console import ConsoleSink
+
+    console = _recording_console()
+    sink = ConsoleSink(console)
+    sink.start_turn()
+    sink(ev.ToolStart(tool_call_id="1", name="nyc_advisories", label="nyc_advisories"))
+    sink(ev.ToolStart(tool_call_id="2", name="street_closures", label="street_closures"))
+    sink(ev.ToolStart(tool_call_id="3", name="street_closures", label="street_closures"))
+    sink(ev.Done(status="success", num_turns=1, citations={}, result=None))
+    out = console.export_text()   # export CLEARS the record buffer
+    assert "· used: nyc_advisories, street_closures" in out   # deduped, order kept
+    sink.start_turn()
+    sink(ev.Done(status="success", num_turns=1, citations={}, result=None))
+    assert "· used:" not in console.export_text()             # no line on a tool-free turn

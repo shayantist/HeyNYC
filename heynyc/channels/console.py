@@ -96,12 +96,14 @@ class ConsoleSink:
         self._segments: list = []
         self._message_start = 0
         self._done = False
+        self.tools_used: list[str] = []
 
     def start_turn(self) -> None:
         self._segments = []
         self._message_start = 0
         self._done = False
         self._live = None
+        self.tools_used = []
 
     def finish(self) -> None:
         """Safety net: stop the live view if a turn ended without a `Done` (it never should)."""
@@ -115,6 +117,7 @@ class ConsoleSink:
         if isinstance(event, events.MessageStart):
             self._message_start = len(self._segments)
         elif isinstance(event, events.ToolStart):
+            self.tools_used.append(event.name)
             _append_segment(self._segments, "tool", f"· using {event.name}…")
         elif isinstance(event, events.TextDelta):
             _append_segment(self._segments, "text", event.text)
@@ -128,6 +131,13 @@ class ConsoleSink:
             self._live.update(self._render())
             if self._done:
                 self._live.stop()   # transient: clears the preview, the settled reply prints next
+                self._live = None
+                if self.tools_used:
+                    # The transient view vanishes with the Live; keep a persistent one-line
+                    # record of the tools this turn used, above the settled reply (owner ask).
+                    seen = list(dict.fromkeys(self.tools_used))
+                    self._console.print(f"[dim]· used: {', '.join(seen)}[/]")
+                    self.tools_used = []
                 self._live = None
 
     def _start_live(self) -> None:
