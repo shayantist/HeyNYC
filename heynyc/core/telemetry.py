@@ -70,7 +70,7 @@ def record_turn(
         "status": status,
     }
     for key in (
-        "cached_input_tokens",
+        "cached_input_tokens", "scope_cached_input_tokens",
         "answer_input_tokens", "answer_output_tokens", "scope_input_tokens",
         "scope_output_tokens", "scope_model", "scope_cost_usd", "scope_time_ms",
         "memory_compactions", "memory_model", "memory_input_tokens",
@@ -100,6 +100,7 @@ def summarize(records: list[dict]) -> dict:
         return {"turns": 0, "total_cost_usd": 0.0, "cost_per_turn_usd": 0.0,
                 "unpriced_turns": 0,
                 "input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0,
+                "scope_cached_input_tokens": 0,
                 "latency_p50_ms": 0.0,
                 "latency_p95_ms": 0.0, "model_time_ms": 0.0, "tool_time_ms": 0.0,
                 "scope_time_ms": 0.0, "orchestration_time_ms": 0.0,
@@ -121,6 +122,9 @@ def summarize(records: list[dict]) -> dict:
         "input_tokens": sum(int(r.get("input_tokens", 0)) for r in records),
         "output_tokens": sum(int(r.get("output_tokens", 0)) for r in records),
         "cached_input_tokens": sum(int(r.get("cached_input_tokens", 0) or 0) for r in records),
+        "scope_cached_input_tokens": sum(
+            int(r.get("scope_cached_input_tokens", 0) or 0) for r in records
+        ),
         "latency_p50_ms": float(np.percentile(latencies, 50)),
         "latency_p95_ms": float(np.percentile(latencies, 95)),
         "model_time_ms": sum(float(r.get("model_time_ms", 0.0) or 0.0) for r in records),

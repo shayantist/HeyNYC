@@ -96,7 +96,9 @@ async def test_reminders_emitted_and_injected(empty_registry):
     reminders = [e for e in evs if e.type == "reminder"]
     assert [r.summary for r in reminders] == ["Today is 2026-06-25", "Location: Astoria"]
     reminder_msgs = [m for m in captured["messages"] if "<system-reminder>" in (m.get("content") or "")]
-    assert len(reminder_msgs) == 2
+    # 3 injected reminders: the volatile now-line/blurbs (cache-layout fix) plus the two explicit
+    # ones; only the two explicit reminders surface as Reminder events (asserted above)
+    assert len(reminder_msgs) == 3
 
 
 async def test_model_error_yields_error_and_done(empty_registry):

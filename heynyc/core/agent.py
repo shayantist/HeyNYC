@@ -2225,6 +2225,9 @@ class ScopeResult:
     event_turn: str | None = None
     modules: tuple[str, ...] = ()
     situations: tuple[str, ...] = ()
+    # Prompt-cache read for the scope call's static prefix (prompt_tokens_details.cached_tokens),
+    # captured the same way the answer stream captures its own, so both calls' cache rates surface.
+    cached_input_tokens: int = 0
 
 
 ScopeFn = Callable[[str, list[dict]], Awaitable[ScopeDecision | ScopeResult]]
@@ -2540,8 +2543,24 @@ class Agent:
             )
             return int(value or 0)
 
+        def cached_value(response_usage) -> int:
+            details = (
+                response_usage.get("prompt_tokens_details")
+                if isinstance(response_usage, dict)
+                else getattr(response_usage, "prompt_tokens_details", None)
+            )
+            if details is None:
+                return 0
+            cached = (
+                details.get("cached_tokens", 0)
+                if isinstance(details, dict)
+                else getattr(details, "cached_tokens", 0)
+            )
+            return int(cached or 0)
+
         input_tokens = 0
         output_tokens = 0
+        cached_input_tokens = 0
         decision: ScopeDecision = "deny"
         event_turn: Optional[str] = None
         checked_modules: tuple[str, ...] = ()
@@ -2572,6 +2591,7 @@ class Agent:
             response_usage = getattr(response, "usage", None)
             input_tokens += usage_value(response_usage, "prompt_tokens")
             output_tokens += usage_value(response_usage, "completion_tokens")
+            cached_input_tokens += cached_value(response_usage)
             if getattr(message, "refusal", None):
                 decision = "deny"
                 break
@@ -2609,6 +2629,7 @@ class Agent:
             event_turn=event_turn,
             modules=checked_modules,
             situations=checked_situations,
+            cached_input_tokens=cached_input_tokens,
         )
 
     def _tool_schemas(self, excluded_tools: Optional[set[str]] = None) -> list[dict]:
@@ -2662,30 +2683,40 @@ class Agent:
             return "retry", text, result
         return "abstain", _strip_ungrounded_claims(text, result), result
 
-    def _system_message(self, query: str) -> dict:
-        """The system message for THIS turn. The stable tier (safety rules + capability menu) is a
-        cacheable prefix; the volatile tier (query-selected blurbs + the date) follows it.
+    def _system_message(self, stable: str) -> dict:
+        """The system message for THIS turn: the STABLE prefix ONLY (safety rules, capability menu,
+        and the byte-static conversation/reply-language rules). It is query- and time-independent, so
+        it is byte-identical across turns and the growing prefix (stable system + history) caches.
 
-        For an Anthropic model we emit `content` as two text blocks and mark the STABLE block with
-        cache_control so repeat calls read that prefix from cache (~90% cheaper). Every other provider
-        (openai, ollama, ...) gets a plain-string `content`, unchanged. This is purely a transport /
-        caching choice: it never changes which safety rules or tools ship. Routing selects the
-        detailed blurbs identically for both shapes, and a routing miss can only drop a blurb."""
-        stable, volatile = build_system_prompt_tiers(self.registry, query=query)
+        For an Anthropic model we emit `content` as one text block marked with cache_control so repeat
+        calls read that prefix from cache (~90% cheaper). Every other provider (openai, ollama, ...)
+        gets a plain-string `content`. The volatile tier (date line + query-selected blurbs) is NOT
+        here: `_build_messages` injects it after history so it never breaks the cached prefix."""
         if _is_anthropic(self.model):
             return {"role": "system", "content": [
                 {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": volatile},
             ]}
-        return {"role": "system", "content": stable + volatile}
+        return {"role": "system", "content": stable}
 
     def _build_messages(
         self, user_message: str, history, reminders, citations: Optional[CitationRegistry] = None,
     ) -> list[dict]:
         if citations is None:
             citations = CitationRegistry()
-        messages: list[dict] = [self._system_message(_routing_query(user_message, history))]
+        stable, volatile = build_system_prompt_tiers(
+            self.registry, query=_routing_query(user_message, history),
+        )
+        messages: list[dict] = [self._system_message(stable)]
         messages.extend(_history_messages(history))
+        # The volatile tier (current-date line + query-selected blurbs) rides a reminder-shaped user
+        # message placed AFTER history, next to the user turn. Keeping these mutables out of the
+        # system prefix is what lets the growing history cache (static-first / dynamic-last); the
+        # existing reminders (scope, continuity) already sit in this same post-history band.
+        volatile = volatile.lstrip("\n")
+        if volatile:
+            messages.append(
+                {"role": "user", "content": f"<system-reminder>\n{volatile}\n</system-reminder>"}
+            )
         for reminder in reminders or []:
             messages.append({"role": "user", "content": f"<system-reminder>\n{reminder}\n</system-reminder>"})
         messages.append({"role": "user", "content": user_message})
@@ -2911,8 +2942,14 @@ class Agent:
                 turn_usage["scope_input_tokens"] = scope_result.input_tokens
                 turn_usage["scope_output_tokens"] = scope_result.output_tokens
                 turn_usage["scope_cost_usd"] = scope_result.cost_usd
+                turn_usage["scope_cached_input_tokens"] = scope_result.cached_input_tokens
                 turn_usage["input_tokens"] += scope_result.input_tokens
                 turn_usage["output_tokens"] += scope_result.output_tokens
+                # Fold the scope call's cache read into the aggregate too (the answer stream adds its
+                # own on top), so `heynyc stats` cached-token total covers both model calls.
+                turn_usage["cached_input_tokens"] = (
+                    turn_usage.get("cached_input_tokens", 0) + scope_result.cached_input_tokens
+                )
                 turn_usage["n_model_calls"] += 1
                 if scope_result.cost_usd is None:
                     self._spend.mark_unpriceable()

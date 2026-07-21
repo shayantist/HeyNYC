@@ -1085,12 +1085,18 @@ def test_build_messages_routes_with_the_immediately_prior_exchange():
         {"role": "assistant", "content": "I found one nearby."},
     ]
 
-    system = agent._build_messages("Can you narrow that down?", history, None)[0]["content"]
+    messages = agent._build_messages("Can you narrow that down?", history, None)
+    system = messages[0]["content"]
     system_text = "".join(
         block["text"] for block in system
     ) if isinstance(system, list) else system
+    reminder_text = " ".join(
+        str(m["content"]) for m in messages if "<system-reminder>" in str(m.get("content"))
+    )
 
-    assert "Preserve the tool's distinction between activated cooling centers" in system_text
+    # routing off the immediately-prior exchange still loads the cooling blurb; it now rides the
+    # volatile reminder after history, while the static conversation rule stays in the system prefix
+    assert "Preserve the tool's distinction between activated cooling centers" in reminder_text
     assert "Interpret the latest message using the conversation" in system_text
     # F062: follow-ups pick up mid-conversation instead of re-announcing settled facts.
     assert "never re-announce what the conversation has already established" in system_text
@@ -1997,7 +2003,9 @@ async def test_run_with_explicit_history(empty_registry):
     ]
     await agent.run("follow up", history=history)
     roles = [m["role"] for m in captured["messages"]]
-    assert roles == ["system", "user", "assistant", "user"]
+    # the volatile now-line/blurbs ride an extra <system-reminder> user message injected AFTER
+    # history (cache-layout fix), so the follow-up turn is preceded by that reminder
+    assert roles == ["system", "user", "assistant", "user", "user"]
 
 
 async def test_non_latin_reply_script_mismatch_retries_once(empty_registry):
@@ -3474,67 +3482,170 @@ def test_is_anthropic_detects_provider_from_model_string():
     assert not _is_anthropic("ollama_chat/qwen3.5:9b")
 
 
-def test_system_message_is_cached_content_blocks_for_anthropic():
-    # For an Anthropic model the system message is a list of content blocks, and the STABLE prefix
-    # block (safety rules + capability menu) carries cache_control so repeat calls read it from cache.
+def test_system_message_is_a_single_cached_stable_block_for_anthropic():
+    # For an Anthropic model the stable-only system message is ONE content block carrying
+    # cache_control, so repeat calls read the whole prefix from cache (cache-layout fix: the volatile
+    # date/blurbs no longer share the system message and so no longer break the cached prefix).
+    from heynyc.core.prompts import build_system_prompt_tiers
+
     agent = _real_agent("anthropic/claude-sonnet-4-6")
-    sysmsg = agent._system_message("where's the nearest food pantry?")
+    stable, _ = build_system_prompt_tiers(agent.registry, query="where's the nearest food pantry?")
+    sysmsg = agent._system_message(stable)
 
     assert sysmsg["role"] == "system"
     content = sysmsg["content"]
     assert isinstance(content, list)
-    stable = content[0]
-    assert stable["cache_control"] == {"type": "ephemeral"}
-    assert "GROUND EVERYTHING" in stable["text"]
-    # the volatile block follows the cached prefix and carries NO cache_control
-    volatile = content[1]
-    assert "cache_control" not in volatile
+    assert len(content) == 1
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "GROUND EVERYTHING" in content[0]["text"]
 
 
 def test_cached_stable_block_excludes_volatile_date_and_selected_blurbs():
-    # The cache never hits if volatile content is inside the cached block: the date and the
-    # query-selected blurbs must live in the SECOND (uncached) block, not the first.
+    # The cache never hits if volatile content sits in the cached system prefix: the date and the
+    # query-selected blurbs must live in the post-history reminder, not the system message.
     agent = _real_agent("anthropic/claude-sonnet-4-6")
-    content = agent._system_message("where's the nearest food pantry?")["content"]
-    stable_text, volatile_text = content[0]["text"], content[1]["text"]
+    messages = agent._build_messages("where's the nearest food pantry?", None, None)
+    stable_text = "".join(b["text"] for b in messages[0]["content"])
+    reminder_text = " ".join(
+        str(m["content"]) for m in messages[1:] if "<system-reminder>" in str(m.get("content"))
+    )
 
     assert "Current date & time" not in stable_text
-    assert "Current date & time" in volatile_text
+    assert "Current date & time" in reminder_text
     assert "nearest_food_pantry(near=" not in stable_text
-    assert "nearest_food_pantry(near=" in volatile_text
+    assert "nearest_food_pantry(near=" in reminder_text
 
 
 def test_system_message_is_plain_string_for_non_anthropic():
     # Every other provider (openai, ollama, ...) keeps the system message as a plain string, with no
-    # content blocks and no cache_control, so behavior there is unchanged.
-    agent = _real_agent("openai/gpt-4o-mini")
-    sysmsg = agent._system_message("where's the nearest food pantry?")
+    # content blocks and no cache_control. It is the stable prefix only; the date and blurbs ride the
+    # post-history reminder, so behavior there is unchanged apart from position.
+    from heynyc.core.prompts import build_system_prompt_tiers
 
-    content = sysmsg["content"]
+    agent = _real_agent("openai/gpt-4o-mini")
+    stable, _ = build_system_prompt_tiers(agent.registry, query="where's the nearest food pantry?")
+    content = agent._system_message(stable)["content"]
+
     assert isinstance(content, str)
     assert "GROUND EVERYTHING" in content              # rules present
-    assert "Current date & time" in content            # date present inline (nothing cached)
-    assert "nearest_food_pantry(near=" in content      # routed blurb present
+    assert "Current date & time" not in content        # the mutable date is NOT in the prefix
+    assert "nearest_food_pantry(near=" not in content  # selected blurbs are NOT in the prefix
+
+
+def test_system_message_is_stable_only_and_mutables_ride_a_post_history_reminder():
+    # Cache-layout fix (2026-07-21): static-first / dynamic-last. The system message is the STABLE
+    # prefix only (no minute-resolution timestamp, no query-selected blurbs), so the prefix stays
+    # byte-identical across turns and the growing history caches. The now-line and the selected
+    # blurbs ride a <system-reminder> user message placed AFTER history, next to the user turn.
+    agent = _real_agent("openai/gpt-4o-mini")
+    history = [
+        {"role": "user", "content": "Where is the nearest food pantry?"},
+        {"role": "assistant", "content": "I found one nearby."},
+    ]
+    messages = agent._build_messages("can you narrow it down?", history, None)
+
+    system = messages[0]["content"]
+    system_text = "".join(b["text"] for b in system) if isinstance(system, list) else system
+    assert "GROUND EVERYTHING" in system_text
+    assert "Current date & time" not in system_text          # the mutable date is NOT in the prefix
+    assert "nearest_food_pantry(near=" not in system_text     # selected blurbs are NOT in the prefix
+
+    reminder_idx = next(
+        i for i, m in enumerate(messages)
+        if m["role"] == "user" and "Current date & time" in str(m["content"])
+    )
+    last_history_idx = max(i for i, m in enumerate(messages) if m.get("role") == "assistant")
+    assert reminder_idx > last_history_idx                    # the now-line sits AFTER history
+    assert "<system-reminder>" in messages[reminder_idx]["content"]
+    assert "nearest_food_pantry(near=" in messages[reminder_idx]["content"]  # blurbs ride along
+    assert messages[-1]["content"] == "can you narrow it down?"   # user turn is last
+    assert reminder_idx < len(messages) - 1                   # reminder precedes the user turn
+
+
+def test_anthropic_system_message_is_a_single_cached_stable_block():
+    # For an Anthropic model the stable-only system message is one content block carrying
+    # cache_control, and it contains no volatile date/blurbs to break the cache.
+    agent = _real_agent("anthropic/claude-sonnet-4-6")
+    messages = agent._build_messages("where's the nearest food pantry?", None, None)
+    content = messages[0]["content"]
+    assert isinstance(content, list) and len(content) == 1
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "GROUND EVERYTHING" in content[0]["text"]
+    assert "Current date & time" not in content[0]["text"]
+    assert "nearest_food_pantry(near=" not in content[0]["text"]
+
+
+async def test_scope_classifier_captures_cached_input_tokens(empty_registry, monkeypatch):
+    # Cache-layout fix: the scope call's static prefix caches on OpenAI; capture its cached read
+    # (prompt_tokens_details.cached_tokens) into ScopeResult the same way the answer stream does.
+    async def cached_completion(**kwargs):
+        message = SimpleNamespace(content='{"decision":"allow"}', refusal=None, parsed=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=SimpleNamespace(
+                prompt_tokens=1200, completion_tokens=2,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=1024),
+            ),
+        )
+
+    monkeypatch.setattr("litellm.acompletion", cached_completion)
+    agent = Agent(empty_registry, tools={})
+
+    result = await agent._classify_scope("where's the nearest pantry?", [])
+
+    assert result.decision == "allow"
+    assert result.cached_input_tokens == 1024
+
+
+async def test_scope_cached_tokens_flow_into_turn_cache_telemetry(empty_registry):
+    from heynyc.core.agent import ScopeResult
+
+    async def scope(_message, _history):
+        return ScopeResult(
+            decision="allow", model="openai/gpt-5.4-mini",
+            input_tokens=1200, output_tokens=2, cost_usd=0.0001, cached_input_tokens=1024,
+        )
+
+    async def answer(messages, tool_schemas):
+        yield {"type": "usage", "input_tokens": 5, "output_tokens": 1, "cached_input_tokens": 8}
+        yield {"type": "message", "message": _assistant(content="done")}
+
+    agent = Agent(
+        empty_registry, tools={}, model="gpt-4o-mini", stream_fn=answer, scope_fn=scope,
+    )
+
+    result = await agent.run("help")
+
+    # both calls' cached reads roll into the aggregate, and the scope call's is separately visible
+    assert result.usage["cached_input_tokens"] == 1032
+    assert result.usage["scope_cached_input_tokens"] == 1024
 
 
 def test_build_messages_routes_blurbs_by_query():
     # Progressive disclosure flows through the agent path: a food query loads the food blurb but not
-    # the cooling blurb, while the menu + rules are always present.
+    # the cooling blurb. The blurbs now ride the post-history reminder; the menu + rules stay in the
+    # system prefix.
     agent = _real_agent("openai/gpt-4o-mini")
-    system = agent._build_messages("where's the nearest food pantry?", None, None)[0]["content"]
+    messages = agent._build_messages("where's the nearest food pantry?", None, None)
+    system = messages[0]["content"]
+    reminder = next(m["content"] for m in messages if "<system-reminder>" in str(m.get("content")))
 
-    assert "nearest_food_pantry(near=" in system
-    assert "NOT outdoor misting stations" not in system     # cooling blurb not loaded
+    assert "nearest_food_pantry(near=" in reminder
+    assert "NOT outdoor misting stations" not in reminder     # cooling blurb not loaded
     assert "Services you can help with (quick menu)" in system
 
 
-def test_build_messages_keeps_reply_language_instruction_next_to_latest_turn():
+def test_build_messages_keeps_reply_language_instruction_in_the_system_prefix():
+    # The reply-language rule is byte-static, so the cache-layout fix moves it into the stable system
+    # prefix. It stays present every turn; only its position (out of the volatile suffix) changed.
     agent = Agent(Registry([]), tools={})
 
     messages = agent._build_messages("আমার স্ন্যাপ বেনিফিট কি চলে যাবে?", None, None)
+    system = messages[0]["content"]
+    system_text = "".join(b["text"] for b in system) if isinstance(system, list) else system
 
     assert messages[-1]["content"] == "আমার স্ন্যাপ বেনিফিট কি চলে যাবে?"
-    assert "same language as the resident's latest message" in str(messages[0]["content"])
+    assert "same language as the resident's latest message" in system_text
 
 
 async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatch):

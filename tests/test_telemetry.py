@@ -88,6 +88,22 @@ def test_summarize_sums_cached_input_tokens():
     assert telemetry.summarize([])["cached_input_tokens"] == 0
 
 
+def test_summarize_sums_scope_cached_input_tokens_separately():
+    # Cache-layout fix: the scope call's cache read is captured into telemetry so its cache rate is
+    # visible in `heynyc stats` alongside the answer call's, not silently folded away.
+    records = [
+        {"cost_usd": 0.01, "input_tokens": 100, "output_tokens": 50, "latency_ms": 100.0,
+         "cached_input_tokens": 90, "scope_cached_input_tokens": 60,
+         "tool_names": [], "status": "success"},
+        {"cost_usd": 0.02, "input_tokens": 200, "output_tokens": 80, "latency_ms": 200.0,
+         "cached_input_tokens": 30, "scope_cached_input_tokens": 20,
+         "tool_names": [], "status": "success"},
+    ]
+    s = telemetry.summarize(records)
+    assert s["scope_cached_input_tokens"] == 80
+    assert telemetry.summarize([])["scope_cached_input_tokens"] == 0
+
+
 def test_summarize_aggregates():
     records = [
         {"cost_usd": 0.01, "input_tokens": 100, "output_tokens": 50, "latency_ms": 100.0,

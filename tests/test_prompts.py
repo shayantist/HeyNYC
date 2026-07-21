@@ -259,6 +259,27 @@ def test_tiers_keep_date_and_selected_blurbs_out_of_the_stable_prefix():
     assert "nearest_food_pantry(near=" in volatile
 
 
+def test_static_conversation_and_language_rules_live_in_the_stable_prefix():
+    # Cache-layout fix (2026-07-21): the conversation-interpretation and reply-language rules are
+    # byte-static (query- and time-independent), so they belong in the cacheable stable prefix, not
+    # in the volatile suffix that changes every turn. Only the true mutables (the date line and the
+    # query-selected blurbs) stay in the volatile suffix.
+    from heynyc.core.prompts import build_system_prompt_tiers
+
+    stable, volatile = build_system_prompt_tiers(
+        _real_registry(), query="where's the nearest food pantry?")
+    assert "Interpret the latest message using the conversation" in stable
+    assert "Reply in the same language as the resident" in stable
+    # the static rules are NOT duplicated into the volatile suffix
+    assert "Interpret the latest message using the conversation" not in volatile
+    assert "Reply in the same language as the resident" not in volatile
+    # the volatile suffix is only the true mutables: the date line and the selected blurbs
+    assert "Current date & time" in volatile
+    assert "nearest_food_pantry(near=" in volatile
+    assert "Current date & time" not in stable
+    assert "nearest_food_pantry(near=" not in stable
+
+
 def test_capability_blurbs_only_filters_to_named_modules():
     reg = _real_registry()
     only = reg.capability_blurbs(only={"food_pantries"})

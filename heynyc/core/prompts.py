@@ -1,11 +1,13 @@
 """System prompt builder. Encodes the grounding + citation + abstention rules.
 
-The prompt is assembled in two tiers so a hosted (Anthropic) caller can cache the stable part:
-  - STABLE tier  = BASE_SYSTEM_PROMPT (all 15 safety rules) + the always-on capability MENU. It is
-    query-independent and time-independent, so it is byte-identical across calls and safe to mark
-    as a cacheable prefix.
+The prompt is assembled in two tiers so a hosted (Anthropic/OpenAI) caller can cache the stable part
+(static-first / dynamic-last, per both vendors' prompt-caching guidance):
+  - STABLE tier  = BASE_SYSTEM_PROMPT (all 15 safety rules), the always-on capability MENU, and the
+    byte-static conversation-interpretation + reply-language rules. It is query-independent and
+    time-independent, so it is byte-identical across calls and safe to mark as a cacheable prefix.
   - VOLATILE tier = the DETAILED per-module blurbs selected for THIS query (progressive disclosure)
     plus the current-date line. Both change between calls, so they must sit AFTER the stable prefix,
+    and in the agent they ride a reminder-shaped user message injected AFTER the growing history,
     never inside any cached block, or the cache never hits.
 
 Blurb selection is a small, transparent keyword router (route_modules): it never gates a safety
@@ -293,11 +295,29 @@ def _capability_menu_text(registry: Registry) -> str:
     return "\n".join(lines)
 
 
+# Byte-static conversation-interpretation and reply-language rules. These are query- and
+# time-independent, so they belong in the cacheable stable prefix (static-first / dynamic-last),
+# never in the volatile suffix that changes every turn.
+_CONVERSATION_AND_LANGUAGE_RULES = (
+    "\n\n# Conversation\nInterpret the latest message using the conversation already provided. "
+    "It may continue, narrow, correct, or answer the previous exchange. If the context supports "
+    "multiple materially different meanings, ask one short clarifying question instead of assuming. "
+    "Earlier answers and citations are historical context: reuse them only to describe what was "
+    "previously said, and run the appropriate tool again for current status or new facts. "
+    "On a follow-up, never re-announce what the conversation has already established, the "
+    "resident just read it. Pick up from there and answer the new part directly."
+    "\n\n# Reply language\nReply in the same language as the resident's latest message. "
+    "Keep official names, addresses, and links exact."
+)
+
+
 def _stable_tier(registry: Registry) -> str:
-    """The cacheable prefix: all safety rules + the always-on capability menu. No query- or
-    time-dependent content, so it is identical across calls and safe to mark as a cache prefix."""
+    """The cacheable prefix: all safety rules, the always-on capability menu, and the byte-static
+    conversation-interpretation and reply-language rules. No query- or time-dependent content, so it
+    is identical across calls and safe to mark as a cache prefix."""
     menu = _capability_menu_text(registry)
-    return f"{BASE_SYSTEM_PROMPT}\n\n{menu}" if menu else BASE_SYSTEM_PROMPT
+    base = f"{BASE_SYSTEM_PROMPT}\n\n{menu}" if menu else BASE_SYSTEM_PROMPT
+    return base + _CONVERSATION_AND_LANGUAGE_RULES
 
 
 def _selected_blurbs(registry: Registry, query: Optional[str]) -> str:
@@ -315,20 +335,11 @@ def _selected_blurbs(registry: Registry, query: Optional[str]) -> str:
 
 def _volatile_tier(registry: Registry, now: Optional[datetime], query: Optional[str]) -> str:
     """The uncacheable suffix: query-selected blurbs + the current-date line. Both vary between
-    calls, so they must come AFTER the cached stable prefix, never inside it."""
+    calls, so they must sit AFTER the cached stable prefix and (in the agent) after the growing
+    history, never inside any cached block."""
     blurbs = _selected_blurbs(registry, query)
     section = f"\n\n# How to use the relevant services\n{blurbs}" if blurbs else ""
-    return section + _now_line(now) + (
-        "\n\n# Conversation\nInterpret the latest message using the conversation already provided. "
-        "It may continue, narrow, correct, or answer the previous exchange. If the context supports "
-        "multiple materially different meanings, ask one short clarifying question instead of assuming. "
-        "Earlier answers and citations are historical context: reuse them only to describe what was "
-        "previously said, and run the appropriate tool again for current status or new facts. "
-        "On a follow-up, never re-announce what the conversation has already established, the "
-        "resident just read it. Pick up from there and answer the new part directly."
-        "\n\n# Reply language\nReply in the same language as the resident's latest message. "
-        "Keep official names, addresses, and links exact."
-    )
+    return section + _now_line(now)
 
 
 def build_system_prompt_tiers(

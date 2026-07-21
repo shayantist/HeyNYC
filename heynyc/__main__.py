@@ -251,7 +251,10 @@ def _render_stats(path) -> None:
     table.add_row("total cost", f"${summary['total_cost_usd']:.4f}")
     table.add_row("cost / turn", f"${summary['cost_per_turn_usd']:.4f}")
     table.add_row("tokens in / out", f"{summary['input_tokens']} / {summary['output_tokens']}")
-    table.add_row("cached input tokens", str(summary["cached_input_tokens"]))
+    table.add_row(
+        "cached input tokens (total / scope)",
+        f"{summary['cached_input_tokens']} / {summary.get('scope_cached_input_tokens', 0)}",
+    )
     table.add_row("latency p50 / p95", f"{summary['latency_p50_ms']:.0f} / {summary['latency_p95_ms']:.0f} ms")
     table.add_row(
         "model / tool / other total",
