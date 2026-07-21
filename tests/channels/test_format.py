@@ -18,7 +18,6 @@ def test_strips_markers_and_appends_sources():
     out = render(r)
     assert len(out) == 1
     body = out[0]
-    assert "{cite:" not in body
     assert "Cooling centers are open. Bring ID." in body
     assert "Sources:" in body
     assert "https://nyc.gov/cool" in body and "https://nyc.gov/id" in body
@@ -62,14 +61,17 @@ def test_preserves_code_and_urls_while_converting_other_markup():
 def test_console_channel_keeps_raw_markdown_for_rich_to_render():
     """The console (REPL) channel is the SAME content as texters, only the typography differs:
     rich renders markdown, so render() must keep the raw markdown instead of collapsing it to the
-    WhatsApp dialect (its default) or stripping it (SMS). Cite markers are still removed."""
+    WhatsApp dialect (its default) or stripping it (SMS). Owner rule 2026-07-21: inline
+    {cite:Sn} markers STAY on the console (a rich surface can render them; texters lose them
+    only because their channels cannot), and the sources footer lists one source per line."""
     text = "**Cooling centers** are open {cite:S1}.\n## Where"
     out = render(FakeResult(text, {"S1": {"url": "https://nyc.gov/cool", "title": "Cooling"}}),
                  "console")
     body = out[0]
-    assert "**Cooling centers**" in body      # markdown preserved (not *bold* WhatsApp, not stripped)
+    assert "**Cooling centers**" in body
+    assert "{cite:S1}" in body                      # inline citations survive on the console
+    assert "\n  [S1] " in body or "[S1]" in body    # one-per-line sources footer      # markdown preserved (not *bold* WhatsApp, not stripped)
     assert "## Where" in body                  # heading markdown preserved
-    assert "{cite:" not in body                # internal markers still stripped
     assert "Sources:" in body and "https://nyc.gov/cool" in body
 
 

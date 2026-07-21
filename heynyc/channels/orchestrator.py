@@ -296,7 +296,9 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 # First-contact welcome: appended to a never-seen user's first normal answer, once
                 # ever (the per-user lock serializes, so no double-send). Marked only here on the
                 # answer path, so a resident whose first message is a command isn't spent on it.
-                if deps.store.first_contact(key):
+                if deps.store.first_contact(key) and msg.channel != "console":
+                    # The console's startup banner already names every command each launch;
+                    # the once-ever texting footer would arrive as an awkward trailing block.
                     await replier.send_text(_WELCOME_FOOTER)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
                 for path in artifacts:

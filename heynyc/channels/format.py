@@ -168,20 +168,28 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     session and telemetry persist. This layer never adds, drops, or alters a factual claim, it only
     formats: SMS gets plain text, WhatsApp gets its native dialect, and both share one link policy.
     """
-    text = _clean_body_links(_strip_markers(result.text), result.citations)
     if channel == "console":
-        # The REPL: rich renders markdown, so keep it raw (same content as texters, richer
-        # typography). Only the internal cite markers were stripped above.
-        body = text
-    elif channel.startswith("sms"):
-        body = _plain_markup(text)
+        # The REPL is the rich surface: inline {cite:Sn} markers STAY visible (texters lose
+        # them only because SMS/WhatsApp can't render them usefully), markdown stays raw for
+        # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
+        body = _clean_body_links(result.text, result.citations)
     else:
-        body = _whatsapp_markup(text)
+        text = _clean_body_links(_strip_markers(result.text), result.citations)
+        body = _plain_markup(text) if channel.startswith("sms") else _whatsapp_markup(text)
     inline_urls = {_canonical_url(match.group()) for match in _URL.finditer(body)}
     # Sources footer is unchanged per channel: it keeps every cited source (row-addressed permalinks
     # included) so the audit record on screen matches the stored one. SMS length is bounded downstream
     # by the Twilio adapter's own per-message segment budget.
-    footer = _sources_footer(used_citations(result.text, result.citations), inline_urls)
+    cited = used_citations(result.text, result.citations)
+    if channel == "console":
+        rows = [
+            f"  [{cid}] {c.get('title') or c.get('url', '')} - {c.get('url', '')}"
+            for cid, c in cited.items()
+            if _canonical_url(c.get("url", "")) not in inline_urls or True
+        ]
+        footer = "Sources:\n" + "\n".join(rows) if rows else ""
+    else:
+        footer = _sources_footer(cited, inline_urls)
     if not footer:
         return _split(body, WA_LIMIT) or [""]
     return _split(f"{body}\n\n{footer}", WA_LIMIT)
