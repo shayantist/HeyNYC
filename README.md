@@ -58,6 +58,37 @@ The assistant gives best-effort answers in the user's language when configured, 
 - **Reachable today:** CLI, SMS, and WhatsApp adapters, without a resident account. SMS and WhatsApp require provider configuration.
 - **Open and self-hostable:** The package can be run by an operator who controls its infrastructure and model configuration.
 
+## Using it
+
+**As a resident (SMS or WhatsApp):** text the pilot number your operator shares. Ask in plain
+language, any language. Your first message gets a one-time note naming the built-in commands,
+which work in any chat, always free of model calls:
+
+| Text | What happens |
+| --- | --- |
+| `HELP` | what HeyNYC can do |
+| `PRIVACY` | how your info is handled, in short |
+| `REPORT` (or 👎) | flag the last answer for human review, after you confirm |
+| `DELETE MY DATA` | erase your conversation, draft, and pending flags, after you confirm |
+| `NEW` | start a fresh conversation the assistant no longer sees |
+| `STOP` / `START` | SMS opt-out and opt-in (carrier-level) |
+
+**As an operator or developer (CLI):** every command reads `.env` for models and keys; `--model`
+overrides explicitly where offered.
+
+| Command | What it does |
+| --- | --- |
+| `heynyc repl` | interactive chat on the SAME path texters use: commands, sessions, caps all live. `--user <name>` keys a separate identity, `--temp` is a throwaway session that persists nothing, `--raw` is the bare-agent debug view |
+| `heynyc chat "..."` | one-shot question |
+| `heynyc serve` | the SMS/WhatsApp webhook server (see the [channels guide](heynyc/channels/README.md); the pilot launcher is `scripts/serve_demo.sh`) |
+| `heynyc eval` | the no-hallucination gate. `--list` shows every case with tags, `--tag` / `--module` / `--case` select slices, `--sample N --seed K` rotates, bare runs need `--all` (cost guard) |
+| `heynyc feedback` | resident-flagged exchanges, decrypted locally for triage |
+| `heynyc stats` | turns, outcomes, costs, cache rates from local telemetry |
+| `heynyc bench --models a,b` | run the case set across candidate models |
+| `heynyc modules` / `new-module` | list or scaffold service modules |
+| `heynyc index-build` / `index-search` | build or probe the retrieval index |
+| `heynyc capabilities --write-readme` | regenerate the capability table below |
+
 ## Quickstart
 
 ```bash
@@ -68,7 +99,7 @@ uv run python -m heynyc index-build      # build the RAG index from module seeds
 uv run python -m heynyc repl             # interactive, streaming chat
 ```
 
-Other commands: `modules`, `new-module <name>`, `chat "..."`, `index-search "..."`, `capabilities --write-readme`, and `eval`. Scoped web search is a retrieval tool, not a resident-facing web channel. For SMS or WhatsApp, configure `HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`, then run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
+Scoped web search is a retrieval tool, not a resident-facing web channel. For SMS or WhatsApp, configure `HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`, then run `uv run python -m heynyc serve`; see the [channels guide](heynyc/channels/README.md).
 
 ## How it works
 
@@ -120,4 +151,4 @@ Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urd
 **Something was wrong or unhelpful. What do I do?**
 Text REPORT (or just 👎) after the bad answer. You'll be asked to confirm before that one exchange is shared with a human reviewer.
 
-_Last updated: 2026-07-20_
+_Last updated: 2026-07-21_
