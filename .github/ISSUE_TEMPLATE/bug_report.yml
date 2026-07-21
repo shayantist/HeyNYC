@@ -1,0 +1,38 @@
+name: Report a bug or a wrong answer
+description: Something broke, or HeyNYC gave a wrong, unsafe, or ungrounded answer.
+title: "[bug] <short summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A wrong or ungrounded answer is exactly the kind of failure we want to know about
+        (see [SAFETY.md](../../SAFETY.md)). For anything sensitive (a security hole, a leak,
+        an injection exploit), use the private path in [SECURITY.md](../../SECURITY.md) instead.
+        Please don't paste anyone's personal information here.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      placeholder: What HeyNYC said or did, as exactly as you can. Screenshots welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      placeholder: The correct answer, the official source that contradicts it, or the behavior you expected.
+  - type: textarea
+    id: repro
+    attributes:
+      label: How can we reproduce it?
+      placeholder: |
+        The question you asked (and the messages before it, if it took a few turns),
+        and where: SMS, WhatsApp, or the CLI.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit (if self-hosting)
+      placeholder: e.g. main @ 01cb48b

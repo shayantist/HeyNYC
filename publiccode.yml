@@ -1,0 +1,47 @@
+# Machine-readable metadata for public-sector software catalogs (Standard for Public Code
+# ecosystem). Spec v0.7: https://yml.publiccode.tools/
+publiccodeYmlVersion: "0.7"
+name: HeyNYC
+url: "https://github.com/shayantist/HeyNYC"
+platforms:
+  - linux
+  - mac
+categories:
+  - digital-citizenship
+  - customer-service-and-support
+developmentStatus: development
+softwareType: standalone/backend
+description:
+  en:
+    shortDescription: >-
+      A grounded SMS and WhatsApp assistant for New York City services: every answer
+      cites official city data, or it abstains and routes to 311.
+    longDescription: >-
+      HeyNYC answers residents' questions about New York City benefits, housing, food,
+      health, immigration, and events over SMS and WhatsApp, with no account or app.
+      Its core rule is cite-or-abstain: every factual claim must trace to an official
+      source a grounded tool actually returned (NYC Open Data, the city's Benefits
+      Screening API, official finders, scoped search over authoritative NYC domains),
+      and a deterministic guard rechecks cited claims before an answer is delivered.
+      When the evidence is not there, it says it does not know and routes the resident
+      to 311 or the responsible agency. It never decides eligibility and never submits
+      applications. Replies follow the resident's language on a best-effort basis;
+      production multilingual safety is still being validated and the project documents
+      that limit, along with a public failure register and red-team records, in its
+      testing documentation.
+    features:
+      - Cite-or-abstain answers grounded in official NYC data sources
+      - Deterministic citation guard on every live answer before delivery
+      - SMS and WhatsApp with in-chat commands (HELP, PRIVACY, REPORT, DELETE MY DATA)
+      - PII-free eligibility screening via the city's official Benefits Screening API
+      - Public failure register, red-team records, and benchmark methodology
+legal:
+  license: Apache-2.0
+maintenance:
+  type: community
+  contacts:
+    - name: Shayan Chowdhury
+localisation:
+  localisationReady: true
+  availableLanguages:
+    - en
