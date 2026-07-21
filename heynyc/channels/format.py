@@ -197,7 +197,9 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     cited = used_citations(result.text, result.citations)
     if channel == "console":
         rows = [
-            f"  [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
+            # Markdown list items: single newlines are soft breaks that Markdown() collapses
+            # into spaces (observed live as one wrapped blob), list items render one per line.
+            f"- [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
             for cid, c in cited.items()
             # or True is LOAD-BEARING post-linkification: the citation URL now appears inline
             # (inside the link destination), so inline_urls would drop every cited source here.

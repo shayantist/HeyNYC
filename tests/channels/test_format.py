@@ -71,7 +71,7 @@ def test_console_channel_keeps_raw_markdown_for_rich_to_render():
     assert "**Cooling centers**" in body
     assert "{cite:S1}" not in body                  # marker replaced by a clickable tag
     assert "[\\[S1\\]](<https://nyc.gov/cool>)" in body  # OSC 8 via markdown link syntax
-    assert "\nSources:\n" in body and "Cooling - <https://nyc.gov/cool>" in body  # linked one-per-line footer      # markdown preserved (not *bold* WhatsApp, not stripped)
+    assert "\nSources:\n- " in body and "Cooling - <https://nyc.gov/cool>" in body  # list items survive Markdown soft-break collapse      # markdown preserved (not *bold* WhatsApp, not stripped)
     assert "## Where" in body                  # heading markdown preserved
     assert "Sources:" in body and "https://nyc.gov/cool" in body
 
