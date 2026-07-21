@@ -360,7 +360,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 # guarantee, a state coverage rule), so, like housing_guidance, they live here as grounded _Fact
 # records returned WITH a DOC citation to the official page each one comes from, never stated from
 # the model's memory. Verified 2026-07-12 against the linked pages (see
-# docs/eval/redteam-coverage-gap-closure-2026-07-12.md); `snippet` is a subset of `body`'s wording
+# docs/internal/eval/redteam-coverage-gap-closure-2026-07-12.md); `snippet` is a subset of `body`'s wording
 # so the eval's faithfulness check (snippet ⊆ tool output) holds. Where the question crosses into
 # immigration-law consequences (public charge), the tool ROUTES to ActionNYC rather than assert a
 # volatile immigration-law conclusion.

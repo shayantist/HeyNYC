@@ -45,7 +45,7 @@ HeyNYC is an alpha release. The messaging pilot can run from an operator-managed
 
 - **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
 - **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
-- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. Texting `DELETE MY DATA` and confirming erases the resident's transcript, any draft, and any pending report flags in chat; see the [privacy notice](legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
+- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. Texting `DELETE MY DATA` and confirming erases the resident's transcript, any draft, and any pending report flags in chat; see the [privacy notice](docs/legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
 - **Not yet shipped:** a resident web UI, durable hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
 - **Known limitations:** intersection geocoding can be wrong, so HeyNYC echoes the resolved address and asks for confirmation. Some city datasets are thin (the SNAP-center list has weekday hours but no phone numbers), and HeyNYC says so rather than filling the gap.
 
@@ -60,9 +60,7 @@ The assistant gives best-effort answers in the user's language when configured, 
 
 ## Using it
 
-**As a resident (SMS or WhatsApp):** text the pilot number your operator shares. Ask in plain
-language, any language. Your first message gets a one-time note naming the built-in commands,
-which work in any chat, always free of model calls:
+**As a resident (SMS or WhatsApp):** text the pilot number your operator shares. Ask in plain language, any language. Your first message gets a one-time note naming the built-in commands, which work in any chat, always free of model calls:
 
 | Text | What happens |
 | --- | --- |
@@ -73,8 +71,7 @@ which work in any chat, always free of model calls:
 | `NEW` | start a fresh conversation the assistant no longer sees |
 | `STOP` / `START` | SMS opt-out and opt-in (carrier-level) |
 
-**As an operator or developer (CLI):** every command reads `.env` for models and keys; `--model`
-overrides explicitly where offered.
+**As an operator or developer (CLI):** every command reads `.env` for models and keys; `--model` overrides explicitly where offered.
 
 | Command | What it does |
 | --- | --- |
@@ -112,12 +109,18 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 ├── heynyc/              Python package and CLI
 │   ├── core/            Agent loop, grounding, citations, RAG, and shared tools
 │   ├── modules/         Service modules, their manifests, data, and evals
-│   ├── eval/            Evaluation runner, checks, and trace reporting
+│   ├── eval/            The live evaluation harness: runs the real model and tools against each module's eval.yaml contract and grades resident outcomes; inside the package because `heynyc eval` and `bench` are product commands
 │   └── channels/        SMS and WhatsApp adapters
-├── tests/               Offline test suite
+├── docs/                Public docs
+│   ├── testing/         Generated public test records (failure register, red-team, benchmarks)
+│   ├── legal/           Formal Privacy Notice and Terms of Use
+│   └── internal/        Local-only specs, plans, and dev notes (gitignored, not shipped)
+├── tests/               Offline pytest suite: deterministic, mocked, free; proves code contracts. Root by Python convention, never shipped
 ├── scripts/             Development and demo scripts
 └── .github/             Issue and pull-request templates
 ```
+
+Offline tests prove contracts; live evals prove behavior.
 
 ## Docs map
 
@@ -125,10 +128,16 @@ HeyNYC routes a question to a service module, then uses grounded tools such as c
 | --- | --- |
 | [SAFETY.md](SAFETY.md) | How the AI stays grounded and safe: guardrails, red-team results, abstention, and data freshness. |
 | [SECURITY.md](SECURITY.md) | How to report a security vulnerability through the private disclosure policy. |
-| [PRIVACY.md](PRIVACY.md) | Plain-language: what happens to your messages. The formal [Privacy Notice](legal/HEYNYC-PRIVACY.md) controls. |
-| [Terms of Use](legal/HEYNYC-TERMS.md) | Pilot limitations, messaging terms, and user responsibilities. |
+| [PRIVACY.md](PRIVACY.md) | Plain-language: what happens to your messages. The formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md) controls. |
+| [Terms of Use](docs/legal/HEYNYC-TERMS.md) | Pilot limitations, messaging terms, and user responsibilities. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to add a module or contribute. |
 | [CHANGELOG.md](CHANGELOG.md) | The running day-to-day log of what shipped. |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | The community standards for taking part. |
+| [LICENSE](LICENSE) | The open-source license the project ships under. |
+| [`docs/testing/`](docs/testing/) | HeyNYC's public test records; the eval harness that produces the gate results lives in [`heynyc/eval/`](heynyc/eval/README.md). Covers the [failure register](docs/testing/failure-db.md), the [red-team write-up](docs/testing/red-team.md), and the [benchmark methodology](docs/testing/benchmarks.md). |
+| [heynyc/eval/README.md](heynyc/eval/README.md) | The evaluation harness: cases, gates, rubric, and how to run it. |
+| [heynyc/channels/README.md](heynyc/channels/README.md) | SMS and WhatsApp adapter conventions. |
+| [heynyc/modules/README.md](heynyc/modules/README.md) | Service-module structure and how to scaffold one. |
 
 ## How we test it
 
@@ -136,19 +145,14 @@ Every case, gate, and failure-driven regression is documented in [heynyc/eval/RE
 
 ## FAQ
 
-**Do people read my messages?**
-No one reads your conversations in the normal course of things. A human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. Text DELETE MY DATA and confirm to erase your transcript, draft, and pending flags yourself. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal notice is the [Privacy Notice](legal/HEYNYC-PRIVACY.md).
+**Do people read my messages?** No one reads your conversations in the normal course of things. A human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. Text DELETE MY DATA and confirm to erase your transcript, draft, and pending flags yourself. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal notice is the [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md).
 
-**How do I know it isn't making things up?**
-Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you. When the source doesn't back a claim, the answer is regenerated or HeyNYC says it can't confirm. When it can't ground an answer, it says so and points you to 311 or the official page instead of guessing.
+**How do I know it isn't making things up?** Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you. When the source doesn't back a claim, the answer is regenerated or HeyNYC says it can't confirm. When it can't ground an answer, it says so and points you to 311 or the official page instead of guessing.
 
-**Is it free?**
-Yes. Standard messaging rates from your carrier apply, nothing from us.
+**Is it free?** Yes. Standard messaging rates from your carrier apply, nothing from us.
 
-**What languages?**
-Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urdu, and more. Program names, addresses, and links stay exact because the official pages are in English.
+**What languages?** Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urdu, and more. Program names, addresses, and links stay exact because the official pages are in English.
 
-**Something was wrong or unhelpful. What do I do?**
-Text REPORT (or just 👎) after the bad answer. You'll be asked to confirm before that one exchange is shared with a human reviewer.
+**Something was wrong or unhelpful. What do I do?** Text REPORT (or just 👎) after the bad answer. You'll be asked to confirm before that one exchange is shared with a human reviewer.
 
 _Last updated: 2026-07-21_

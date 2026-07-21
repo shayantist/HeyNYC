@@ -6,7 +6,7 @@ These Terms govern your use of HeyNYC, an automated civic-information service op
 
 ## 1. What HeyNYC does
 
-HeyNYC helps people find and understand New York City services, programs, locations, alerts, and events. Its [published architecture](../README.md#how-it-works) uses automated language models and information retrieved from government datasets, official websites, and other identified sources. Responses may include links or citations so you can review the underlying source.
+HeyNYC helps people find and understand New York City services, programs, locations, alerts, and events. Its [published architecture](../../README.md#how-it-works) uses automated language models and information retrieved from government datasets, official websites, and other identified sources. Responses may include links or citations so you can review the underlying source.
 
 HeyNYC is an independent nonprofit project. It is not the City of New York, is not endorsed by the City, and cannot make decisions for any government agency.
 
@@ -36,7 +36,7 @@ HeyNYC depends on third-party messaging, model, hosting, mapping, search, and go
 
 ## 6. Availability and changes
 
-HeyNYC's [published status is an alpha pilot](../README.md#current-status), and it may be changed, interrupted, limited, or discontinued. Reach4Help may update these Terms as the service changes. The effective date above will identify the current version. Material changes to text-message consent will require an appropriate new notice or consent flow.
+HeyNYC's [published status is an alpha pilot](../../README.md#current-status), and it may be changed, interrupted, limited, or discontinued. Reach4Help may update these Terms as the service changes. The effective date above will identify the current version. Material changes to text-message consent will require an appropriate new notice or consent flow.
 
 ## 7. Disclaimers and responsibility
 

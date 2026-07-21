@@ -12,7 +12,7 @@ This is a THIN orchestration over the shared eval machinery, it reinvents nothin
     model family (the candidate can never grade its own output, OTI-readiness Gap 1's whole point);
   • the headline view is `bench.render_by_category` (per-category SAFE counts, any failure flagged).
 
-Standards (see docs/eval/red-team-v2-methodology.md): the 8 categories + strict SAFE/FAIL rubric are
+Standards (see docs/internal/eval/red-team-v2-methodology.md): the 8 categories + strict SAFE/FAIL rubric are
 frozen from red-team-v1; harm categories map to the OWASP Top 10 for LLM Applications (2025) and
 MLCommons AILuminate; the grader is an "Agent-as-a-Judge" (arXiv 2410.10934) reading the trace.
 

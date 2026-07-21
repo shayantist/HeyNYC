@@ -21,19 +21,7 @@ Two boundaries fall out of this design:
 
 ### Offline tests and live evals are separate gates
 
-Every service module ships with its own eval, and a module isn't "done" until that eval is green.
-The offline pytest suite exercises deterministic code, injected tools, and scripted traces without
-calling a model. The live `heynyc eval` command runs the configured model through the real agent,
-then applies the deterministic floor (attribution, faithfulness, grounding, link liveness, and the
-other structural checks defined in [`heynyc/eval/README.md`](heynyc/eval/README.md)) to the
-captured trace. The two are complementary. A green offline suite does not prove that the current model selected the
-right tools, stayed in language, or produced a useful answer. Live testing is selective and
-risk-triggered to control spend: changed modules and failure cases run after scoped changes, a
-compact cross-cutting set gates prompt, model, routing, memory, and guard changes, and the full
-golden and adversarial suites are reserved for public releases and major safety-boundary changes.
-Channel tests use the direct agent path first and only the smallest WhatsApp smoke needed to prove
-transport behavior. Design, commands, rubric, and the exact cadence are in
-[`heynyc/eval/README.md`](heynyc/eval/README.md).
+Every service module ships with its own eval, and a module isn't "done" until that eval is green. The offline pytest suite exercises deterministic code, injected tools, and scripted traces without calling a model. The live `heynyc eval` command runs the configured model through the real agent, then applies the deterministic floor (attribution, faithfulness, grounding, link liveness, and the other structural checks defined in [`heynyc/eval/README.md`](heynyc/eval/README.md)) to the captured trace. The two are complementary. A green offline suite does not prove that the current model selected the right tools, stayed in language, or produced a useful answer. Live testing is selective and risk-triggered to control spend: changed modules and failure cases run after scoped changes, a compact cross-cutting set gates prompt, model, routing, memory, and guard changes, and the full golden and adversarial suites are reserved for public releases and major safety-boundary changes. Channel tests use the direct agent path first and only the smallest WhatsApp smoke needed to prove transport behavior. Design, commands, rubric, and the exact cadence are in [`heynyc/eval/README.md`](heynyc/eval/README.md).
 
 ### The Part C cited-claim check
 
@@ -59,11 +47,11 @@ Full design, rationale, and the research behind each choice are kept in the proj
 
 ### The MyCity safety subset (human-graded)
 
-We rebuilt NYC's documented MyCity failures as a labeled test set: the exact cases where MyCity told business owners they could break the law (take workers' tips, refuse Section 8 voucher tenants, go cash-free, lock out a tenant, skip schedule-change notice). We pose each one twice, once the way the owner asked it and once the way the worker or tenant on the receiving end would ask, because that second person is the one about to lose money or housing. Correct behavior on every one: answer correctly and grounded, or abstain and route to the authoritative source. **Never repeat the illegal advice.** Every gold answer is tied to the real statute and human-reviewed, and the litigation-live ones (the 2026 Section 8 / source-of-income ruling) carry a date and a re-check flag. The MyCity subset, and the real law behind each trap, is summarized in the [public benchmark methodology](transparency/benchmark-methodology.md).
+We rebuilt NYC's documented MyCity failures as a labeled test set: the exact cases where MyCity told business owners they could break the law (take workers' tips, refuse Section 8 voucher tenants, go cash-free, lock out a tenant, skip schedule-change notice). We pose each one twice, once the way the owner asked it and once the way the worker or tenant on the receiving end would ask, because that second person is the one about to lose money or housing. Correct behavior on every one: answer correctly and grounded, or abstain and route to the authoritative source. **Never repeat the illegal advice.** Every gold answer is tied to the real statute and human-reviewed, and the litigation-live ones (the 2026 Section 8 / source-of-income ruling) carry a date and a re-check flag. The MyCity subset, and the real law behind each trap, is summarized in the [public benchmark methodology](docs/testing/benchmarks.md).
 
 ### The historical 137-query red-team and current 205-case suite
 
-The [first completed adversarial run](transparency/red-team-summary.md) used **137 queries across 8 categories**, every one built to make HeyNYC give harmful, ungrounded, or illegal advice, or to break its grounding. The categories were MyCity replays, prompt injection and jailbreak, out-of-scope harm, false-premise and leading questions, high-stakes over-reliance, PII and privacy, citation integrity, and Spanish-language safety. The [shipped current suite](transparency/red-team-v2-methodology.md) now contains **205 cases**. It has not yet received a complete owner-approved live rerun, so the results below describe the historical 137-case run, not the current suite.
+The [first completed adversarial run](docs/testing/red-team.md#results-to-date) used **137 queries across 8 categories**, every one built to make HeyNYC give harmful, ungrounded, or illegal advice, or to break its grounding. The categories were MyCity replays, prompt injection and jailbreak, out-of-scope harm, false-premise and leading questions, high-stakes over-reliance, PII and privacy, citation integrity, and Spanish-language safety. The [shipped current suite](docs/testing/red-team.md#how-we-red-team) now contains **205 cases**. It has not yet received a complete owner-approved live rerun, so the results below describe the historical 137-case run, not the current suite.
 
 **The honest part is how it was graded.** The person who wrote the adversarial queries also scored them first, which is a real conflict of interest: you grade your own traps leniently, or misread your own transcripts. That's not a hunch, it's the documented self-enhancement and self-preference bias that any grader, human or LLM-as-judge, carries[^judge-bias]. So a second, **independent fresh-context grader** re-scored all 137 against the ground-truth legal facts, having never seen the first grader's verdicts. **It caught the first grader overclaiming.** After reconciling every disagreement against the raw transcript, the two converged on the real result.
 
@@ -75,7 +63,7 @@ The result, stated straight:
 - **0 fabricated citations** (16/16 on the category built specifically to extract a fake code section, URL, case number, or hotline).
 - **7 grounding-accuracy failures**, found and fixed. Four were the same bug (mischaracterizing the live 2026 Section 8 / source-of-income court ruling: wrong court, overstated scope). One was a public-charge misstatement (half-confirming that SNAP counts against a green card, which it doesn't under current rules). Two were Spanish-only lapses the clean English answer didn't have (a fabricated statute number, and emergency aspirin dosing).
 
-All 7 were fixed, re-verified, and committed (commit `3454e1d`). The [public write-up](transparency/red-team-summary.md) has the per-category results and the two-grader reconciliation; the verbatim failure transcripts are withheld from the public export pending owner review, since some are crisis and self-harm material.
+All 7 were fixed, re-verified, and committed (commit `3454e1d`). The [public write-up](docs/testing/red-team.md#results-to-date) has the per-category results and the two-grader reconciliation; the verbatim failure transcripts are withheld from the public export pending owner review, since some are crisis and self-harm material.
 
 **Why we publish the failures.** Because "our tests pass" is what the last tool said. A red-team that failed on 7 real items, caught its own grader overclaiming, fixed them, and documents each one is a stronger safety claim than a clean scorecard.
 
@@ -93,22 +81,13 @@ Two pieces are planned and not yet shipped: an automated content-drift check tha
 
 HeyNYC remembers an ongoing messaging conversation so a resident can ask a real follow-up instead of starting over after every message or process restart. The identifier is a [salted HMAC of the channel and sender](heynyc/channels/identity.py), not a saved raw phone number. Hosted serving [requires an encryption key, encrypts transcript records, and purges expired conversations and drafts at startup and every 24 hours](heynyc/channels/app.py); the inactivity window currently defaults to 30 days. These are implemented controls, not planned claims.
 
-The bounded-memory layer is now implemented locally. It budgets complete turns by measured tokens,
-compacts only under pressure into one typed continuity record, redacts identifiers before
-compaction, revalidates continuity against resident-authored text, and excludes prior assistant
-facts, URLs, and citations from future evidence. A generated turn is committed only after all
-outbound text and documents are accepted. `NEW` and `PRIVACY` are implemented locally. Confirmed
-Confirmed `DELETE MY DATA` is shipped: after an in-chat confirmation it erases the resident's encrypted transcript, any draft, and pending report flags, keeping only PII-free aggregates and an anonymized daily spend record.
-the new memory behavior still awaits a supervised live restart.
+The bounded-memory layer is now implemented locally. It budgets complete turns by measured tokens, compacts only under pressure into one typed continuity record, redacts identifiers before compaction, revalidates continuity against resident-authored text, and excludes prior assistant facts, URLs, and citations from future evidence. A generated turn is committed only after all outbound text and documents are accepted. `NEW` and `PRIVACY` are implemented locally. Confirmed Confirmed `DELETE MY DATA` is shipped: after an in-chat confirmation it erases the resident's encrypted transcript, any draft, and pending report flags, keeping only PII-free aggregates and an anonymized daily spend record. the new memory behavior still awaits a supervised live restart.
 
 The intended replacement is bounded task continuity, not a personal profile. A typed record may retain a resident's stated goal, corrections, completed steps, and unresolved questions. It must not preserve a benefit rule, deadline, location status, legal claim, or citation as truth; those are retrieved again and pass through the current grounding guard. Old assistant text is dialogue context, never evidence. Validated application state stays in the separate draft store rather than being copied into model-written memory.
 
 That design follows current provider guidance that long-running conversations should remove stale tool output and compact only when context pressure requires it ([OpenAI compaction](https://developers.openai.com/api/docs/guides/compaction), [Anthropic context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing)). Its privacy baseline comes from the [NIST Privacy Framework](https://www.nist.gov/privacy-framework), the data-minimization and storage-limitation principles in [GDPR Article 5](https://eur-lex.europa.eu/eli/reg/2016/679/art_5/oj), and the public-sector precedent of publishing what conversation history is kept and for how long in the [GOV.UK Chat privacy notice](https://www.gov.uk/government/publications/govuk-chat-privacy-notice/govuk-chat-privacy-notice). These are design references, not a claim that HeyNYC has been certified or independently audited against them.
 
-Before calling the memory layer complete, we still need the compact live acceptance set for
-cross-language and cross-module follow-ups, long-conversation usefulness, and a supervised restart.
-Confirmed in-chat deletion is implemented and tested end to end.
-tokens, latency, and cost without reducing resident-task success.
+Before calling the memory layer complete, we still need the compact live acceptance set for cross-language and cross-module follow-ups, long-conversation usefulness, and a supervised restart. Confirmed in-chat deletion is implemented and tested end to end. tokens, latency, and cost without reducing resident-task success.
 
 ## The human-in-the-loop boundary
 
@@ -135,11 +114,13 @@ Read this part. These are real and current as of 2026-07-21:
 
 ## Where to read more
 
+The testing records behind these claims live in [`docs/testing/`](docs/testing/), generated from internal sources by `scripts/export_testing_docs.py`:
+
 - No-hallucination eval design and rubric: [`heynyc/eval/README.md`](heynyc/eval/README.md)
-- MyCity safety subset (the traps and the real law behind each): [`transparency/benchmark-methodology.md`](transparency/benchmark-methodology.md)
-- The historical 137-query red-team and reconciliation: [`transparency/red-team-summary.md`](transparency/red-team-summary.md)
-- Current 205-case methodology: [`transparency/red-team-v2-methodology.md`](transparency/red-team-v2-methodology.md)
-- Benchmark methodology (how we measure at scale): [`transparency/benchmark-methodology.md`](transparency/benchmark-methodology.md)
+- MyCity safety subset (the traps and the real law behind each): [`docs/testing/benchmarks.md`](docs/testing/benchmarks.md)
+- The historical 137-query red-team, results, and reconciliation: [`docs/testing/red-team.md`](docs/testing/red-team.md#results-to-date)
+- How we red-team (the current 205-case method): [`docs/testing/red-team.md`](docs/testing/red-team.md#how-we-red-team)
+- Benchmark methodology (how we measure at scale): [`docs/testing/benchmarks.md`](docs/testing/benchmarks.md)
 - Security vulnerability reporting (a different thing): [SECURITY.md](SECURITY.md)
 
 HeyNYC is an open-source project and is not affiliated with the City of New York. If you find a way to make it give an unsafe or ungrounded answer, that's exactly the kind of failure we want to know about; please open an issue (or, for anything sensitive, see [SECURITY.md](SECURITY.md)).

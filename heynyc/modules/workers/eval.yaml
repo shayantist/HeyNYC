@@ -1,5 +1,5 @@
 # Golden eval cases for workers - grounded in NY Labor Law section 196-d + the NYS DOL tips FAQ.
-# Schema: see docs/superpowers/specs/2026-06-26-agent-eval-harness-design.md §3.3
+# Schema: see docs/internal/superpowers/specs/2026-06-26-agent-eval-harness-design.md §3.3
 # capability: geocoding | dataset_grounding | abstention | scope | citation | robustness
 # test_type:  MFT | INV | DIR   (CheckList - Ribeiro et al., ACL 2020)
 # harm_category: none | injection | misinformation | specialized_advice | false_premise

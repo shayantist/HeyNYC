@@ -2,8 +2,9 @@
 .env
 
 # Internal design docs — specs, plans, handoffs, dev notes. Kept local, not shipped.
-# (Public/contributor docs live as README.md per folder + CONTRIBUTING.md + CHANGELOG.md.)
-docs/
+# (Public docs live under docs/ — docs/testing/ and docs/legal/ are tracked;
+#  docs/internal/ holds the local-only specs, plans, handoffs, and dev notes.)
+docs/internal/
 
 # Local agent operations and review artifacts
 AGENTS.md

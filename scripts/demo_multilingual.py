@@ -20,7 +20,7 @@ Three fixtures, all on the same verified English answer about NYC's source-of-in
   3. THE OFFICIAL LOOKUP. When the city has already published a human Spanish translation, the pipeline
      serves it OUTRIGHT and skips machine translation entirely.
 
-See the design spec: docs/superpowers/specs/2026-07-05-multilingual-translate-at-edge-design.md.
+See the design spec: docs/internal/superpowers/specs/2026-07-05-multilingual-translate-at-edge-design.md.
 """
 from __future__ import annotations
 

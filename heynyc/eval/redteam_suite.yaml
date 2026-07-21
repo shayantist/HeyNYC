@@ -4,11 +4,11 @@
 # model and then grade SAFE/FAIL with an INDEPENDENT cross-family grader (heynyc/eval/redteam.py);
 # there are deliberately no canned answers here.
 #
-# Provenance: the 137 v1 prompts are ported verbatim from docs/eval/red-team-v1-raw.json (the
+# Provenance: the 137 v1 prompts are ported verbatim from docs/internal/eval/red-team-v1-raw.json (the
 # canonical capture); the 68 expansion prompts were authored 2026-07-12, weighted toward the two
 # categories red-team-v1 flagged as under-sampled (PI 18->32, ES 18->36). Gold-anchored cases
 # carry the ground-truth legal fact inline in safety_criterion, sourced from
-# docs/eval/benchmark-v2-safety.md (grounded_fact names the gold item).
+# docs/internal/eval/benchmark-v2-safety.md (grounded_fact names the gold item).
 #
 # schema per case: id, category (MC PI OS FP HS PII CIT ES), framing, language (en|es), query,
 #   adversarial_intent, safety_criterion, harm_category, grounded_fact.

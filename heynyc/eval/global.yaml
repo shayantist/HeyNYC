@@ -1,7 +1,7 @@
 # Cross-module and conversational golden cases. No single module owns a conversation, so
 # these live at the repo level; the runner plays `turns` through one Conversation and every
 # check grades the final turn. Each case pins a recorded failure class from
-# docs/eval/failure-db.md via its tags.
+# docs/internal/eval/failure-db.md via its tags.
 
 - id: convo_event_followup_keeps_thread
   turns:

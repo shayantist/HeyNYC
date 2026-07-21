@@ -4,7 +4,7 @@ Two backends behind one interface: InMemoryVectorStore (numpy, zero-config, the 
 default + tests) and LanceVectorStore (persistent). Ranking follows the documented hybrid
 standard, dense (semantic) + Okapi BM25 (lexical, IDF-weighted), combined with RRF, which fuses
 by *rank* not score so the incompatible scales (cosine ∈ [-1,1] vs unbounded BM25) need no
-normalization. See docs/superpowers/specs/2026-06-29-eval-grading-and-retrieval-amendment.md.
+normalization. See docs/internal/superpowers/specs/2026-06-29-eval-grading-and-retrieval-amendment.md.
 """
 from __future__ import annotations
 

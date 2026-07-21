@@ -42,7 +42,7 @@ def test_looks_like_intersection():
 # --- Borough-bias fix: the "125th Street Manhattan → College Point, Queens" bug is a
 # QUERY bug. A borough named in the query must produce a borough-aware boundary.rect;
 # a plain address with no borough must still get the citywide NYC rect as a floor.
-# (Verified live 2026-07-05; see docs/strategy/2026-07-05-geocoder-upgrade.md.) --------
+# (Verified live 2026-07-05; see docs/internal/strategy/2026-07-05-geocoder-upgrade.md.) --------
 
 def test_detect_borough_from_full_names():
     # The exact live-verified failing query, plus the doc's stated cases.

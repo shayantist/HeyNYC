@@ -1,7 +1,6 @@
 # Contributing to HeyNYC
 
-HeyNYC is open source and grows through community-contributed service modules.
-If there's a gov't service that we haven't covered (DMV, Fair Fares, loans), we would appreciate any help with creating a well-grounded module for that service. 
+HeyNYC is open source and grows through community-contributed service modules. If there's a gov't service that we haven't covered (DMV, Fair Fares, loans), we would appreciate any help with creating a well-grounded module for that service.
 
 There are two ways to help:
 
@@ -25,10 +24,7 @@ heynyc/modules/<name>/
 
 To not reinvent the wheel, we use the same **"one descriptor file per unit, in its own folder"** convention as [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: the manifest carries `name` + `description` + keywords for routing, and adding a unit means dropping in a folder: **convention over configuration**. (A HeyNYC module is a plain MCP-style tool + a schema-validated manifest; we deliberately do **not** use Anthropic Agent Skills, which are for reusable techniques, not project-specific data + config.)
 
-**Shallow by default.** A module is a folder with the manifest at its root; the only nesting is an
-optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder for a **submodule**:
-a light sub-service that reuses the parent's tool and owns its own sources + eval (e.g.
-`events/topics/world_cup/`). Most modules are a single `manifest.yaml`.
+**Shallow by default.** A module is a folder with the manifest at its root; the only nesting is an optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder for a **submodule**: a light sub-service that reuses the parent's tool and owns its own sources + eval (e.g. `events/topics/world_cup/`). Most modules are a single `manifest.yaml`.
 
 The module manifest and examples live in the [modules README](heynyc/modules/README.md) and the existing module folders.
 
@@ -59,8 +55,7 @@ The upshot for you as an author: you never have to build the safety machinery. P
 
 ## Requesting a module (issue)
 
-No coding required. Open an issue using the **"Propose a new service module"** template and
-fill in:
+No coding required. Open an issue using the **"Propose a new service module"** template and fill in:
 - the service name and what it helps people do,
 - the official NYC page(s) for it,
 - a NYC Open Data dataset id if it's a "find nearest X" service (search
@@ -92,9 +87,7 @@ uv run python -m heynyc index-build
 uv run python -m heynyc chat "a question your module should handle"
 ```
 
-Open a PR using the template. Keep modules **grounded**: never return a fact (location,
-distance, hours, eligibility, price) that didn't come from a tool/dataset. When in doubt,
-the module's `prompt` should tell the agent to **abstain and link to the official page**.
+Open a PR using the template. Keep modules **grounded**: never return a fact (location, distance, hours, eligibility, price) that didn't come from a tool/dataset. When in doubt, the module's `prompt` should tell the agent to **abstain and link to the official page**.
 
 ### PR checklist
 - [ ] One folder under `heynyc/modules/<name>/` with `manifest.yaml`.

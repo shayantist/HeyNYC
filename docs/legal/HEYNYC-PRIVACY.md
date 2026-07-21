@@ -30,9 +30,9 @@ Reach4Help does not sell personal information or use HeyNYC messages for adverti
 
 ## 3. Phone-number protection and conversation records
 
-HeyNYC's application [converts a sender address into a salted pseudonymous identifier](../heynyc/channels/identity.py) before saving application-level sessions, telemetry, drafts, or feedback. The application does not save the raw phone number in those local records. The messaging provider still receives and processes the phone number so it can deliver messages.
+HeyNYC's application [converts a sender address into a salted pseudonymous identifier](../../heynyc/channels/identity.py) before saving application-level sessions, telemetry, drafts, or feedback. The application does not save the raw phone number in those local records. The messaging provider still receives and processes the phone number so it can deliver messages.
 
-HeyNYC saves conversation text so the assistant can understand follow-up questions and avoid appearing to forget an ongoing conversation. Before a resident-answer request reaches the answer model, the current pilot [uses a measured context budget](../heynyc/core/memory.py), keeps complete recent turns, and may replace older turns with a typed continuity record. The smaller scope-classification preflight is a separate model call and is not covered by that answer-context budget. Prior assistant prose is not treated as evidence for new factual claims. In-progress application drafts may also be saved so you can return and finish them. Public hosted deployments [require encryption and run a scheduled deletion process](../heynyc/channels/app.py) for local conversation and draft files after the configured inactivity period, which defaults to 30 days. Pseudonymous operational metrics and [encrypted, pattern-redacted feedback](../heynyc/channels/analytics.py) may be kept longer when needed for security, evaluation, and service improvement.
+HeyNYC saves conversation text so the assistant can understand follow-up questions and avoid appearing to forget an ongoing conversation. Before a resident-answer request reaches the answer model, the current pilot [uses a measured context budget](../../heynyc/core/memory.py), keeps complete recent turns, and may replace older turns with a typed continuity record. The smaller scope-classification preflight is a separate model call and is not covered by that answer-context budget. Prior assistant prose is not treated as evidence for new factual claims. In-progress application drafts may also be saved so you can return and finish them. Public hosted deployments [require encryption and run a scheduled deletion process](../../heynyc/channels/app.py) for local conversation and draft files after the configured inactivity period, which defaults to 30 days. Pseudonymous operational metrics and [encrypted, pattern-redacted feedback](../../heynyc/channels/analytics.py) may be kept longer when needed for security, evaluation, and service improvement.
 
 No security or deletion method is perfect. Reach4Help limits what the application stores, restricts access, and uses technical safeguards appropriate to the pilot, but cannot guarantee absolute security.
 
@@ -42,10 +42,10 @@ HeyNYC uses the [NIST Privacy Framework](https://www.nist.gov/privacy-framework)
 
 What the current code demonstrates:
 
-- Raw sender addresses are replaced with a [salted pseudonymous identifier](../heynyc/channels/identity.py) before application-level persistence
-- Hosted serving fails without a valid encryption key and [runs expiry at startup and daily](../heynyc/channels/app.py)
-- Conversation records are [encrypted per record with authenticated encryption](../heynyc/core/session.py)
-- Resident-authored feedback is [pattern-redacted before encrypted storage](../heynyc/channels/analytics.py)
+- Raw sender addresses are replaced with a [salted pseudonymous identifier](../../heynyc/channels/identity.py) before application-level persistence
+- Hosted serving fails without a valid encryption key and [runs expiry at startup and daily](../../heynyc/channels/app.py)
+- Conversation records are [encrypted per record with authenticated encryption](../../heynyc/core/session.py)
+- Resident-authored feedback is [pattern-redacted before encrypted storage](../../heynyc/channels/analytics.py)
 
 What is not implemented yet:
 
@@ -67,7 +67,7 @@ These providers may keep their own service logs under their privacy notices and 
 
 ## 6. Government agencies
 
-Using HeyNYC does not create an account with a government agency. Under the project's [resident-control rule](../SAFETY.md), Reach4Help does not silently submit applications, complaints, or service requests. If a future feature prepares information for an agency, you will receive a review step and must expressly authorize any submission. An agency that receives information you choose to submit will handle it under that agency's own privacy rules.
+Using HeyNYC does not create an account with a government agency. Under the project's [resident-control rule](../../SAFETY.md), Reach4Help does not silently submit applications, complaints, or service requests. If a future feature prepares information for an agency, you will receive a review step and must expressly authorize any submission. An agency that receives information you choose to submit will handle it under that agency's own privacy rules.
 
 ## 7. Your choices
 

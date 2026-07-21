@@ -207,7 +207,7 @@ def maps_link(lat: float, lon: float) -> str:
 # raw "125th Street Manhattan" resolves to a same-named "125 Street" in College Point, Queens. The
 # fix is a QUERY change, not a geocoder swap: attach a hard boundary.rect for the named borough, and
 # ALWAYS attach a citywide NYC rect as the floor so a plain no-borough address still stays inside the
-# five boroughs. Verified live 2026-07-05 (docs/strategy/2026-07-05-geocoder-upgrade.md). We do NOT
+# five boroughs. Verified live 2026-07-05 (docs/internal/strategy/2026-07-05-geocoder-upgrade.md). We do NOT
 # use focus.point: it is only a soft re-rank, it did not fix this case in testing, and GeoSearch only
 # documents it on /autocomplete, not /search.
 

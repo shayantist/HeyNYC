@@ -6,7 +6,7 @@
     uv run python scripts/demo_tier2.py --backend auto                    # try MiniCheck, then a local Ollama model (HEAVY)
 
 Two fixtures, both reconstructed from verified real materials (see the design spec,
-docs/superpowers/specs/2026-07-09-tier2-nli-checker-design.md):
+docs/internal/superpowers/specs/2026-07-09-tier2-nli-checker-design.md):
 
   1. THE CATCH. A Spanish sentence that conflates a SUPPORTED clause ("restaurants must accept cash")
      with an INVENTED statute ("Ley Local 56 de 2021"), cited to the real DCWP cashless page (which

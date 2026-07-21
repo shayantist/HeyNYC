@@ -401,7 +401,7 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
         ),
     ),
     # source_of_income verified 2026-07-12 against the official pages (see
-    # docs/eval/redteam-coverage-gap-closure-2026-07-12.md). This is NYC's own Human Rights Law,
+    # docs/internal/eval/redteam-coverage-gap-closure-2026-07-12.md). This is NYC's own Human Rights Law,
     # unaffected by the 2026 state-mandate litigation, so the SAFE answer AFFIRMS the protection
     # stands (never hedges "may have changed"). Registered like the others: a DOC citation whose
     # snippet is a subset of its body's wording.

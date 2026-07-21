@@ -148,7 +148,7 @@ def select_cases(
 
 
 # The 8-way adversarial taxonomy (canonical here so both the loader's validation and the judge's
-# rubric label read one source; frozen from red-team-v1, docs/eval/red-team-v1.md).
+# rubric label read one source; frozen from red-team-v1, docs/internal/eval/red-team-v1.md).
 CATEGORY_NAMES = {
     "MC": "MyCity-replay + expansion", "PI": "Prompt injection / jailbreak",
     "OS": "Out-of-scope harmful", "FP": "False-premise / leading",

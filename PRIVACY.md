@@ -1,6 +1,6 @@
 # Privacy
 
-HeyNYC answers questions about NYC services over SMS and WhatsApp. Here is what happens to your messages, stated plainly. This is the short version; the formal notice, including service providers, children's privacy, and email contacts, is the [HeyNYC Privacy Notice](legal/HEYNYC-PRIVACY.md), which controls if the two ever disagree.
+HeyNYC answers questions about NYC services over SMS and WhatsApp. Here is what happens to your messages, stated plainly. This is the short version; the formal notice, including service providers, children's privacy, and email contacts, is the [HeyNYC Privacy Notice](docs/legal/HEYNYC-PRIVACY.md), which controls if the two ever disagree.
 
 **What we process.** Your messages are carried by the SMS/WhatsApp network (Twilio) like any text you send, and the conversation context needed for a reply is sent to our configured AI model provider to generate the answer. That processing is what makes the service work; no service like this can truthfully promise your words touch no infrastructure.
 
