@@ -3410,14 +3410,26 @@ class Agent:
         forced_tool_args: Optional[dict] = None,
         excluded_tools: Optional[set[str]] = None,
         prefetched_notify_awareness: Optional[str] = None,
+        event_sink: Optional[Callable[[events.Event], None]] = None,
     ) -> AgentResult:
-        """Drain the event stream into a single AgentResult."""
+        """Drain the event stream into a single AgentResult.
+
+        `event_sink`, when given, is called once per event with exactly what `stream` yields:
+        the conditional-streaming seam a channel view (the console REPL) rides while every guard
+        and accounting still lives in `stream`. It is a pure observer, it cannot change the result,
+        and its exceptions are swallowed so a rendering bug never aborts a resident's turn. None
+        (the default, e.g. Twilio) is byte-identical to draining the stream directly."""
         result: Optional[AgentResult] = None
         async for event in self.stream(user_message, history=history, max_iters=max_iters,
                                        reminders=reminders, output_dir=output_dir, drafts=drafts,
                                        forced_tool=forced_tool, forced_tool_args=forced_tool_args,
                                        excluded_tools=excluded_tools,
                                        prefetched_notify_awareness=prefetched_notify_awareness):
+            if event_sink is not None:
+                try:
+                    event_sink(event)
+                except Exception:
+                    pass  # a view bug never aborts a turn
             if isinstance(event, events.Done):
                 result = event.result
         assert result is not None  # stream always ends with Done

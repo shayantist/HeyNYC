@@ -58,6 +58,18 @@ def _msg(text="when do cooling centers open?", mid="m1"):
     return InboundMessage(channel="whatsapp_meta", sender="+1555", text=text, message_id=mid)
 
 
+async def test_deps_event_sink_observes_the_turn_stream(tmp_path):
+    """Stage B seam: an event_sink on Deps is threaded into handle's prepare call so a channel
+    view (the console REPL) sees the SAME stream every guard rides. None (Twilio) is unchanged."""
+    from heynyc.core import events
+
+    seen = []
+    deps = _deps(tmp_path)
+    deps.event_sink = seen.append
+    await handle(_msg(text="when do cooling centers open?", mid="sink1"), FakeReplier(), deps)
+    assert any(isinstance(e, events.Done) for e in seen)
+
+
 async def test_happy_path_replies_types_and_records(tmp_path):
     deps, replier = _deps(tmp_path), FakeReplier()
     await handle(_msg(), replier, deps)

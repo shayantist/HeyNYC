@@ -59,6 +59,20 @@ def test_preserves_code_and_urls_while_converting_other_markup():
     ]
 
 
+def test_console_channel_keeps_raw_markdown_for_rich_to_render():
+    """The console (REPL) channel is the SAME content as texters, only the typography differs:
+    rich renders markdown, so render() must keep the raw markdown instead of collapsing it to the
+    WhatsApp dialect (its default) or stripping it (SMS). Cite markers are still removed."""
+    text = "**Cooling centers** are open {cite:S1}.\n## Where"
+    out = render(FakeResult(text, {"S1": {"url": "https://nyc.gov/cool", "title": "Cooling"}}),
+                 "console")
+    body = out[0]
+    assert "**Cooling centers**" in body      # markdown preserved (not *bold* WhatsApp, not stripped)
+    assert "## Where" in body                  # heading markdown preserved
+    assert "{cite:" not in body                # internal markers still stripped
+    assert "Sources:" in body and "https://nyc.gov/cool" in body
+
+
 def test_heading_preserves_a_trailing_hash_character():
     assert render(FakeResult("# C#")) == ["*C#*"]
 

@@ -168,9 +168,15 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     session and telemetry persist. This layer never adds, drops, or alters a factual claim, it only
     formats: SMS gets plain text, WhatsApp gets its native dialect, and both share one link policy.
     """
-    sms = channel.startswith("sms")
     text = _clean_body_links(_strip_markers(result.text), result.citations)
-    body = _plain_markup(text) if sms else _whatsapp_markup(text)
+    if channel == "console":
+        # The REPL: rich renders markdown, so keep it raw (same content as texters, richer
+        # typography). Only the internal cite markers were stripped above.
+        body = text
+    elif channel.startswith("sms"):
+        body = _plain_markup(text)
+    else:
+        body = _whatsapp_markup(text)
     inline_urls = {_canonical_url(match.group()) for match in _URL.finditer(body)}
     # Sources footer is unchanged per channel: it keeps every cited source (row-addressed permalinks
     # included) so the audit record on screen matches the stored one. SMS length is bounded downstream

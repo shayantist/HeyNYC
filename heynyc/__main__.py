@@ -405,37 +405,9 @@ def _render_feedback(path, store=None, sessions_dir=None) -> None:
         console.print(f"  [cyan]heynyc:[/] {assistant_turn.get('content', '')}")
 
 
-def _append_segment(segments: list, kind: str, text: str) -> None:
-    """Accumulate a stream event into ordered REPL render segments.
-
-    Consecutive text deltas merge into one block; a tool note breaks the text so
-    ordering is preserved, a tool call that arrives after some preamble text renders
-    *below* it (a chronological stack), not pinned above the whole message."""
-    if kind == "text" and segments and segments[-1]["kind"] == "text":
-        segments[-1]["text"] += text
-    else:
-        segments.append({"kind": kind, "text": text})
-
-
-def _reconcile_message_text(segments: list, start: int, text: str) -> None:
-    """Replace streamed deltas with the authoritative completed-message snapshot."""
-    del segments[start:]
-    if text.strip():
-        _append_segment(segments, "text", text)
-
-
-def _approve_repl_action(console, name: str, args: dict) -> bool:
-    """Ask for local consent without printing the tool arguments, which may contain PII."""
-    if name == "prepare_snap_application":
-        action = (
-            "create the local SNAP PDF from the answers you reviewed"
-            if args.get("confirmed")
-            else "save these answers in a local draft and show you a review"
-        )
-        prompt = f"[bold yellow]Allow HeyNYC to {action}? It will not submit anything. [y/N] [/]"
-    else:
-        prompt = f"[bold yellow]Allow HeyNYC to run {name}? [y/N] [/]"
-    return console.input(prompt).strip().lower() in {"y", "yes"}
+# _append_segment / _reconcile_message_text / _approve_repl_action now live in
+# heynyc.channels.console (the console channel owns the segment machinery + the local approver).
+# The frozen `--raw` REPL below imports them back; the unified REPL rides ConsoleSink instead.
 
 
 def _screen_turn_options(text: str) -> dict:
@@ -452,13 +424,67 @@ def _screen_turn_options(text: str) -> dict:
     }
 
 
-async def _cmd_repl(model: str | None = None) -> None:
-    """Interactive, streaming multi-turn chat, rich-rendered, Claude-Code-like."""
+async def _cmd_repl(model: str | None = None, user: str = "local") -> None:
+    """Interactive streaming chat that rides the SAME orchestrator path a texter does: the free
+    commands (HELP / PRIVACY / REPORT / DELETE MY DATA), encrypted persistent sessions, identity,
+    the per-resident spend cap, dedup, and channel rendering. Only the presentation differs, a
+    transient live view (streamed text, tool notes, spinner) settling into the rendered markdown.
+    `--user` keys a `console:<user>` identity (the seed of future account identity, NOT the OS user).
+    Today's bare-agent REPL is frozen behind `--raw` (see `_cmd_repl_raw`)."""
+    import uuid
+
+    from rich.console import Console
+
+    from heynyc.channels.base import InboundMessage
+    from heynyc.channels.console import ConsoleReplier, build_console_deps
+    from heynyc.channels.orchestrator import handle
+
+    console = Console()
+    deps = build_console_deps(console=console, model=model)
+    sink = deps.event_sink
+    artifacts_dir = config.HEYNYC_DATA_DIR / "repl-artifacts"
+    replier = ConsoleReplier(console, artifacts_dir)
+
+    modules = ", ".join(m.name for m in deps.agent.registry.modules)
+    console.print(
+        "[bold]HeyNYC[/], ask about NYC services & events. [dim]Ctrl-C to exit.[/]\n"
+        "[dim]Commands (all work here, same as texting): HELP, PRIVACY, REPORT, DELETE MY DATA.[/]"
+    )
+    console.print(f"[dim]Modules loaded: {modules or 'none'}  ·  you = console:{user}[/]\n")
+
+    while True:
+        try:
+            question = console.input("[bold green]you ▸ [/] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]bye[/]")
+            return
+        if not question:
+            continue
+        # A fresh message id per turn: dedup keys on it, so an identical repeated question is not
+        # silently swallowed as a duplicate.
+        inbound = InboundMessage(
+            channel="console", sender=user, text=question, message_id=str(uuid.uuid4()),
+        )
+        console.print("[bold cyan]heynyc ▸[/]")
+        sink.start_turn()
+        try:
+            await handle(inbound, replier, deps)
+        finally:
+            sink.finish()
+        console.print()
+
+
+async def _cmd_repl_raw(model: str | None = None) -> None:
+    """The frozen legacy REPL, kept verbatim behind `--raw` as a DEBUG surface: a bare Agent that
+    bypasses the channel features (free commands, encrypted sessions, identity, spend cap, channel
+    rendering). The default `repl` now rides the shared orchestrator path, see `_cmd_repl`."""
     from rich.console import Console, Group
     from rich.live import Live
     from rich.markdown import Markdown
     from rich.spinner import Spinner
     from rich.text import Text
+
+    from heynyc.channels.console import _append_segment, _approve_repl_action, _reconcile_message_text
 
     console = Console()
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
@@ -482,7 +508,10 @@ async def _cmd_repl(model: str | None = None) -> None:
     artifacts_dir = config.HEYNYC_DATA_DIR / "repl-artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print("[bold]HeyNYC[/], ask about NYC services & events. [dim]Ctrl-C to exit.[/]\n")
+    console.print(
+        "[bold]HeyNYC[/] [yellow](--raw debug surface)[/]: bare agent, no channel commands, "
+        "sessions, identity, or rendering. [dim]Ctrl-C to exit.[/]\n"
+    )
     modules = ", ".join(m.name for m in registry.modules)
     console.print(f"[dim]Modules loaded: {modules or 'none'}[/]\n")
 
@@ -686,9 +715,9 @@ async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool,
     print("\n" + render_bench(rows, safety_ids))
 
 
-def _run_repl(model=None) -> None:
+def _run_repl(model=None, raw: bool = False, user: str = "local") -> None:
     try:
-        asyncio.run(_cmd_repl(model))
+        asyncio.run(_cmd_repl_raw(model) if raw else _cmd_repl(model, user))
     except KeyboardInterrupt:
         pass
 
@@ -705,8 +734,14 @@ def main() -> None:
     chat = sub.add_parser("chat", help="ask the agent a question (one-shot)")
     chat.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
     chat.add_argument("question")
-    repl = sub.add_parser("repl", help="interactive streaming chat (feels like Claude Code)")
+    repl = sub.add_parser("repl", help="interactive streaming chat on the same path as texting")
     repl.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
+    repl.add_argument("--user", default="local",
+                      help="identity for this session, keyed as console:<user> (NOT your OS username); "
+                           "the seed of future account identity")
+    repl.add_argument("--raw", action="store_true",
+                      help="legacy bare-agent REPL: a DEBUG surface that bypasses channel commands, "
+                           "encrypted sessions, identity, spend cap, and channel rendering")
     cap = sub.add_parser("capabilities", help="print the capabilities table (generated from module manifests)")
     cap.add_argument("--markdown", action="store_true", help="emit a GitHub markdown table")
     cap.add_argument("--write-readme", dest="write_readme", action="store_true",
@@ -762,7 +797,7 @@ def main() -> None:
     elif args.command == "chat":
         asyncio.run(_cmd_chat(args.question, model=args.model))
     elif args.command == "repl":
-        _run_repl(getattr(args, "model", None))
+        _run_repl(getattr(args, "model", None), raw=args.raw, user=args.user)
     elif args.command == "capabilities":
         _cmd_capabilities(markdown=args.markdown, write_readme=args.write_readme)
     elif args.command == "stats":

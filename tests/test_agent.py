@@ -206,13 +206,15 @@ async def test_event_preparation_turn_forces_advisory_check_from_awareness(
 
 
 def test_repl_and_chat_wire_notify_awareness_like_the_server():
-    """Surface parity (owner-reported): the REPL and one-shot chat must carry the same
-    Notify NYC awareness lane as the SMS/WhatsApp server."""
+    """Surface parity (owner-reported): the console REPL and one-shot chat must carry the same
+    Notify NYC awareness lane as the SMS/WhatsApp server. The unified REPL's agent is built in
+    channels.console.build_console_deps; one-shot chat still builds its own."""
     import inspect
 
     import heynyc.__main__ as cli
+    from heynyc.channels import console
 
-    assert "notify_awareness=current_awareness" in inspect.getsource(cli._cmd_repl)
+    assert "notify_awareness=current_awareness" in inspect.getsource(console.build_console_deps)
     assert "notify_awareness=current_awareness" in inspect.getsource(cli._cmd_chat)
 
 
@@ -3900,3 +3902,83 @@ def test_advisories_forcing_fires_once_per_conversation(empty_registry, monkeypa
     assert _history_already_cites_notify([
         {"role": "assistant", "content": "x", "citations": {"S1": {"url": "https://nyc.gov/x"}}},
     ]) is False
+
+
+# --- Stage A: Agent.run event_sink (the conditional-streaming seam) ---------------
+# A per-turn observer of the SAME stream the drain consumes: it cannot alter the result,
+# and a view bug never aborts a texter's turn. None (the default) is byte-identical to today.
+
+
+def _sink_collector():
+    seen: list = []
+    return seen, seen.append
+
+
+async def test_run_event_sink_default_is_none_and_unchanged(empty_registry):
+    """None sink = today's drain: the result is identical whether the param is omitted or None."""
+    default = await Agent(
+        empty_registry, tools={}, complete_fn=_scripted(_assistant("hello")),
+    ).run("hi")
+    explicit_none = await Agent(
+        empty_registry, tools={}, complete_fn=_scripted(_assistant("hello")),
+    ).run("hi", event_sink=None)
+    assert (default.text, default.status, default.citations, default.tool_calls_made) == (
+        explicit_none.text, explicit_none.status, explicit_none.citations,
+        explicit_none.tool_calls_made,
+    )
+
+
+async def test_run_event_sink_sees_exactly_what_stream_yields(empty_registry):
+    seen, sink = _sink_collector()
+    await Agent(
+        empty_registry, tools={}, complete_fn=_scripted(_assistant("streamed answer")),
+    ).run("hi", event_sink=sink)
+
+    from_stream = [
+        ev async for ev in Agent(
+            empty_registry, tools={}, complete_fn=_scripted(_assistant("streamed answer")),
+        ).stream("hi")
+    ]
+
+    assert [(type(e).__name__, e.sse_data()) for e in seen] == [
+        (type(e).__name__, e.sse_data()) for e in from_stream
+    ]
+
+
+async def test_run_result_with_sink_equals_result_without_sink(empty_registry):
+    without = await Agent(
+        empty_registry, tools={}, complete_fn=_scripted(_assistant("same answer")),
+    ).run("hi")
+    seen, sink = _sink_collector()
+    with_sink = await Agent(
+        empty_registry, tools={}, complete_fn=_scripted(_assistant("same answer")),
+    ).run("hi", event_sink=sink)
+    assert (with_sink.text, with_sink.status, with_sink.citations, with_sink.tool_calls_made) == (
+        without.text, without.status, without.citations, without.tool_calls_made
+    )
+    assert seen  # the sink actually observed the turn
+
+
+async def test_run_raising_event_sink_cannot_abort_the_turn(empty_registry):
+    def boom(_event):
+        raise RuntimeError("a rendering bug in the view")
+
+    result = await Agent(
+        empty_registry, tools={}, complete_fn=_scripted(_assistant("resilient")),
+    ).run("hi", event_sink=boom)
+    assert result.text == "resilient"
+    assert result.status == "success"
+
+
+async def test_event_sink_reaches_run_through_session_prepare(tmp_path):
+    from heynyc.core import events
+    from heynyc.core.session import Session
+
+    agent = Agent(Registry([]), tools={}, complete_fn=_scripted(_assistant("prepared answer")))
+    session = Session(agent=agent, id="sink", path=tmp_path / "sink.jsonl")
+    seen, sink = _sink_collector()
+
+    pending = await session.prepare("question", event_sink=sink)
+
+    assert pending.result.text == "prepared answer"
+    assert any(isinstance(e, events.Done) for e in seen)

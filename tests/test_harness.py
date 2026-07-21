@@ -195,7 +195,7 @@ async def test_community_web_result_carries_disclaimer_to_model(empty_registry):
 def test_repl_segments_preserve_chronological_order():
     """REPL render order is a stack: preamble text, then the tools it triggered, then the
     answer — a tool note must NOT float above text that streamed before it."""
-    from heynyc.__main__ import _append_segment
+    from heynyc.channels.console import _append_segment
 
     segs: list = []
     _append_segment(segs, "text", "Let me look ")
@@ -212,7 +212,7 @@ def test_repl_segments_preserve_chronological_order():
 
 
 def test_repl_reconciles_streamed_text_with_completed_message():
-    from heynyc.__main__ import _append_segment, _reconcile_message_text
+    from heynyc.channels.console import _append_segment, _reconcile_message_text
 
     segs = [{"kind": "tool", "text": "· using prepare_snap_application…"}]
     start = len(segs)
@@ -226,7 +226,7 @@ def test_repl_reconciles_streamed_text_with_completed_message():
 
 
 def test_repl_snap_approval_is_explicit_and_does_not_echo_pii():
-    from heynyc.__main__ import _approve_repl_action
+    from heynyc.channels.console import _approve_repl_action
 
     class Console:
         def __init__(self, answer):
@@ -310,23 +310,30 @@ def test_eval_run_metadata_preserves_usage_cost_and_case_ids():
     }
 
 
-def test_repl_turn_uses_existing_pii_free_telemetry(tmp_path, monkeypatch):
+def test_console_turn_records_pii_free_telemetry_tagged_console(tmp_path):
+    """The unified console REPL records through the SAME shared analytics path a texter does,
+    tagged channel='console' and keyed off the salted user_key (never a raw identity)."""
     from types import SimpleNamespace
 
-    from heynyc.__main__ import _record_agent_turn
-    from heynyc.core import config, telemetry
+    from heynyc.channels import analytics
+    from heynyc.core import telemetry
 
-    monkeypatch.setattr(config, "HEYNYC_DATA_DIR", tmp_path)
     result = SimpleNamespace(
         usage={"latency_ms": 250.0, "tool_time_ms": 40.0},
         tool_calls_made=["screen_eligibility"],
+        citations={},
         status="success",
+        text="here you go",
     )
 
-    _record_agent_turn("repl", "openai/gpt-5.4-mini", result)
+    analytics.record_interaction(
+        telemetry_path=tmp_path / "t.jsonl", model="openai/gpt-5.4-mini",
+        user_key="consolekey", channel="console", result=result,
+    )
 
-    records = telemetry.load(telemetry.default_path(tmp_path))
-    assert records[-1]["session_id"] == "repl"
+    records = telemetry.load(tmp_path / "t.jsonl")
+    assert records[-1]["channel"] == "console"
+    assert records[-1]["session_id"] == "consolekey"
     assert records[-1]["latency_ms"] == 250.0
     assert records[-1]["tool_names"] == ["screen_eligibility"]
 

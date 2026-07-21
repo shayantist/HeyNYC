@@ -7,7 +7,7 @@ import asyncio
 import shutil
 import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from heynyc.core.drafts import DraftStore
 from datetime import datetime
@@ -115,6 +115,9 @@ class Deps:
     # Per-resident, per-NYC-day model-cost ceiling (owner ruling: one resident going ham never
     # dims the service for anyone else). None → off. Emergencies always bypass it.
     user_daily_spend_cap: Optional[float] = None
+    # Per-event observer of the SAME stream the drain rides, for a channel that streams a live view
+    # (the console REPL). None (Twilio/Meta) is byte-identical to today: no view, pure drain.
+    event_sink: Optional[Callable[[object], None]] = None
 
 
 def is_flag(text: str) -> bool:
@@ -279,6 +282,7 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                             "show_all": msg.text.strip().lower() == "/screen all",
                         } if screen_requested else None,
                         excluded_tools=None if screen_requested else {_SCREEN_TOOL},
+                        event_sink=deps.event_sink,
                     )
                 except ContextCapacityError:
                     await replier.send_text(
