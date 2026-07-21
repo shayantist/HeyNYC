@@ -1975,6 +1975,20 @@ def _is_notify_url(url: str) -> bool:
         and parsed.path.lower().endswith("/notifynyc/home/recentmessages")
     ) or host == "everbridge.net" or host.endswith(".everbridge.net")
 
+def _history_already_cites_notify(history) -> bool:
+    """A prior assistant turn in THIS conversation already delivered a Notify NYC citation.
+    Gates the forced advisories prefetch to once per conversation (F080): re-forcing every
+    turn re-injects the full report, which the model re-briefs, and steals the first tool
+    round from whatever the resident just asked for. The model can still call the tool."""
+    for message in history or []:
+        if message.get("role") != "assistant":
+            continue
+        for cite in (message.get("citations") or {}).values():
+            if _is_notify_url(str(cite.get("url") or "")):
+                return True
+    return False
+
+
 
 def _action_url(citation: dict) -> str:
     return _normalize_url(str(citation.get("url") or ""))
@@ -3010,6 +3024,21 @@ class Agent:
         notify_awareness = prefetched_notify_awareness
         if notify_awareness is None:
             notify_awareness = await self.get_notify_awareness()
+            if notify_awareness and _history_already_cites_notify(history):
+                # F080, second organ: the full notice index re-injected every turn is what the
+                # model re-briefs. Once this conversation has delivered notices, shrink the
+                # reminder to a delta instruction (Anthropic context-editing shape: never
+                # re-deliver unchanged content for re-processing).
+                titles = "; ".join(
+                    line.lstrip("- ").split(": ", 1)[-1]
+                    for line in notify_awareness.splitlines() if line.startswith("- ")
+                )[:400]
+                notify_awareness = (
+                    "You already told the resident about today's Notify NYC notices earlier in "
+                    "this conversation. Do NOT re-brief them. Mention one again only if it "
+                    f"directly bears on this new message. Current titles, for change detection "
+                    f"only: {titles}"
+                )
             if notify_awareness:
                 messages.insert(-1, {
                     "role": "user",
@@ -3019,6 +3048,7 @@ class Agent:
             initial_forced_tool is None
             and (event_discovery_turn or event_preparation_turn)
             and bool(notify_awareness)
+            and not _history_already_cites_notify(history)
             and "nyc_advisories" in self.tools
             and "nyc_advisories" not in set(excluded_tools or ())
         ):

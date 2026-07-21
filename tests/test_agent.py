@@ -3876,3 +3876,27 @@ async def test_recorded_turn_cost_prices_answer_cached_input_at_reduced_rate():
     result = await agent.run("help")
     # 400 uncached @1e-5 + 600 cached @1e-6 + 200 out @3e-5 = 0.0106 (full rate would be 0.016)
     assert abs(result.usage["cost_usd"] - 0.0106) < 1e-9
+
+
+def _notify_cited_history():
+    return [
+        {"role": "user", "content": "what should i know for going to work today"},
+        {"role": "assistant", "content": "Tornado watch until 9 PM.",
+         "citations": {"S1": {"url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+                              "title": "Notify NYC - Tornado Watch"}}},
+    ]
+
+
+def test_advisories_forcing_fires_once_per_conversation(empty_registry, monkeypatch):
+    """F080: the forced advisories fetch re-fired on EVERY turn of a commute conversation,
+    re-injecting the full report (which the model re-briefed) and stealing the first tool
+    round from the action the resident just accepted. The force is once per conversation:
+    a history turn already citing a Notify NYC source suppresses it; the model may still
+    CHOOSE the tool freely."""
+    from heynyc.core.agent import _history_already_cites_notify
+
+    assert _history_already_cites_notify(_notify_cited_history()) is True
+    assert _history_already_cites_notify([]) is False
+    assert _history_already_cites_notify([
+        {"role": "assistant", "content": "x", "citations": {"S1": {"url": "https://nyc.gov/x"}}},
+    ]) is False
