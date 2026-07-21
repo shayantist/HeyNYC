@@ -168,3 +168,50 @@ def test_record_turn_persists_checklist_and_summarize_aggregates_it(tmp_path):
     assert summary["outcome_mix"] == {"answered": 2, "redirected": 1}
     assert summary["scope_module_mix"] == {"events": 2, "advisories": 1}
     assert summary["scope_situation_mix"] == {}
+
+
+_CACHE_TEST_MODEL = "heynyc-cachetest/model"
+
+
+def _register_cache_test_model():
+    import litellm
+
+    litellm.register_model({
+        _CACHE_TEST_MODEL: {
+            "input_cost_per_token": 1e-05,          # $10 / M
+            "cache_read_input_token_cost": 1e-06,   # $1 / M  (10x cheaper, like the real models)
+            "output_cost_per_token": 3e-05,         # $30 / M
+            "litellm_provider": "openai", "mode": "chat",
+        }
+    })
+
+
+def test_priced_cost_prices_cached_input_at_reduced_rate():
+    # Cache-aware accounting: cached prompt tokens bill at the model's cache-read rate via litellm's
+    # own cost_per_token(cache_read_input_tokens=...), not at the full input rate.
+    _register_cache_test_model()
+    full = telemetry.priced_cost_usd(_CACHE_TEST_MODEL, 1000, 200)
+    cached = telemetry.priced_cost_usd(_CACHE_TEST_MODEL, 1000, 200, cached_input_tokens=600)
+    assert abs(full - 0.016) < 1e-12                       # 1000*1e-5 + 200*3e-5
+    assert abs(cached - 0.0106) < 1e-12                    # 400*1e-5 + 600*1e-6 + 200*3e-5
+    assert cached < full                                   # caching must lower the bill
+
+
+def test_priced_cost_clamps_cached_at_or_below_input():
+    # Defensive money math: a provider reporting more cached tokens than total input never yields a
+    # negative bill (would happen if litellm subtracted cached from a smaller prompt count).
+    _register_cache_test_model()
+    cost = telemetry.priced_cost_usd(_CACHE_TEST_MODEL, 5, 1, cached_input_tokens=8)
+    assert cost is not None and cost >= 0.0
+
+
+def test_record_turn_fallback_cost_is_cache_aware(tmp_path):
+    # When the agent does not pre-compute cost_usd, record_turn's own pricing must still be
+    # cache-aware, using the record's cached_input_tokens.
+    _register_cache_test_model()
+    rec = telemetry.record_turn(
+        tmp_path / "t.jsonl", session_id="s", model=_CACHE_TEST_MODEL,
+        usage={"input_tokens": 1000, "output_tokens": 200, "cached_input_tokens": 600},
+        n_tool_calls=0, tool_names=[], status="success",
+    )
+    assert abs(rec["cost_usd"] - 0.0106) < 1e-12

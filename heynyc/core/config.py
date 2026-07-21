@@ -10,7 +10,13 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 # does, so the reusable engine never auto-reads a dotenv and tests stay hermetic.
 
 # LLM
-HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "anthropic/claude-sonnet-4-6")
+# RULED 2026-07-21 (owner, "just use the .env value and keep it consistent"): the answer model is
+# read from the env here, the single source of truth, and the agent core defaults to THIS value
+# (not a hardcoded model of its own). The fallback is a cheap production-parity model rather than
+# Sonnet: the old Sonnet default made dev sessions that build an Agent without an explicit model
+# silently run at ~3.3x the production price. Production sets HEYNYC_MODEL in .env (the pilot pins
+# gpt-5.6-luna at medium effort); this default only governs an unset environment.
+HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "openai/gpt-5.4-mini")
 # Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
 # the resident-answer model; deployments can override it independently.
 # RULED 2026-07-20 (the F058 tier decision): mini, not nano. Nano's ceiling was measured, not

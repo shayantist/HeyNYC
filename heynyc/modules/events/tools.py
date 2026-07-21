@@ -697,15 +697,16 @@ def get_tools() -> list[Tool]:
         Tool(
             name="whats_on_events",
             description=(
-                "Find upcoming NYC events (concerts, sports, festivals, free park events, watch "
-                "parties, plus street fairs, farmers markets, block parties, parades, and plaza "
-                "events from the city permitted-events feed) from live Ticketmaster, NYC Parks, "
-                "NYC Permitted Events, current editorial guides, and trusted "
-                "web sources. Pass `keyword` (e.g. "
-                "'world cup', 'jazz'), optional `classification` (Music/Sports/Arts & Theatre), "
-                "and optional `borough`. Returns grounded, dated, linked listings, future events "
-                "only. Use this for 'what's happening' / 'events this weekend' questions; it never "
-                "invents events and already coordinates the event retrieval lanes."
+                "THE source for what's on in NYC: upcoming concerts, sports, festivals, free park "
+                "events, watch parties, plus street fairs, farmers markets, block parties, parades, "
+                "and plaza events (from live Ticketmaster, NYC Parks, the NYC Permitted Events feed, "
+                "current editorial guides, and trusted web sources). Pass `keyword` (e.g. 'world "
+                "cup', 'jazz'), optional `classification` (Music/Sports/Arts & Theatre), and "
+                "optional `borough`. Returns grounded, dated, linked listings, future events only; "
+                "it never invents events and already coordinates the event retrieval lanes. Use it "
+                "for 'what's happening' / 'events this weekend' AND for every follow-up inside an "
+                "events thread (another borough, a different date, more like these, cheaper ones): "
+                "stay in this tool for NYC event listings rather than switching to web_search."
             ),
             parameters={
                 "type": "object",

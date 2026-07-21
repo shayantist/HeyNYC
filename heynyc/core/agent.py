@@ -42,9 +42,10 @@ from .tools.notify_nyc import is_citywide_area
 
 logger = logging.getLogger("heynyc.agent")
 
-# Engine default. The application injects its configured model via `Agent(model=...)`;
-# the core does NOT read a domain config module, so it stays reusable across projects.
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+# The application injects its configured model via `Agent(model=...)`. When it does not, the
+# default comes from config.HEYNYC_MODEL, the single source of truth (RULED 2026-07-21, owner:
+# "just use the .env value and keep it consistent"). This replaced a hardcoded Sonnet default that
+# made dev sessions silently run at ~3.3x the production model's price.
 CONTEXT_LIMIT_FALLBACK = (
     "I can't safely fit enough of this conversation into the AI model right now. "
     "Please try again shortly or send NEW to start a fresh conversation."
@@ -2277,7 +2278,7 @@ class Agent:
         )
         self._embedder = getattr(index, "embedder", None)  # shared with retrieval-using module tools
         self.tools = tools if tools is not None else build_toolbox(registry, index=index)
-        self.model = model or DEFAULT_MODEL
+        self.model = model or config.HEYNYC_MODEL
         self._approver = approver
         self._notify_awareness = notify_awareness
         # Session spend cap (OWASP LLM10). Defaults to the env-configured ceiling; None keeps it OFF
@@ -2846,6 +2847,7 @@ class Agent:
             "output_tokens": 0,
             "answer_input_tokens": 0,
             "answer_output_tokens": 0,
+            "answer_cached_input_tokens": 0,
             "model_time_ms": 0.0,
             "tool_time_ms": 0.0,
             "n_model_calls": 0,
@@ -2874,6 +2876,7 @@ class Agent:
                     self.model,
                     turn_usage["answer_input_tokens"],
                     turn_usage["answer_output_tokens"],
+                    cached_input_tokens=turn_usage["answer_cached_input_tokens"],
                 )
                 if answer_cost is None:
                     unpriced = True
@@ -3147,11 +3150,13 @@ class Agent:
                         turn_usage["output_tokens"] += call_out
                         turn_usage["answer_input_tokens"] += call_in
                         turn_usage["answer_output_tokens"] += call_out
+                        call_cached = int(chunk.get("cached_input_tokens", 0) or 0)
                         turn_usage["cached_input_tokens"] = (
-                            turn_usage.get("cached_input_tokens", 0)
-                            + int(chunk.get("cached_input_tokens", 0) or 0)
+                            turn_usage.get("cached_input_tokens", 0) + call_cached
                         )
-                        self._spend.record(self.model, call_in, call_out)  # accrue toward the cap
+                        turn_usage["answer_cached_input_tokens"] += call_cached
+                        # accrue the cache-discounted cost toward the cap
+                        self._spend.record(self.model, call_in, call_out, call_cached)
                     elif chunk["type"] == "message":
                         assistant = chunk["message"]
             except Exception as exc:  # model call failed after retries

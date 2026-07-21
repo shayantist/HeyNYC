@@ -16,7 +16,8 @@ from typing import Callable, Optional
 
 from . import telemetry
 
-CostFn = Callable[[str, int, int], Optional[float]]
+# (model, input_tokens, output_tokens, cached_input_tokens) -> USD, or None if unpriceable.
+CostFn = Callable[[str, int, int, int], Optional[float]]
 
 
 class SpendGuard:
@@ -39,16 +40,22 @@ class SpendGuard:
     def enabled(self) -> bool:
         return self.cap_usd > 0
 
-    def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
+    def record(
+        self, model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0,
+    ) -> float:
         """Add one model call's cost to the running total; return that cost.
 
         No-op (returns 0.0) when disabled, so a run with no cap does exactly what it did
         before. When enabled, a cost that cannot be computed (the cost_fn raises) latches
-        the fail-safe halt instead of being silently counted as $0."""
+        the fail-safe halt instead of being silently counted as $0. `cached_input_tokens` is
+        threaded into pricing so the cap reflects the real cache-discounted bill, not a full-rate
+        overstatement that would trip the cap earlier than actual spend."""
         if not self.enabled:
             return 0.0
         try:
-            priced = self._cost_fn(model, int(input_tokens), int(output_tokens))
+            priced = self._cost_fn(
+                model, int(input_tokens), int(output_tokens), int(cached_input_tokens)
+            )
             if priced is None:
                 self._cost_unavailable = True
                 return 0.0

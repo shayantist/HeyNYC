@@ -15,22 +15,35 @@ from pathlib import Path
 import numpy as np  # already a dep (core/index/store.py), reuse for percentiles
 
 
-def priced_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """USD cost from LiteLLM, or None when the model cannot be priced."""
+def priced_cost_usd(
+    model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0,
+) -> float | None:
+    """USD cost from LiteLLM, or None when the model cannot be priced.
+
+    Cache-aware: `cached_input_tokens` (prompt_tokens_details.cached_tokens) is billed at the
+    model's cache-read rate via LiteLLM's own `cost_per_token(cache_read_input_tokens=...)`, which
+    prices `(prompt_tokens - cache_read) * input_cost + cache_read * cache_read_input_token_cost`.
+    `input_tokens` is the TOTAL prompt count (cached included), matching LiteLLM's contract. We
+    clamp the cached count to input (a provider can never cache-read more than it was sent) so the
+    money math can never go negative."""
     try:
         import litellm
 
+        cached = max(0, min(int(cached_input_tokens), int(input_tokens)))
         prompt_cost, completion_cost = litellm.cost_per_token(
-            model=model, prompt_tokens=int(input_tokens), completion_tokens=int(output_tokens)
+            model=model, prompt_tokens=int(input_tokens), completion_tokens=int(output_tokens),
+            cache_read_input_tokens=cached,
         )
         return float(prompt_cost) + float(completion_cost)
     except Exception:
         return None
 
 
-def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+def cost_usd(
+    model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0,
+) -> float | None:
     """USD cost, explicitly None when LiteLLM cannot price the model."""
-    return priced_cost_usd(model, input_tokens, output_tokens)
+    return priced_cost_usd(model, input_tokens, output_tokens, cached_input_tokens)
 
 
 def default_path(data_dir: Path) -> Path:
@@ -48,8 +61,9 @@ def record_turn(
     for the messaging on-ramp; `summarize()` ignores unknown keys."""
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
+    cached_input_tokens = int(usage.get("cached_input_tokens", 0) or 0)
     turn_cost = usage.get("cost_usd") if "cost_usd" in usage else priced_cost_usd(
-        model, input_tokens, output_tokens
+        model, input_tokens, output_tokens, cached_input_tokens
     )
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),

@@ -249,12 +249,14 @@ def web_search_tools(
         Tool(
             name="web_search",
             description=(
-                "Search trusted NYC web sources (nyc.gov, nyctourism.com, official event sites, etc.) "
-                "for fresh or long-tail info not in the index, e.g. a specific event this weekend. "
-                "Also your ORIENTATION tool: when a resident reference is ambiguous or abbreviated, "
-                "call this FIRST with a short noun-phrase query (the reference plus at most a date "
-                "or NYC, never their whole sentence) to identify what they mean before choosing "
-                "other tools. "
+                "Search trusted NYC web sources (nyc.gov, nyctourism.com, etc.) for fresh or "
+                "long-tail info not in the index, and for IDENTITY RESOLUTION. "
+                "Your ORIENTATION tool: when a resident reference is ambiguous or abbreviated, call "
+                "this FIRST with a short noun-phrase query (the reference plus at most a date or "
+                "NYC, never their whole sentence) to identify what they mean before choosing other "
+                "tools. "
+                "For NYC event listings, what's on, or any follow-up inside an events thread, use "
+                "whats_on_events instead: that catalog is the source for NYC events, not this tool. "
                 "Restricted to an allowlist and ranked by source trust; results are tagged "
                 "authoritative/editorial/community. Treat community-tagged (⚠️) results as unconfirmed "
                 "and tell the user to verify. Pass `prefer` to boost the active topic's official "

@@ -22,7 +22,7 @@ def test_disabled_when_no_cap_and_is_a_noop():
     # Default OFF: no cap (None) or a non-positive cap disables the guard, and recording a
     # huge cost neither accumulates nor ever halts, so agent behavior is unchanged.
     for cap in (None, 0, 0.0, -5):
-        g = spend.SpendGuard(cap, cost_fn=lambda m, i, o: 1_000_000.0)
+        g = spend.SpendGuard(cap, cost_fn=lambda m, i, o, c=0: 1_000_000.0)
         assert not g.enabled
         assert g.record("anthropic/claude-sonnet-4-6", 10, 10) == 0.0
         assert g.spent_usd == 0.0
@@ -30,7 +30,7 @@ def test_disabled_when_no_cap_and_is_a_noop():
 
 
 def test_accumulates_injected_cost_and_halts_when_cap_met_or_exceeded():
-    g = spend.SpendGuard(0.10, cost_fn=lambda m, i, o: 0.04)
+    g = spend.SpendGuard(0.10, cost_fn=lambda m, i, o, c=0: 0.04)
     assert g.record("m", 1, 1) == 0.04
     assert g.halt_reason() is None                 # 0.04 < 0.10, keep going
     g.record("m", 1, 1)                            # 0.08 < 0.10
@@ -41,7 +41,7 @@ def test_accumulates_injected_cost_and_halts_when_cap_met_or_exceeded():
 
 
 def test_halts_exactly_at_the_cap_boundary():
-    g = spend.SpendGuard(1.0, cost_fn=lambda m, i, o: 1.0)
+    g = spend.SpendGuard(1.0, cost_fn=lambda m, i, o, c=0: 1.0)
     g.record("m", 1, 1)                            # spent == cap: "meets or exceeds"
     assert g.halt_reason() is not None
 
@@ -49,7 +49,7 @@ def test_halts_exactly_at_the_cap_boundary():
 def test_failsafe_uncomputable_cost_under_active_cap_halts():
     # If cost cannot be computed while a cap is active, do NOT count it as $0 (that would
     # silently disable the cap). The guard latches into a halt state instead.
-    def boom(model, i, o):
+    def boom(model, i, o, c=0):
         raise RuntimeError("pricing unavailable")
 
     g = spend.SpendGuard(5.0, cost_fn=boom)
@@ -60,7 +60,7 @@ def test_failsafe_uncomputable_cost_under_active_cap_halts():
 
 def test_failsafe_does_not_fire_when_cap_is_disabled():
     # With no cap, an uncomputable cost changes nothing: still a no-op, still never halts.
-    def boom(model, i, o):
+    def boom(model, i, o, c=0):
         raise RuntimeError("pricing unavailable")
 
     g = spend.SpendGuard(None, cost_fn=boom)
@@ -94,7 +94,7 @@ async def test_agent_halts_further_model_calls_when_cap_exceeded():
 
     agent = Agent(Registry([]), tools={"noop": _tool()}, stream_fn=fake_stream)
     # Inject a fake cost: each model call "costs" $1, well past the $0.50 cap.
-    agent._spend = spend.SpendGuard(0.50, cost_fn=lambda m, i, o: 1.0)
+    agent._spend = spend.SpendGuard(0.50, cost_fn=lambda m, i, o, c=0: 1.0)
 
     seen = [e async for e in agent.stream("go")]
 
@@ -113,14 +113,14 @@ async def test_scope_call_counts_toward_spend_cap_before_answer_model():
     from heynyc.core.agent import Agent, ScopeResult
 
     async def scope(_message, _history):
-        return ScopeResult("allow", "scope/model", 10, 1, 0.01)
+        return ScopeResult("scope/model", 10, 1, 0.01)
 
     async def should_not_run(messages, tool_schemas):
         raise AssertionError("answer model ran after scope exhausted the cap")
         yield
 
     agent = Agent(Registry([]), tools={}, stream_fn=should_not_run, scope_fn=scope)
-    agent._spend = spend.SpendGuard(0.50, cost_fn=lambda model, i, o: 1.0)
+    agent._spend = spend.SpendGuard(0.50, cost_fn=lambda model, i, o, c=0: 1.0)
 
     seen = [event async for event in agent.stream("go")]
 
@@ -168,3 +168,33 @@ def test_explicit_spend_cap_overrides_config(monkeypatch):
     monkeypatch.setattr(config, "HEYNYC_SPEND_CAP", None, raising=False)
     a = agent_mod.Agent(Registry([]), tools={}, spend_cap=0.25)
     assert a._spend.enabled and a._spend.cap_usd == 0.25
+
+
+def test_record_forwards_cached_tokens_to_cost_fn():
+    # The spend cap must reflect the REAL (cache-discounted) bill: record threads cached tokens
+    # into the pricing function.
+    seen = {}
+
+    def cost_fn(model, i, o, cached=0):
+        seen["cached"] = cached
+        return 0.0
+
+    g = spend.SpendGuard(1.0, cost_fn=cost_fn)
+    g.record("m", 1000, 200, cached_input_tokens=600)
+    assert seen["cached"] == 600
+
+
+def test_spendguard_bills_cached_input_at_reduced_rate():
+    # With the real telemetry pricing path, a cap accrues the cache-discounted cost, not the
+    # full-rate overstatement (which would trip the cap earlier than real spend).
+    import litellm
+
+    litellm.register_model({
+        "heynyc-cachetest/model": {
+            "input_cost_per_token": 1e-05, "cache_read_input_token_cost": 1e-06,
+            "output_cost_per_token": 3e-05, "litellm_provider": "openai", "mode": "chat",
+        }
+    })
+    g = spend.SpendGuard(100.0)  # default cost_fn = telemetry.priced_cost_usd
+    g.record("heynyc-cachetest/model", 1000, 200, cached_input_tokens=600)
+    assert abs(g.spent_usd - 0.0106) < 1e-12
