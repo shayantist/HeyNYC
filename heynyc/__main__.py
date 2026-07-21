@@ -9,6 +9,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import warnings
+
+# LiteLLM serializes usage through a Pydantic model that predates the newer OpenAI token-detail
+# fields, emitting a harmless "Pydantic serializer warnings" UserWarning on every priced call.
+# Suppress exactly that message at the CLI surface so it never interleaves with resident-facing
+# output (observed live mid-REPL); the usage numbers themselves flow correctly either way.
+warnings.filterwarnings(
+    "ignore", message="Pydantic serializer warnings", category=UserWarning, module="pydantic.main",
+)
 from datetime import datetime
 from pathlib import Path
 
