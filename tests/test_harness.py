@@ -394,3 +394,24 @@ def test_repl_temp_flag_isolates_and_randomizes(monkeypatch):
     src = __import__("inspect").getsource(cli._cmd_repl)
     assert "TemporaryDirectory" in src and 'f"temp-{uuid.uuid4().hex[:8]}"' in src
     assert "temp_dir.cleanup()" in src
+
+
+def test_unwrap_docs_joins_prose_and_preserves_structure():
+    """The unwrap tool: prose joins to full lines; fences, tables, lists, headers, hard breaks,
+    and blank lines are byte-preserved."""
+    import sys
+    sys.path.insert(0, "scripts")
+    from unwrap_docs import unwrap_text
+
+    src = (
+        "# Title\n\nThis line was wrapped\nat a fixed width\nlong ago.\n\n"
+        "- a list item\n- another\n\n| a | b |\n|---|---|\n\n```\ncode stays\nwrapped\n```\n\n"
+        "A hard break  \nstays broken.\n"
+    )
+    out = unwrap_text(src)
+    assert "This line was wrapped at a fixed width long ago." in out
+    assert "- a list item\n- another" in out
+    assert "| a | b |\n|---|---|" in out
+    assert "```\ncode stays\nwrapped\n```" in out
+    assert "A hard break  \nstays broken." in out
+    assert out.count("# Title") == 1

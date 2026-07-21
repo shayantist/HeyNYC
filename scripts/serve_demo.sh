@@ -58,6 +58,14 @@ until curl -fsS http://127.0.0.1:8791/health >/dev/null 2>&1; do
     sleep 1
 done
 
+# A stale ngrok from an earlier run holds the reserved domain and the new agent dies with
+# ERR_NGROK_334 (observed live after the pre-fix Ctrl-C orphan). This launcher owns the pilot
+# tunnel on this machine: clear any leftover agent before claiming.
+if pgrep -x ngrok >/dev/null 2>&1; then
+    echo "stale ngrok agent found; stopping it to reclaim $DOMAIN" >&2
+    pkill -x ngrok || true
+    sleep 2
+fi
 ngrok http --url="https://$DOMAIN" 8791 &
 NGROK_PID=$!
 
