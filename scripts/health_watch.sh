@@ -4,7 +4,7 @@
 # silent outage can never again last hours unnoticed. Designed for cron (every 5 minutes).
 set -eu
 
-DOMAIN="${HEYNYC_NGROK_DOMAIN:-nonepiscopal-inspiredly-sarai.ngrok-free.dev}"
+DOMAIN="${HEYNYC_NGROK_DOMAIN:-}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$REPO_DIR/.data/health.log"
 STATE="$REPO_DIR/.data/health.state"

@@ -3,7 +3,7 @@ category: Food
 description: >-
   Find free food pantries and soup kitchens across NYC, the nearest open sites with
   their address, hours, phone, and dietary/access options (Halal, Kosher, HIV-focused,
-  mobile) — grounded in the city's official FoodHelp finder.
+  mobile), grounded in the city's official FoodHelp finder.
 keywords:
   - food pantry
   - food pantries
@@ -32,8 +32,8 @@ prompt: |
   afford food right now"), call nearest_food_pantry(near=<the user's NYC address or neighborhood>).
   Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a full address,
   a scheduled-open-now status computed from the site's own hours, a phone number, any dietary/access flag
-  (Halal / Kosher / HIV / Mobile), and a Google Maps directions link — pass these through as given.
-  HONEST LIMITS — do not fabricate beyond the data:
+  (Halal / Kosher / HIV / Mobile), and a Google Maps directions link, pass these through as given.
+  HONEST LIMITS, do not fabricate beyond the data:
     - Scheduled-open-now is computed from the site's structured weekly hours. The source has no
       holiday or temporary exception fields, so tell the user to call before leaving. If the tool
       says "hours not listed", say so and never invent hours.

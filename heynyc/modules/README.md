@@ -9,9 +9,9 @@ HeyNYC is built so that **adding a city service means adding a folder**, without
 
 ## Convention (and the standard it follows)
 
-A module is **a self-contained folder with a YAML manifest at its root** — the "one descriptor file per unit, in its own folder" idea behind [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: drop in a folder, the core stays untouched. (HeyNYC modules are plain MCP-style tools + a schema-validated manifest — deliberately **not** Anthropic Agent Skills, which are for reusable *techniques*, not project-specific data + config.)
+A module is **a self-contained folder with a YAML manifest at its root**, the "one descriptor file per unit, in its own folder" idea behind [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: drop in a folder, the core stays untouched. (HeyNYC modules are plain MCP-style tools + a schema-validated manifest, deliberately **not** Anthropic Agent Skills, which are for reusable *techniques*, not project-specific data + config.)
 
-Optional nesting: a `data/` subfolder for bundled curated data, and a `topics/<topic>/` subfolder for a **submodule** — a light, self-contained sub-service that reuses the parent module's tool and owns only its own sources + eval (e.g. `events/topics/world_cup/`, deletable with `rm -rf`). Most modules are still a single `manifest.yaml`. 
+Optional nesting: a `data/` subfolder for bundled curated data, and a `topics/<topic>/` subfolder for a **submodule**, a light, self-contained sub-service that reuses the parent module's tool and owns only its own sources + eval (e.g. `events/topics/world_cup/`, deletable with `rm -rf`). Most modules are still a single `manifest.yaml`. 
 
 ---
 
@@ -19,9 +19,9 @@ Optional nesting: a `data/` subfolder for bundled curated data, and a `topics/<t
 
 | You can… | …then you can build |
 |---|---|
-| Edit a text (YAML) file from a template | A full **info + web-search** module (eligibility, how-to, links) — **no code** |
-| Also copy a dataset ID + column names from NYC Open Data | A **"find nearest X"** module (cooling centers, pools, senior centers) — **no code** |
-| Write a little Python | A **custom-tool** module (a live API, special logic) — like `benefits` or `events` |
+| Edit a text (YAML) file from a template | A full **info + web-search** module (eligibility, how-to, links), **no code** |
+| Also copy a dataset ID + column names from NYC Open Data | A **"find nearest X"** module (cooling centers, pools, senior centers), **no code** |
+| Write a little Python | A **custom-tool** module (a live API, special logic), like `benefits` or `events` |
 
 Most services need only the first two rows: **just pure YAML, zero code.** Custom tools are rare.
 
@@ -31,11 +31,11 @@ Most services need only the first two rows: **just pure YAML, zero code.** Custo
 
 ```
 heynyc/modules/<name>/
-  manifest.yaml     # required — declares the module (pure YAML)
-  eval.yaml         # recommended — test questions that prove it doesn't hallucinate
-  tools.py          # optional — only if the service needs custom logic
-  data/             # optional — curated data files your tool reads
-  topics/<topic>/   # optional — a submodule (reuses the parent's tool; own sources + eval)
+  manifest.yaml     # required, declares the module (pure YAML)
+  eval.yaml         # recommended, test questions that prove it doesn't hallucinate
+  tools.py          # optional, only if the service needs custom logic
+  data/             # optional, curated data files your tool reads
+  topics/<topic>/   # optional, a submodule (reuses the parent's tool; own sources + eval)
 ```
 
 The registry auto-discovers every folder under `modules/` at startup and wires it in: its keywords + capability blurb go into the agent's system prompt, its datasets become `nearest()` categories, its seeds get indexed, its allowlist extends web search, and its eval cases join the test gate.
@@ -54,7 +54,7 @@ keywords:                         # words that should make the agent reach for t
   - heat
   - beat the heat
 
-datasets:                         # OPTIONAL — enables "nearest X" via NYC Open Data
+datasets:                         # OPTIONAL, enables "nearest X" via NYC Open Data
   - id: h2bn-gu9k                 # the dataset id from its data.cityofnewyork.us URL
     category: cooling_center      # the category the agent passes to nearest()
     field_map:                    # map the dataset's REAL column names → our common shape
@@ -65,10 +65,10 @@ datasets:                         # OPTIONAL — enables "nearest X" via NYC Ope
       borough: borough            # optional
     where: "status='Activated'"   # optional SoQL filter
 
-seeds:                            # OPTIONAL — official pages indexed for how-to/eligibility
+seeds:                            # OPTIONAL, official pages indexed for how-to/eligibility
   - https://finder.nyc.gov/coolingcenters/
 
-allowlist:                        # OPTIONAL — extra trusted domains for scoped web search
+allowlist:                        # OPTIONAL, extra trusted domains for scoped web search
   - finder.nyc.gov
 
 prompt: |                         # the behavior rules: how to help, what to cite, when to abstain
@@ -79,7 +79,7 @@ prompt: |                         # the behavior rules: how to help, what to cit
 eval: eval.yaml                   # OPTIONAL but recommended
 ```
 
-Everything except `name` is optional. A module with just `name`, `description`, `keywords`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group your `allowlist` domains by trust — `authoritative` / `editorial` / `community` — so `web_search` ranks and disclaims them) and a **`topics/`** folder for submodules. See `modules/events/` for both.
+Everything except `name` is optional. A module with just `name`, `description`, `keywords`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group your `allowlist` domains by trust, `authoritative` / `editorial` / `community`, so `web_search` ranks and disclaims them) and a **`topics/`** folder for submodules. See `modules/events/` for both.
 
 ### Finding a dataset + its column names (for "nearest X")
 1. Go to <https://data.cityofnewyork.us> and search (e.g. "senior centers").
@@ -93,11 +93,11 @@ Everything except `name` is optional. A module with just `name`, `description`, 
 
 You usually don't have to write the tools, but point the module at these shared ones via the manifest:
 
-- **`nearest(category, near)`** — ranks dataset locations by distance from an address.
+- **`nearest(category, near)`**, ranks dataset locations by distance from an address.
   Enabled by adding a `datasets:` entry. Used for "where's the nearest …".
-- **`index_search(query)`** — semantic search over your `seeds:` pages. Used for
+- **`index_search(query)`**, semantic search over your `seeds:` pages. Used for
   "how do I…/am I eligible…/what do I bring".
-- **`web_search(query)`** — scoped to your `allowlist:` (+ the global allowlist) for fresh
+- **`web_search(query)`**, scoped to your `allowlist:` (+ the global allowlist) for fresh
   or long-tail info. Always cited; abstains when nothing trusted is found.
 
 Tell the agent which to use in your `prompt:`.
@@ -178,7 +178,7 @@ Run: `uv run python -m heynyc eval`. See [the eval guide](../eval/README.md) for
 - [ ] `field_map` matches the dataset's actual columns (check the dataset page).
 - [ ] `prompt` says which tool to use, to cite, and **when to abstain**.
 - [ ] The answer exposes the source's real update or verification time, never the fetch date as a freshness substitute.
-- [ ] Location and deadline results handle the practical “useful now” questions that apply: current or today's availability, holiday or exception status, access restrictions, and the exact next action.
+- [ ] Location and deadline results handle the practical "useful now" questions that apply: current or today's availability, holiday or exception status, access restrictions, and the exact next action.
 - [ ] Evals include late-night, holiday, stale-source, closure-conflict, and access-restriction cases where those conditions could change the recommendation. See the [useful-now gate](../../docs/superpowers/specs/2026-06-30-service-coverage-map-design.md#7c-the-useful-now-gate-truth-is-necessary-not-sufficient).
 - [ ] At least one `abstain: true` eval case (don't-make-things-up coverage).
 - [ ] `uv run python -m heynyc modules` lists it; `pytest` stays green.

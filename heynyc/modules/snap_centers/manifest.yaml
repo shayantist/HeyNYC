@@ -2,7 +2,7 @@ name: snap_centers
 category: benefits
 description: >-
   Find the nearest HRA SNAP (food stamps) application / enrollment center to apply
-  in person — grounded in the city's official list of the ~13 SNAP centers citywide.
+  in person, grounded in the city's official list of the ~13 SNAP centers citywide.
 keywords:
   - snap center
   - snap office
@@ -30,7 +30,7 @@ allowlist:
 prompt: |
   For "where do I apply for SNAP / food stamps in person" or "SNAP center/office near me",
   call nearest(category="snap_center", near=<the user's address>). Report ONLY the centers the
-  tool returns and cite each one — these are the ~13 HRA SNAP application/enrollment centers.
+  tool returns and cite each one, these are the ~13 HRA SNAP application/enrollment centers.
 
   ALWAYS add that they can also apply online at ACCESS HRA (accesshra.nyc.gov) without visiting
   a center at all, or call 311. Pass through the source's listed hours and row update date. The

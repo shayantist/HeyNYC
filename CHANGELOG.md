@@ -49,24 +49,24 @@ tagged package releases. HeyNYC is pre-1.0 and is not a hosted service.
 - **Verifiable citations, deterministic core (Part C).** DATA citations carry a row snapshot plus SHA-256 plus a row permalink; the eval floor recomputes distances from the cited row and blocks an ungrounded structured fact.
 - **Eval and geocoder fixes.** The judge split into a free interactive agent-judge and a paid API-judge, calibrated to stop false-failing current-dated, absence, and refusal answers; bare NYC zips resolve from a bundled Census ZCTA table; the cooling finder repointed to the real indoor dataset; the README capabilities table is auto-generated from manifests and drift-guarded.
 
-## 0.5 — 2026-06-29
+## 0.5, 2026-06-29
 
 - **Eval overhaul → a tiered no-hallucination gate.** A deterministic *structural floor* (citation,
   faithfulness, forbidden-tool, link-liveness) that blocks CI, plus a portable **agent-as-judge** for
   the semantic verdict (abstained-for-the-right-reason, grounded + useful) that any coding agent can
-  run. Retrieval upgraded to the documented standard — **hybrid dense + BM25 fused with Reciprocal
+  run. Retrieval upgraded to the documented standard, **hybrid dense + BM25 fused with Reciprocal
   Rank Fusion**. Principled checker fixes: refuse-with-redirect passes; a grounded, cited answer isn't
   mislabeled an abstention; only a definitive 404/410 counts as a dead link.
-- **Agent voice.** Warm, direct, plain — a "Mamdani register": sincere, specific acknowledgment on
+- **Agent voice.** Warm, direct, plain, a "Mamdani register": sincere, specific acknowledgment on
   high-stakes questions, texting-style formatting (no walls of markdown), and it surfaces the
   map/directions links the tools provide.
 - **Multilingual replies.** Answers in the user's language; program names, addresses, and links kept
   as-is.
 - **Staleness guard.** Every fact carries an "as of" date and is flagged when older than a module's
-  tolerance (benefits = re-check annually) — the active half of the freshness guarantee.
+  tolerance (benefits = re-check annually), the active half of the freshness guarantee.
 - **REPL.** Events render in true chronological order (narration and tool calls stack as they happen).
 
-## 0.4 — 2026-06-28
+## 0.4, 2026-06-28
 
 - **`benefits` navigator.** Live NYC Benefits & Programs data, hybrid retrieval, always-caveated
   eligibility that defers to the official screener; a per-program "as of" date on returned facts.
@@ -75,17 +75,17 @@ tagged package releases. HeyNYC is pre-1.0 and is not a hosted service.
   `things_to_do` and `world_cup` modules.
 - **Observability.** Cost/usage telemetry (`stats`) and an in-process embedding cache.
 
-## 0.3 — 2026-06-27
+## 0.3, 2026-06-27
 
 - **Scoped `web_search`** (allowlist-enforced) and the streaming `repl`; sessions / persistence.
 - **Geocoder reliability.** Confidence gate + non-NYC reject behind a swappable provider.
 
-## 0.2 — 2026-06-26
+## 0.2, 2026-06-26
 
 - **Eval gate.** Deterministic checks + OpenInference traces + outcome invariants + pass^k on the
   safety subset; optional cross-family LLM groundedness judge.
 
-## 0.1 — 2026-06-25
+## 0.1, 2026-06-25
 
 - **Core + module SDK.** Manifest, registry, citations, streaming tool-calling agent loop, prompts.
 - **Grounded tools + first modules.** `geocode` / `nearest` / `distance` and the `cooling_centers`

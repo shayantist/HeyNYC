@@ -98,7 +98,7 @@ compacts only under pressure into one typed continuity record, redacts identifie
 compaction, revalidates continuity against resident-authored text, and excludes prior assistant
 facts, URLs, and citations from future evidence. A generated turn is committed only after all
 outbound text and documents are accepted. `NEW` and `PRIVACY` are implemented locally. Confirmed
-`DELETE MY DATA` remains pending the owner's ruling on pseudonymous telemetry and feedback, and
+Confirmed `DELETE MY DATA` is shipped: after an in-chat confirmation it erases the resident's encrypted transcript, any draft, and pending report flags, keeping only PII-free aggregates and an anonymized daily spend record.
 the new memory behavior still awaits a supervised live restart.
 
 The intended replacement is bounded task continuity, not a personal profile. A typed record may retain a resident's stated goal, corrections, completed steps, and unresolved questions. It must not preserve a benefit rule, deadline, location status, legal claim, or citation as truth; those are retrieved again and pass through the current grounding guard. Old assistant text is dialogue context, never evidence. Validated application state stays in the separate draft store rather than being copied into model-written memory.
@@ -107,7 +107,7 @@ That design follows current provider guidance that long-running conversations sh
 
 Before calling the memory layer complete, we still need the compact live acceptance set for
 cross-language and cross-module follow-ups, long-conversation usefulness, and a supervised restart.
-Confirmed deletion remains unimplemented. We also need live evidence that compaction reduces total
+Confirmed in-chat deletion is implemented and tested end to end.
 tokens, latency, and cost without reducing resident-task success.
 
 ## The human-in-the-loop boundary
@@ -124,7 +124,7 @@ None of this is just our house style, it's where every serious AI-governance fra
 
 ## Limitations (what we haven't proven yet)
 
-Read this part. These are real and current as of 2026-07-17:
+Read this part. These are real and current as of 2026-07-21:
 
 - **Non-English safety has dedicated cases but is not demonstrated as a production capability.** Spanish and Bengali testing has already surfaced regressions the English answers did not have, including a fabricated law number, emergency aspirin dosing, a public-charge detour in response to a SNAP-loss question, and weaker tool use from some candidate models. A mistranslated benefit rule is a safety bug, not a UX bug, and in-language safety cannot be assumed from English coverage: models hallucinate at measurably different rates across languages[^multilingual-hallucination-gaps], and factual precision drops when they generate grounded facts in a non-English language[^multi-fact]. The [translate-at-edge pipeline](docs/superpowers/specs/2026-07-05-multilingual-translate-at-edge-design.md) remains off by default and has not completed production validation. Dedicated cases are evidence that we test this surface, not proof that every supported language is safe.
 - **Language access and accessibility are part of the safety surface, and we hold ourselves to the standards without claiming we've been audited against them.** Serving New Yorkers means clearing more than an accuracy bar. Language access is the law here: NYC Local Law 30 of 2017[^nyc-local-law-30] requires city services in the ten designated citywide languages plus telephonic interpretation in 100-plus. Accessibility has a hard target too: WCAG 2.1 Level AA[^wcag-21], the same standard the 2024 ADA Title II web rule[^ada-title-ii-2024] points state and local government at and that Section 508[^section-508] sets for federal technology. We build toward both, but we haven't done an independent accessibility audit or a per-language access review, so read these as commitments, not certifications.

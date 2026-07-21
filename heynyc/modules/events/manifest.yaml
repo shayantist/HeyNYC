@@ -1,8 +1,8 @@
 name: events
 category: events
 description: >-
-  What's on in NYC — concerts, sports, festivals, free park events, pop-ups, and
-  watch parties — grounded in live sources (Ticketmaster + NYC Parks) and trusted
+  What's on in NYC, concerts, sports, festivals, free park events, pop-ups, and
+  watch parties, grounded in live sources (Ticketmaster + NYC Parks) and trusted
   editorial event guides, with links back to every official page.
 keywords:
   - events
@@ -66,6 +66,6 @@ prompt: |
   plainly, but prefix any community-tagged (⚠️) result with "community-posted, confirm before
   you go." Never
   recommend private-residence or "DM for address" gatherings, and never invent an event
-  that isn't grounded — if nothing comes back, say so and link the official source.
+  that isn't grounded, if nothing comes back, say so and link the official source.
 tools: tools.py
 eval: eval.yaml

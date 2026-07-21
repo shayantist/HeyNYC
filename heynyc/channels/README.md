@@ -1,8 +1,8 @@
-# HeyNYC channels — the messaging on-ramp
+# HeyNYC channels, the messaging on-ramp
 
 This package puts the grounded agent in front of people on the platforms they already use.
-A New Yorker texts our number; the existing `Agent` answers — cited, multilingual, abstaining
-when it should — and the reply comes back as platform-native messages.
+A New Yorker texts our number; the existing `Agent` answers, cited, multilingual, abstaining
+when it should, and the reply comes back as platform-native messages.
 
 ## How it's shaped
 
@@ -10,10 +10,10 @@ One **channel-agnostic core** with thin per-provider **adapters**:
 
 ```
 base.py          InboundMessage + Replier port, dispatch() fire-and-forget seam, KeyedLocks
-identity.py      user_key(channel, sender, salt) — the PII boundary
+identity.py      user_key(channel, sender, salt), the PII boundary
 store.py         sqlite dedup + per-user rate-limit (crash-aware, no Redis)
 format.py        render(result, channel) -> channel-appropriate chunks (SMS plain / WhatsApp native, strip {cite:Sn}, Sources footer, 4096 split)
-orchestrator.py  handle(msg, replier, deps) — dedup → rate → lock → run agent → reply → record
+orchestrator.py  handle(msg, replier, deps), dedup → rate → lock → run agent → reply → record
 analytics.py     pseudonymous interaction log + user-flag feedback log
 meta.py          Meta WhatsApp Cloud API adapter (pywa)
 twilio.py        Twilio adapter (WhatsApp sandbox + SMS)
@@ -21,7 +21,7 @@ app.py           FastAPI factory: build the Agent once, mount providers, drain o
 ```
 
 The orchestrator is universal; only the adapters know a provider. Adding SMS, Instagram DMs, or a
-web channel is another adapter — the core doesn't change. The webhook handler verifies → `dispatch`
+web channel is another adapter, the core doesn't change. The webhook handler verifies → `dispatch`
 (fire-and-forget) → returns 200 fast; the agent runs out-of-band (pywa awaits the handler, so this is
 mandatory, not optional). Per-user `asyncio.Lock` keeps one person's messages in order; a global
 `Semaphore` bounds concurrency and LLM spend.
@@ -29,7 +29,7 @@ mandatory, not optional). Per-user `asyncio.Lock` keeps one person's messages in
 ## Privacy
 
 Senders are reduced to a salted-HMAC `user_key` at the door. **Raw phone numbers are never
-persisted** — not session filenames, not telemetry, not the feedback log. The raw address lives only
+persisted**, not session filenames, not telemetry, not the feedback log. The raw address lives only
 in memory during a request, held by the `Replier` to send the reply. Serving requires both
 `HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`; conversation and draft files are encrypted, and the service
 deletes expired files on startup and once per day using `HEYNYC_PII_RETENTION_DAYS` (30 by default).
@@ -47,7 +47,7 @@ Resident-authored queries, notes, and assistant text are PII-redacted before fee
   [public-beta indicator API](https://www.twilio.com/docs/whatsapp/api/typing-indicators-resource).
   It fails open so a beta outage cannot block the final reply.
 - A user message opens/resets a **24-hour service window** where free-form replies are free and
-  unlimited — an inbound assistant lives here, so WhatsApp messaging cost ≈ $0; the LLM call is the
+  unlimited, an inbound assistant lives here, so WhatsApp messaging cost ≈ $0; the LLM call is the
   real cost.
 - Re-initiating after 24h needs a pre-approved **template** (out of scope for v1).
 - Opt-in is required; quality rating can throttle; **Business Verification** (a registered entity)
@@ -58,11 +58,11 @@ Resident-authored queries, notes, and assistant text are PII-redacted before fee
 1. **Generate the privacy secrets:** create `HEYNYC_PII_SALT` with `openssl rand -hex 32`, create
    `HEYNYC_PII_KEY` with `uv run python -c "from heynyc.core.pii_crypto import generate_key; print(generate_key())"`,
    and put both in `.env`.
-2. **Fastest demo — Twilio sandbox** (no Meta app, no money): create a Twilio account → Messaging →
+2. **Fastest demo, Twilio sandbox** (no Meta app, no money): create a Twilio account → Messaging →
    *Try WhatsApp* → send `join <code>` from your phone → copy `TWILIO_ACCOUNT_SID`,
    `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` into `.env` → point the sandbox's "when a message comes
    in" at `https://<tunnel>/webhook/twilio`.
-3. **Production path — Meta Cloud API:** create a Business-type Meta App + add the WhatsApp product →
+3. **Production path, Meta Cloud API:** create a Business-type Meta App + add the WhatsApp product →
    copy `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_APP_SECRET` → invent a `WHATSAPP_VERIFY_TOKEN` (the
    same value in the dashboard and `.env`) → mint a system-user **Admin** token for `WHATSAPP_TOKEN`
    (the dashboard's temporary token dies in <24h) → set the callback URL to

@@ -6,8 +6,9 @@ def test_demo_launcher_uses_stable_domain_and_production_sender():
     script = Path(__file__).parents[1] / "scripts" / "serve_demo.sh"
     text = script.read_text()
 
-    assert "nonepiscopal-inspiredly-sarai.ngrok-free.dev" in text
-    assert "whatsapp:+18882120042" in text
+    assert "nonepiscopal" not in text  # deployment specifics live in .env only (public-readiness B2)
+    assert "+18882120042" not in text  # the real sender never ships in a tracked file (B1)
+    assert "TWILIO_WHATSAPP_FROM" in text  # required by name in the env gate
     assert 'export HEYNYC_MODEL=' not in text  # RULED 2026-07-21: .env is the ONLY model source;
     # the old script export was silently OVERWRITTEN by .env sourcing anyway (set -a re-assigns),
     # so the luna pin never took effect and the pilot ran mini. The launcher now only VERIFIES.
