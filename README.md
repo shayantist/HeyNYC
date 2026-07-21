@@ -3,7 +3,7 @@
 [![CI](https://github.com/shayantist/HeyNYC/actions/workflows/ci.yml/badge.svg)](https://github.com/shayantist/HeyNYC/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Text HeyNYC about life in New York: your commute on a tornado-watch morning, this weekend's free events, a SNAP application, an eviction notice. Every answer is grounded in live official city data and cited so you can check it, in your language, or it tells you it doesn't know and points you to 311.**
+**Text HeyNYC about life in New York: your commute on a flood-watch morning, this weekend's free events, a SNAP application, an eviction notice. Every answer is grounded in live official city data and cited so you can check it, in your language, or it tells you it doesn't know and points you to 311.**
 
 > Open-source civic project. Not affiliated with the City of New York.
 
