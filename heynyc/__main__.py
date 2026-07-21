@@ -424,7 +424,7 @@ def _screen_turn_options(text: str) -> dict:
     }
 
 
-async def _cmd_repl(model: str | None = None, user: str = "local") -> None:
+async def _cmd_repl(model: str | None = None, user: str = "local", temp: bool = False) -> None:
     """Interactive streaming chat that rides the SAME orchestrator path a texter does: the free
     commands (HELP / PRIVACY / REPORT / DELETE MY DATA), encrypted persistent sessions, identity,
     the per-resident spend cap, dedup, and channel rendering. Only the presentation differs, a
@@ -440,9 +440,20 @@ async def _cmd_repl(model: str | None = None, user: str = "local") -> None:
     from heynyc.channels.orchestrator import handle
 
     console = Console()
-    deps = build_console_deps(console=console, model=model)
+    temp_dir = None
+    if temp:
+        # Throwaway test session: random identity, isolated data dir, removed on exit. The full
+        # channel machinery still runs (commands, welcome, caps), it just writes into a grave.
+        import tempfile
+
+        temp_dir = tempfile.TemporaryDirectory(prefix="heynyc-repl-temp-")
+        user = f"temp-{uuid.uuid4().hex[:8]}"
+    deps = build_console_deps(
+        console=console, model=model,
+        data_dir=Path(temp_dir.name) if temp_dir else None,
+    )
     sink = deps.event_sink
-    artifacts_dir = config.HEYNYC_DATA_DIR / "repl-artifacts"
+    artifacts_dir = (Path(temp_dir.name) if temp_dir else config.HEYNYC_DATA_DIR) / "repl-artifacts"
     replier = ConsoleReplier(console, artifacts_dir)
 
     modules = ", ".join(m.name for m in deps.agent.registry.modules)
@@ -472,6 +483,8 @@ async def _cmd_repl(model: str | None = None, user: str = "local") -> None:
         finally:
             sink.finish()
         console.print()
+    if temp_dir is not None:
+        temp_dir.cleanup()
 
 
 async def _cmd_repl_raw(model: str | None = None) -> None:
@@ -715,9 +728,9 @@ async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool,
     print("\n" + render_bench(rows, safety_ids))
 
 
-def _run_repl(model=None, raw: bool = False, user: str = "local") -> None:
+def _run_repl(model=None, raw: bool = False, user: str = "local", temp: bool = False) -> None:
     try:
-        asyncio.run(_cmd_repl_raw(model) if raw else _cmd_repl(model, user))
+        asyncio.run(_cmd_repl_raw(model) if raw else _cmd_repl(model, user, temp))
     except KeyboardInterrupt:
         pass
 
@@ -736,6 +749,8 @@ def main() -> None:
     chat.add_argument("question")
     repl = sub.add_parser("repl", help="interactive streaming chat on the same path as texting")
     repl.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
+    repl.add_argument("--temp", action="store_true",
+                      help="throwaway session: a random identity in a temporary data dir, nothing persists after exit")
     repl.add_argument("--user", default="local",
                       help="identity for this session, keyed as console:<user> (NOT your OS username); "
                            "the seed of future account identity")
@@ -797,7 +812,7 @@ def main() -> None:
     elif args.command == "chat":
         asyncio.run(_cmd_chat(args.question, model=args.model))
     elif args.command == "repl":
-        _run_repl(getattr(args, "model", None), raw=args.raw, user=args.user)
+        _run_repl(getattr(args, "model", None), raw=args.raw, user=args.user, temp=args.temp)
     elif args.command == "capabilities":
         _cmd_capabilities(markdown=args.markdown, write_readme=args.write_readme)
     elif args.command == "stats":

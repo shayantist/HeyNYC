@@ -374,3 +374,23 @@ def test_case_listing_renders_one_greppable_row_per_case():
     assert any("convo_past_tense_identity_not_trivia" in l and "global" in l for l in lines)
     header = lines[0]
     assert "id" in header and "tags" in header
+
+
+def test_repl_temp_flag_isolates_and_randomizes(monkeypatch):
+    """--temp: a throwaway data dir and a random identity, so test sessions persist nothing.
+    Pins the seams: the parser accepts the flag, and build_console_deps honors data_dir by
+    placing the store inside it (the whole channel stack then writes into the grave)."""
+    import tempfile
+    from pathlib import Path
+
+    from rich.console import Console
+
+    from heynyc.channels.console import build_console_deps
+
+    with tempfile.TemporaryDirectory() as td:
+        deps = build_console_deps(console=Console(), data_dir=Path(td))
+        assert str(Path(td)) in str(deps.sessions_dir)
+    import heynyc.__main__ as cli
+    src = __import__("inspect").getsource(cli._cmd_repl)
+    assert "TemporaryDirectory" in src and 'f"temp-{uuid.uuid4().hex[:8]}"' in src
+    assert "temp_dir.cleanup()" in src
