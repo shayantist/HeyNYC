@@ -3,10 +3,8 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-DOMAIN="${HEYNYC_NGROK_DOMAIN:-}"
 # Load the ignored .env when present so `sh scripts/serve_demo.sh` just works; the parent
 # shell's own exports still win because .env values only fill what sourcing sets.
-export TWILIO_FROM="${TWILIO_FROM:-$TWILIO_WHATSAPP_FROM}"
 if [ -f ./.env ]; then
     set -a
     . ./.env
@@ -22,6 +20,8 @@ missing=""
 [ -n "${HEYNYC_MODEL:-}" ] || missing="$missing HEYNYC_MODEL"
 [ -n "${TWILIO_WHATSAPP_FROM:-}" ] || missing="$missing TWILIO_WHATSAPP_FROM"
 [ -n "${HEYNYC_NGROK_DOMAIN:-}" ] || missing="$missing HEYNYC_NGROK_DOMAIN"
+export TWILIO_FROM="${TWILIO_FROM:-${TWILIO_WHATSAPP_FROM:-}}"
+DOMAIN="$HEYNYC_NGROK_DOMAIN"
 if [ -n "$missing" ]; then
     echo "Missing required env:$missing" >&2
     echo "Load the ignored .env first, e.g.: set -a && . ./.env && set +a" >&2
