@@ -347,8 +347,8 @@ def test_to_sse_formats_frame():
 
 def test_stats_summary_renders(tmp_path, capsys):
     # the stats command summarizes a telemetry log without touching the network
-    from heynyc.core import telemetry
     from heynyc.__main__ import _render_stats
+    from heynyc.core import telemetry
 
     path = tmp_path / "telemetry.jsonl"
     telemetry.record_turn(path, session_id="s", model="m",
@@ -362,9 +362,9 @@ def test_stats_summary_renders(tmp_path, capsys):
 
 def test_case_listing_renders_one_greppable_row_per_case():
     """The audit surface: every case in the corpus on one line: id, source file, flags, tags."""
-    from heynyc.eval.cases import render_case_listing
     from heynyc.core import config
     from heynyc.core.registry import Registry
+    from heynyc.eval.cases import render_case_listing
 
     registry = Registry.discover(config.MODULES_DIR)
     out = render_case_listing(registry)

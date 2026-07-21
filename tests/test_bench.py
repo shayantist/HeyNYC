@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from heynyc.eval.bench import BenchRow, bench_summary, render_bench, run_bench
+from heynyc.eval.bench import BenchRow, bench_summary, render_bench
 from heynyc.eval.cases import EvalCase
 
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import CaseResult
-from heynyc.eval.trace import Span, Trace, build_trace, classify_outcome
+from heynyc.eval.trace import build_trace, classify_outcome
 
 
 def _cr(**kw):

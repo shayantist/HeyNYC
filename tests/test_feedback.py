@@ -12,7 +12,6 @@ from heynyc.core import config, pii_crypto
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
 
-
 # ---- PII redaction (write-time) ------------------------------------------------
 
 def test_redact_pii_masks_phone_ssn_email_address_dob():

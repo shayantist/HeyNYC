@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 
-from heynyc.core.ticketmaster import DISCOVERY_URL, NYC_DMA_ID, ticketmaster_events
+from heynyc.core.ticketmaster import NYC_DMA_ID, ticketmaster_events
 
 
 def _mock_client(handler) -> httpx.AsyncClient:

@@ -1,6 +1,7 @@
-from dataclasses import dataclass, field
 import signal
-from heynyc.channels.format import _split, render, WA_LIMIT
+from dataclasses import dataclass, field
+
+from heynyc.channels.format import WA_LIMIT, _split, render
 
 
 @dataclass

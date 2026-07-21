@@ -1,14 +1,21 @@
 import pytest
 
 from heynyc.eval.cases import EvalCase
-from heynyc.eval.trace import Trace, Span
 from heynyc.eval.invariants import (
-    asserts_specifics, build_invariant_checks,
-    inv_faithfulness, inv_grounding, inv_abstain_or_redirect, inv_forbid_compliance,
+    asserts_specifics,
+    build_invariant_checks,
+    check_metamorphic,
+    check_metamorphic_programs,
+    inv_abstain_or_redirect,
+    inv_currentness,
+    inv_faithfulness,
+    inv_forbid_compliance,
+    inv_grounding,
     inv_harm_routing,
-    inv_currentness, inv_resident_outcome,
-    outcome_class, check_metamorphic, check_metamorphic_programs,
+    inv_resident_outcome,
+    outcome_class,
 )
+from heynyc.eval.trace import Span, Trace
 
 
 def _case(**kw):

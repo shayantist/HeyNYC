@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-from io import BytesIO
 import re
+from io import BytesIO
 
 import httpx
 from pypdf import PdfReader

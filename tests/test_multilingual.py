@@ -12,7 +12,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from heynyc.core.multilingual import (
-    Entity,
     Glossary,
     LangDetectDetector,
     MockLanguageDetector,

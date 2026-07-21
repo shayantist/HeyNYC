@@ -7,9 +7,9 @@ No hallucinated events: every row is grounded in a live source and cited with a 
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-import re
 from typing import Optional
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo

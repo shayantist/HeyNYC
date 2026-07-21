@@ -103,8 +103,8 @@ def test_funnel_roundtrips_through_the_sidecar(tmp_path: Path):
 
 
 def test_outcomes_report_renders(tmp_path: Path, capsys):
-    from heynyc.core import telemetry
     from heynyc.__main__ import _render_outcomes
+    from heynyc.core import telemetry
 
     tpath = telemetry.default_path(tmp_path)
     telemetry.record_turn(tpath, session_id="u1", model="m",

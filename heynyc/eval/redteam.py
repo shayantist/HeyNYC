@@ -26,7 +26,11 @@ from typing import Optional
 
 from .bench import BenchRow, render_by_category, run_bench
 from .cases import CATEGORY_NAMES, default_redteam_suite, load_redteam_cases
-from .judges import make_api_judge, model_family, same_family  # re-exported for the package API
+from .judges import (  # re-exported for the package API
+    make_api_judge,
+    model_family,
+    same_family,
+)
 
 __all__ = [
     "run_redteam", "render_by_category", "load_redteam_cases", "model_family", "same_family",

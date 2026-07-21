@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools import web_search as web_search_mod
+from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.web_search import _domain_allowed, web_search_tools
 
 ALLOW = ["nyc.gov", "nyctourism.com", "nynjfwc26.com"]

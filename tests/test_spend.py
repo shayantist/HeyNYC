@@ -5,11 +5,8 @@ reuses core.telemetry.cost_usd for real pricing (asserted by identity, not by ca
 """
 from __future__ import annotations
 
-import pytest
-
 from heynyc.core import spend, telemetry
 from heynyc.core.registry import Registry
-
 
 # --- Unit: the SpendGuard itself ------------------------------------------------------------------
 
@@ -81,7 +78,7 @@ def _tool(name="noop"):
 
 async def test_agent_halts_further_model_calls_when_cap_exceeded():
     from heynyc.core import events
-    from heynyc.core.agent import Agent, SPEND_CAPPED_FALLBACK
+    from heynyc.core.agent import SPEND_CAPPED_FALLBACK, Agent
 
     calls = {"n": 0}
 
@@ -133,7 +130,7 @@ async def test_scope_call_counts_toward_spend_cap_before_answer_model():
 async def test_agent_runs_normally_when_cap_disabled_even_with_usage():
     # spend_cap unset (default): the guard is a no-op, so a turn that reports token usage still
     # completes normally. Behavior is unchanged without a cap.
-    from heynyc.core import config, events
+    from heynyc.core import events
     from heynyc.core.agent import Agent
 
     async def fake_stream(messages, tool_schemas):

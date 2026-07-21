@@ -3,7 +3,7 @@ import pytest
 pytest.importorskip("twilio")
 pytest.importorskip("fastapi")
 
-from heynyc.channels.twilio import TwilioReplier, to_inbound, public_url
+from heynyc.channels.twilio import TwilioReplier, public_url, to_inbound
 
 
 class FakeMessages:
@@ -158,6 +158,7 @@ def test_to_inbound_distinguishes_sms_from_whatsapp():
 def test_twilio_router_uses_recipient_as_reply_sender_and_rejects_missing_addresses(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from heynyc.channels import twilio
 
     routed = []

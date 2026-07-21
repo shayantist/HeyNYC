@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass, field
+
 from heynyc.channels import analytics
 from heynyc.core import telemetry
 

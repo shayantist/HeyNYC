@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from heynyc.core import config
+from heynyc.core.citations import content_hash
 from heynyc.core.registry import Registry
 from heynyc.eval.cases import EvalCase, load_cases
-from heynyc.core.citations import content_hash
 from heynyc.eval.checks import (
     check_abstention,
     check_cite_kinds,
@@ -203,6 +201,7 @@ def test_case_schema_new_fields_and_safety_default():
 
 def test_load_cases_parses_taxonomy(tmp_path):
     import yaml
+
     from heynyc.eval.cases import load_cases
 
     mod = tmp_path / "demo"
@@ -253,6 +252,7 @@ async def test_run_case_captures_messages():
 
 def test_judge_model_defaults_off_agent_model(monkeypatch):
     import importlib
+
     from heynyc.core import config
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -526,6 +526,7 @@ def test_data_grounding_ignores_non_data_citations():
 
 def test_load_cases_parses_tags_and_global_file(tmp_path):
     import yaml as _yaml
+
     from heynyc.eval.cases import load_cases
 
     mod = tmp_path / "demo"
@@ -597,6 +598,7 @@ async def test_bare_eval_run_requires_all_flag(capsys, monkeypatch):
 
 def test_multi_turn_case_schema_derives_final_query(tmp_path):
     import yaml as _yaml
+
     from heynyc.eval.cases import load_cases
 
     mod = tmp_path / "demo"

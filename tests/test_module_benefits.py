@@ -8,7 +8,8 @@ from heynyc.core.citations import CitationRegistry
 from heynyc.core.index.embedder import HashEmbedder
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
-from heynyc.modules.benefits import screening, tools as btools
+from heynyc.modules.benefits import screening
+from heynyc.modules.benefits import tools as btools
 
 # Deterministic, offline embedder (the project's test default) injected via ToolContext so the
 # benefits tool's hybrid retrieval never reaches for fastembed (which would download a model).

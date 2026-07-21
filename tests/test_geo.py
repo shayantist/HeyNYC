@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry

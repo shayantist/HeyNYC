@@ -24,7 +24,6 @@ fabricating, this feed never invents an advisory. Verified live 2026-07-02.
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone

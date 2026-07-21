@@ -8,7 +8,6 @@ generic — not pantry-specific.
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 

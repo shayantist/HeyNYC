@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+
 import httpx
 import pytest
 
@@ -10,8 +11,14 @@ from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.modules.events import tools as events
 from heynyc.modules.events.tools import (
-    Event, _event_block, _explicitly_free, _from_parks, _from_ticketmaster, _future_only,
-    _requested_window, get_tools,
+    Event,
+    _event_block,
+    _explicitly_free,
+    _from_parks,
+    _from_ticketmaster,
+    _future_only,
+    _requested_window,
+    get_tools,
 )
 
 

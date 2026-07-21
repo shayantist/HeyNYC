@@ -101,5 +101,6 @@ Open a PR using the template. Keep modules **grounded**: never return a fact (lo
 
 ## Code style
 - Python, async, type-hinted. Keep tools small and well-described.
+- Lint before you push: `uv run ruff check heynyc/ tests/ scripts/`. CI enforces it (pyflakes + import order; formatting is not enforced).
 - Secrets only via `.env` (never committed). See `.env.example`.
 - New behavior comes with tests (`tests/`), no network/LLM calls in unit tests.

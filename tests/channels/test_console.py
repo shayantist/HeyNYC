@@ -3,16 +3,13 @@ only in presentation. These pin the presentation seam (ConsoleReplier, ConsoleSi
 free commands / welcome / consent flows reach the console key through build_console_deps + handle."""
 from __future__ import annotations
 
-import asyncio
 import shutil
 from io import StringIO
 
-import pytest
-
 from heynyc.channels.base import InboundMessage
 from heynyc.channels.identity import user_key
-from heynyc.channels.orchestrator import Deps, handle
-from heynyc.core import config, events
+from heynyc.channels.orchestrator import handle
+from heynyc.core import events
 from heynyc.core.agent import Agent
 from heynyc.core.registry import Registry
 
@@ -219,8 +216,8 @@ def _ConsoleReplierFor(deps, console):
 def test_sink_prints_persistent_tool_line_above_settled_reply():
     """The transient live view vanishes on Done; the tools a turn used stay visible as one dim
     line printed before the settled reply (owner ask: see what tools ran, after the fact)."""
-    from heynyc.core import events as ev
     from heynyc.channels.console import ConsoleSink
+    from heynyc.core import events as ev
 
     console = _recording_console()
     sink = ConsoleSink(console)

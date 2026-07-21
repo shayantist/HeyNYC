@@ -7,7 +7,7 @@ reconciles by id (*_completed, done). Events serialize to SSE via `to_sse`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 
 @dataclass

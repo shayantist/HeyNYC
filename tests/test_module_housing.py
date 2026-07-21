@@ -24,7 +24,12 @@ from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.housing import tools as housing
-from heynyc.modules.housing.tools import COMPLAINTS_ID, LITIGATIONS_ID, VIOLATIONS_ID, get_tools
+from heynyc.modules.housing.tools import (
+    COMPLAINTS_ID,
+    LITIGATIONS_ID,
+    VIOLATIONS_ID,
+    get_tools,
+)
 
 # 617 Courtlandt Ave, Bronx — a real building (verified live): BBL 2024110048,
 # which decomposes to boro 2, block 2411, lot 48.

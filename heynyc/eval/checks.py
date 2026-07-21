@@ -10,15 +10,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
-from urllib.parse import urlparse
 
 import httpx
 
 from ..core.citations import content_hash
+
 # The cited-claim grounding logic lives in core.grounding, shared VERBATIM with the runtime guard
 # (core/agent.py), one implementation, no drift. _CITED_CLAIM_GROUNDING_BLOCKING is re-exported here
 # because test_checks.py imports it from this module.
-from ..core.grounding import _CITED_CLAIM_GROUNDING_BLOCKING, check_grounding  # noqa: F401
+from ..core.grounding import (  # noqa: F401
+    _CITED_CLAIM_GROUNDING_BLOCKING,
+    check_grounding,
+)
 from .runner import CaseResult
 
 _DIST_TOL_MI = 0.05  # covers the answer's :.2f rounding + float noise

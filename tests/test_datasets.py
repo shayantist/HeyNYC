@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
-from heynyc.core.tools.datasets import Place, dataset_url, normalize, query_dataset, row_url
+from heynyc.core.tools.datasets import (
+    Place,
+    dataset_url,
+    normalize,
+    query_dataset,
+    row_url,
+)
 
 FIELD_MAP = {"name": "propertyname", "lat": "y", "lon": "x", "status": "status", "borough": "borough"}
 

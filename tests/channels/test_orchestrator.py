@@ -1,5 +1,7 @@
 import asyncio
+
 import pytest
+
 from heynyc.channels.base import InboundMessage, KeyedLocks
 from heynyc.channels.orchestrator import (
     Deps,
@@ -615,7 +617,6 @@ async def test_user_over_daily_cap_gets_fixed_copy_and_no_agent_call(tmp_path):
 
 async def test_emergency_text_bypasses_the_daily_cap(tmp_path):
     from heynyc.channels.orchestrator import _nyc_day
-    from heynyc.core.agent import _EMERGENCY_RESPONSE_EN
 
     deps, replier = _deps(tmp_path), FakeReplier()
     deps.user_daily_spend_cap = 0.50
@@ -629,8 +630,8 @@ async def test_emergency_text_bypasses_the_daily_cap(tmp_path):
 
 
 async def test_turn_cost_accrues_to_the_daily_tally(tmp_path):
-    from heynyc.channels.orchestrator import _nyc_day
     from heynyc.channels.identity import user_key as _uk
+    from heynyc.channels.orchestrator import _nyc_day
 
     deps, replier = _deps(tmp_path), FakeReplier()
     deps.user_daily_spend_cap = 5.00

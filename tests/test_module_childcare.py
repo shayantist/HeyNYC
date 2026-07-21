@@ -10,7 +10,6 @@ when geocoding fails, the location is ambiguous, the API is down, or no programs
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
@@ -30,7 +29,6 @@ from heynyc.modules.childcare.tools import (
     directions_link,
     get_tools,
 )
-
 
 # --- pure helpers ----------------------------------------------------------
 

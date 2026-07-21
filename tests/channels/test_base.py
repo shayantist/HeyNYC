@@ -1,6 +1,6 @@
 import asyncio
-import pytest
-from heynyc.channels.base import InboundMessage, dispatch, drain, KeyedLocks
+
+from heynyc.channels.base import InboundMessage, KeyedLocks, dispatch, drain
 
 
 async def test_dispatch_runs_and_drain_awaits():

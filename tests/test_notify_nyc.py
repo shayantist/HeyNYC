@@ -11,12 +11,11 @@ import json
 from datetime import date, datetime, timezone
 
 import httpx
-import pytest
 
 from heynyc.core import config
-from heynyc.core.tools import notify_nyc
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
+from heynyc.core.tools import notify_nyc
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.notify_nyc import (
     RECENT_MESSAGES_URL,
@@ -191,7 +190,6 @@ async def test_fetch_advisories_english_default_ignores_other_languages():
 
 async def test_nyc_advisories_tool_passes_language_through():
     # The module tool threads a `lang` arg to the feed and surfaces the official translation.
-    from datetime import datetime, timezone
 
     citations = CitationRegistry()
     client = _client(RSS_MULTILANG, CAPS_MULTILANG)

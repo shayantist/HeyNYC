@@ -506,7 +506,11 @@ async def _cmd_repl_raw(model: str | None = None) -> None:
     from rich.spinner import Spinner
     from rich.text import Text
 
-    from heynyc.channels.console import _append_segment, _approve_repl_action, _reconcile_message_text
+    from heynyc.channels.console import (
+        _append_segment,
+        _approve_repl_action,
+        _reconcile_message_text,
+    )
 
     console = Console()
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)

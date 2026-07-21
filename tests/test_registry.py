@@ -139,6 +139,7 @@ def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
     each module's OWN manifest (`official_only`, default true), enforced by the schema at load —
     a high-stakes module physically cannot grow an editorial pool without an explicit opt-out."""
     import pytest
+
     from heynyc.core.manifest import ServiceModule
 
     with pytest.raises(ValueError, match="official_only"):

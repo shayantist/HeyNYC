@@ -2,6 +2,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
+
 from heynyc.core import pii_crypto
 
 

@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from .checks import CheckResult, LinkChecker, run_checks
-from .invariants import build_invariant_checks, check_metamorphic, check_metamorphic_programs
+from .invariants import (
+    build_invariant_checks,
+    check_metamorphic,
+    check_metamorphic_programs,
+)
 from .runner import CaseResult
 from .trace import Trace, build_trace
 

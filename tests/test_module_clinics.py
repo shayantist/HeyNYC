@@ -9,10 +9,7 @@ clarification. Mirrors tests/test_module_food_pantries.py.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import httpx
-import pytest
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry

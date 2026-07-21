@@ -37,6 +37,10 @@ jobs:
       - name: Install dependencies (dev + whatsapp extras)
         run: uv sync --frozen --extra dev --extra whatsapp
 
+      # Real-bug rules only (pyflakes + import order), per [tool.ruff] in pyproject.toml.
+      - name: Lint (ruff)
+        run: uv run ruff check heynyc/ tests/ scripts/
+
       - name: Run the offline test suite
         run: uv run python -m pytest -q
 

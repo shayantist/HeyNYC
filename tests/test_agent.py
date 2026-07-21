@@ -2413,7 +2413,10 @@ def test_essential_services_shutoff_uses_illegal_lockout_guidance():
     ],
 )
 def test_unrelated_queries_do_not_force_housing_law(query):
-    from heynyc.core.agent import _current_civic_law_search, _needs_current_lockout_guidance
+    from heynyc.core.agent import (
+        _current_civic_law_search,
+        _needs_current_lockout_guidance,
+    )
 
     assert not _needs_current_lockout_guidance(query)
     assert _current_civic_law_search(query) is None

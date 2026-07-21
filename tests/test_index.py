@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.index import IndexRetriever
 from heynyc.core.index.corpus import build_index, chunk_text, clean_html
-from heynyc.core.index.embedder import HashEmbedder, tokenize
+from heynyc.core.index.embedder import HashEmbedder
 from heynyc.core.index.store import IndexDoc, InMemoryVectorStore
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry

@@ -1,7 +1,7 @@
 """Offline tests for the LDSS-4826 application module (no network, no LLM)."""
 from __future__ import annotations
 
-from heynyc.modules.benefits.application import validate_slots, SLOTS
+from heynyc.modules.benefits.application import SLOTS, validate_slots
 
 
 def test_validate_accepts_good_input_and_reports_no_missing():
@@ -47,7 +47,7 @@ def test_required_set_matches_form_minimum():
 
 
 def test_summary_lists_values_missing_and_disclaimer():
-    from heynyc.modules.benefits.application import application_summary, DISCLAIMER
+    from heynyc.modules.benefits.application import DISCLAIMER, application_summary
     s = application_summary(
         {"legal_name": "Ana Diaz", "monthly_income": 1500.0}, ["residence_street"])
     assert "Legal name: Ana Diaz" in s
@@ -72,7 +72,10 @@ def test_summary_carries_provenance_stamp():
 
 def test_template_provenance_and_integrity():
     from heynyc.modules.benefits.application import (
-        template_provenance, verify_template_integrity, provenance_stamp)
+        provenance_stamp,
+        template_provenance,
+        verify_template_integrity,
+    )
     meta = template_provenance()
     assert meta["revision"] == "Rev. 12/23" and meta["num_pages"] == 12
     assert verify_template_integrity() is True          # vendored PDF matches recorded sha256
@@ -81,7 +84,7 @@ def test_template_provenance_and_integrity():
 
 def test_integrity_fails_on_hash_mismatch():
     # a swapped/updated template (different hash) is caught → caller must degrade, not fill
-    from heynyc.modules.benefits.application import verify_template_integrity, TEMPLATE
+    from heynyc.modules.benefits.application import TEMPLATE, verify_template_integrity
     assert verify_template_integrity(TEMPLATE, {"sha256": "deadbeef"}) is False
 
 
@@ -89,7 +92,9 @@ def test_integrity_fails_on_hash_mismatch():
 
 def test_fill_returns_a_real_pdf_with_values_actually_placed():
     import io
+
     from pypdf import PdfReader
+
     from heynyc.modules.benefits.application import fill_application
 
     clean = {"legal_name": "Ana Diaz", "residence_street": "1 Main St",
@@ -102,7 +107,8 @@ def test_fill_returns_a_real_pdf_with_values_actually_placed():
 
 def test_fill_raises_form_drift_when_anchor_missing():
     import pytest
-    from heynyc.modules.benefits.application import fill_application, FormDriftError
+
+    from heynyc.modules.benefits.application import FormDriftError, fill_application
     bad = {"mode": "overlay-anchor", "fields": {
         "legal_name": {"page": 2, "anchor": "NoSuchLabelXYZ", "dx": 6, "dy": 0, "size": 9}}}
     with pytest.raises(FormDriftError):
@@ -125,7 +131,10 @@ def test_high_stakes_fields_are_the_consequential_ones():
 
 def test_review_request_flags_high_stakes_and_carries_two_tier_attestation():
     from heynyc.modules.benefits.application import (
-        review_request, SCRIBE_CERT, APPLICANT_ATTESTATION)
+        APPLICANT_ATTESTATION,
+        SCRIBE_CERT,
+        review_request,
+    )
     clean = {"legal_name": "Ana Diaz", "monthly_income": 1500.0, "phone": "555-1212"}
     r = review_request(clean)
     assert "Ana Diaz" in r and "$1,500.00" in r

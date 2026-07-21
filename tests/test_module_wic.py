@@ -10,7 +10,6 @@ no NYC sites come back.
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
@@ -27,7 +26,6 @@ from heynyc.modules.wic.tools import (
     directions_link,
     get_tools,
 )
-
 
 # --- pure helpers ----------------------------------------------------------
 

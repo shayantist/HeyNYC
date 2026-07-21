@@ -15,8 +15,8 @@ from typing import Optional
 import httpx
 
 from .. import config
-from ..config import GEOSEARCH_BASE, OSRM_BASE
 from ..citations import data_provenance
+from ..config import GEOSEARCH_BASE, OSRM_BASE
 from .arcgis import feature_query_url, query_feature_service
 from .base import Tool, ToolContext
 from .datasets import dataset_url, normalize, query_dataset, row_url

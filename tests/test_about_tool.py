@@ -3,8 +3,6 @@ citable DOC sources, so self-description answers quote the running code's real f
 drift from deployed behavior."""
 from __future__ import annotations
 
-import pytest
-
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
