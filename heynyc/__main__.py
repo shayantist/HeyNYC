@@ -582,7 +582,7 @@ def _eval_run_metadata(model: str, results: list) -> dict:
     }
 
 
-async def _cmd_eval(model: str | None, 
+async def _cmd_eval(
     use_api_judge: bool,
     repeat: int = 1,
     out: str | None = None,
@@ -592,6 +592,7 @@ async def _cmd_eval(model: str | None,
     sample: int | None = None,
     seed: int = 0,
     run_all_cases: bool = False,
+    model: str | None = None,
 ) -> None:
     from datetime import timezone
     from pathlib import Path
