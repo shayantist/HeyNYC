@@ -214,12 +214,13 @@ def _record_agent_turn(session_id: str, model: str, result) -> None:
     )
 
 
-async def _cmd_chat(question: str) -> None:
+async def _cmd_chat(question: str, model: str | None = None) -> None:
+    # CLI --model wins when given; otherwise .env ALWAYS decides (owner rule 2026-07-21).
     from heynyc.modules.advisories.tools import current_awareness
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     agent = Agent(
-        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False),
+        registry, model=model or config.HEYNYC_MODEL, index=_load_retriever(required=False),
         notify_awareness=current_awareness, scope_gate=True,
     )
     result = await agent.run(question, reminders=_default_reminders())
@@ -451,7 +452,7 @@ def _screen_turn_options(text: str) -> dict:
     }
 
 
-async def _cmd_repl() -> None:
+async def _cmd_repl(model: str | None = None) -> None:
     """Interactive, streaming multi-turn chat, rich-rendered, Claude-Code-like."""
     from rich.console import Console, Group
     from rich.live import Live
@@ -468,7 +469,7 @@ async def _cmd_repl() -> None:
     from heynyc.modules.advisories.tools import current_awareness
 
     agent = Agent(
-        registry, model=config.HEYNYC_MODEL, index=_load_retriever(required=False),
+        registry, model=model or config.HEYNYC_MODEL, index=_load_retriever(required=False),
         approver=approver, notify_awareness=current_awareness, scope_gate=True,
     )
     convo = agent.conversation()
@@ -581,7 +582,7 @@ def _eval_run_metadata(model: str, results: list) -> dict:
     }
 
 
-async def _cmd_eval(
+async def _cmd_eval(model: str | None, 
     use_api_judge: bool,
     repeat: int = 1,
     out: str | None = None,
@@ -620,7 +621,7 @@ async def _cmd_eval(
     print(f"Running {len(cases)} eval case(s) across {len(registry.modules)} module(s)...")
 
     def factory():
-        return Agent(registry, model=config.HEYNYC_MODEL, index=retriever, scope_gate=True)
+        return Agent(registry, model=model or config.HEYNYC_MODEL, index=retriever, scope_gate=True)
 
     results = await run_all(factory, cases, reminders=_default_reminders())
     judge = None
@@ -684,9 +685,9 @@ async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool,
     print("\n" + render_bench(rows, safety_ids))
 
 
-def _run_repl() -> None:
+def _run_repl(model=None) -> None:
     try:
-        asyncio.run(_cmd_repl())
+        asyncio.run(_cmd_repl(model))
     except KeyboardInterrupt:
         pass
 
@@ -701,8 +702,10 @@ def main() -> None:
     isearch = sub.add_parser("index-search", help="query the index directly (no LLM)")
     isearch.add_argument("query")
     chat = sub.add_parser("chat", help="ask the agent a question (one-shot)")
+    chat.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
     chat.add_argument("question")
-    sub.add_parser("repl", help="interactive streaming chat (feels like Claude Code)")
+    repl = sub.add_parser("repl", help="interactive streaming chat (feels like Claude Code)")
+    repl.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
     cap = sub.add_parser("capabilities", help="print the capabilities table (generated from module manifests)")
     cap.add_argument("--markdown", action="store_true", help="emit a GitHub markdown table")
     cap.add_argument("--write-readme", dest="write_readme", action="store_true",
@@ -711,6 +714,7 @@ def main() -> None:
     sub.add_parser("outcomes", help="show the find->understand->apply funnel (who reached APPLY)")
     sub.add_parser("feedback", help="review user-flagged wrong answers (the error-feedback loop)")
     ev = sub.add_parser("eval", help="run the no-hallucination eval gate")
+    ev.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
     ev.add_argument(
         "--api-judge", dest="api_judge", action="store_true",
         help="also run the PAID API groundedness judge (a cross-family LLM call) for "
@@ -755,9 +759,9 @@ def main() -> None:
     elif args.command == "index-search":
         _cmd_index_search(args.query)
     elif args.command == "chat":
-        asyncio.run(_cmd_chat(args.question))
+        asyncio.run(_cmd_chat(args.question, model=args.model))
     elif args.command == "repl":
-        _run_repl()
+        _run_repl(getattr(args, "model", None))
     elif args.command == "capabilities":
         _cmd_capabilities(markdown=args.markdown, write_readme=args.write_readme)
     elif args.command == "stats":
@@ -777,7 +781,7 @@ def main() -> None:
             registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
             print(render_case_listing(registry))
             return
-        asyncio.run(_cmd_eval(use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
+        asyncio.run(_cmd_eval(model=args.model, use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
                               module=args.module, case_ids=args.case_ids,
                               tags=args.tags, sample=args.sample, seed=args.seed,
                               run_all_cases=args.run_all_cases))
