@@ -160,6 +160,20 @@ def _split(text: str, limit: int) -> list[str]:
     return chunks
 
 
+
+_CITE_ID = re.compile(r"\{cite:(S\d+)\}")
+
+
+def _link_markers(text: str, citations: dict) -> str:
+    """Console only: each inline {cite:Sn} becomes a clickable markdown link showing [Sn].
+    Escaped brackets keep the visible tag; the angle-bracket destination survives gov and
+    Socrata URLs full of ?, &, and #:~:text= fragments. Unknown ids pass through untouched."""
+    def sub(m):
+        cid = m.group(1)
+        url = (citations.get(cid) or {}).get("url", "")
+        return f"[\\[{cid}\\]](<{url}>)" if url else m.group(0)
+    return _CITE_ID.sub(sub, text)
+
 def render(result, channel: str = "whatsapp") -> list[str]:
     """Render the grounded, guard-checked `result` for delivery on `channel`.
 
@@ -172,7 +186,7 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         # The REPL is the rich surface: inline {cite:Sn} markers STAY visible (texters lose
         # them only because SMS/WhatsApp can't render them usefully), markdown stays raw for
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
-        body = _clean_body_links(result.text, result.citations)
+        body = _link_markers(_clean_body_links(result.text, result.citations), result.citations)
     else:
         text = _clean_body_links(_strip_markers(result.text), result.citations)
         body = _plain_markup(text) if channel.startswith("sms") else _whatsapp_markup(text)
@@ -183,8 +197,10 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     cited = used_citations(result.text, result.citations)
     if channel == "console":
         rows = [
-            f"  [{cid}] {c.get('title') or c.get('url', '')} - {c.get('url', '')}"
+            f"  [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
             for cid, c in cited.items()
+            # or True is LOAD-BEARING post-linkification: the citation URL now appears inline
+            # (inside the link destination), so inline_urls would drop every cited source here.
             if _canonical_url(c.get("url", "")) not in inline_urls or True
         ]
         footer = "Sources:\n" + "\n".join(rows) if rows else ""
