@@ -1,6 +1,5 @@
 #!/bin/sh
 set -eu
-set -m
 
 cd "$(dirname "$0")/.."
 
@@ -28,16 +27,22 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
-stop_group() {
+stop_one() {
+    # Direct TERM to the child (uv forwards signals to python), then sweep grandchildren.
+    # Group kills (kill -- -pgid) under non-interactive sh can hit the script's OWN group
+    # and die mid-cleanup, orphaning the server on port 8791 (observed live: Ctrl-C left
+    # the server running until a manual kill -9 by port).
     pid="$1"
-    [ -z "$pid" ] || kill -TERM -- -"$pid" 2>/dev/null || true
-    [ -z "$pid" ] || wait "$pid" 2>/dev/null || true
+    [ -z "$pid" ] && return 0
+    kill -TERM "$pid" 2>/dev/null || true
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
 }
 
 cleanup() {
     trap - EXIT INT TERM
-    stop_group "${NGROK_PID:-}"
-    stop_group "${SERVER_PID:-}"
+    stop_one "${NGROK_PID:-}"
+    stop_one "${SERVER_PID:-}"
 }
 trap cleanup EXIT INT TERM
 

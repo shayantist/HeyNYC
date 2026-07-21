@@ -15,11 +15,12 @@ def test_demo_launcher_uses_stable_domain_and_production_sender():
     assert "--port 8791" in text
     assert " 8791" in text
     assert "127.0.0.1:8791/health" in text
-    assert "set -m" in text
-    assert 'kill -TERM -- -"$pid"' in text
+    assert "set -m" not in text  # group kills under sh strike the script's own group (af7c044)
+    assert "pkill -TERM -P" in text  # direct TERM + child sweep is the shutdown mechanism
+    assert 'kill -TERM "$pid"' in text  # direct child kill, uv forwards to python (ec54aed)
     assert 'wait "$pid"' in text
-    assert 'stop_group "${NGROK_PID:-}"' in text
-    assert 'stop_group "${SERVER_PID:-}"' in text
+    assert 'stop_one "${NGROK_PID:-}"' in text
+    assert 'stop_one "${SERVER_PID:-}"' in text
     assert 'kill -0 "$NGROK_PID"' in text
     subprocess.run(["sh", "-n", script], check=True)
 
