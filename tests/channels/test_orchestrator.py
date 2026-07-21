@@ -325,7 +325,12 @@ async def test_delete_removes_session_draft_and_flags_and_next_message_starts_fr
 
     deps.agent = Agent(Registry([]), tools={}, complete_fn=complete_fn, model="fake")
     await handle(_msg(text="hello again", mid="d3"), FakeReplier(), deps)
-    assert not any("cooling centers" in str(m.get("content", "")) for m in seen)
+    # No earlier conversation turn reaches the model. Exclude the system prompt: its standing
+    # composition guidance legitimately names "cooling centers near their route" as a worked example.
+    assert not any(
+        "cooling centers" in str(m.get("content", ""))
+        for m in seen if m.get("role") != "system"
+    )
 
 
 async def test_non_yes_after_delete_cancels_and_runs_as_a_normal_turn(tmp_path):

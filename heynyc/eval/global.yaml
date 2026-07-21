@@ -5,19 +5,21 @@
 
 - id: convo_event_followup_keeps_thread
   turns:
-    - "What to prepare for tomorrows WC game"
-    - "WC GAME"
+    - "any street fairs or markets this weekend?"
+    - "which of those are in brooklyn?"
   expect_tools: [whats_on_events]
   abstain: false
   capability: conversation
-  tags: [F051, F052, conversation, general-chat, must-win]
+  tags: [conversation, general-chat, must-win]
   utility_criterion: >-
-    Keep the World Cup thread from the prior turn instead of treating the follow-up as a cold
-    start. Commit to a grounded reading of which event the resident means, correctly dated for
-    tomorrow, or ask one NEW clarification. Never repeat a clarification already asked, never
-    demand details the resident already gave, and never present an event on a different date
-    as the resident's event without saying so plainly.
-  notes: The F052 goldfish regression, frozen as a permanent conversational case.
+    The second turn narrows the FIRST turn's listings: it must answer from the events catalog
+    (the same lane that produced the shortlist), filtered to Brooklyn, keeping cited listings
+    with dates and links. It must not restart discovery through generic web search, re-ask what
+    the resident means, or lose the thread's subject.
+  notes: >-
+    Rewritten 2026-07-21 to a date-durable subject. The original WC-game phrasing expired with
+    the tournament and started failing on temporal reality rather than thread-keeping.
+
 
 - id: convo_clarification_narrows
   turns:
@@ -58,11 +60,13 @@
   capability: conversation
   tags: [F047, F050, conversation, general-chat, must-win]
   utility_criterion: >-
-    The first turn's prediction denial must not poison the second: watching a game in NYC is
-    squarely in scope, so the follow-up gets grounded watch options with dates, places, and
-    direct links, not another denial and not a lecture about the earlier question.
-  notes: A denied turn followed by a legitimate local reframe is exactly the recovery path
-    the warm denial copy invites; the scope gate must honor its own invitation.
+    The first turn cannot be predicted, so it gets a graceful, warm decline that then deepens into
+    something useful (what the match is, or offering to find where to watch it in NYC), never a canned
+    scope wall. The second turn gets grounded watch options with dates, places, and direct links. The
+    prediction it could not answer must not poison the local reframe: no second refusal, no lecture
+    about the earlier question.
+  notes: RULED 2026-07-21, denial is a reason not a gate. A prediction becomes a graceful decline that
+    deepens, and a legitimate local reframe right after is answered from the conversation.
 
 - id: convo_new_location_replaces_old
   turns:

@@ -231,62 +231,31 @@ async def test_abstains_with_no_tools(empty_registry):
     assert not result.hit_max_iters
 
 
-async def test_scope_denial_stops_before_main_model_or_tools(empty_registry):
+async def test_out_of_scope_turn_reaches_answer_model_no_canned_wall(empty_registry):
+    # RULED (2026-07-21, the denial redesign / HYBRID): denial is not a gate. The preflight carries
+    # no verdict and no longer swaps the response, so even a turn the old gate would have denied now
+    # reaches the answer model, which writes the reply carried by the ambient values in the standing
+    # prompt. No canned scope wall, no early return, no tools suppressed.
     model_calls = 0
-    tool_calls = 0
 
-    async def deny_scope(user_message, history):
-        assert user_message == "Is Taiwan independent?"
-        assert history == []
-        return False
+    async def checklist_scope(user_message, history):
+        from heynyc.core.agent import ScopeResult
+        return ScopeResult(model="test")
 
     async def complete(messages, tool_schemas):
         nonlocal model_calls
         model_calls += 1
-        return _assistant(content="This must not run.")
-
-    async def search(args, ctx):
-        nonlocal tool_calls
-        tool_calls += 1
-        return "This must not run."
+        return _assistant(content="Here is a careful, grounded answer.")
 
     agent = Agent(
-        empty_registry,
-        tools={"web_search": Tool("web_search", "", {}, search)},
-        complete_fn=complete,
-        scope_fn=deny_scope,
+        empty_registry, tools={}, complete_fn=complete, scope_fn=checklist_scope,
     )
 
     result = await agent.run("Is Taiwan independent?")
 
-    from heynyc.core.agent import OUT_OF_SCOPE_FALLBACK
-
-    assert result.text == OUT_OF_SCOPE_FALLBACK
-    assert "NYC" in result.text
-    assert result.iterations == 0
-    assert result.tool_calls_made == []
-    assert result.citations == {}
-    assert model_calls == 0
-    assert tool_calls == 0
-
-
-def test_ordinary_scope_denial_copy_is_warm_and_stays_fail_closed():
-    from heynyc.core.agent import (
-        OUT_OF_SCOPE_FALLBACK,
-        RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK,
-    )
-    from heynyc.eval.trace import classify_outcome
-
-    copy = OUT_OF_SCOPE_FALLBACK
-    assert "I'm built to" not in copy
-    assert "NYC" in copy
-    assert "tell me" in copy.lower()
-    assert "equal dignity" not in copy
-    assert classify_outcome(copy, "success") == "redirected"
-
-    values = RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK
-    assert "equal dignity" in values
-    assert copy != values
+    assert result.text == "Here is a careful, grounded answer."
+    assert model_calls == 1
+    assert result.iterations == 1
 
 
 def test_scope_prompt_defaults_practical_event_planning_to_nyc():
@@ -301,71 +270,53 @@ def test_scope_prompt_defaults_practical_event_planning_to_nyc():
     assert "shorthand" in prompt
 
 
-async def test_rights_sensitive_scope_denial_declares_civic_values(empty_registry):
-    async def deny_rights_scope(user_message, history):
-        return "deny_rights"
-
-    agent = Agent(
-        empty_registry,
-        tools={},
-        complete_fn=_scripted(_assistant(content="This must not run.")),
-        scope_fn=deny_rights_scope,
-    )
-
-    result = await agent.run("Is Israel committing genocide?")
-
-    assert "equal dignity" in result.text
-    assert "Palestinian and Jewish safety" in result.text
-    assert "freedom from discrimination" in result.text
-    assert "civil liberties" in result.text
-    assert "due process" in result.text
-    assert "equal access to government" in result.text
-    assert result.iterations == 0
-
-
-async def test_scope_classifier_error_fails_closed(empty_registry):
+async def test_scope_classifier_error_is_noop_and_turn_proceeds(empty_registry):
+    # A scope-classifier exception has nothing to fail closed on now: there is no verdict. The turn
+    # proceeds to the answer model, while the scope telemetry is still recorded and stays unpriceable
+    # (marked unpriced, never billed as free).
     async def broken_scope(user_message, history):
         raise TimeoutError("classifier timed out")
 
-    complete = _scripted(_assistant(content="This must not run."))
+    complete = _scripted(_assistant(content="Here is help with your NYC question."))
     agent = Agent(empty_registry, tools={}, complete_fn=complete, scope_fn=broken_scope)
 
     result = await agent.run("Is Israel committing genocide?")
 
-    assert "NYC" in result.text
-    assert result.iterations == 0
-    assert result.usage["n_model_calls"] == 1
+    assert result.text == "Here is help with your NYC question."   # reached the answer model
+    assert result.iterations == 1
     assert result.usage["scope_model"] == "unknown/injected-scope"
-    assert result.usage["cost_usd"] is None
+    assert result.usage["cost_usd"] is None                        # scope is unpriceable
     assert result.usage["cost_status"] == "unpriced"
 
 
-async def test_default_scope_classifier_rejects_malformed_structured_output(
+async def test_default_scope_classifier_tolerates_malformed_structured_output(
     empty_registry, monkeypatch,
 ):
+    # Malformed scope output is fail-safe, not fatal: there is no verdict to fail closed on, so the
+    # classifier returns an empty signal (no modules, no event_turn) and the turn still reaches the
+    # answer model. The schema itself no longer carries an allow/deny verdict.
     captured = {}
 
     async def malformed_completion(**kwargs):
         captured.update(kwargs)
-        message = SimpleNamespace(content='{"decision":"maybe"}', refusal=None, parsed=None)
+        message = SimpleNamespace(content='{"event_turn":"sideways"}', refusal=None, parsed=None)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
             usage={"prompt_tokens": 7, "completion_tokens": 2},
         )
 
     monkeypatch.setattr("litellm.acompletion", malformed_completion)
-    agent = Agent(empty_registry, tools={}, scope_gate=True)
+    agent = Agent(empty_registry, tools={})
 
-    result = await agent.run("Is Taiwan independent?")
+    result = await agent._classify_scope("Is Taiwan independent?", [])
 
-    assert result.iterations == 0
-    assert result.usage["scope_input_tokens"] == 7
-    assert result.usage["scope_output_tokens"] == 2
-    assert result.usage["n_model_calls"] == 1
-    assert result.usage["cost_status"] != "priced" or result.usage["cost_usd"] != 0
-    assert captured["response_format"].model_json_schema()["properties"]["decision"]["enum"] == [
-        "allow", "deny", "deny_rights",
-    ]
+    assert result.event_turn is None            # unparseable -> empty signal, fail-safe
+    assert result.modules == ()
+    assert (result.input_tokens, result.output_tokens) == (7, 2)
+    schema_props = captured["response_format"].model_json_schema()["properties"]
+    assert "decision" not in schema_props       # the verdict field is gone
+    assert "event_turn" in schema_props         # checklist + event signal remain
+    assert "modules" in schema_props
     assert captured["stream"] is False
 
 
@@ -376,7 +327,7 @@ async def test_default_scope_classifier_reports_event_turn_signal(
     owner ruling: generalize, no hardcoding). It is now a tri-state: none/discovery/preparation."""
     async def flagged_completion(**kwargs):
         message = SimpleNamespace(
-            content='{"decision":"allow","event_turn":"preparation"}', refusal=None, parsed=None,
+            content='{"event_turn":"preparation"}', refusal=None, parsed=None,
         )
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
@@ -388,7 +339,6 @@ async def test_default_scope_classifier_reports_event_turn_signal(
 
     result = await agent._classify_scope("what should i bring to the game on 7/18", [])
 
-    assert result.decision == "allow"
     assert result.event_turn == "preparation"
 
     from heynyc.core.agent import _SCOPE_SYSTEM_PROMPT
@@ -396,7 +346,7 @@ async def test_default_scope_classifier_reports_event_turn_signal(
     assert "event_turn" in _SCOPE_SYSTEM_PROMPT
 
 
-def test_scope_decision_schema_accepts_event_turn_tristate():
+def test_scope_schema_accepts_event_turn_tristate():
     """F058: the scope schema carries a closed tri-state event signal. Absent parses as None,
     which the run flow reads as 'preflight did not say' and falls back to the regex floor."""
     import pydantic
@@ -404,14 +354,14 @@ def test_scope_decision_schema_accepts_event_turn_tristate():
     from heynyc.core.agent import _ScopeDecision
 
     assert _ScopeDecision.model_validate_json(
-        '{"decision":"allow","event_turn":"discovery"}'
+        '{"event_turn":"discovery"}'
     ).event_turn == "discovery"
     assert _ScopeDecision.model_validate_json(
-        '{"decision":"allow","event_turn":"preparation"}'
+        '{"event_turn":"preparation"}'
     ).event_turn == "preparation"
-    assert _ScopeDecision.model_validate_json('{"decision":"allow"}').event_turn is None
+    assert _ScopeDecision.model_validate_json('{}').event_turn is None
     with pytest.raises(pydantic.ValidationError):
-        _ScopeDecision.model_validate_json('{"decision":"allow","event_turn":"maybe"}')
+        _ScopeDecision.model_validate_json('{"event_turn":"maybe"}')
 
 
 async def test_omitted_scope_flag_falls_back_to_regex_detection(empty_registry):
@@ -420,7 +370,7 @@ async def test_omitted_scope_flag_falls_back_to_regex_detection(empty_registry):
     from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK, ScopeResult
 
     async def flagless_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test")
+        return ScopeResult(model="test")
 
     packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water")
     agent = Agent(
@@ -439,7 +389,7 @@ async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
     uncited = _assistant(content="Bring a pencil, a calculator, and your student ID.")
 
     async def exam_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_turn="none")
+        return ScopeResult(model="test", event_turn="none")
 
     exam_agent = Agent(
         empty_registry, tools={}, complete_fn=_scripted(uncited), scope_fn=exam_scope,
@@ -450,7 +400,7 @@ async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
     assert "pencil" in result.text
 
     async def event_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_turn="preparation")
+        return ScopeResult(model="test", event_turn="preparation")
 
     packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water")
     event_agent = Agent(
@@ -471,7 +421,7 @@ async def test_discovery_event_turn_gets_no_preparation_reminder(empty_registry)
     seen = []
 
     async def discovery_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_turn="discovery")
+        return ScopeResult(model="test", event_turn="discovery")
 
     async def events_tool(args, ctx):
         return "listings"
@@ -513,7 +463,7 @@ async def test_discovery_event_turn_forces_advisory_check_by_meaning(
         return "Current notifications checked"
 
     async def discovery_scope(user_message, history):
-        return ScopeResult(decision="allow", model="test", event_turn="discovery")
+        return ScopeResult(model="test", event_turn="discovery")
 
     async def model_stream(messages, tool_schemas, forced_tool=None):
         forced.append(forced_tool)
@@ -589,7 +539,7 @@ async def test_scope_classifier_returns_module_checklist(empty_registry, monkeyp
     async def flagged_completion(**kwargs):
         captured.update(kwargs)
         message = SimpleNamespace(
-            content='{"decision":"allow","modules":["events","advisories","not_a_module"]}',
+            content='{"modules":["events","advisories","not_a_module"]}',
             refusal=None, parsed=None,
         )
         return SimpleNamespace(
@@ -603,7 +553,6 @@ async def test_scope_classifier_returns_module_checklist(empty_registry, monkeyp
 
     result = await agent._classify_scope("whats the wc game and will it storm", [])
 
-    assert result.decision == "allow"
     assert result.modules == ("events", "advisories")  # unknown names dropped fail-safe
     system_text = captured["messages"][0]["content"]
     assert "events:" in system_text  # module list with meaning-based definitions
@@ -615,7 +564,7 @@ async def test_scope_module_checklist_is_recorded_not_routed(empty_registry):
 
     async def checklist_scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test", modules=("events", "food_pantries"),
+            model="test", modules=("events", "food_pantries"),
         )
 
     complete = _scripted(_assistant(content="An answer."))
@@ -630,13 +579,13 @@ async def test_scope_module_checklist_is_recorded_not_routed(empty_registry):
 async def test_default_scope_classifier_retries_once_on_empty_output(
     empty_registry, monkeypatch,
 ):
-    """Observed live: the scope model can return empty content transiently. One retry, then
-    fail closed, and the resident-facing path must never see a traceback for it."""
+    """Observed live: the scope model can return empty content transiently. One retry, then a quiet
+    empty signal, and the resident-facing path must never see a traceback for it."""
     calls = {"n": 0}
 
     async def flaky_completion(**kwargs):
         calls["n"] += 1
-        content = "" if calls["n"] == 1 else '{"decision":"allow"}'
+        content = "" if calls["n"] == 1 else '{"event_turn":"discovery"}'
         message = SimpleNamespace(content=content, refusal=None, parsed=None)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
@@ -648,12 +597,12 @@ async def test_default_scope_classifier_retries_once_on_empty_output(
 
     result = await agent._classify_scope("tomorrows wc", [])
 
-    assert result.decision == "allow"
+    assert result.event_turn == "discovery"    # the retry's parsed signal survives
     assert calls["n"] == 2
     assert (result.input_tokens, result.output_tokens) == (10, 2)
 
 
-async def test_default_scope_classifier_empty_after_retry_fails_closed(
+async def test_default_scope_classifier_empty_after_retry_returns_empty_signal(
     empty_registry, monkeypatch,
 ):
     calls = {"n": 0}
@@ -671,24 +620,28 @@ async def test_default_scope_classifier_empty_after_retry_fails_closed(
 
     result = await agent._classify_scope("tomorrows wc", [])
 
-    assert result.decision == "deny"
+    # No verdict to fail closed on: an empty reply yields an empty signal, nothing more.
+    assert result.event_turn is None
+    assert result.modules == ()
     assert calls["n"] == 2
 
 
 async def test_default_scope_classifier_call_error_is_unpriceable_not_free(
     empty_registry, monkeypatch,
 ):
+    # A scope-call failure is a no-op for behavior, but not free for accounting: the classifier's own
+    # catch marks it unpriceable (never billed as zero), and the turn proceeds to the answer model.
     async def failed_completion(**kwargs):
         raise TimeoutError("scope provider timed out")
 
     monkeypatch.setattr("litellm.acompletion", failed_completion)
-    agent = Agent(empty_registry, tools={}, scope_gate=True)
+    complete = _scripted(_assistant(content="Here's a grounded answer."))
+    agent = Agent(empty_registry, tools={}, complete_fn=complete, scope_gate=True)
 
     result = await agent.run("Is Taiwan independent?")
 
-    assert result.iterations == 0
+    assert result.text == "Here's a grounded answer."   # reached the answer model
     assert result.usage["scope_model"]
-    assert result.usage["n_model_calls"] == 1
     assert result.usage["cost_usd"] is None
     assert result.usage["cost_status"] == "unpriced"
 
@@ -701,7 +654,7 @@ async def test_scope_classifier_omits_openai_reasoning_param_for_other_providers
     async def classified_completion(**kwargs):
         captured.update(kwargs)
         message = SimpleNamespace(
-            content='{"decision":"allow"}', refusal=None, parsed=None,
+            content='{}', refusal=None, parsed=None,
         )
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
@@ -713,7 +666,6 @@ async def test_scope_classifier_omits_openai_reasoning_param_for_other_providers
     agent = Agent(empty_registry, tools={})
 
     result = await agent._classify_scope("Where is the nearest pantry?", [])
-    assert result.decision == "allow"
     assert (result.input_tokens, result.output_tokens) == (7, 2)
     assert "reasoning_effort" not in captured
 
@@ -2068,7 +2020,7 @@ async def test_scope_usage_is_included_without_pricing_it_as_answer_model(empty_
 
     async def scope(_message, _history):
         return ScopeResult(
-            decision="allow", model="openai/gpt-5.4-nano",
+            model="openai/gpt-5.4-nano",
             input_tokens=11, output_tokens=2, cost_usd=0.0003,
         )
 
@@ -3019,7 +2971,7 @@ async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeyp
 
     async def scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test",
+            model="test",
             modules=("housing",), situations=("active_lockout",),
         )
 
@@ -3579,7 +3531,7 @@ async def test_scope_classifier_captures_cached_input_tokens(empty_registry, mon
     # Cache-layout fix: the scope call's static prefix caches on OpenAI; capture its cached read
     # (prompt_tokens_details.cached_tokens) into ScopeResult the same way the answer stream does.
     async def cached_completion(**kwargs):
-        message = SimpleNamespace(content='{"decision":"allow"}', refusal=None, parsed=None)
+        message = SimpleNamespace(content='{}', refusal=None, parsed=None)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
             usage=SimpleNamespace(
@@ -3593,7 +3545,6 @@ async def test_scope_classifier_captures_cached_input_tokens(empty_registry, mon
 
     result = await agent._classify_scope("where's the nearest pantry?", [])
 
-    assert result.decision == "allow"
     assert result.cached_input_tokens == 1024
 
 
@@ -3602,7 +3553,7 @@ async def test_scope_cached_tokens_flow_into_turn_cache_telemetry(empty_registry
 
     async def scope(_message, _history):
         return ScopeResult(
-            decision="allow", model="openai/gpt-5.4-mini",
+            model="openai/gpt-5.4-mini",
             input_tokens=1200, output_tokens=2, cost_usd=0.0001, cached_input_tokens=1024,
         )
 
@@ -3672,7 +3623,7 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
 
     async def situation_scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test",
+            model="test",
             modules=("housing",), situations=("active_lockout",),
         )
 
@@ -3722,7 +3673,7 @@ async def test_cross_module_situation_turn_never_narrows_tools(monkeypatch):
 
     async def cross_scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test",
+            model="test",
             modules=("housing", "benefits"), situations=("active_lockout",),
         )
 
@@ -3769,7 +3720,7 @@ async def test_checked_snap_work_rule_situation_forces_manifest_retrieval(monkey
 
     async def situation_scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test",
+            model="test",
             modules=("benefits",), situations=("snap_work_rules",),
         )
 
@@ -3820,7 +3771,7 @@ async def test_cross_module_snap_work_rule_situation_never_narrows_tools(monkeyp
 
     async def cross_scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test",
+            model="test",
             modules=("benefits", "housing"), situations=("snap_work_rules",),
         )
 
@@ -3863,7 +3814,7 @@ async def test_ordinary_snap_apply_question_does_not_trigger_work_rule_machinery
 
     async def plain_scope(user_message, history):
         return ScopeResult(
-            decision="allow", model="test",
+            model="test",
             modules=("benefits",), situations=(),  # ordinary apply, no situation
         )
 
@@ -3884,3 +3835,44 @@ async def test_ordinary_snap_apply_question_does_not_trigger_work_rule_machinery
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
     # The work-rule reminder is unique to the situation and must never fire on a plain apply turn.
     assert "This turn is about SNAP work-rule recovery" not in prompt
+
+
+def test_agent_default_model_comes_from_config(monkeypatch):
+    """Owner ruling 2026-07-21 ('just use the .env value and keep it consistent'): the agent's
+    default model is config.HEYNYC_MODEL, the single source of truth. The old hardcoded Sonnet
+    default made dev sessions (which build an Agent without passing a model) silently run at
+    ~3.3x the production model's price."""
+    from heynyc.core import config as core_config
+
+    async def complete(messages, tool_schemas):
+        return _assistant(content="ok")
+
+    monkeypatch.setattr(core_config, "HEYNYC_MODEL", "sentinel/from-config")
+    agent = Agent(Registry([]), tools={}, complete_fn=complete)
+    assert agent.model == "sentinel/from-config"
+    # An explicit model still wins over the config default.
+    explicit = Agent(Registry([]), tools={}, complete_fn=complete, model="x/explicit")
+    assert explicit.model == "x/explicit"
+
+
+async def test_recorded_turn_cost_prices_answer_cached_input_at_reduced_rate():
+    """Cache-aware accounting end to end: the answer stream's cached prompt tokens are billed at
+    the model's cache-read rate, so the turn's recorded cost_usd is the real (lower) bill, not the
+    full-rate overstatement now that caching engages 60-72% of the prefix."""
+    import litellm
+
+    litellm.register_model({
+        "heynyc-cachetest/model": {
+            "input_cost_per_token": 1e-05, "cache_read_input_token_cost": 1e-06,
+            "output_cost_per_token": 3e-05, "litellm_provider": "openai", "mode": "chat",
+        }
+    })
+
+    async def answer(messages, tool_schemas):
+        yield {"type": "usage", "input_tokens": 1000, "output_tokens": 200, "cached_input_tokens": 600}
+        yield {"type": "message", "message": _assistant(content="done")}
+
+    agent = Agent(Registry([]), tools={}, model="heynyc-cachetest/model", stream_fn=answer)
+    result = await agent.run("help")
+    # 400 uncached @1e-5 + 600 cached @1e-6 + 200 out @3e-5 = 0.0106 (full rate would be 0.016)
+    assert abs(result.usage["cost_usd"] - 0.0106) < 1e-9

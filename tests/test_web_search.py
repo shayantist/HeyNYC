@@ -269,3 +269,16 @@ async def test_handler_does_not_annotate_unchanged_queries():
 
     assert seen == ["world cup schedule"]
     assert "Searched as" not in out
+
+
+def test_web_search_defers_nyc_event_listings_to_the_catalog():
+    """7/8 tool-choice fix (convo_event_followup_keeps_thread): an events follow-up must route to
+    whats_on_events, not web_search. web_search stays the orientation / identity-resolution /
+    long-tail tool and hands NYC event listings to the catalog by name; the orientation-first rule
+    is preserved."""
+    tools = {t.name: t for t in web_search_tools(["nyc.gov"])}
+    desc = tools["web_search"].description.lower()
+    assert "orientation" in desc and "first" in desc      # orientation-first rule intact
+    assert "long-tail" in desc                            # long-tail facts stay here
+    assert "whats_on_events" in desc                      # defers NYC event listings to the catalog
+    assert "a specific event this weekend" not in desc    # no longer advertises event listings

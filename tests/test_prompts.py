@@ -157,6 +157,44 @@ def test_system_prompt_same_discipline_in_every_language():
     assert "local law 34" in low or "20-840" in low
 
 
+def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
+    # RULED (2026-07-21): the equal-dignity values baseline is ambient in the standing prompt,
+    # carried into every generated reply, not trapped in a canned denial template. Owner constraint:
+    # NO named groups (legal exposure); open-ended in equal dignity, justice, and civil rights, and
+    # never taking sides in or adjudicating a contested political or armed conflict.
+    from heynyc.core.prompts import build_system_prompt_tiers
+
+    stable, volatile = build_system_prompt_tiers(Registry([]))
+    low = stable.lower()
+    assert "equal dignity" in low
+    assert "civil rights" in low
+    assert "never take sides" in low
+    assert "contested" in low
+    # No named groups anywhere in the values baseline.
+    assert "palestinian" not in low
+    assert "jewish" not in low
+    assert "israel" not in low
+    # Ambient in the cacheable stable prefix, not the volatile per-turn suffix.
+    assert "equal dignity" not in volatile.lower()
+
+
+def test_system_prompt_teaches_per_turn_composition_in_stable_tier():
+    # HYBRID (RULED 2026-07-21): composition guidance with the worked commute example lands in the
+    # cacheable stable tier; it unlocks advisories+closures composition without a forced lane, and
+    # keeps the retrieve-first floor for high-stakes situations in any language.
+    from heynyc.core.prompts import build_system_prompt_tiers
+
+    stable, volatile = build_system_prompt_tiers(Registry([]))
+    low = stable.lower()
+    assert "tool menu" in low
+    assert "commute" in low
+    assert "current advisories and disruptions" in low
+    assert "cooling centers near their route" in low
+    assert "official guidance first, in any language" in low
+    # Stable, not volatile.
+    assert "cooling centers near their route" not in volatile.lower()
+
+
 # --- Change 1: progressive disclosure of the per-module detailed blurbs ---------------------------
 
 def test_router_matches_module_on_curated_keyword():

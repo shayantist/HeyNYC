@@ -849,3 +849,15 @@ async def test_stuffed_keyword_zeroing_permitted_lane_falls_back_unkeyworded(mon
 
     assert "Inwood Greenmarket" in out
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
+
+
+def test_whats_on_events_owns_listings_and_thread_followups():
+    """7/8 tool-choice fix: whats_on_events is THE source for what's on in NYC (listings, watch
+    parties, street events) INCLUDING follow-ups within an events thread, so the model does not
+    drift to web_search mid-thread."""
+    from heynyc.modules.events.tools import get_tools
+
+    desc = get_tools()[0].description.lower()
+    assert "watch part" in desc                # watch parties are in-scope for the catalog
+    assert "follow-up" in desc                 # follow-ups inside an events thread stay here
+    assert "web_search" in desc                # explicitly tells the model to stay, not switch

@@ -106,28 +106,13 @@ EVENT_PREPARATION_ABSTAIN_FALLBACK = (
     "pull the current details."
 )
 
-# Deterministic ordinary scope denial (F047). Fail-closed by design: the answer model never runs
-# on a denied turn, so this exact copy is what the resident reads. Keep it warm and concrete, and
-# keep the phrase "I can help with NYC" intact: the eval outcome classifier keys on it to mark the
-# turn `redirected` (see `heynyc/eval/trace.py::_SCOPE_MARKERS`).
-OUT_OF_SCOPE_FALLBACK = (
-    "Honestly, that one's outside what I know well enough to answer, so I'd rather not guess. "
-    "I can help with NYC services and benefits, food, housing, health care, getting around, "
-    "city events, and city alerts. If any part of this touches your life in NYC, tell me that "
-    "part and I'll help you find a grounded next step."
-)
-RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK = (
-    "HeyNYC stands for equal dignity and safety, including Palestinian and Jewish safety, "
-    "freedom from discrimination, civil liberties, due process, and equal access to government. "
-    "I can't responsibly settle that broader question from NYC civic sources. If it affects you "
-    "in NYC, tell me the concrete local need and I'll help find an official, grounded next step."
-)
-
-
+# The scope preflight is a CHECKLIST, not a gate (RULED 2026-07-21, the denial redesign / HYBRID):
+# it no longer returns an allow/deny verdict and no longer swaps the response. Every turn reaches the
+# answer model, which writes the reply carried by the ambient values in the standing prompt. What the
+# preflight still provides: the module/situation checklist and the event signal (below).
 class _ScopeDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: Literal["allow", "deny", "deny_rights"]
     # Semantic event signal (F046/F053/F058 family), a tri-state read by meaning, not a phrase
     # list: "preparation" plans around one dated event (resolve identity before advice),
     # "discovery" browses what is on or which event is happening (broad-shortlist treatment),
@@ -146,48 +131,46 @@ class _ScopeDecision(BaseModel):
     situations: list[str] = []
 
 
-_SCOPE_SYSTEM_PROMPT = """You are the fail-closed scope gate for HeyNYC.
+_SCOPE_SYSTEM_PROMPT = """You are the preflight classifier for HeyNYC. Read the conversation and
+describe the latest turn for the assistant that will answer it: which service modules and situations
+it touches, and whether it is about a dated public event. You do not decide whether to answer, and
+you never swap the reply; every turn is answered.
 
-Allow a turn only when the conversation is about New York City civic life: finding, understanding,
-or using public services, laws, benefits, official data, public places, transportation, alerts,
-community resources, or events in NYC. Also allow greetings, questions about HeyNYC itself, and
-short follow-ups whose meaning is in scope only when read with the conversation.
+HeyNYC is about New York City civic life: finding, understanding, or using public services, laws,
+benefits, official data, public places, transportation, alerts, community resources, or events in
+NYC. Greetings, questions about HeyNYC itself, and short follow-ups whose meaning is clear only when
+read with the conversation belong here too.
 
 HeyNYC serves New Yorkers. Treat an ordinary public-service or civic-help request as concerning the
 user's NYC situation unless the conversation places it elsewhere. Do not require the user to repeat
 NYC or New York in every turn.
 
-Treat practical event-attendance planning as concerning NYC unless the conversation places the event
+Read practical event-attendance planning as concerning NYC unless the conversation places the event
 elsewhere. This includes preparing for, getting to, entering, or staying safe at a game, concert,
-festival, parade, watch party, or other public event. Allow the planning turn when the event name is
-abbreviated or ambiguous so the assistant can retrieve or clarify it. Residents often write in texting
-shorthand: read abbreviations like tm, tmrw, tn, or wknd as dates, and read an initial-letter or
-shortened event name as a resolvable public event when the surrounding words ask for practical local
-help. A very short message that pairs a date shorthand with an abbreviated or unexplained event name,
-even just initials, is usually a resident asking for practical local help, not trivia; allow it so the
-assistant can resolve or clarify it. Apply the same reading when the message is nothing but that
-date and abbreviation, with no other words: a bare fragment like a date plus initials is a resident's
-shorthand ask, and the assistant will clarify it, so allow rather than deny. This does not include predictions or
-sports trivia with no practical NYC connection. An event-identity question — which event is, was,
-or will be happening — is in scope regardless of TENSE, especially about an event this conversation
-already discussed; asking what game happened today is identity, not trivia. Results, scores, and
-winner questions remain out of scope.
+festival, parade, watch party, or other public event. Read a planning turn as event preparation when
+the event name is abbreviated or ambiguous so the assistant can retrieve or clarify it. Residents
+often write in texting shorthand: read abbreviations like tm, tmrw, tn, or wknd as dates, and read an
+initial-letter or shortened event name as a resolvable public event when the surrounding words ask for
+practical local help. A very short message that pairs a date shorthand with an abbreviated or
+unexplained event name, even just initials, is usually a resident asking for practical local help,
+not trivia, and the assistant will resolve or clarify it. Apply the same reading when the message is
+nothing but that date and abbreviation, with no other words: a bare fragment like a date plus initials
+is a resident's shorthand ask. This does not include predictions or sports trivia with no practical
+NYC connection. An event-identity question, which event is, was, or will be happening, concerns a
+public event regardless of TENSE, especially about an event this conversation already discussed;
+asking what game happened today is identity, not trivia. Results, scores, and winner questions are
+not event attendance.
 
-State, federal, or global matters are in scope only when the user is asking about their practical
-effect on a New Yorker, an NYC service, or NYC civic life. Unrelated general knowledge, opinion,
-and politics are out of scope. Do not treat an official government source as proof that a question
-is in scope. For an out-of-scope question about human rights, war, political violence, identity,
-discrimination, civil liberties, sovereignty, or contested statehood, return deny_rights so the
-assistant can state its civic values without pretending to adjudicate the broader dispute. Judge
-meaning, not keywords, language, country, or viewpoint. Uncertainty cuts two ways: when the
-SUBJECT may be outside NYC civic life, deny; but when the subject is plausibly the resident's own
-life in the city (their work, home, block, kids, a hearing or appointment they must get through,
-or getting to and from things, including a regional event reached on the transit New Yorkers use
-even when the venue sits outside the city) and only their NEED is vague or casually worded, allow
-it so the assistant can ask one clarifying question. Vagueness or slang is never by itself a
-reason to deny. A short follow-up that is in scope when read with the
-conversation stays allowed, including a practical NYC reframe right after you denied the previous
-turn: decide it from the conversation, not from the prior denial.
+State, federal, or global matters concern NYC when the user is asking about their practical effect on
+a New Yorker, an NYC service, or NYC civic life. Unrelated general knowledge, opinion, and politics do
+not. Do not treat an official government source as proof that a question concerns NYC. When the
+subject is plausibly the resident's own life in the city (their work, home, block, kids, a hearing or
+appointment they must get through, or getting to and from things, including a regional event reached
+on the transit New Yorkers use even when the venue sits outside the city), read it as concerning NYC
+even when only their need is vague or casually worded. Judge meaning, not keywords, language, country,
+or viewpoint. Vagueness or slang alone never takes a turn out of NYC civic life. A short follow-up
+whose meaning is in scope when read with the conversation stays in scope, including a practical NYC
+reframe right after an off-scope turn: read it from the conversation, not from the prior turn.
 
 Set event_turn only when the turn is actually about a dated public NYC event, read with the
 conversation, in any language or shorthand: "preparation" to plan around one specific dated public
@@ -2213,12 +2196,12 @@ StreamFn = Callable[[list[dict], list[dict]], AsyncIterator[dict]]
 # Approval callback for side-effecting tools: (name, args) -> approved?
 Approver = Callable[[str, dict], Awaitable[bool]]
 NotifyAwarenessFn = Callable[[], Awaitable[str]]
-ScopeDecision = bool | Literal["allow", "deny", "deny_rights"]
 
 
 @dataclass(frozen=True)
 class ScopeResult:
-    decision: ScopeDecision
+    # The preflight carries no allow/deny verdict anymore (RULED 2026-07-21): it is a checklist plus
+    # the event signal. Every turn reaches the answer model; these fields only configure retrieval.
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
@@ -2231,7 +2214,7 @@ class ScopeResult:
     cached_input_tokens: int = 0
 
 
-ScopeFn = Callable[[str, list[dict]], Awaitable[ScopeDecision | ScopeResult]]
+ScopeFn = Callable[[str, list[dict]], Awaitable[ScopeResult]]
 MemoryTokenCounter = Callable[[list[dict], list[dict]], int]
 MemoryCompactor = Callable[
     [list[dict], Optional[ContinuityRecord]],
@@ -2487,7 +2470,9 @@ class Agent:
         return tokens <= capacity
 
     async def _classify_scope(self, user_message: str, history: list[dict]) -> ScopeResult:
-        """Use one schema-bound, no-tools model call to decide whether the turn enters the agent."""
+        """One schema-bound, no-tools model call that classifies the turn for retrieval: the module /
+        situation checklist and the event signal. It carries no allow/deny verdict (RULED 2026-07-21):
+        every turn reaches the answer model regardless of what this returns."""
         import litellm
 
         transcript = [
@@ -2516,11 +2501,7 @@ class Agent:
             "\n\nAlso return modules: the list of service modules this turn touches, chosen "
             "only from the list below, judged by meaning in any language, empty when none "
             "apply. This is a checklist for grounding, not a route: pick every module whose "
-            "sources could help.\n" + module_lines + situations_section +
-            "\n\nThe modules checklist NEVER changes the decision. Decide allow, deny, or "
-            "deny_rights exactly as instructed above; in particular, a short follow-up whose "
-            "in-scope meaning comes from the conversation, including a practical local "
-            "reframe right after a denied question, is still allowed."
+            "sources could help.\n" + module_lines + situations_section
         ) if module_lines else ""
         kwargs = {
             "model": config.HEYNYC_SCOPE_MODEL,
@@ -2562,7 +2543,6 @@ class Agent:
         input_tokens = 0
         output_tokens = 0
         cached_input_tokens = 0
-        decision: ScopeDecision = "deny"
         event_turn: Optional[str] = None
         checked_modules: tuple[str, ...] = ()
         checked_situations: tuple[str, ...] = ()
@@ -2571,22 +2551,26 @@ class Agent:
             if getattr(module, "parent", None) is None
         }
         known_situations = set(self.registry.situation_hints())
-        # One retry on transiently EMPTY structured output (observed live), then fail closed
-        # quietly: an empty reply is not worth a resident-visible traceback.
+        # One retry on transiently EMPTY structured output (observed live), then give up quietly with
+        # an empty signal. There is no verdict to fail closed on: an unusable scope reply just means
+        # the turn reaches the answer model with no checklist config, never a canned wall.
         for attempt in range(2):
             try:
                 response = await litellm.acompletion(**kwargs)
             except Exception:
-                logger.exception("scope model call failed closed")
+                logger.exception("scope model call failed; returning empty signal")
                 return ScopeResult(
-                    decision="deny",
                     model=config.HEYNYC_SCOPE_MODEL,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cost_usd=(
-                        priced_cost_usd(config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens)
+                        priced_cost_usd(
+                            config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens,
+                            cached_input_tokens=cached_input_tokens,
+                        )
                         if input_tokens or output_tokens else None
                     ),
+                    cached_input_tokens=cached_input_tokens,
                 )
             message = response.choices[0].message
             response_usage = getattr(response, "usage", None)
@@ -2594,22 +2578,19 @@ class Agent:
             output_tokens += usage_value(response_usage, "completion_tokens")
             cached_input_tokens += cached_value(response_usage)
             if getattr(message, "refusal", None):
-                decision = "deny"
                 break
             parsed = getattr(message, "parsed", None)
             content = (message.content or "").strip()
             if parsed is None and not content:
                 if attempt == 0:
                     continue
-                logger.warning("scope model returned empty output twice; failing closed")
-                decision = "deny"
+                logger.warning("scope model returned empty output twice; returning empty signal")
                 break
             try:
                 verdict = (
                     parsed if isinstance(parsed, _ScopeDecision)
                     else _ScopeDecision.model_validate_json(content)
                 )
-                decision = verdict.decision
                 event_turn = verdict.event_turn
                 checked_modules = tuple(
                     name for name in verdict.modules if name in known_modules
@@ -2618,15 +2599,16 @@ class Agent:
                     name for name in verdict.situations if name in known_situations
                 )
             except Exception:
-                logger.exception("scope model returned invalid structured output; failing closed")
-                decision = "deny"
+                logger.exception("scope model returned invalid structured output; empty signal")
             break
         return ScopeResult(
-            decision=decision,
             model=config.HEYNYC_SCOPE_MODEL,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=priced_cost_usd(config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens),
+            cost_usd=priced_cost_usd(
+                config.HEYNYC_SCOPE_MODEL, input_tokens, output_tokens,
+                cached_input_tokens=cached_input_tokens,
+            ),
             event_turn=event_turn,
             modules=checked_modules,
             situations=checked_situations,
@@ -2929,13 +2911,12 @@ class Agent:
             try:
                 scope_result = await self._scope_fn(user_message, list(history or []))
             except Exception:
-                logger.exception("scope classifier failed closed")
-                scope_result = ScopeResult(
-                    decision="deny", model="unknown/injected-scope", cost_usd=None,
-                )
+                logger.exception("scope classifier failed; returning empty signal")
+                scope_result = ScopeResult(model="unknown/injected-scope", cost_usd=None)
             turn_usage["scope_time_ms"] = (time.perf_counter() - scope_started) * 1000.0
+            # No gate: whatever the preflight returns, the turn proceeds to the answer model. A
+            # non-ScopeResult (a legacy bare return) simply carries no checklist config.
             if isinstance(scope_result, ScopeResult):
-                scope_decision = scope_result.decision
                 scope_event_turn = scope_result.event_turn
                 scope_modules = scope_result.modules
                 scope_situations = scope_result.situations
@@ -2959,35 +2940,8 @@ class Agent:
                 else:
                     self._spend.record(
                         scope_result.model, scope_result.input_tokens, scope_result.output_tokens,
+                        scope_result.cached_input_tokens,
                     )
-            else:
-                scope_decision = scope_result
-            if scope_decision not in (True, "allow"):
-                fallback = (
-                    RIGHTS_SENSITIVE_OUT_OF_SCOPE_FALLBACK
-                    if scope_decision == "deny_rights"
-                    else OUT_OF_SCOPE_FALLBACK
-                )
-                message_id = "m0"
-                assistant = {
-                    "role": "assistant", "content": fallback, "tool_calls": None,
-                }
-                messages.append(assistant)
-                yield events.MessageStart(message_id=message_id)
-                yield events.TextDelta(message_id=message_id, text=fallback)
-                yield events.MessageCompleted(
-                    message_id=message_id, text=fallback,
-                    citations=citations.mapping(),
-                )
-                result = AgentResult(
-                    text=fallback, citations=citations.mapping(),
-                    tool_calls_made=tools_made, iterations=0, status="success",
-                    messages=messages, usage=_usage(),
-                )
-                yield events.Done(
-                    status="success", num_turns=0, citations=result.citations, result=result,
-                )
-                return
 
         # The semantic preflight tri-state is authoritative when present; the broad-events and
         # preparation regexes are the preflight-absent fallback only (F058, owner ruling: no
