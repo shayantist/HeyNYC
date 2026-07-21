@@ -178,9 +178,15 @@ and politics are out of scope. Do not treat an official government source as pro
 is in scope. For an out-of-scope question about human rights, war, political violence, identity,
 discrimination, civil liberties, sovereignty, or contested statehood, return deny_rights so the
 assistant can state its civic values without pretending to adjudicate the broader dispute. Judge
-meaning, not keywords, language, country, or viewpoint. If uncertain, deny. A short follow-up that
-is in scope when read with the conversation stays allowed, including a practical NYC reframe right
-after you denied the previous turn: decide it from the conversation, not from the prior denial.
+meaning, not keywords, language, country, or viewpoint. Uncertainty cuts two ways: when the
+SUBJECT may be outside NYC civic life, deny; but when the subject is plausibly the resident's own
+life in the city (their work, home, block, kids, a hearing or appointment they must get through,
+or getting to and from things, including a regional event reached on the transit New Yorkers use
+even when the venue sits outside the city) and only their NEED is vague or casually worded, allow
+it so the assistant can ask one clarifying question. Vagueness or slang is never by itself a
+reason to deny. A short follow-up that is in scope when read with the
+conversation stays allowed, including a practical NYC reframe right after you denied the previous
+turn: decide it from the conversation, not from the prior denial.
 
 Set event_turn only when the turn is actually about a dated public NYC event, read with the
 conversation, in any language or shorthand: "preparation" to plan around one specific dated public
