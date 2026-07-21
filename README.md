@@ -1,20 +1,26 @@
 # HeyNYC
 
-**HeyNYC** helps New Yorkers find and understand New York City government services, grounded in real city data and official sources. The current adapters are CLI, SMS, and WhatsApp. There is no resident web UI or durable hosted deployment yet.
+[![CI](https://github.com/shayantist/HeyNYC/actions/workflows/ci.yml/badge.svg)](https://github.com/shayantist/HeyNYC/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-It answers questions about benefits, housing, food, health, immigration, and events. Supported factual claims carry an official citation; when evidence is insufficient, HeyNYC abstains and points you to 311.
+**Text HeyNYC about life in New York: your commute on a tornado-watch morning, this weekend's free events, a SNAP application, an eviction notice. Every answer is grounded in live official city data and cited so you can check it, in your language, or it tells you it doesn't know and points you to 311.**
 
 > Open-source civic project. Not affiliated with the City of New York.
 
+## Try it
+
+The pilot is live at **1-888-212-0042** (toll-free):
+
+- **WhatsApp:** [wa.me/18882120042](https://wa.me/18882120042)
+- **SMS:** text **1-888-212-0042**
+
+Free, no account, no app; standard carrier messaging rates apply. How your messages are handled: [PRIVACY.md](PRIVACY.md) · [Terms of Use](docs/legal/HEYNYC-TERMS.md).
+
+<!-- TODO: screenshot of one real SMS exchange goes here -->
+
 ## What you can ask
 
-- "Where's the nearest cooling center to the Bronx 10453?"
-- "My landlord won't take my CityFHEPS voucher, is that legal?"
-- "I'm undocumented and my boss keeps our tips, what can I do?"
-- "Where can I watch the World Cup final, and how do I get a ticket?"
-- "Am I eligible for SNAP?" HeyNYC uses the city's real, PII-free benefits screener.
-
-The table below is the full, generated list of current service modules.
+The table below is the full, generated list of current service modules, each with the official source that grounds it.
 
 <!-- CAPABILITIES:START -->
 
@@ -39,9 +45,16 @@ The table below is the full, generated list of current service modules.
 
 <!-- CAPABILITIES:END -->
 
+## What makes it different
+
+- **Cite or abstain:** Supported factual claims need a citation or an abstention. A deterministic guard rechecks cited claims before an answer ships. See [SAFETY.md](SAFETY.md).
+- **Does, not just tells:** It uses the city's benefits screener and can prepare the real application for review, without deciding eligibility itself.
+- **Reachable today:** SMS, WhatsApp, and a CLI, without a resident account. Self-hosted instances need provider configuration for the messaging channels.
+- **Open and self-hostable:** The package can be run by an operator who controls its infrastructure and model configuration.
+
 ## Current status
 
-HeyNYC is an alpha release. The messaging pilot can run from an operator-managed development server, but it is not a durable public hosted service.
+HeyNYC is an alpha release. The public pilot number above runs from an operator-managed server; a durable hosted deployment is still ahead.
 
 - **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
 - **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
@@ -49,18 +62,9 @@ HeyNYC is an alpha release. The messaging pilot can run from an operator-managed
 - **Not yet shipped:** a resident web UI, durable hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
 - **Known limitations:** intersection geocoding can be wrong, so HeyNYC echoes the resolved address and asks for confirmation. Some city datasets are thin (the SNAP-center list has weekday hours but no phone numbers), and HeyNYC says so rather than filling the gap.
 
-The assistant gives best-effort answers in the user's language when configured, but multilingual behavior is not a verified production capability. It does not decide eligibility or submit applications. When evidence is insufficient, it abstains and routes to 311 or the relevant agency.
-
-## What makes it different
-
-- **Cite or abstain:** Supported factual claims need a citation or an abstention. A deterministic guard rechecks cited claims before an answer ships. See [SAFETY.md](SAFETY.md).
-- **Does, not just tells:** It uses the city's benefits screener and can prepare the real application for review, without deciding eligibility itself.
-- **Reachable today:** CLI, SMS, and WhatsApp adapters, without a resident account. SMS and WhatsApp require provider configuration.
-- **Open and self-hostable:** The package can be run by an operator who controls its infrastructure and model configuration.
-
 ## Using it
 
-**As a resident (SMS or WhatsApp):** text the pilot number your operator shares. Ask in plain language, any language. Your first message gets a one-time note naming the built-in commands, which work in any chat, always free of model calls:
+**As a resident (SMS or WhatsApp):** text the pilot number above, or the number your operator shares if someone else runs an instance. Ask in plain language, any language. Your first message gets a one-time note naming the built-in commands, which work in any chat, always free of model calls:
 
 | Text | What happens |
 | --- | --- |
@@ -139,20 +143,38 @@ Offline tests prove contracts; live evals prove behavior.
 | [heynyc/channels/README.md](heynyc/channels/README.md) | SMS and WhatsApp adapter conventions. |
 | [heynyc/modules/README.md](heynyc/modules/README.md) | Service-module structure and how to scaffold one. |
 
-## How we test it
-
-Every case, gate, and failure-driven regression is documented in [heynyc/eval/README.md](heynyc/eval/README.md), including the methodology and where it comes from; [SAFETY.md](SAFETY.md) covers the deterministic guardrails those evals run behind.
-
 ## FAQ
 
-**Do people read my messages?** No one reads your conversations in the normal course of things. A human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. Text DELETE MY DATA and confirm to erase your transcript, draft, and pending flags yourself. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal notice is the [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md).
+### If you're texting it
 
-**How do I know it isn't making things up?** Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you. When the source doesn't back a claim, the answer is regenerated or HeyNYC says it can't confirm. When it can't ground an answer, it says so and points you to 311 or the official page instead of guessing.
+**How do I know it isn't making things up?** Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you; when the evidence isn't there, it says it can't confirm and points you to 311 instead of guessing. It also never decides your eligibility and never submits anything on your behalf; the full design is in [SAFETY.md](SAFETY.md).
+
+**Do people read my messages?** No one reads your conversations in the normal course of things; a human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md) controls.
+
+**How do I delete my data?** Text DELETE MY DATA and confirm: your encrypted transcript, any in-progress draft, and pending flags are erased, and only PII-free aggregate statistics survive. What's kept and for how long is in [PRIVACY.md](PRIVACY.md).
 
 **Is it free?** Yes. Standard messaging rates from your carrier apply, nothing from us.
 
-**What languages?** Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urdu, and more. Program names, addresses, and links stay exact because the official pages are in English.
+**What languages?** Write in whatever language you're comfortable in: Spanish, Bengali, Chinese, Urdu, and more; program names, addresses, and links stay exact because the official pages are in English. Non-English safety has dedicated tests but isn't yet proven at production grade, which [SAFETY.md](SAFETY.md#limitations-what-we-havent-proven-yet) states plainly.
+
+**Why not just ask ChatGPT?** A general chatbot is built to always have an answer; HeyNYC is built to be right or say it doesn't know, which is the property that matters when the question is your housing, your food, or your immigration status. It also reaches for what a general chatbot doesn't have: live city datasets, the city's real benefits screener, a citation on every fact, and a benchmark that runs its cases head-to-head against a bare frontier model ([methodology](docs/testing/benchmarks.md)).
 
 **Something was wrong or unhelpful. What do I do?** Text REPORT (or just 👎) after the bad answer. You'll be asked to confirm before that one exchange is shared with a human reviewer.
+
+### If you're evaluating it (the City, journalists, civic technologists)
+
+**How is this not another MyCity chatbot?** MyCity answered confidently without grounding and [told business owners they could break the law](https://themarkup.org/artificial-intelligence/2024/03/29/nycs-ai-chatbot-tells-businesses-to-break-the-law); HeyNYC's architecture is the deliberate opposite: no ungrounded facts, cite-or-abstain, a deterministic guard on every live answer, and MyCity's documented failures rebuilt as a permanent regression suite ([the traps and the real law behind each](docs/testing/benchmarks.md)). We also publish our own failures as a numbered [register](docs/testing/failure-db.md); [SAFETY.md](SAFETY.md) explains why a documented failure record is the stronger safety claim.
+
+**What grounds the answers?** Official sources only: NYC Open Data, the city's Benefits Screening API, official finders, and scoped search over an allowlist of authoritative NYC domains where a lower-tier source can never outrank an official one. The capability table above names the dataset behind each module; the source-trust design is in [SAFETY.md](SAFETY.md).
+
+**Which AI models, and who processes resident data?** The answer model is operator-configured behind a deterministic verification guard, so the safety contract doesn't depend on which backend model runs; messages are carried by Twilio or Meta, and every service provider is named in the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md). Self-hosted models are an explicit design goal: verification adds no data egress ([SAFETY.md](SAFETY.md)).
+
+**How is it tested?** An offline pytest suite proves the code's contracts, and a live eval gate runs the real model against every module's contract with a deterministic no-hallucination floor; red-team results and failures become permanent public records. Start at [heynyc/eval/README.md](heynyc/eval/README.md) and [`docs/testing/`](docs/testing/).
+
+**What's the language-access story?** NYC Local Law 30's citywide languages are the bar we build toward, and the assistant replies in the resident's language with dedicated non-English safety cases. We claim testing, not certification; the honest state is in [SAFETY.md](SAFETY.md#limitations-what-we-havent-proven-yet).
+
+**Can we request or add a service module?** Yes: a module is one folder with a YAML manifest, and requesting one needs no code at all. [CONTRIBUTING.md](CONTRIBUTING.md) has both paths.
+
+**What would this cost a city?** The grounding guarantee lives in the deterministic guard rather than in an expensive model, which is what makes cheap or self-hosted models safe to run; measured by the built-in telemetry, the median resident turn costs under two cents on the pilot's current stack. The economics of the design are part of [SAFETY.md](SAFETY.md).
 
 _Last updated: 2026-07-21_
