@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Derive the public `transparency/` artifacts from the gitignored internal docs.
+"""Derive the public `docs/testing/` records from the gitignored internal docs.
 
-The internal `docs/eval/` sources (failure DB, red-team write-ups, methodology) are
-kept local. This generator emits a redacted, tracked, public subset into
-`transparency/` by DETERMINISTIC rules so the public repo can link to real
-evidence without shipping internal paths, spend, owner rulings, or unreviewed
+The internal `docs/internal/eval/` sources (failure DB, red-team write-ups,
+methodology) are kept local. This generator emits a redacted, tracked, public
+subset into `docs/testing/` by DETERMINISTIC rules so the public repo can link to
+real evidence without shipping internal paths, spend, owner rulings, or unreviewed
 adversarial transcripts. It is a GENERATOR, not a hand fork: never edit the
 artifacts by hand; edit the source and rerun. A drift guard
-(`tests/test_transparency_export.py`) fails CI if the tracked files diverge.
+(`tests/test_export_testing_docs.py`) fails CI if the tracked files diverge.
 
-Run:  python scripts/export_transparency.py         (writes transparency/)
-      python scripts/export_transparency.py --check  (exit 1 on drift, writes nothing)
+Run:  python scripts/export_testing_docs.py         (writes docs/testing/)
+      python scripts/export_testing_docs.py --check  (exit 1 on drift, writes nothing)
 
 Determinism: no wall-clock. The header's "Source dated" is parsed from the source
 doc's own date line and the hash is over the source bytes, so a re-run on any day
@@ -19,21 +19,50 @@ reproduces byte-identical output as long as the source is unchanged.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import re
 import sys
 from pathlib import Path
 
+
+def _load_unwrap():
+    """Import the shared `unwrap_text` from `scripts/unwrap_docs.py` without polluting
+    sys.path, so it resolves both on a direct run and when this file is loaded by
+    importlib in the drift test. Returns None (identity fallback) if the helper is
+    not present yet."""
+    path = Path(__file__).resolve().parent / "unwrap_docs.py"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("unwrap_docs", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return getattr(mod, "unwrap_text", None)
+
+
+_unwrap_text = _load_unwrap()
+
 # --------------------------------------------------------------------------- #
 # Which internal source maps to which public artifact, and how it is exported.
-# The map is also the docs/ -> transparency/ link-rewrite table.
+# The link-rewrite table below (internal doc basename -> public artifact) also
+# collapses the two red-team sources onto the single merged `red-team.md`.
 # --------------------------------------------------------------------------- #
-# source basename (under docs/eval/) -> public artifact filename
+# source basename (under docs/internal/eval/) -> public artifact filename
 _ARTIFACT_NAMES = {
-    "failure-db.md": "failure-register.md",
-    "red-team-v1.md": "red-team-summary.md",
-    "benchmark-methodology.md": "benchmark-methodology.md",
-    "red-team-v2-methodology.md": "red-team-v2-methodology.md",
+    "failure-db.md": "failure-db.md",
+    "red-team-v1.md": "red-team.md",
+    "red-team-v2-methodology.md": "red-team.md",
+    "benchmark-methodology.md": "benchmarks.md",
 }
+
+_SCRIPT_REL = "scripts/export_testing_docs.py"
+_INTERNAL_EVAL = "docs/internal/eval"
+
+# One-sentence bridge between the two words a stranger meets first: the public
+# umbrella (docs/testing/) and the code-level term of art (heynyc/eval/).
+_EVAL_BRIDGE = (
+    "These are HeyNYC's public test records; the eval harness that produces the "
+    "gate results lives in `heynyc/eval/`."
+)
 
 # Phone-shaped strings that ARE documented public hotlines and must survive redaction.
 _HOTLINE_ALLOWLIST = {
@@ -92,7 +121,7 @@ def rewrite_internal_doc_links(text: str) -> str:
     """Rule 4: rewrite/drop internal docs/ references.
 
     - external (http) links: untouched.
-    - shipped repo paths (tests/, heynyc/): kept, rebased for transparency/ depth.
+    - shipped repo paths (tests/, heynyc/): kept, rebased for docs/testing/ depth.
     - internal doc with a public artifact: rewritten to that artifact (sibling).
     - any other internal doc/data ref: hyperlink dropped, link text retained.
     """
@@ -102,7 +131,7 @@ def rewrite_internal_doc_links(text: str) -> str:
         if url.startswith(("http://", "https://", "#", "mailto:")):
             return m.group(0)
         base = url.split("#", 1)[0]
-        # Shipped, public repo files: rebase ../../ (from docs/eval/) to ../ (from transparency/).
+        # Shipped, public repo files: rebase to reach the repo root from docs/testing/.
         if "/tests/" in base or base.startswith("../../tests/"):
             return f"[{label}]({_rebase(url, 'tests/')})"
         if "/heynyc/" in base or base.startswith("../../heynyc/"):
@@ -118,11 +147,14 @@ def rewrite_internal_doc_links(text: str) -> str:
 
 
 def _rebase(url: str, marker: str) -> str:
-    """Rewrite a doc-relative link to a shipped file into a transparency-relative one."""
+    """Rewrite a doc-relative link to a shipped file into a docs/testing/-relative one.
+
+    docs/testing/ sits two levels below the repo root, so a shipped file is reached
+    with `../../<tail>` regardless of the depth the internal source wrote it at."""
     frag = _frag(url)
     base = url.split("#", 1)[0]
     tail = base[base.index(marker):]  # e.g. "tests/test_agent.py"
-    return f"../{tail}{frag}"
+    return f"../../{tail}{frag}"
 
 
 def _frag(url: str) -> str:
@@ -179,23 +211,51 @@ def source_date(raw: str) -> str:
     return m.group(1) if m else "undated"
 
 
-def header(source_rel: str, raw: str) -> str:
-    return (
-        "> **Generated file. Do not edit by hand.**\n"
-        f"> Generated by `scripts/export_transparency.py` from the internal source "
-        f"`{source_rel}`.\n"
+def header(sources: list[tuple[str, str]]) -> str:
+    """Do-not-edit banner. `sources` is a list of (source_rel, raw_text); the merged
+    red-team artifact carries two, so each source's SHA-256 and declared date is listed."""
+    noun = "source" if len(sources) == 1 else "sources"
+    names = ", ".join(f"`{rel}`" for rel, _ in sources)
+    lines = [
+        "> **Generated file. Do not edit by hand.**",
+        f"> Generated by `{_SCRIPT_REL}` from the internal {noun} {names}.",
+        f"> {_EVAL_BRIDGE}",
         "> Edit the source and regenerate; direct edits are overwritten and fail the "
-        "drift guard.\n"
-        f"> Source content SHA-256: `{source_hash(raw)}`\n"
-        f"> Source dated: {source_date(raw)}\n"
-    )
+        "drift guard.",
+    ]
+    for rel, raw in sources:
+        lines.append(f"> Source `{rel}` SHA-256: `{source_hash(raw)}`")
+        lines.append(f"> Source `{rel}` dated: {source_date(raw)}")
+    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------- #
-# Exporter: failure register (redacted 4-column table)
+# Exporter: failure register (grouped by the nine-category taxonomy)
 # --------------------------------------------------------------------------- #
 _ROW_RE = re.compile(r"^\|\s*F\d+\b")
 _SPLIT_RE = re.compile(r"\s*\|\|\s*(?=F\d+\s*\|)")  # recover rows glued by `|| Fnnn |`
+
+# The project's nine-category failure taxonomy, in its canonical (ROADMAP) order.
+# Rows tagged outside this set are NOT recategorized: they group under their own tag
+# after the nine, which surfaces them for the tag audit rather than hiding them.
+_CATEGORY_TAXONOMY = (
+    "citation-integrity",
+    "retrieval-identity",
+    "operations",
+    "channels-transport",
+    "scope-gating",
+    "conversation-memory",
+    "multilingual-equity",
+    "location-usefulness",
+    "emergency-safety",
+)
+_TAG_RE = re.compile(r"\*\*([a-z][a-z-]*)\*\*")
+
+
+def _category_tag(category_cell: str) -> str:
+    """The taxonomy tag is the first bold lowercase-hyphen token of the category cell."""
+    m = _TAG_RE.search(category_cell)
+    return m.group(1) if m else "(uncategorized)"
 
 
 def _failure_rows(raw: str) -> list[tuple[int, str, str, str, str]]:
@@ -219,7 +279,21 @@ def _failure_rows(raw: str) -> list[tuple[int, str, str, str, str]]:
     return rows
 
 
+_COLUMNS = (
+    "| ID | Observed failure | Category and class | Fix and status |\n"
+    "| --- | --- | --- | --- |\n"
+)
+
+
 def export_failure_register(raw: str, source_rel: str) -> str:
+    rows = _failure_rows(raw)
+    groups: dict[str, list[tuple[int, str, str, str, str]]] = {}
+    for row in rows:
+        groups.setdefault(_category_tag(row[3]), []).append(row)
+    # Canonical nine first, then any off-taxonomy tags (alpha) so no row is dropped.
+    ordered = [c for c in _CATEGORY_TAXONOMY if c in groups]
+    ordered += sorted(c for c in groups if c not in _CATEGORY_TAXONOMY)
+
     intro = (
         "# HeyNYC public failure register\n\n"
         "Every resident-facing failure found in testing, its category, and the pinned "
@@ -227,25 +301,36 @@ def export_failure_register(raw: str, source_rel: str) -> str:
         "of the project's operational risk register (internal decision records, spend "
         "figures, and internal paths removed). The named tests and eval cases are runnable "
         "public evidence: they ship in this repository.\n\n"
-        "| ID | Observed failure | Category and class | Fix and status |\n"
-        "| --- | --- | --- | --- |\n"
+        f"**Total: {len(rows)} failures across {len(ordered)} categories.**\n\n"
+        "Families (cross-row root-cause clusters, named as the rows name them): "
+        "**over-denial** (F069, F071, F075), where a plausibly-NYC need is denied at the "
+        "scope gate; **conversation-repetition** (F062, F078, F080), where a follow-up "
+        "re-briefs settled context instead of answering the delta; and **event-identity** "
+        "(F046, F053, F058), where an event turn never resolves which event is meant "
+        "before answering.\n"
     )
-    body = "".join(
-        f"| {fid} | {redact_all(observed)} | {redact_all(category)} | {redact_all(fix_status)} |\n"
-        for _num, fid, observed, category, fix_status in _failure_rows(raw)
-    )
-    return f"{header(source_rel, raw)}\n{intro}{body}"
+
+    sections = []
+    for cat in ordered:
+        grp = groups[cat]
+        body = "".join(
+            f"| {fid} | {redact_all(observed)} | {redact_all(category)} | {redact_all(fix_status)} |\n"
+            for _num, fid, observed, category, fix_status in grp
+        )
+        sections.append(f"## {cat} ({len(grp)})\n\n{_COLUMNS}{body}")
+
+    return f"{header([(source_rel, raw)])}\n{intro}\n" + "\n".join(sections)
 
 
 # --------------------------------------------------------------------------- #
 # Exporter: methodology docs (near-verbatim minus the same redactions)
 # --------------------------------------------------------------------------- #
 def export_methodology(raw: str, source_rel: str) -> str:
-    return f"{header(source_rel, raw)}\n{redact_all(raw)}"
+    return f"{header([(source_rel, raw)])}\n{redact_all(raw)}"
 
 
 # --------------------------------------------------------------------------- #
-# Exporter: red-team (per-category counts + outcomes only; verbatim -> placeholder)
+# Red-team: per-category counts + outcomes only; verbatim -> placeholder
 # --------------------------------------------------------------------------- #
 _WITHHOLD_HEADING = ("verbatim", "full query set", "per-item", "per item", "query set")
 
@@ -271,8 +356,8 @@ def _withhold(heading: str, body: str) -> bool:
 def _placeholder(heading: str, crisis: bool) -> str:
     note = (
         "This section of the internal red-team contains verbatim adversarial prompts "
-        "and/or model responses. The public transparency export publishes per-category "
-        "counts and outcomes only; verbatim exchanges are withheld pending owner review."
+        "and/or model responses. The public export publishes per-category counts and "
+        "outcomes only; verbatim exchanges are withheld pending owner review."
     )
     if crisis:
         note += (
@@ -303,8 +388,10 @@ def redact_crisis_quotes(text: str) -> str:
     return _INLINE_QUOTE_RE.sub(_sub, text)
 
 
-def export_red_team(raw: str, source_rel: str) -> str:
-    out = [header(source_rel, raw)]
+def _red_team_results_body(raw: str) -> str:
+    """The v1 summary: per-category counts and outcomes kept, verbatim sections
+    replaced by REVIEW-REQUIRED placeholders. No header (the merged file owns it)."""
+    out: list[str] = []
     for heading, body in _sections(raw):
         if heading and _withhold(heading, body):
             crisis = any(m in body.lower() for m in _CRISIS_MARKERS)
@@ -312,35 +399,98 @@ def export_red_team(raw: str, source_rel: str) -> str:
         else:
             chunk = f"{heading}\n{body}" if heading else body
             out.append(redact_crisis_quotes(redact_all(chunk)).rstrip("\n"))
-    return "\n".join(out).rstrip("\n") + "\n"
+    return "\n".join(out).rstrip("\n")
+
+
+def _nest_body(body: str) -> str:
+    """Drop a source body's own H1 title and push every remaining ATX heading down one
+    level, so the source's sections nest under the merged file's H2 section headers.
+    Fenced code blocks (e.g. shell examples whose comments start with `#`) are skipped."""
+    out: list[str] = []
+    dropped_title = False
+    in_fence = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if not in_fence:
+            if not dropped_title and line.startswith("# "):
+                dropped_title = True
+                continue
+            if line.startswith("#"):
+                line = "#" + line
+        out.append(line)
+    return "\n".join(out).strip("\n")
+
+
+_REDTEAM_STATUS = (
+    "The current adversarial suite is 205 cases, but its full run has not yet been "
+    "executed (owner-gated live budget). The per-category results below are from the "
+    "completed 137-query v1 run plus the standing per-change adversarial matrices, not "
+    "a full 205-case rerun."
+)
+
+
+def export_red_team_merged(v2_raw: str, v1_raw: str, v2_rel: str, v1_rel: str) -> str:
+    """One public red-team record from both internal sources: the v2 methodology
+    ('How we red-team') and the v1 results ('Results to date'), each nested under an H2,
+    with the v1 REVIEW-REQUIRED placeholders preserved and both source hashes in the header."""
+    hdr = header([(v2_rel, v2_raw), (v1_rel, v1_raw)])
+    method = _nest_body(redact_all(v2_raw))
+    results = _nest_body(_red_team_results_body(v1_raw))
+    return (
+        f"{hdr}\n"
+        "# HeyNYC red-team\n\n"
+        "## How we red-team\n\n"
+        f"{method}\n\n"
+        "## Results to date\n\n"
+        f"{_REDTEAM_STATUS}\n\n"
+        f"{results}\n"
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
-_EXPORTERS = {
-    "failure-db.md": export_failure_register,
-    "benchmark-methodology.md": export_methodology,
-    "red-team-v2-methodology.md": export_methodology,
-    "red-team-v1.md": export_red_team,
+# single-source: internal source basename -> (public artifact, exporter)
+_SINGLE_EXPORTERS = {
+    "failure-db.md": ("failure-db.md", export_failure_register),
+    "benchmark-methodology.md": ("benchmarks.md", export_methodology),
 }
 
 
 def docs_available(project_root: Path) -> bool:
-    return (project_root / "docs" / "eval" / "failure-db.md").exists()
+    return (project_root / "docs" / "internal" / "eval" / "failure-db.md").exists()
 
 
-def generate_all(docs_root: Path) -> dict[str, str]:
+def generate_all(internal_root: Path) -> dict[str, str]:
     """Map public artifact filename -> content. Empty if the internal docs are absent
-    (a public clone), which is what lets the drift guard skip cleanly."""
+    (a public clone), which is what lets the drift guard skip cleanly. `internal_root`
+    is the docs/internal/ tree; sources live under its eval/ subdir."""
+    eval_dir = internal_root / "eval"
     artifacts: dict[str, str] = {}
-    for src_name, exporter in _EXPORTERS.items():
-        src = docs_root / "eval" / src_name
+    for src_name, (art_name, exporter) in _SINGLE_EXPORTERS.items():
+        src = eval_dir / src_name
         if not src.exists():
             continue
         raw = src.read_text()
-        source_rel = f"docs/eval/{src_name}"
-        artifacts[_ARTIFACT_NAMES[src_name]] = exporter(raw, source_rel)
+        artifacts[art_name] = exporter(raw, f"{_INTERNAL_EVAL}/{src_name}")
+    # Merged red-team: both sources required, both hashes in the header.
+    v2, v1 = eval_dir / "red-team-v2-methodology.md", eval_dir / "red-team-v1.md"
+    if v2.exists() and v1.exists():
+        artifacts["red-team.md"] = export_red_team_merged(
+            v2.read_text(), v1.read_text(),
+            f"{_INTERNAL_EVAL}/red-team-v2-methodology.md",
+            f"{_INTERNAL_EVAL}/red-team-v1.md",
+        )
+    # Final step: unwrap hard-wrapped prose to full lines so regeneration stays unwrapped
+    # and the drift test compares like against like. The shared helper preserves fences,
+    # tables, lists, headers, and blockquotes (incl. this file's header banner).
+    if _unwrap_text is not None:
+        artifacts = {name: _unwrap_text(content) for name, content in artifacts.items()}
+    # TODO(unwrap): if scripts/unwrap_docs.py is ever removed, artifacts ship hard-wrapped
+    # until it returns; wire the shared `unwrap_text` back in here.
     return artifacts
 
 
@@ -351,9 +501,9 @@ def main(argv: list[str] | None = None) -> int:
     if not docs_available(root):
         print("internal docs/ tree absent; nothing to export (public clone).")
         return 0
-    out_dir = root / "transparency"
-    out_dir.mkdir(exist_ok=True)
-    artifacts = generate_all(root / "docs")
+    out_dir = root / "docs" / "testing"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = generate_all(root / "docs" / "internal")
     drift = False
     for name, content in artifacts.items():
         target = out_dir / name
@@ -362,14 +512,14 @@ def main(argv: list[str] | None = None) -> int:
             continue
         drift = True
         if check_only:
-            print(f"DRIFT: {name} is out of date; run scripts/export_transparency.py")
+            print(f"DRIFT: {name} is out of date; run {_SCRIPT_REL}")
         else:
             target.write_text(content)
-            print(f"wrote transparency/{name}")
+            print(f"wrote docs/testing/{name}")
     if check_only:
         return 1 if drift else 0
     if not drift:
-        print("transparency/ already up to date.")
+        print("docs/testing/ already up to date.")
     return 0
 
 

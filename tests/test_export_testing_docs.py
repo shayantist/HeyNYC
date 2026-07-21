@@ -1,27 +1,29 @@
-"""Transparency-export generator: redaction rules + drift guard.
+"""Public test-records generator: redaction rules + grouping + drift guard.
 
-The generator (`scripts/export_transparency.py`) derives the tracked, public
-`transparency/` artifacts from the gitignored internal `docs/eval/` sources by
+The generator (`scripts/export_testing_docs.py`) derives the tracked, public
+`docs/testing/` records from the gitignored internal `docs/internal/eval/` sources by
 deterministic rules. These tests pin each redaction pattern (a positive hit and a
-negative pass-through) and the drift guard in both directions, mirroring the
-README capability drift test in `tests/test_capabilities.py`.
+negative pass-through), the failure-register grouping, and the drift guard in both
+directions, mirroring the README capability drift test in `tests/test_capabilities.py`.
 """
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
 
 from heynyc.core import config
 
-_SCRIPT = config.PROJECT_ROOT / "scripts" / "export_transparency.py"
-_TRANSPARENCY = config.PROJECT_ROOT / "transparency"
-_DOCS_EVAL = config.PROJECT_ROOT / "docs" / "eval"
+_SCRIPT = config.PROJECT_ROOT / "scripts" / "export_testing_docs.py"
+_TESTING = config.PROJECT_ROOT / "docs" / "testing"
+_INTERNAL = config.PROJECT_ROOT / "docs" / "internal"
+_INTERNAL_EVAL = _INTERNAL / "eval"
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("export_transparency", _SCRIPT)
+    spec = importlib.util.spec_from_file_location("export_testing_docs", _SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -40,7 +42,7 @@ def test_redact_internal_paths_positive():
 
 
 def test_redact_internal_paths_negative():
-    keep = "pinned by ../tests/test_agent.py and ../heynyc/modules/benefits/eval.yaml"
+    keep = "pinned by ../../tests/test_agent.py and ../../heynyc/modules/benefits/eval.yaml"
     assert xp.redact_internal_paths(keep) == keep
 
 
@@ -76,16 +78,16 @@ def test_redact_phones_negative():
 # Redaction rule 4: internal docs/ references
 # --------------------------------------------------------------------------- #
 def test_rewrite_doc_links_public_repo_paths_kept_and_rebased():
-    # tests/ and heynyc/ ship publicly: keep the link, rebase for transparency/ depth.
+    # tests/ and heynyc/ ship publicly: keep the link, rebase two levels for docs/testing/ depth.
     out = xp.rewrite_internal_doc_links("[t](../../tests/test_agent.py)")
-    assert "(../tests/test_agent.py)" in out
+    assert "(../../tests/test_agent.py)" in out
     out2 = xp.rewrite_internal_doc_links("[e](../../heynyc/modules/benefits/eval.yaml)")
-    assert "(../heynyc/modules/benefits/eval.yaml)" in out2
+    assert "(../../heynyc/modules/benefits/eval.yaml)" in out2
 
 
 def test_rewrite_doc_links_internal_with_artifact_is_rewritten():
     out = xp.rewrite_internal_doc_links("the [first run](./red-team-v1.md) used 137 queries")
-    assert "red-team-summary.md" in out
+    assert "red-team.md" in out
     assert "red-team-v1.md" not in out
 
 
@@ -130,13 +132,21 @@ def test_normalize_em_dashes_negative():
 
 
 # --------------------------------------------------------------------------- #
+# Failure-register grouping: the taxonomy tag is the first bold token
+# --------------------------------------------------------------------------- #
+def test_category_tag_reads_the_first_bold_token():
+    assert xp._category_tag("**scope-gating** · over-denial on register") == "scope-gating"
+    assert xp._category_tag("**scope-gating**-adjacent wrong remedy") == "scope-gating"
+
+
+# --------------------------------------------------------------------------- #
 # Generated artifacts: shape and header
 # --------------------------------------------------------------------------- #
 def _generated():
-    return xp.generate_all(config.PROJECT_ROOT / "docs")
+    return xp.generate_all(_INTERNAL)
 
 
-docs_present = _DOCS_EVAL.exists()
+docs_present = _INTERNAL_EVAL.exists()
 requires_docs = pytest.mark.skipif(not docs_present, reason="internal docs/ absent (public clone)")
 
 
@@ -144,14 +154,30 @@ requires_docs = pytest.mark.skipif(not docs_present, reason="internal docs/ abse
 def test_every_artifact_carries_the_do_not_edit_header():
     for name, content in _generated().items():
         assert "do not edit by hand" in content.lower(), name
-        assert "scripts/export_transparency.py" in content, name
+        assert "scripts/export_testing_docs.py" in content, name
         assert "SHA-256" in content, name
+        # the one-sentence eval/testing bridge rides in every header
+        assert "the eval harness that produces the gate results lives in" in content, name
 
 
 @requires_docs
-def test_failure_register_keeps_columns_and_evidence_names():
-    reg = _generated()["failure-register.md"]
+def test_failure_register_is_grouped_by_taxonomy_with_total_and_families():
+    reg = _generated()["failure-db.md"]
+    # column header appears once per section but at least once
     assert "| ID | Observed failure | Category and class | Fix and status |" in reg
+    # total line up top
+    assert re.search(r"\*\*Total: \d+ failures across \d+ categories\.\*\*", reg)
+    # families paragraph names the three clusters exactly as the rows name them
+    assert "over-denial" in reg and "F069" in reg and "F071" in reg and "F075" in reg
+    assert "conversation-repetition" in reg and "F078" in reg and "F080" in reg
+    assert "event-identity" in reg and "F046" in reg and "F053" in reg and "F058" in reg
+    # every one of the nine taxonomy categories heads a section
+    for cat in xp._CATEGORY_TAXONOMY:
+        assert f"## {cat} (" in reg, cat
+    # no row is dropped in grouping and none is duplicated
+    ids = re.findall(r"^\| (F\d+) \|", reg, re.M)
+    assert len(ids) == len(set(ids))
+    assert "F001" in ids and "F080" in ids
     # runnable public evidence (a pinned test name) survives
     assert "test_scope_denial_stops_before_main_model_or_tools" in reg
     # redaction floors: no internal paths, spend, or governance markers leak
@@ -162,8 +188,34 @@ def test_failure_register_keeps_columns_and_evidence_names():
 
 
 @requires_docs
+def test_failure_register_surfaces_off_taxonomy_tags_as_their_own_sections():
+    # The tag audit: rows tagged outside the nine are NOT recategorized; they group
+    # under their own tag AFTER the nine, which is how the export surfaces them.
+    reg = _generated()["failure-db.md"]
+    assert "## awareness-policy (" in reg
+    assert "## conversation-continuity (" in reg
+    last_taxonomy = reg.index("## emergency-safety (")
+    assert reg.index("## awareness-policy (") > last_taxonomy
+    assert reg.index("## conversation-continuity (") > last_taxonomy
+
+
+@requires_docs
+def test_red_team_merges_both_sources_with_two_hashes():
+    rt = _generated()["red-team.md"]
+    # both internal sources are named and hashed in the one header
+    assert "docs/internal/eval/red-team-v1.md" in rt
+    assert "docs/internal/eval/red-team-v2-methodology.md" in rt
+    assert rt.count("SHA-256") >= 2
+    # the two ruled sections
+    assert "## How we red-team" in rt
+    assert "## Results to date" in rt
+    # the honest status line about the un-run 205-case suite
+    assert "205 cases" in rt and "not yet been executed" in rt
+
+
+@requires_docs
 def test_red_team_export_is_counts_only_with_review_required_placeholders():
-    rt = _generated()["red-team-summary.md"]
+    rt = _generated()["red-team.md"]
     assert "Results at a glance" in rt          # per-category counts kept
     assert "REVIEW-REQUIRED" in rt              # verbatim exchanges withheld
     # a self-harm / crisis section must be flagged for owner hand-pick, never auto-published
@@ -171,13 +223,12 @@ def test_red_team_export_is_counts_only_with_review_required_placeholders():
     # no verbatim adversarial response block leaks through, including inline crisis quotes
     assert "Llama al 911 ahora mismo" not in rt
     assert "mastica una" not in rt
-    import re as _re
-    assert not _re.search(r"\d+ ?mg o cuatro", rt)  # the medication-dose snippet is withheld
+    assert not re.search(r"\d+ ?mg o cuatro", rt)  # the medication-dose snippet is withheld
 
 
 @requires_docs
 def test_methodology_exports_are_near_verbatim_minus_redactions():
-    bench = _generated()["benchmark-methodology.md"]
+    bench = _generated()["benchmarks.md"]
     assert "three legally-clean pillars" in bench   # substance preserved verbatim
     assert "$1.1B" not in bench                      # but dollar amounts redacted
 
@@ -187,15 +238,16 @@ def test_methodology_exports_are_near_verbatim_minus_redactions():
 # --------------------------------------------------------------------------- #
 @requires_docs
 def test_drift_guard_tracked_artifacts_match_regeneration():
-    """When docs/ exists, the tracked transparency/ files must equal a fresh export.
-    Edit a source without regenerating (`python scripts/export_transparency.py`) and
-    this fails, so transparency/ single-sources from docs/, same as the README table."""
+    """When docs/internal/ exists, the tracked docs/testing/ files must equal a fresh
+    export. Edit a source without regenerating (`python scripts/export_testing_docs.py`)
+    and this fails, so docs/testing/ single-sources from docs/internal/, same as the
+    README capability table."""
     generated = _generated()
     assert generated, "generator produced no artifacts"
     for name, content in generated.items():
-        tracked = _TRANSPARENCY / name
+        tracked = _TESTING / name
         assert tracked.exists(), f"missing tracked artifact {name}"
-        assert tracked.read_text() == content, f"drift in {name}: regenerate transparency/"
+        assert tracked.read_text() == content, f"drift in {name}: regenerate docs/testing/"
 
 
 @requires_docs
@@ -208,9 +260,10 @@ def test_drift_guard_detects_a_tampered_artifact():
 
 
 def test_drift_guard_skips_cleanly_when_docs_absent(tmp_path):
-    """Public clones have no docs/ tree; generate_all over an empty root yields nothing
-    and the guard has nothing to compare, so it is a clean no-op rather than a failure."""
-    empty_root = tmp_path / "docs"
-    empty_root.mkdir()
-    assert xp.generate_all(empty_root) == {}
+    """Public clones have no docs/internal/ tree; generate_all over an empty internal
+    root yields nothing and the guard has nothing to compare, so it is a clean no-op
+    rather than a failure."""
+    empty_internal = tmp_path / "internal"
+    empty_internal.mkdir()
+    assert xp.generate_all(empty_internal) == {}
     assert xp.docs_available(tmp_path) is False
