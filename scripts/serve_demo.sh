@@ -66,17 +66,27 @@ if pgrep -x ngrok >/dev/null 2>&1; then
     pkill -x ngrok || true
     sleep 2
 fi
-ngrok http --url="https://$DOMAIN" 8791 &
+# F081: log to a file and detach stdout so ngrok never draws its fullscreen TUI over the
+# launcher's own output (the TUI garbled the screen and ate the real error during the outage).
+NGROK_LOG=".data/ngrok.log"
+mkdir -p .data
+: > "$NGROK_LOG"
+ngrok http --url="https://$DOMAIN" 8791 --log "$NGROK_LOG" --log-format=logfmt >/dev/null 2>&1 &
 NGROK_PID=$!
 
-# F059: a running ngrok process is not a bound tunnel. Gate on the PUBLIC endpoint, the only
+# F059: a running ngrok process is not a bound tunnel. Gate ONCE on the PUBLIC endpoint, the only
 # check that proves Twilio can reach us (a stale-session claim collision serves 404 forever).
 attempt=0
 until curl -fsS "https://$DOMAIN/health" >/dev/null 2>&1; do
-    kill -0 "$NGROK_PID" 2>/dev/null || { echo "ngrok exited before binding" >&2; exit 1; }
+    kill -0 "$NGROK_PID" 2>/dev/null || { echo "ngrok exited before binding, last log lines:" >&2; tail -5 "$NGROK_LOG" >&2; exit 1; }
     attempt=$((attempt + 1))
     [ "$attempt" -lt 15 ] || {
-        echo "public endpoint https://$DOMAIN/health never came up; is the reserved domain still claimed by an old session?" >&2
+        # F081: name the REAL error instead of guessing. ngrok's edge answers every blocked
+        # request with an ngrok-error-code header (the outage was ERR_NGROK_727, monthly
+        # request quota exhausted, which no amount of session-clearing would have fixed).
+        code=$(curl -s -o /dev/null -D - -m 8 "https://$DOMAIN/health" | tr -d '\r' | awk 'tolower($1)=="ngrok-error-code:"{print $2}')
+        echo "public endpoint https://$DOMAIN/health never came up${code:+ (ngrok says: $code, see https://ngrok.com/docs/errors)}" >&2
+        tail -5 "$NGROK_LOG" >&2
         exit 1
     }
     sleep 2
@@ -84,15 +94,19 @@ done
 
 echo "HeyNYC: https://$DOMAIN"
 echo "Twilio webhook: https://$DOMAIN/webhook/twilio"
-public_failures=0
+# F081: supervision polls LOCAL health only. Polling the public URL every 10s (8,640
+# requests/day) burned the ngrok free tier's monthly quota and took the pilot down with
+# ERR_NGROK_727. The cron dead-man (scripts/health_watch.sh) owns the public endpoint at a
+# low cadence; here a dead tunnel is caught by ngrok process liveness.
+local_failures=0
 while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$NGROK_PID" 2>/dev/null; do
     sleep 10
-    if curl -fsS -m 8 "https://$DOMAIN/health" >/dev/null 2>&1; then
-        public_failures=0
+    if curl -fsS -m 8 http://127.0.0.1:8791/health >/dev/null 2>&1; then
+        local_failures=0
     else
-        public_failures=$((public_failures + 1))
-        if [ "$public_failures" -ge 3 ]; then
-            echo "public endpoint dead for three straight checks; shutting down loudly" >&2
+        local_failures=$((local_failures + 1))
+        if [ "$local_failures" -ge 3 ]; then
+            echo "local health dead for three straight checks; shutting down loudly" >&2
             exit 1
         fi
     fi

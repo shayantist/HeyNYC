@@ -28,9 +28,12 @@ def test_demo_launcher_uses_stable_domain_and_production_sender():
 
 def test_demo_launcher_verifies_public_endpoint_and_required_env():
     """F059: the owner's pilot served a healthy local process while the tunnel had silently
-    failed to bind the reserved domain. The launcher must verify the PUBLIC endpoint after
-    starting ngrok, keep verifying it while supervising, and fail loudly at the top with the
-    names of any missing required env instead of trusting the parent shell."""
+    failed to bind the reserved domain. The launcher must verify the PUBLIC endpoint once after
+    starting ngrok and fail loudly at the top with the names of any missing required env.
+    F081: the launcher must NOT poll the public endpoint while supervising; its own 10-second
+    public polling burned the ngrok free tier's monthly request quota (ERR_NGROK_727) and took
+    the pilot down. Supervision watches local health + process liveness; the cron dead-man
+    (health_watch.sh) owns the public endpoint at a low cadence."""
     script = Path(__file__).parents[1] / "scripts" / "serve_demo.sh"
     text = script.read_text()
 
@@ -39,10 +42,20 @@ def test_demo_launcher_verifies_public_endpoint_and_required_env():
         assert name in text
     assert "missing" in text.lower()
 
-    # Public-endpoint gate after ngrok starts, and continuous public verification while
-    # supervising, so a dead tunnel kills the stack noisily instead of serving silence.
-    assert text.count("https://$DOMAIN/health") >= 2
+    # One-shot public-endpoint gate after ngrok starts (this is the check that caught F081 live).
+    assert "https://$DOMAIN/health" in text
     assert "public endpoint" in text.lower()
+
+    # F081: the gate's failure path names the REAL ngrok error instead of guessing, from the
+    # response header and the agent log (the TUI used to eat the error and garble the screen).
+    assert "ngrok-error-code" in text
+    assert "--log" in text and "ngrok.log" in text
+    assert ">/dev/null" in text  # no TTY on stdout means no fullscreen TUI
+
+    # F081: after the supervise loop starts, the public URL is never polled again.
+    supervise = text[text.index("while kill -0") :]
+    assert "https://$DOMAIN" not in supervise
+    assert "127.0.0.1:8791/health" in supervise
     subprocess.run(["sh", "-n", script], check=True)
 
 

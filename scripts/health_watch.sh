@@ -1,7 +1,9 @@
 #!/bin/sh
 # Dead-man watch for the supervised pilot (F059 follow-up): logs the PUBLIC endpoint's health
 # and raises a desktop notification on the transition to down and again on recovery, so a
-# silent outage can never again last hours unnoticed. Designed for cron (every 5 minutes).
+# silent outage can never again last hours unnoticed. Designed for cron, every 15 minutes:
+# each tick spends one request of the ngrok free tier's monthly quota, and this watcher is the
+# ONLY public poller by design (F081: the launcher's 10s public polling exhausted the quota).
 set -eu
 
 DOMAIN="${HEYNYC_NGROK_DOMAIN:-}"
