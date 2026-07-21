@@ -79,11 +79,18 @@ _DELETE_DONE_MSG = (
     "for abuse control, neither of which identifies you. This conversation starts fresh now."
 )
 # First-contact welcome footer: one line on what HeyNYC is, one naming the controls. Sent once ever.
-_WELCOME_FOOTER = (
-    "First time here? I'm HeyNYC, I help you find and use NYC services, grounded in real city data.\n"
-    "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to flag a "
-    "bad answer, or DELETE MY DATA to erase everything I keep."
-)
+def _welcome_footer(registry) -> str:
+    """First-contact greeting. The capability line derives from the installed manifests at send
+    time (the same zero-drift pattern as HELP and the README table), so new modules appear here
+    automatically and this copy can never lie about what is installed."""
+    categories = sorted({m.category for m in registry.modules if m.category})
+    listed = ", ".join(categories[:-1]) + f", and {categories[-1]}" if len(categories) > 1 else (categories[0] if categories else "NYC services")
+    return (
+        f"First time here? I'm HeyNYC. I help with {listed} across NYC, grounded in real city "
+        "data, and I cite my sources.\n"
+        "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
+        "flag a bad answer, or DELETE MY DATA to erase everything I keep."
+    )
 _NEW_MESSAGE = (
     "Started a new conversation. I won't use the earlier chat as context. "
     "This does not delete stored records."
@@ -291,15 +298,15 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                     )
                     return
                 result = pending.result
+                # First-contact welcome LEADS on every channel (owner, 2026-07-21: greet first,
+                # then answer, the way a person would; trailing it after sources read as an
+                # afterthought). Once ever, marked only on the answer path so a first message
+                # that is a command isn't spent on it. The console banner merely lists commands;
+                # this explains them, so the console gets it too.
+                if deps.store.first_contact(key):
+                    await replier.send_text(_welcome_footer(deps.agent.registry) + "\n\nNow, about your message:")
                 for chunk in render(result, msg.channel):
                     await replier.send_text(chunk)
-                # First-contact welcome: appended to a never-seen user's first normal answer, once
-                # ever (the per-user lock serializes, so no double-send). Marked only here on the
-                # answer path, so a resident whose first message is a command isn't spent on it.
-                if deps.store.first_contact(key) and msg.channel != "console":
-                    # The console's startup banner already names every command each launch;
-                    # the once-ever texting footer would arrive as an awkward trailing block.
-                    await replier.send_text(_WELCOME_FOOTER)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
                 for path in artifacts:
                     await replier.send_document(path, caption="Your draft SNAP application (LDSS-4826)")

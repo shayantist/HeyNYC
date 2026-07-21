@@ -2,7 +2,6 @@ import asyncio
 import pytest
 from heynyc.channels.base import InboundMessage, KeyedLocks
 from heynyc.channels.orchestrator import (
-    _WELCOME_FOOTER,
     Deps,
     handle,
     is_delete,
@@ -36,7 +35,7 @@ class FakeReplier:
 def _answers(replier):
     """Sent messages minus the once-ever first-contact welcome footer, so a test that asserts on
     the ANSWER stays focused on it and isn't perturbed by the new first-contact greeting."""
-    return [s for s in replier.sent if s != _WELCOME_FOOTER]
+    return [s for s in replier.sent if not s.startswith("First time here")]
 
 
 def _agent(reply="Here you go."):
@@ -52,6 +51,13 @@ def _deps(tmp_path, **kw):
                 sessions_dir=tmp_path / "sessions", salt="s",
                 telemetry_path=tmp_path / "t.jsonl", feedback_path=tmp_path / "fb.jsonl",
                 locks=KeyedLocks(), semaphore=asyncio.Semaphore(8))
+
+
+def _burn_welcome(deps, channel="whatsapp_meta", sender="+1555"):
+    """Consume the once-ever first-contact flag so tests about OTHER behaviors see only
+    their answer messages (the welcome now LEADS a first answer on every channel)."""
+    from heynyc.channels.identity import user_key
+    deps.store.first_contact(user_key(channel, sender, "s"))
 
 
 def _msg(text="when do cooling centers open?", mid="m1"):
@@ -83,6 +89,7 @@ async def test_sms_channel_renders_plain_text_but_persists_raw_generation(tmp_pa
     with its markup intact. Pins the ordering: grounding/generation produces the raw turn, which
     is what's persisted; rendering is a deterministic presentation layer downstream of it."""
     deps = _deps(tmp_path, reply="**Cooling centers** are open Saturday.")
+    _burn_welcome(deps, channel="sms_twilio")
     replier = FakeReplier()
     msg = InboundMessage(channel="sms_twilio", sender="+1555", text="cooling?", message_id="sms1")
 
@@ -103,6 +110,7 @@ async def test_sms_channel_renders_plain_text_but_persists_raw_generation(tmp_pa
 
 async def test_whatsapp_channel_keeps_native_markup(tmp_path):
     deps = _deps(tmp_path, reply="**Cooling centers** are open Saturday.")
+    _burn_welcome(deps, channel="whatsapp_meta", sender="+1556")
     replier = FakeReplier()
     msg = InboundMessage(channel="whatsapp_meta", sender="+1556", text="cooling?", message_id="wa1")
 
@@ -516,6 +524,7 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
 
     agent._litellm_stream = fake_litellm
     deps, replier = _deps(tmp_path), FakeReplier()
+    _burn_welcome(deps, channel="whatsapp_meta")
     deps.agent = agent
 
     await handle(_msg(text="Here is my complete profile", mid="profile"), replier, deps)

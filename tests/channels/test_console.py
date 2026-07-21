@@ -152,20 +152,23 @@ async def test_console_greeting_gets_the_help_menu(tmp_path):
 
 async def test_console_welcome_footer_appears_once_on_the_console_key(tmp_path):
     """Per-channel welcome (owner, 2026-07-21): the console NEVER gets the texting footer,
-    its startup banner names the commands every launch; the first-contact flag still burns."""
+    the welcome LEADS the first answer on every channel (the banner lists, the welcome
+    explains), then never repeats."""
     deps = _console_deps(tmp_path)
     console = deps.event_sink._console
     deps.agent = _scripted_agent()
     replier = _ConsoleReplierFor(deps, console)
 
     await handle(_console_msg("when do cooling centers open?", "w1"), replier, deps)
-    assert "First time here" not in console.export_text()
+    first = console.export_text()
+    assert "First time here" in first and "Now, about your message:" in first
+    assert first.index("First time here") < first.index("Here you go.")  # greet, THEN answer
 
     console2 = _recording_console()
     replier2 = ConsoleReplierWith(console2, tmp_path)
     deps.event_sink._console = console2
     await handle(_console_msg("what about SNAP?", "w2"), replier2, deps)
-    assert "First time here" not in console2.export_text()
+    assert "First time here" not in console2.export_text()  # once ever
 
 
 async def test_console_report_confirm_flow(tmp_path):
