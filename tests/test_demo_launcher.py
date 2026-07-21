@@ -8,8 +8,10 @@ def test_demo_launcher_uses_stable_domain_and_production_sender():
 
     assert "nonepiscopal-inspiredly-sarai.ngrok-free.dev" in text
     assert "whatsapp:+18882120042" in text
-    assert 'HEYNYC_MODEL="openai/gpt-5.6-luna"' in text
-    assert 'HEYNYC_REASONING_EFFORT="medium"' in text  # the benched config, never a default
+    assert 'export HEYNYC_MODEL=' not in text  # RULED 2026-07-21: .env is the ONLY model source;
+    # the old script export was silently OVERWRITTEN by .env sourcing anyway (set -a re-assigns),
+    # so the luna pin never took effect and the pilot ran mini. The launcher now only VERIFIES.
+    assert 'HEYNYC_MODEL' in text  # named in the required-env gate
     assert "--port 8791" in text
     assert " 8791" in text
     assert "127.0.0.1:8791/health" in text
