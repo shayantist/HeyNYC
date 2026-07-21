@@ -91,5 +91,5 @@ redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error vi
 
 Built: WhatsApp (Meta + Twilio) + SMS-ready Twilio, dedup, rate-limit, per-user ordering, analytics,
 user flagging. Deferred (seams in place): inbound voice notes, outbound templates, a Celery/Dramatiq queue,
-dashboards, the public-reply governance layer, and the web channel. See the spec:
-`docs/superpowers/specs/2026-06-29-multichannel-onramp-design.md`.
+dashboards, the public-reply governance layer, and the web channel. The full v1 scope and the
+deferred seams are described in the project's internal multichannel-onramp design spec.
