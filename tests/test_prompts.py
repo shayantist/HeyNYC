@@ -56,8 +56,9 @@ def test_system_prompt_includes_active_recency_check():
     prompt = build_system_prompt(Registry([]))
     low = prompt.lower()
     assert "recent_developments" in prompt
-    assert "this may be changing" in low
-    assert "recency check" in low
+    assert "check for recent changes" in low
+    # The heads-up shape ("this may be changing") rehomed to the tool description with the
+    # rest of the protocol (prompt diet, 2026-07-22); pinned there by the contested test.
 
 
 def test_system_prompt_surfaces_human_and_appeal_path():
@@ -109,19 +110,27 @@ def test_system_prompt_sets_plain_language_reading_level():
     assert "6th" in low and "8th" in low
 
 
-def test_system_prompt_contested_legal_matter_protocol():
-    # Red-team MC03/MC04/FP02/ES03 fix: on a contested legal ruling surfaced from news, the agent must
-    # NOT restate the court/holding/scope, must NOT tell a user their protection is struck down/gone/
-    # annulled, and must LEAD with the protection that currently stands, then route.
+def test_contested_legal_matter_protocol_lives_in_its_one_home():
+    # Red-team MC03/MC04/FP02/ES03 fix, rehomed by the prompt diet (2026-07-22): the FULL
+    # contested-legal protocol (never restate court/holding/scope from news, never struck
+    # down/annulled, lead with what currently stands, active-legal-challenge framing) now
+    # lives ONCE, in the recent_developments tool description, the point of decision. The
+    # stable prompt keeps only the short never-cross line. Both are pinned so the policy
+    # can never silently vanish from either surface.
+    from heynyc.core.tools.web_search import web_search_tools
+
+    tools = {t.name: t for t in web_search_tools(["nyc.gov"], {}, set())}
+    desc = tools["recent_developments"].description.lower()
+    assert "contested legal matter" in desc
+    assert "struck" in desc and "annulled" in desc
+    assert "currently stands" in desc
+    assert "active legal challenge" in desc
+    assert "never name the court" in desc or "characterize the outcome" in desc
+
     low = build_system_prompt(Registry([])).lower()
-    assert "contested legal matter" in low
-    # names the exact words it must never use about a still-valid right
-    assert "struck down" in low and "annulled" in low
-    # the safe shape: lead with what currently stands
-    assert "currently stands" in low
-    assert "active legal challenge" in low
-    # must not assert the court
-    assert "never name the court" in low or "which court ruled" in low
+    assert "currently stands" in low                      # the never-cross line survives
+    assert "never a repeal" in low
+    assert "recent_developments" in low                   # rule 9 points at the one home
 
 
 def test_system_prompt_emergency_no_medical_dosing():
