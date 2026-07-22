@@ -61,6 +61,7 @@ class Tool:
     requires_approval: bool = False  # gate side-effecting tools behind user approval
     strict: bool = False         # emit `strict: true` (all params required) for constrained decoding
     title: str = ""              # human-readable label
+    module: str = ""             # owning service module; "" = core, always exposed (diet block 4)
 
     def _input_schema(self) -> dict:
         """Parameter schema with `additionalProperties: false` (strict-schema best practice)."""

@@ -319,7 +319,9 @@ class Registry:
                 sys.modules[spec.name] = mod
                 spec.loader.exec_module(mod)
                 if hasattr(mod, "get_tools"):
-                    tools.extend(mod.get_tools())
+                    for tool in mod.get_tools():
+                        tool.module = module.name  # ownership drives per-turn schema gating
+                        tools.append(tool)
             except Exception:
                 logger.exception("failed loading tools for module %s", module.name)
         return tools
