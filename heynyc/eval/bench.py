@@ -171,3 +171,24 @@ async def run_bench(
         except Exception as e:  # a broken/unauthorized model must not sink the whole comparison
             rows.append(BenchRow(model, None, error=f"{type(e).__name__}: {e}"))
     return rows
+
+
+async def run_bare_baseline(model: str, cases, *, completion=None) -> dict[str, str]:
+    """The resident's-ChatGPT-tab approximation (RULED 2026-07-20): each case query sent RAW
+    to a frontier model. No system prompt, no tools, no grounding, no HeyNYC harness, so the
+    head-to-head stops being reviewer speculation and becomes columns. Returns case id ->
+    answer text; a per-case provider error is captured inline and never aborts the sweep."""
+    if completion is None:
+        import litellm
+
+        completion = litellm.acompletion
+    answers: dict[str, str] = {}
+    for case in cases:
+        try:
+            response = await completion(
+                model=model, messages=[{"role": "user", "content": case.query}]
+            )
+            answers[case.id] = response.choices[0].message.content or ""
+        except Exception as e:
+            answers[case.id] = f"[baseline error: {type(e).__name__}: {e}]"
+    return answers

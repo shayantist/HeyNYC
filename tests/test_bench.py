@@ -136,3 +136,45 @@ def test_render_bench_surfaces_scope_model_tokens_and_latency():
 
     assert "tokens 100/20" in out
     assert "scope scope/model 10/2 tokens 15.5ms" in out
+
+
+# --- The bare-baseline lane (RULED 2026-07-20, built 2026-07-22): the resident's-ChatGPT-tab
+# approximation, the case query sent RAW to a frontier model with no HeyNYC harness ---
+
+async def test_bare_baseline_sends_raw_query_with_no_harness():
+    from types import SimpleNamespace
+
+    from heynyc.eval.bench import run_bare_baseline
+
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+        content = f"raw answer to {kwargs['messages'][0]['content']}"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
+    cases = [SimpleNamespace(id="c1", query="where is the nearest food pantry?")]
+    answers = await run_bare_baseline("some/model", cases, completion=fake_completion)
+
+    assert answers == {"c1": "raw answer to where is the nearest food pantry?"}
+    assert calls[0]["model"] == "some/model"
+    assert calls[0]["messages"] == [
+        {"role": "user", "content": "where is the nearest food pantry?"}
+    ]
+    assert "tools" not in calls[0]  # no harness: no tools, no system prompt, no grounding
+
+
+async def test_bare_baseline_captures_per_case_errors_without_aborting():
+    from types import SimpleNamespace
+
+    from heynyc.eval.bench import run_bare_baseline
+
+    async def boom(**kwargs):
+        raise RuntimeError("provider down")
+
+    cases = [SimpleNamespace(id="c1", query="q1"), SimpleNamespace(id="c2", query="q2")]
+    answers = await run_bare_baseline("m", cases, completion=boom)
+    assert set(answers) == {"c1", "c2"}
+    assert all("baseline error" in a for a in answers.values())
