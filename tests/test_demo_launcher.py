@@ -61,7 +61,10 @@ def test_demo_launcher_verifies_public_endpoint_and_required_env():
 
 def test_health_watch_logs_public_endpoint_and_notifies_on_transitions():
     """F059 follow-up: the dead-man watcher checks the PUBLIC endpoint, appends a timestamped
-    log line, and notifies only on down/up transitions, never every tick."""
+    log line, and notifies only on down/up transitions, never every tick.
+    F081 follow-up: the watcher self-throttles from `.env` (`HEYNYC_HEALTH_WATCH_INTERVAL_S`,
+    default hourly) so the crontab's granularity never decides the quota spend, and it sources
+    `.env` itself because cron starts with an empty environment."""
     script = Path(__file__).parents[1] / "scripts" / "health_watch.sh"
     text = script.read_text()
 
@@ -71,6 +74,13 @@ def test_health_watch_logs_public_endpoint_and_notifies_on_transitions():
     assert "display notification" in text
     assert 'if [ "$status" = "FAIL" ] && [ "$prev" = "OK" ]' in text
     assert 'if [ "$status" = "OK" ] && [ "$prev" = "FAIL" ]' in text
+
+    # F081: .env-configured cadence with an hourly default, enforced by a last-check stamp.
+    assert "HEYNYC_HEALTH_WATCH_INTERVAL_S" in text
+    assert ":-3600" in text
+    assert "health.last" in text
+    assert '. "$REPO_DIR/.env"' in text
+    assert text.index('. "$REPO_DIR/.env"') < text.index("HEYNYC_NGROK_DOMAIN")
     subprocess.run(["sh", "-n", script], check=True)
 
 
