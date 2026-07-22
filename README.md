@@ -58,8 +58,8 @@ HeyNYC is an alpha release. The public pilot number above runs from an operator-
 
 - **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
 - **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
-- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. Texting `DELETE MY DATA` and confirming erases the resident's transcript, any draft, and any pending report flags in chat; see the [privacy notice](docs/legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
-- **Not yet shipped:** a resident web UI, durable hosted deployment, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
+- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Twilio requests enter an encrypted SQLite inbox before acknowledgement and resume after a restart. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. Texting `DELETE MY DATA` and confirming erases the resident's transcript, queued messages, draft, and pending report flags; see the [privacy notice](docs/legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
+- **Not yet shipped:** a resident web UI, durable Meta webhook intake, automated restore-tested host migration, self-service resident data export, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
 - **Known limitations:** intersection geocoding can be wrong, so HeyNYC echoes the resolved address and asks for confirmation. Some city datasets are thin (the SNAP-center list has weekday hours but no phone numbers), and HeyNYC says so rather than filling the gap.
 
 ## Using it
@@ -71,7 +71,7 @@ HeyNYC is an alpha release. The public pilot number above runs from an operator-
 | `HELP` | what HeyNYC can do |
 | `PRIVACY` | how your info is handled, in short |
 | `REPORT` (or 👎) | flag the last answer for human review, after you confirm |
-| `DELETE MY DATA` | erase your conversation, draft, and pending flags, after you confirm |
+| `DELETE MY DATA` | erase your conversation, queued messages, draft, and pending flags, after you confirm |
 | `NEW` | start a fresh conversation the assistant no longer sees |
 | `STOP` / `START` | SMS opt-out and opt-in (carrier-level) |
 
@@ -151,7 +151,9 @@ Offline tests prove contracts; live evals prove behavior.
 
 **Do people read my messages?** No one reads your conversations in the normal course of things; a human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md) controls.
 
-**How do I delete my data?** Text DELETE MY DATA and confirm: your encrypted transcript, any in-progress draft, and pending flags are erased, and only PII-free aggregate statistics survive. What's kept and for how long is in [PRIVACY.md](PRIVACY.md).
+**How do I delete my data?** Text DELETE MY DATA and confirm: your encrypted transcript, queued messages, any in-progress draft, and pending flags are erased, and only PII-free aggregate statistics and anonymized abuse-control spend remain. What's kept and for how long is in [PRIVACY.md](PRIVACY.md).
+
+**Can I get a copy of my conversations?** Not through an automated command yet. You can request a copy of information held directly by Reach4Help at [privacy@reach4help.org](mailto:privacy@reach4help.org); the planned self-service export and its machine-readable format are described in [PRIVACY.md](PRIVACY.md).
 
 **Is it free?** Yes. Standard messaging rates from your carrier apply, nothing from us.
 
@@ -177,4 +179,4 @@ Offline tests prove contracts; live evals prove behavior.
 
 **What would this cost a city?** The grounding guarantee lives in the deterministic guard rather than in an expensive model, which is what makes cheap or self-hosted models safe to run; measured by the built-in telemetry, the median resident turn costs under two cents on the pilot's current stack. The economics of the design are part of [SAFETY.md](SAFETY.md).
 
-_Last updated: 2026-07-21_
+_Last updated: 2026-07-22_

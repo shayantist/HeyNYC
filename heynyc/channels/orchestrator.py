@@ -66,14 +66,14 @@ _DELETE_TOKENS = {
 _DELETE_COMMANDS = ("/delete", "/deletedata", "/forget")
 _DELETE_CONFIRM_MSG = (
     "This permanently deletes your data with me: your encrypted conversation transcript, any "
-    "in-progress application draft, and any pending report flags. "
+    "queued messages, in-progress application draft, and pending report flags. "
     "What stays: only PII-free aggregate service statistics and an anonymized daily spend record "
     "kept for abuse control, neither of which identifies you. "
     "This can't be undone. Reply YES to delete, or anything else to cancel."
 )
 _DELETE_DONE_MSG = (
-    "Done. I deleted your conversation transcript, any application draft, and any pending report "
-    "flags. All that remains is PII-free aggregate statistics and an anonymized daily spend record "
+    "Done. I deleted your conversation transcript, queued messages, any application draft, and "
+    "pending report flags. All that remains is PII-free aggregate statistics and an anonymized daily spend record "
     "for abuse control, neither of which identifies you. This conversation starts fresh now."
 )
 # First-contact welcome footer: one line on what HeyNYC is, one naming the controls. Sent once ever.
@@ -190,7 +190,7 @@ def _privacy_message(channel: str) -> str:
         "Send NEW to start without earlier model context. If I get something wrong, reply REPORT "
         "and, after you confirm, that one exchange is shared with a human reviewer, nothing else. "
         "To erase your data, send DELETE MY DATA and confirm: that deletes your transcript, any "
-        "draft, and any pending flags, keeping only PII-free aggregate stats and an anonymized "
+        "queued messages, draft, and pending flags, keeping only PII-free aggregate stats and an anonymized "
         "daily spend record for abuse control."
     )
 
@@ -213,9 +213,11 @@ def _artifacts_in(art_dir: Path) -> list[str]:
     return sorted(str(p) for p in art_dir.glob("*") if p.is_file())
 
 
-async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
+async def handle(
+    msg: InboundMessage, replier: Replier, deps: Deps, *, deduplicate: bool = True,
+) -> None:
     key = user_key(msg.channel, msg.sender, deps.salt)
-    if deps.store.seen(msg.message_id, key):  # dedup (also records), before any work
+    if deduplicate and deps.store.seen(msg.message_id, key):  # records before any work
         return
     if not deps.store.allow(key):
         await replier.send_text(_RATE_LIMIT_MSG)
@@ -308,6 +310,9 @@ async def handle(msg: InboundMessage, replier: Replier, deps: Deps) -> None:
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
                 for path in artifacts:
                     await replier.send_document(path, caption="Your draft SNAP application (LDSS-4826)")
+                finalize = getattr(replier, "finalize", None)
+                if finalize is not None:
+                    await finalize()
                 session.commit(pending)
                 turn_cost = result.usage.get("cost_usd")
                 deps.store.add_spend(key, _nyc_day(), float(turn_cost) if turn_cost else 0.0)

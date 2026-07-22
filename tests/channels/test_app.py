@@ -43,9 +43,12 @@ def test_lifespan_runs_private_data_purge(monkeypatch, tmp_path):
     calls = []
     from heynyc.channels import app as appmod
     monkeypatch.setattr(appmod, "purge_private_data", lambda data: calls.append(data))
-    with TestClient(appmod.create_app(provider="twilio")):
+    monkeypatch.setattr(appmod, "purge_channel_data", lambda store: calls.append(store))
+    api = appmod.create_app(provider="twilio")
+    with TestClient(api):
         pass
-    assert calls == [tmp_path]
+    assert calls[0] == tmp_path
+    assert calls[1] is api.state.deps.store
 
 
 def test_lifespan_migrates_legacy_private_data_before_purge(monkeypatch, tmp_path):

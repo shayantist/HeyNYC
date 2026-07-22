@@ -228,6 +228,18 @@ async def test_duplicate_message_is_ignored(tmp_path):
     assert replier.sent.count("Here you go.") == 1   # the duplicate produced no second answer
 
 
+async def test_durable_inbox_can_skip_the_second_dedup_check(tmp_path):
+    from heynyc.channels.identity import user_key
+
+    deps, replier = _deps(tmp_path), FakeReplier()
+    message = _msg(mid="already-in-inbox")
+    deps.store.seen(message.message_id, user_key(message.channel, message.sender, deps.salt))
+
+    await handle(message, replier, deps, deduplicate=False)
+
+    assert "Here you go." in replier.sent
+
+
 async def test_rate_limit_blocks_with_a_notice(tmp_path):
     deps = _deps(tmp_path, rate_limit=1)
     r1, r2 = FakeReplier(), FakeReplier()
@@ -304,7 +316,7 @@ async def test_delete_asks_to_confirm_stating_what_goes_and_survives_before_any_
     assert r.typed == 0                                   # deterministic, no model call
     copy = r.sent[0].lower()
     assert "yes" in copy                                  # only YES executes
-    assert "transcript" in copy and "draft" in copy       # what WILL be deleted
+    assert "transcript" in copy and "draft" in copy and "queued" in copy
     assert "spend" in copy and ("aggregate" in copy or "statistics" in copy)  # what SURVIVES
     assert session_file.exists()                          # nothing deleted yet
 
@@ -332,7 +344,7 @@ async def test_delete_removes_session_draft_and_flags_and_next_message_starts_fr
 
     assert r.typed == 0
     done = r.sent[0].lower()
-    assert "delet" in done and "spend" in done              # ack confirms + restates survivors
+    assert "delet" in done and "queued" in done and "spend" in done
     assert not session_file.exists()                        # transcript actually gone
     assert not draft_file.exists()                          # draft actually gone
     assert deps.store.flags() == []                         # flag rows gone

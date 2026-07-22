@@ -7,22 +7,22 @@ This package puts the grounded agent in front of people on the platforms they al
 One **channel-agnostic core** with thin per-provider **adapters**:
 
 ```
-base.py          InboundMessage + Replier port, dispatch() fire-and-forget seam, KeyedLocks
+base.py          InboundMessage + Replier port, Meta dispatch seam, KeyedLocks
 identity.py      user_key(channel, sender, salt), the PII boundary
-store.py         sqlite dedup + per-user rate-limit (crash-aware, no Redis)
+store.py         encrypted SQLite inbox + dedup + per-user rate-limit
 format.py        render(result, channel) -> channel-appropriate chunks (SMS plain / WhatsApp native, strip {cite:Sn}, Sources footer, 4096 split)
 orchestrator.py  handle(msg, replier, deps), dedup → rate → lock → run agent → reply → record
 analytics.py     pseudonymous interaction log + user-flag feedback log
 meta.py          Meta WhatsApp Cloud API adapter (pywa)
-twilio.py        Twilio adapter (WhatsApp sandbox + SMS)
-app.py           FastAPI factory: build the Agent once, mount providers, drain on shutdown
+twilio.py        Twilio adapter + restart-safe inbox worker (WhatsApp + SMS)
+app.py           FastAPI factory: build the Agent once, mount providers, start/stop workers
 ```
 
-The orchestrator is universal; only the adapters know a provider. Adding SMS, Instagram DMs, or a web channel is another adapter, the core doesn't change. The webhook handler verifies → `dispatch` (fire-and-forget) → returns 200 fast; the agent runs out-of-band (pywa awaits the handler, so this is mandatory, not optional). Per-user `asyncio.Lock` keeps one person's messages in order; a global `Semaphore` bounds concurrency and LLM spend.
+The orchestrator is universal; only the adapters know a provider. Adding Instagram DMs or a web channel is another adapter, the core doesn't change. The Twilio webhook verifies, encrypts and persists the inbound envelope by `MessageSid`, then returns 200. A bounded worker resumes unfinished work after restart. Meta still uses the in-memory dispatch seam. Per-user ordering keeps one person's messages sequential while the global concurrency limit lets different residents proceed together and bounds LLM spend.
 
 ## Privacy
 
-Senders are reduced to a salted-HMAC `user_key` at the door. **Raw phone numbers are never persisted**, not session filenames, not telemetry, not the feedback log. The raw address lives only in memory during a request, held by the `Replier` to send the reply. Serving requires both `HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`; conversation and draft files are encrypted, and the service deletes expired files on startup and once per day using `HEYNYC_PII_RETENTION_DAYS` (30 by default). Resident-authored queries, notes, and assistant text are PII-redacted before feedback is stored.
+Senders are reduced to a salted-HMAC `user_key` at the door. Raw phone numbers and message text in the Twilio inbox are encrypted at rest; session filenames, telemetry, and the feedback index use only the pseudonymous key. Serving requires both `HEYNYC_PII_SALT` and `HEYNYC_PII_KEY`. The service deletes expired inbox rows, conversations, and drafts on startup and once per day using `HEYNYC_PII_RETENTION_DAYS` (30 by default). Successful inbox work is scrubbed immediately after Twilio accepts every reply part.
 
 ## Inherited WhatsApp constraints (documented, not built around)
 
@@ -60,4 +60,4 @@ A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, or 👎 to f
 
 ## v1 scope
 
-Built: WhatsApp (Meta + Twilio) + SMS-ready Twilio, dedup, rate-limit, per-user ordering, analytics, user flagging. Deferred (seams in place): inbound voice notes, outbound templates, a Celery/Dramatiq queue, dashboards, the public-reply governance layer, and the web channel. The full v1 scope and the deferred seams are described in the project's internal multichannel-onramp design spec.
+Built: WhatsApp (Meta + Twilio), Twilio SMS, encrypted durable Twilio intake, dedup, bounded retries, per-user ordering, rate limits, analytics, and user flagging. Deferred: durable Meta intake, inbound voice notes, outbound templates, dashboards, the public-reply governance layer, and the web channel. The full v1 scope and deferred seams are described in the project's internal multichannel-onramp design spec.

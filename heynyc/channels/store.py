@@ -1,11 +1,18 @@
-"""Crash-aware, Redis-free dedup + rate-limit on stdlib sqlite3. Survives restarts;
-the one residual loss window (a crash between the 200 and the reply) is acceptable
-for the pilot and closes by swapping the dispatch() seam for a real queue."""
+"""Crash-aware inbox, dedup, and rate limits on stdlib sqlite3."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
+
+from heynyc.core import pii_crypto
+
+
+class InboxPayloadError(RuntimeError):
+    def __init__(self, message_id: str) -> None:
+        super().__init__(f"unreadable inbox payload for {message_id}")
+        self.message_id = message_id
 
 
 class ChannelStore:
@@ -15,15 +22,37 @@ class ChannelStore:
         self.dedup_ttl_s = dedup_ttl_s
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False, timeout=30.0)
+        tables = {
+            row[0]
+            for row in self._db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if "seen" in tables and "inbox" not in tables:
+            self._db.execute("ALTER TABLE seen RENAME TO inbox")
         self._db.execute(
-            "CREATE TABLE IF NOT EXISTS seen "
+            "CREATE TABLE IF NOT EXISTS inbox "
             "(message_id TEXT PRIMARY KEY, ts REAL, user_key TEXT NOT NULL DEFAULT '')"
         )
-        columns = {row[1] for row in self._db.execute("PRAGMA table_info(seen)")}
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(inbox)")}
         if "user_key" not in columns:
             self._db.execute(
-                "ALTER TABLE seen ADD COLUMN user_key TEXT NOT NULL DEFAULT ''"
+                "ALTER TABLE inbox ADD COLUMN user_key TEXT NOT NULL DEFAULT ''"
             )
+        additions = {
+            "payload": "BLOB",
+            "outbox": "BLOB",
+            "state": "TEXT NOT NULL DEFAULT 'sent'",
+            "attempts": "INTEGER NOT NULL DEFAULT 0",
+            "delivered_parts": "INTEGER NOT NULL DEFAULT 0",
+            "available_at": "REAL NOT NULL DEFAULT 0",
+            "lease_until": "REAL",
+            "outbound_ids": "TEXT NOT NULL DEFAULT ''",
+            "updated_at": "REAL NOT NULL DEFAULT 0",
+        }
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(inbox)")}
+        for name, declaration in additions.items():
+            if name not in columns:
+                self._db.execute(f"ALTER TABLE inbox ADD COLUMN {name} {declaration}")
+        self._db.execute("PRAGMA user_version = 2")
         self._db.execute("CREATE TABLE IF NOT EXISTS rate (user_key TEXT, ts REAL)")
         self._db.execute("CREATE INDEX IF NOT EXISTS rate_key ON rate (user_key, ts)")
         self._db.execute(
@@ -59,13 +88,129 @@ class ChannelStore:
         """True if already seen; otherwise record it and return False. INSERT OR IGNORE
         keeps the prune + insert in one committed transaction (no dangling lock)."""
         now = time.time()
-        self._db.execute("DELETE FROM seen WHERE ts < ?", (now - self.dedup_ttl_s,))
+        self._db.execute(
+            "DELETE FROM inbox WHERE state = 'sent' AND ts < ?", (now - self.dedup_ttl_s,)
+        )
         cur = self._db.execute(
-            "INSERT OR IGNORE INTO seen (message_id, ts, user_key) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO inbox (message_id, ts, user_key) VALUES (?, ?, ?)",
             (message_id, now, user_key),
         )
         self._db.commit()
         return cur.rowcount == 0
+
+    def enqueue(self, message_id: str, user_key: str, payload: str) -> bool:
+        """Persist one encrypted inbound message. False means this ID already exists."""
+        now = time.time()
+        self._db.execute(
+            "DELETE FROM inbox WHERE state = 'sent' AND ts < ?", (now - self.dedup_ttl_s,)
+        )
+        cur = self._db.execute(
+            "INSERT OR IGNORE INTO inbox "
+            "(message_id, ts, user_key, payload, state, available_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'received', ?, ?)",
+            (message_id, now, user_key, pii_crypto.encrypt(payload), now, now),
+        )
+        self._db.commit()
+        return cur.rowcount == 1
+
+    def claim_next(self, *, lease_s: float, user_key: str | None = None) -> dict | None:
+        """Lease the oldest ready message, including work abandoned by a crashed worker."""
+        now = time.time()
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT i.message_id, i.user_key, i.payload, i.attempts, i.outbox, "
+                "i.delivered_parts FROM inbox AS i "
+                "WHERE i.payload IS NOT NULL AND (? IS NULL OR i.user_key = ?) AND "
+                "NOT EXISTS (SELECT 1 FROM inbox AS earlier "
+                "WHERE earlier.user_key = i.user_key AND earlier.payload IS NOT NULL AND "
+                "earlier.state != 'failed' AND "
+                "(earlier.ts < i.ts OR (earlier.ts = i.ts AND earlier.rowid < i.rowid))) AND "
+                "i.available_at <= ? AND (i.state IN ('received', 'retrying') OR "
+                "(i.state IN ('processing', 'delivering') AND COALESCE(i.lease_until, 0) <= ?)) "
+                "ORDER BY i.ts, i.rowid LIMIT 1",
+                (user_key, user_key, now, now),
+            ).fetchone()
+            if row is None:
+                self._db.commit()
+                return None
+            attempts = int(row[3]) + 1
+            self._db.execute(
+                "UPDATE inbox SET state = 'processing', attempts = ?, lease_until = ?, "
+                "updated_at = ? WHERE message_id = ?",
+                (attempts, now + lease_s, now, row[0]),
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        try:
+            payload = pii_crypto.decrypt(row[2])
+            outbox = json.loads(pii_crypto.decrypt(row[4])) if row[4] is not None else None
+        except Exception as exc:
+            self.fail(row[0])
+            raise InboxPayloadError(row[0]) from exc
+        return {
+            "message_id": row[0], "user_key": row[1], "payload": payload,
+            "attempts": attempts, "outbox": outbox, "delivered_parts": int(row[5]),
+        }
+
+    def stage_outbox(self, message_id: str, parts: list[dict]) -> None:
+        """Persist the complete rendered reply before the session commits or delivery starts."""
+        self._db.execute(
+            "UPDATE inbox SET outbox = ?, state = 'delivering', delivered_parts = 0, "
+            "updated_at = ? WHERE message_id = ?",
+            (pii_crypto.encrypt(json.dumps(parts)), time.time(), message_id),
+        )
+        self._db.commit()
+
+    def complete(self, message_id: str, outbound_ids: list[str] | None = None) -> None:
+        """Mark delivery accepted and erase the resident-authored queued payload."""
+        now = time.time()
+        if outbound_ids is None:
+            self._db.execute(
+                "UPDATE inbox SET state = 'sent', payload = NULL, outbox = NULL, "
+                "lease_until = NULL, updated_at = ? WHERE message_id = ?",
+                (now, message_id),
+            )
+        else:
+            self._db.execute(
+                "UPDATE inbox SET state = 'sent', payload = NULL, outbox = NULL, "
+                "outbound_ids = ?, lease_until = NULL, updated_at = ? WHERE message_id = ?",
+                (json.dumps(outbound_ids), now, message_id),
+            )
+        self._db.commit()
+
+    def record_outbound(self, message_id: str, outbound_id: str) -> None:
+        """Checkpoint one provider-accepted outbound message before sending the next part."""
+        row = self._db.execute(
+            "SELECT outbound_ids FROM inbox WHERE message_id = ?", (message_id,)
+        ).fetchone()
+        if row is None:
+            return
+        outbound_ids = json.loads(row[0] or "[]")
+        if outbound_id not in outbound_ids:
+            outbound_ids.append(outbound_id)
+            self._db.execute(
+                "UPDATE inbox SET outbound_ids = ?, updated_at = ? WHERE message_id = ?",
+                (json.dumps(outbound_ids), time.time(), message_id),
+            )
+            self._db.execute(
+                "UPDATE inbox SET delivered_parts = delivered_parts + 1 WHERE message_id = ?",
+                (message_id,),
+            )
+            self._db.commit()
+
+    def fail(self, message_id: str, *, retry_after_s: float | None = None) -> None:
+        """Keep failed work encrypted, optionally releasing it for one later retry."""
+        now = time.time()
+        state = "retrying" if retry_after_s is not None else "failed"
+        self._db.execute(
+            "UPDATE inbox SET state = ?, available_at = ?, lease_until = NULL, "
+            "updated_at = ? WHERE message_id = ?",
+            (state, now + (retry_after_s or 0), now, message_id),
+        )
+        self._db.commit()
 
     def daily_spend(self, user_key: str, day: str) -> float:
         """This user's accumulated model cost for `day` (an ISO date string)."""
@@ -135,13 +280,19 @@ class ChannelStore:
         return {"ts": float(row[0])}
 
     def delete_user(self, user_key: str) -> None:
-        """Erase this resident's own control-plane rows on DELETE MY DATA: their flag pointers
-        (pending + confirmed) and any staged deletion. The daily `spend` record is deliberately
-        KEPT (anonymized, abuse control), matching the survivor promised in the confirmation copy.
-        The transcript and drafts (the actual PII) are files, deleted by the channel, not here."""
+        """Erase this resident's inbox and control-plane rows on DELETE MY DATA. The daily
+        `spend` record stays as the anonymized abuse-control survivor promised in the copy."""
+        self._db.execute("DELETE FROM inbox WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM flag WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM flag_pending WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM delete_pending WHERE user_key = ?", (user_key,))
+        self._db.execute("DELETE FROM welcomed WHERE user_key = ?", (user_key,))
+        self._db.execute("DELETE FROM rate WHERE user_key = ?", (user_key,))
+        self._db.commit()
+
+    def purge_inbox(self, *, before: float) -> None:
+        """Remove queued resident content older than the configured retention boundary."""
+        self._db.execute("DELETE FROM inbox WHERE ts < ?", (before,))
         self._db.commit()
 
     def first_contact(self, user_key: str) -> bool:

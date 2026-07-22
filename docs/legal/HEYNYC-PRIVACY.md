@@ -2,6 +2,8 @@
 
 **Effective date:** July 17, 2026
 
+**Updated:** July 22, 2026, to clarify access, portability, and recovery work that is not yet implemented
+
 This notice explains how [Reach4Help](https://reach4help.org/) handles information when you use HeyNYC by SMS, WhatsApp, command line, or another supported channel. It supplements the general [Reach4Help Privacy Policy](https://reach4help.org/privacy/). If the two notices conflict about HeyNYC, this HeyNYC notice controls.
 
 ## 1. Information HeyNYC handles
@@ -46,10 +48,14 @@ What the current code demonstrates:
 - Hosted serving fails without a valid encryption key and [runs expiry at startup and daily](../../heynyc/channels/app.py)
 - Conversation records are [encrypted per record with authenticated encryption](../../heynyc/core/session.py)
 - Resident-authored feedback is [pattern-redacted before encrypted storage](../../heynyc/channels/analytics.py)
+- Twilio requests are [encrypted and persisted before acknowledgement](../../heynyc/channels/twilio.py), resume after restart, and are scrubbed after successful delivery
 
 What is not implemented yet:
 
 - (Shipped 2026-07-20, after this notice's effective date: in-chat `DELETE MY DATA` now deletes the conversation transcript, draft, and pending report flags after confirmation; `NEW` and `PRIVACY` work as before. Email deletion remains available.)
+- (Shipped 2026-07-22: confirmed `DELETE MY DATA` now also deletes queued messages associated with the resident.)
+- A self-service data-export command or downloadable archive
+- An automated, restore-tested backup and host-migration process
 - A settled retention and deletion policy for longer-lived pseudonymous telemetry
 - Live semantic acceptance of memory compaction across long multilingual conversations
 - An external privacy, security, accessibility, or standards-compliance audit
@@ -71,9 +77,9 @@ Using HeyNYC does not create an account with a government agency. Under the proj
 
 ## 7. Your choices
 
-You can stop SMS messages by replying **STOP**. Reply **HELP** for messaging help. STOP is a messaging opt-out, not a deletion request. Text **DELETE MY DATA** and confirm to erase your conversation transcript, draft, and pending report flags in chat. You can also stop using the service at any time.
+You can stop SMS messages by replying **STOP**. Reply **HELP** for messaging help. STOP is a messaging opt-out, not a deletion request. Text **DELETE MY DATA** and confirm to erase your conversation transcript, queued messages, draft, and pending report flags in chat. You can also stop using the service at any time.
 
-To request access to or deletion of information held directly by Reach4Help, email [privacy@reach4help.org](mailto:privacy@reach4help.org). Include enough information for us to locate the relevant record without sending sensitive identifiers by email. Reach4Help may need to retain limited information for security, legal compliance, or an unresolved request. Requests concerning a messaging, model, or government provider may also be subject to that provider's procedures.
+To request access to, a copy of, or deletion of information held directly by Reach4Help, email [privacy@reach4help.org](mailto:privacy@reach4help.org). A self-service export is not available yet. Include enough information for us to locate the relevant record without sending sensitive identifiers by email. Reach4Help may need to verify that you control the messaging address associated with the records. Reach4Help may also need to retain limited information for security, legal compliance, or an unresolved request. Requests concerning a messaging, model, or government provider may be subject to that provider's procedures.
 
 ## 8. Children
 

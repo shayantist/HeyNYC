@@ -1,9 +1,14 @@
+import json
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("twilio")
 pytest.importorskip("fastapi")
 
+from heynyc.channels.store import ChannelStore
 from heynyc.channels.twilio import TwilioReplier, public_url, to_inbound
+from heynyc.core import pii_crypto
 
 
 class FakeMessages:
@@ -12,6 +17,7 @@ class FakeMessages:
 
     def create(self, from_, to, body, media_url=None):
         self.created.append((from_, to, body, media_url))
+        return SimpleNamespace(sid=f"SM-out-{len(self.created)}")
 
 
 class FakeClient:
@@ -155,29 +161,36 @@ def test_to_inbound_distinguishes_sms_from_whatsapp():
     assert m.channel == "sms_twilio"
 
 
-def test_twilio_router_uses_recipient_as_reply_sender_and_rejects_missing_addresses(monkeypatch):
+def test_twilio_router_persists_before_ack_and_rejects_missing_addresses(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     from heynyc.channels import twilio
 
-    routed = []
+    enqueued = []
 
     class Validator:
         def validate(self, url, params, signature):
             return True
 
-    class Replier:
-        def __init__(self, client, from_, to, message_id):
-            routed.append((from_, to, message_id))
+    class Store:
+        def enqueue(self, message_id, user_key, payload):
+            enqueued.append((message_id, user_key, json.loads(payload)))
+            return True
+
+    class Worker:
+        def __init__(self):
+            self.wakes = 0
+
+        def wake(self):
+            self.wakes += 1
 
     monkeypatch.setattr("twilio.request_validator.RequestValidator", lambda token: Validator())
-    monkeypatch.setattr("twilio.rest.Client", lambda sid, token: object())
-    monkeypatch.setattr(twilio, "TwilioReplier", Replier)
-    monkeypatch.setattr(twilio, "dispatch", lambda coro: coro.close())
+    worker = Worker()
+    deps = SimpleNamespace(store=Store(), salt="test-salt")
 
     app = FastAPI()
-    app.include_router(twilio.make_twilio_router(object()))
+    app.include_router(twilio.make_twilio_router(deps, worker))
     with TestClient(app) as client:
         accepted = client.post("/webhook/twilio", data={
             "From": "+15551234567",
@@ -193,7 +206,304 @@ def test_twilio_router_uses_recipient_as_reply_sender_and_rejects_missing_addres
 
     assert accepted.status_code == 200
     assert missing_to.status_code == 400
-    assert routed == [("+18882120042", "+15551234567", "SM2")]
+    assert worker.wakes == 1
+    assert len(enqueued) == 1
+    message_id, stored_user_key, payload = enqueued[0]
+    assert message_id == "SM2"
+    assert stored_user_key and "+15551234567" not in stored_user_key
+    assert payload == {
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "hi",
+        "message_id": "SM2",
+        "profile_name": "",
+        "media": [],
+    }
+
+
+def test_twilio_router_acknowledges_duplicate_without_waking_worker(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from heynyc.channels import twilio
+
+    class Validator:
+        def validate(self, url, params, signature):
+            return True
+
+    class Store:
+        def enqueue(self, message_id, user_key, payload):
+            return False
+
+    class Worker:
+        def __init__(self):
+            self.wakes = 0
+
+        def wake(self):
+            self.wakes += 1
+
+    monkeypatch.setattr("twilio.request_validator.RequestValidator", lambda token: Validator())
+    worker = Worker()
+    app = FastAPI()
+    app.include_router(twilio.make_twilio_router(
+        SimpleNamespace(store=Store(), salt="test-salt"), worker,
+    ))
+
+    with TestClient(app) as client:
+        response = client.post("/webhook/twilio", data={
+            "From": "+15551234567",
+            "To": "+18882120042",
+            "Body": "same delivery",
+            "MessageSid": "SM-duplicate",
+        })
+
+    assert response.status_code == 200
+    assert worker.wakes == 0
+
+
+async def test_twilio_worker_processes_envelope_and_records_outbound_sids(monkeypatch, tmp_path):
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    payload = json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "hello",
+        "message_id": "SM-in-1",
+        "profile_name": "",
+        "media": [],
+    })
+    store.enqueue("SM-in-1", "u1", payload)
+    calls = []
+
+    async def fake_handle(message, replier, deps, *, deduplicate=True):
+        calls.append((message, deduplicate))
+        await replier.send_text("reply")
+
+    monkeypatch.setattr(twilio, "handle", fake_handle)
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=FakeClient(), lease_s=30,
+    )
+
+    assert await worker.process_one() is True
+
+    message, deduplicate = calls[0]
+    assert message.message_id == "SM-in-1"
+    assert message.sender == "+15551234567"
+    assert deduplicate is False
+    assert store._db.execute(
+        "SELECT state, payload, outbound_ids FROM inbox WHERE message_id = ?", ("SM-in-1",)
+    ).fetchone() == ("sent", None, '["SM-out-1"]')
+
+
+async def test_twilio_worker_stops_retrying_after_bounded_failures(monkeypatch, tmp_path):
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-in-fail", "u1", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "hello",
+        "message_id": "SM-in-fail",
+        "profile_name": "",
+        "media": [],
+    }))
+
+    async def fail_handle(message, replier, deps, *, deduplicate=True):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(twilio, "handle", fail_handle)
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=FakeClient(), lease_s=30,
+        retry_after_s=0, max_attempts=3,
+    )
+
+    assert [await worker.process_one() for _ in range(3)] == [True, True, True]
+    assert await worker.process_one() is False
+    state, attempts, payload = store._db.execute(
+        "SELECT state, attempts, payload FROM inbox WHERE message_id = ?", ("SM-in-fail",)
+    ).fetchone()
+    assert state == "failed"
+    assert attempts == 3
+    assert payload is not None
+
+
+async def test_twilio_worker_resumes_only_unsent_reply_parts(monkeypatch, tmp_path):
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-partial", "u1", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "hello",
+        "message_id": "SM-partial",
+        "profile_name": "",
+        "media": [],
+    }))
+
+    async def partial_handle(message, replier, deps, *, deduplicate=True):
+        await replier.send_text("first accepted part")
+        await replier.send_text("second accepted part")
+
+    class FlakyMessages(FakeMessages):
+        def __init__(self):
+            super().__init__()
+            self.failed_once = False
+
+        def create(self, from_, to, body, media_url=None):
+            if body == "second accepted part" and not self.failed_once:
+                self.failed_once = True
+                raise RuntimeError("temporary provider failure")
+            return super().create(from_, to, body, media_url)
+
+    client = FakeClient()
+    client.messages = FlakyMessages()
+
+    monkeypatch.setattr(twilio, "handle", partial_handle)
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=client, retry_after_s=0,
+    )
+
+    assert await worker.process_one() is True
+    state, outbox, delivered_parts = store._db.execute(
+        "SELECT state, outbox, delivered_parts FROM inbox WHERE message_id = ?", ("SM-partial",)
+    ).fetchone()
+    assert state == "retrying" and delivered_parts == 1
+    assert isinstance(outbox, bytes)
+    assert b"first accepted part" not in outbox and b"second accepted part" not in outbox
+    assert await worker.process_one() is True
+    assert await worker.process_one() is False
+    assert store._db.execute(
+        "SELECT state, payload, outbound_ids FROM inbox WHERE message_id = ?", ("SM-partial",)
+    ).fetchone() == ("sent", None, '["SM-out-1", "SM-out-2"]')
+    assert [body for _, _, body, _ in client.messages.created] == [
+        "first accepted part", "second accepted part",
+    ]
+
+
+async def test_twilio_worker_recovers_queued_work_on_startup(monkeypatch, tmp_path):
+    import asyncio
+
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-before-start", "u1", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "survive restart",
+        "message_id": "SM-before-start",
+        "profile_name": "",
+        "media": [],
+    }))
+    processed = asyncio.Event()
+
+    async def fake_handle(message, replier, deps, *, deduplicate=True):
+        await replier.send_text("recovered")
+        processed.set()
+
+    monkeypatch.setattr(twilio, "handle", fake_handle)
+    worker = twilio.TwilioInboxWorker(SimpleNamespace(store=store), client=FakeClient())
+
+    worker.start()
+    await asyncio.wait_for(processed.wait(), timeout=1)
+    await worker.stop()
+
+    assert store._db.execute(
+        "SELECT state FROM inbox WHERE message_id = ?", ("SM-before-start",)
+    ).fetchone() == ("sent",)
+
+
+async def test_twilio_worker_processes_different_senders_concurrently(monkeypatch, tmp_path):
+    import asyncio
+
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    for index in (1, 2):
+        store.enqueue(f"SM-{index}", f"u{index}", json.dumps({
+            "channel": "sms_twilio",
+            "sender": f"+1555000000{index}",
+            "recipient": "+18882120042",
+            "text": "hello",
+            "message_id": f"SM-{index}",
+            "profile_name": "",
+            "media": [],
+        }))
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    started = 0
+
+    async def fake_handle(message, replier, deps, *, deduplicate=True):
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await release.wait()
+
+    monkeypatch.setattr(twilio, "handle", fake_handle)
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=FakeClient(), concurrency=2,
+    )
+
+    worker.start()
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    release.set()
+    await worker.stop()
+
+    assert started == 2
+
+
+async def test_twilio_worker_quarantines_unreadable_row_and_continues(monkeypatch, tmp_path):
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-bad", "u1", '{"text":"bad"}')
+    store._db.execute("UPDATE inbox SET payload = ? WHERE message_id = ?", (b"corrupt", "SM-bad"))
+    store._db.commit()
+    store.enqueue("SM-good", "u2", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15550000002",
+        "recipient": "+18882120042",
+        "text": "hello",
+        "message_id": "SM-good",
+        "profile_name": "",
+        "media": [],
+    }))
+
+    async def fake_handle(message, replier, deps, *, deduplicate=True):
+        await replier.send_text("ok")
+
+    monkeypatch.setattr(twilio, "handle", fake_handle)
+    worker = twilio.TwilioInboxWorker(SimpleNamespace(store=store), client=FakeClient())
+
+    assert await worker.process_one() is True
+    assert await worker.process_one() is True
+    assert store._db.execute(
+        "SELECT message_id, state FROM inbox ORDER BY message_id"
+    ).fetchall() == [("SM-bad", "failed"), ("SM-good", "sent")]
 
 
 def test_to_inbound_maps_twilio_media_without_downloading_it():

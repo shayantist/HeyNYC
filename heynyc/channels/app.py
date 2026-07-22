@@ -4,6 +4,7 @@ state lives only in Session."""
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -27,16 +28,21 @@ def purge_private_data(data_dir: Path) -> None:
     DraftStore(data_dir / "drafts").purge_expired()
 
 
+def purge_channel_data(store) -> None:
+    store.purge_inbox(before=time.time() - pii_crypto.retention_days() * 24 * 60 * 60)
+
+
 def migrate_private_data(data_dir: Path) -> None:
     migrate_plaintext_sessions(data_dir / "sessions")
     DraftStore(data_dir / "drafts").migrate_plaintext()
     analytics.migrate_plaintext_feedback(data_dir / "feedback.jsonl")
 
 
-async def _purge_loop(data_dir: Path) -> None:
+async def _purge_loop(data_dir: Path, store) -> None:
     while True:
         await asyncio.sleep(_PURGE_INTERVAL_S)
         purge_private_data(data_dir)
+        purge_channel_data(store)
 
 
 def _load_retriever():
@@ -89,21 +95,27 @@ def create_app(provider: str | None = None):
         raise RuntimeError("HEYNYC_PII_KEY must be a valid encryption key.") from exc
 
     deps = build_deps(build_agent())
+    workers = []
 
     @asynccontextmanager
     async def lifespan(_app):
         migrate_private_data(config.HEYNYC_DATA_DIR)
         purge_private_data(config.HEYNYC_DATA_DIR)
-        purge_task = asyncio.create_task(_purge_loop(config.HEYNYC_DATA_DIR))
+        purge_channel_data(deps.store)
+        purge_task = asyncio.create_task(_purge_loop(config.HEYNYC_DATA_DIR, deps.store))
+        for worker in workers:
+            worker.start()
         try:
             yield
         finally:
+            await asyncio.gather(*(worker.stop() for worker in workers))
             purge_task.cancel()
             with suppress(asyncio.CancelledError):
                 await purge_task
             await drain()   # graceful shutdown: finish in-flight replies
 
     app = FastAPI(lifespan=lifespan)
+    app.state.deps = deps
 
     @app.get("/health")
     async def health():
@@ -113,6 +125,14 @@ def create_app(provider: str | None = None):
         from .meta import attach_meta
         attach_meta(app, deps)
     if provider in ("twilio", "both"):
-        from .twilio import make_twilio_router
-        app.include_router(make_twilio_router(deps))
+        from twilio.rest import Client
+
+        from .twilio import TwilioInboxWorker, make_twilio_router
+
+        worker = TwilioInboxWorker(
+            deps, Client(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN),
+            concurrency=config.CHANNEL_MAX_CONCURRENCY,
+        )
+        workers.append(worker)
+        app.include_router(make_twilio_router(deps, worker))
     return app
