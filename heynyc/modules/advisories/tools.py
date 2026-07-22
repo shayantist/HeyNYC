@@ -220,9 +220,29 @@ def _render_recent_additions(ctx: ToolContext, notes: list[RecentNote]) -> str:
     return "\n".join(lines)
 
 
+# F080 residual: the model re-fetches advisories it already delivered and re-briefs them.
+# When every current item was already cited earlier in the conversation, the tool answers
+# with this marker instead of the payload, so there is nothing to re-brief.
+_ALREADY_SHARED = (
+    "Nothing new: the active advisories are unchanged since earlier in this conversation "
+    "({titles}). Do not re-brief them; answer the resident's actual request, referring back "
+    "briefly only if one is directly relevant. If the resident explicitly asks to see the "
+    "details again, call nyc_advisories with full_text=true."
+)
+_STILL_ACTIVE = (
+    "Also still active and already shared earlier in this conversation (do not re-brief): "
+    "{titles}"
+)
+
+
+def _norm_title(title: str) -> str:
+    return (title or "").strip().casefold()
+
+
 async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     lang = (args.get("lang") or "").strip() or None
+    delivered = frozenset() if args.get("full_text") else ctx.delivered_notify_titles
     now = datetime.now(timezone.utc)
 
     # TIERED, fail-safe sourcing (neither call ever crashes; both carry a `confirmed` flag):
@@ -244,21 +264,41 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     if feed.confirmed and cap_advisories:
         cap_titles = {
-            (advisory.headline or advisory.event).strip().casefold()
+            _norm_title(advisory.headline or advisory.event)
             for advisory in cap_advisories
         }
         additions = [
             note for note in recent_notes
-            if note.title.strip().casefold() not in cap_titles
+            if _norm_title(note.title) not in cap_titles
         ] if recent.confirmed else []
-        rendered = _render_cap(ctx, cap_advisories, near)
-        return (
-            f"{rendered}\n\n{_render_recent_additions(ctx, additions)}"
-            if additions else rendered
-        )
+        # F080: split current items into new vs already delivered this conversation.
+        old_caps = [a for a in cap_advisories
+                    if _norm_title(a.headline or a.event) in delivered]
+        new_caps = [a for a in cap_advisories if a not in old_caps]
+        new_additions = [n for n in additions if _norm_title(n.title) not in delivered]
+        old_titles = sorted({a.headline or a.event for a in old_caps}
+                            | {n.title for n in additions if n not in new_additions})
+        if delivered and not new_caps and not new_additions:
+            return _ALREADY_SHARED.format(titles="; ".join(old_titles))
+        parts = []
+        if new_caps:
+            parts.append(_render_cap(ctx, new_caps, near))
+        if new_additions:
+            parts.append(_render_recent_additions(ctx, new_additions))
+        if old_titles:
+            parts.append(_STILL_ACTIVE.format(titles="; ".join(old_titles)))
+        return "\n\n".join(parts)
     if feed.confirmed:
         if recent.confirmed and recent_notes:
-            return _render_recent_additions(ctx, recent_notes)
+            new_notes = [n for n in recent_notes if _norm_title(n.title) not in delivered]
+            if delivered and not new_notes:
+                return _ALREADY_SHARED.format(
+                    titles="; ".join(sorted(n.title for n in recent_notes)))
+            rendered = _render_recent_additions(ctx, new_notes)
+            if len(new_notes) < len(recent_notes):
+                shared = sorted(n.title for n in recent_notes if n not in new_notes)
+                rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles='; '.join(shared))}"
+            return rendered
         # F067: our own forced game-day/prep check finding nothing is not news — return
         # nothing so there is no null result for the model to narrate as an "update".
         # A resident who actually asked gets the plain NO_ACTIVE answer.
@@ -303,6 +343,12 @@ def get_tools() -> list[Tool]:
                         "'Chinese'), pass the language the user is writing in. The feed carries "
                         "official city translations for ~12 languages; defaults to English, and "
                         "falls back to English for any alert with no variant in that language.",
+                    },
+                    "full_text": {
+                        "type": "boolean",
+                        "description": "Set true ONLY when the resident explicitly asks to see "
+                        "again details you already shared in this conversation; otherwise "
+                        "already-shared advisories return as a compact unchanged marker.",
                     },
                 },
             },

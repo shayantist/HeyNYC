@@ -1990,6 +1990,22 @@ def _history_already_cites_notify(history) -> bool:
 
 
 
+def _delivered_notify_titles(history) -> frozenset:
+    """Normalized titles of Notify NYC citations delivered by prior assistant turns in THIS
+    conversation (F080 residual): threaded into ToolContext so a repeat nyc_advisories call
+    can return an already-shared marker instead of the full payload the model would re-brief."""
+    titles = set()
+    for message in history or []:
+        if message.get("role") != "assistant":
+            continue
+        for cite in (message.get("citations") or {}).values():
+            if _is_notify_url(str(cite.get("url") or "")):
+                title = str(cite.get("title") or "").strip().casefold()
+                if title:
+                    titles.add(title)
+    return frozenset(titles)
+
+
 def _action_url(citation: dict) -> str:
     return _normalize_url(str(citation.get("url") or ""))
 
@@ -2830,7 +2846,8 @@ class Agent:
         ctx = ToolContext(citations=citations, registry=self.registry, query=user_message,
                           user_history=user_history, user_turns=user_turns, toolbox=self.tools,
                           embedder=self._embedder,
-                          output_dir=output_dir, drafts=drafts)
+                          output_dir=output_dir, drafts=drafts,
+                          delivered_notify_titles=_delivered_notify_titles(history))
         tools_made: list[str] = []
         tool_citation_ids: set[str] = set()
         screen_shortlist_used = False

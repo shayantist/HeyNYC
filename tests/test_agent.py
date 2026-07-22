@@ -3985,3 +3985,23 @@ async def test_event_sink_reaches_run_through_session_prepare(tmp_path):
 
     assert pending.result.text == "prepared answer"
     assert any(isinstance(e, events.Done) for e in seen)
+
+
+def test_delivered_notify_titles_collects_prior_notify_citation_titles():
+    """F080 residual: the agent threads the titles already cited from Notify sources into
+    ToolContext so a repeat nyc_advisories call can answer with a marker, not a re-brief."""
+    from heynyc.core.agent import _delivered_notify_titles
+
+    history = [
+        {"role": "assistant", "citations": {"S1": {
+            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            "title": "Notify NYC - Waterbody Advisory - 7/22 (NYC)"}}},
+        {"role": "assistant", "citations": {"S2": {
+            "url": "https://data.cityofnewyork.us/resource/x.json",
+            "title": "NYC Open Data street closure"}}},
+        {"role": "user", "content": "yeah do that"},
+    ]
+    titles = _delivered_notify_titles(history)
+    assert "notify nyc - waterbody advisory - 7/22 (nyc)" in titles
+    assert all("street closure" not in t for t in titles)
+    assert _delivered_notify_titles([]) == frozenset()

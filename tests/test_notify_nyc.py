@@ -629,3 +629,71 @@ def test_advisories_module_loads_with_tool_and_eval():
     assert cases, "advisories should ship eval cases"
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
     assert any(c.harm_category == "injection" for c in cases)
+
+
+# --- F080 residual: repeat advisory calls in one conversation return a marker, not a re-brief ---
+
+CAP_FLOOD = _cap("NYC-FLOOD-1", severity="Moderate", event="Flood Watch",
+                 headline="Flood Watch for Queens", expires="2099-08-01T10:00:00-04:00")
+
+
+async def test_nyc_advisories_dedups_titles_already_delivered_this_conversation():
+    """F080: luna re-fetched by choice and re-briefed a near-verbatim repeat. When every
+    active advisory was already cited earlier in the conversation, the tool returns a
+    compact already-shared marker instead of the payload, so there is nothing to re-brief."""
+    citations = CitationRegistry()
+    client = _client(RSS_MAIN, CAPS_MAIN)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
+                      delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}))
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "unchanged" in out.lower()
+    assert "do not re-brief" in out.lower()
+    assert "full_text" in out                                # the explicit escape hatch is named
+    assert "in effect until" not in out                      # full payload withheld
+    assert "{cite:" not in out and len(citations) == 0       # nothing re-registered
+
+
+async def test_nyc_advisories_full_text_repeats_on_explicit_request():
+    citations = CitationRegistry()
+    client = _client(RSS_MAIN, CAPS_MAIN)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
+                      delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}))
+    out = await get_tools()[0].handler({"full_text": True}, ctx)
+    await client.aclose()
+
+    assert "Heat Advisory in effect for NYC" in out
+    assert "{cite:S1}" in out
+
+
+async def test_nyc_advisories_delivers_only_the_new_advisory():
+    """A genuinely NEW advisory still arrives in full with its citation; the already-shared
+    one shrinks to a do-not-re-brief mention."""
+    rss = _rss(
+        _item("Heat (English)", "NYCEM [English]", "g-heat", "active.xml"),
+        _item("Flood (English)", "NYCEM [English]", "g-flood", "flood.xml"),
+    )
+    caps = {"active.xml": CAP_ACTIVE, "flood.xml": CAP_FLOOD}
+    citations = CitationRegistry()
+    client = _client(rss, caps)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
+                      delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}))
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "Flood Watch for Queens" in out
+    assert "{cite:S1}" in out                                # the new one is cited in full
+    assert "2099-08-01T10:00:00-04:00" in out                # with its own payload
+    assert "2099-07-02T19:45:28-04:00" not in out            # the old one's payload withheld
+    assert "already shared" in out.lower()
+    assert "Heat Advisory in effect for NYC" in out          # named, not re-briefed
+
+
+async def test_nyc_advisories_empty_delivered_set_changes_nothing():
+    citations = CitationRegistry()
+    client = _client(RSS_MAIN, CAPS_MAIN)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+    assert "Heat Advisory in effect for NYC" in out and "{cite:S1}" in out
