@@ -378,11 +378,12 @@ async def test_broad_temporal_events_gather_current_city_context_concurrently(mo
     assert "Major current city event" in output
     assert "Current editorial weekend guide" in output
     assert "newly retrieved" in output.lower()
-    assert "at most 5" in output
-    assert "light emoji" in output
-    assert "group the rest" in output
+    # count policy rehomed to How you talk (diet block 3); the pin guards a kept data rule
+    assert "narrowing question" in output
+    assert "narrowing question" in output  # voice half rehomed to How you talk (diet block 3)
+    assert "advisory once after the event list" in output  # grouping copy rehomed (diet block 3)
     assert "today-only advisory once" in output
-    assert "merge sources" in output
+    assert "Merge sources" in output
 
 
 async def test_tool_context_event_turn_preparation_activates_prep_synthesis(monkeypatch):
@@ -443,7 +444,8 @@ async def test_tool_context_event_turn_discovery_gathers_broad_context_by_meanin
     output = await get_tools()[0].handler({}, ctx)
 
     # Shortlist synthesis (broad context), not identity-first preparation synthesis.
-    assert "at most 5" in output
+    # count policy rehomed to How you talk (diet block 3); the pin guards a kept data rule
+    assert "narrowing question" in output
     assert "Event identity context" not in output
 
 
@@ -513,7 +515,8 @@ async def test_broad_query_falls_back_to_shortlist_rules_without_a_preflight(mon
 
     output = await get_tools()[0].handler({}, ctx)
 
-    assert "at most 5" in output
+    # count policy rehomed to How you talk (diet block 3); the pin guards a kept data rule
+    assert "narrowing question" in output
     assert "Event identity context" not in output
 
 

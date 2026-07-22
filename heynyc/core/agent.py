@@ -1872,7 +1872,7 @@ _EVENT_PREPARATION_SCOPE_REMINDER = (
     "already gave. State the event's own date plainly, and say so when it is not on the exact "
     "day the resident asked about. Do not "
     "give generic packing advice unless a retrieved advisory or forecast supports it. Pure "
-    "predictions and sports trivia remain out of scope. Keep the answer phone-length."
+    "predictions and sports trivia remain out of scope."
 )
 
 _BULLET_LINE_RE = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+")

@@ -183,13 +183,9 @@ _SHORTLIST_SYNTHESIS_RULES = (
     "Synthesis rules: supplement the structured catalog with relevant official web results. "
     "For every recommended event, copy its direct source URL beside the item and include any "
     "known date, time, place, and ticket or reservation step. Prefer individual event pages "
-    "over roundup pages. Voice and format: start with one warm sentence about what stands out; "
-    "give at most 5 options by default, each with a short bold title and one light emoji; keep "
-    "the logistics compact; briefly group the rest by category or time of day and offer to list "
-    "them; merge sources that describe the same event into one option; mention any today-only "
-    "advisory once after the event list; finish with one natural "
-    "narrowing question. Do not call an event "
-    "free unless its cited evidence establishes that. Keep "
+    "over roundup pages. Merge sources that describe the same event into one option; mention "
+    "any today-only advisory once after the event list; finish with one natural narrowing "
+    "question. Do not call an event free unless its cited evidence establishes that. Keep "
     "prior-conversation facts separate from these newly retrieved results."
 )
 

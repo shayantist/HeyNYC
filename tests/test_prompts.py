@@ -46,7 +46,7 @@ def test_system_prompt_bans_internal_jargon_in_replies():
     assert '"grounded"' in prompt  # the ban names the exact word residents saw
     # Luna-medium runs long for SMS (2026-07-18 review): the voice caps answer size.
     assert "text-message sized" in low
-    assert "at most five short options" in low
+    assert "about 5 items" in low   # consolidated count home (prompt diet block 3)
 
 
 def test_system_prompt_includes_active_recency_check():
@@ -226,7 +226,7 @@ def test_router_loads_cooling_and_water_details_for_combined_request():
 def test_phone_style_limits_combined_default_without_capping_user_requests():
     from heynyc.core.prompts import BASE_SYSTEM_PROMPT
 
-    assert "about 6 total" in BASE_SYSTEM_PROMPT
+    assert "about 6 across categories" in BASE_SYSTEM_PROMPT
     assert "honor the user's requested count" in BASE_SYSTEM_PROMPT
 
 

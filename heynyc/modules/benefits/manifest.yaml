@@ -49,8 +49,7 @@ situations:
     reminder: >-
       This turn is about SNAP work-rule recovery. Use current official SNAP guidance, the human
       or fair-hearing path, and immediate food help if requested. Do not call or mention
-      unrelated service modules unless the user separately asked for them. Keep the answer
-      phone-length.
+      unrelated service modules unless the user separately asked for them.
     focus_tools:
       - official_sources
       - web_search
