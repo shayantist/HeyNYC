@@ -638,3 +638,33 @@ def test_metamorphic_programs_skips_without_flag():
     variant = Trace(case_id="c", query="q2", spans=[], final_text="WIC",
                     citations={"S1": _cite("WIC", "u2")}, outcome="answered")
     assert check_metamorphic_programs(variant, base, case) is None
+
+
+def test_asserts_specifics_exempts_digits_echoed_from_the_resident_query():
+    """F082: echoing the resident's own message back is not asserting a fact about the
+    world; a clarify naming their intersection must not demand a citation. Digits the
+    model ADDS still count, with or without an echo beside them."""
+    q = "Where's the nearest cooling center to 116th Street and Broadway in Manhattan?"
+    assert not asserts_specifics("Which corner of W 116th Street and Broadway do you mean?", query=q)
+    assert not asserts_specifics("For 116th Street, call 311 first.", query=q)
+    assert asserts_specifics("It's at 120 Broadway near W 116th Street.", query=q)
+    assert asserts_specifics("The fee is $95.", query="is the fee my landlord charges legal?")
+    assert asserts_specifics("It's at 120 Broadway.")  # no query given: unchanged behavior
+
+
+def test_grounding_invariant_passes_uncited_clarify_that_echoes_the_query():
+    """F082 end to end: an uncited clarify whose only digits are the resident's own
+    street number passes inv_grounding; the same reply with a model-added address fails."""
+    case = _case(invariants={"must_ground": True})
+    query = "Where's the nearest cooling center to 116th Street and Broadway?"
+    clarify = Trace(case_id="c", query=query, final_text=(
+        "Which corner near W 116th Street and Broadway do you mean?"
+    ))
+    result = inv_grounding(clarify, case)
+    assert result is not None and result.passed
+
+    added = Trace(case_id="c", query=query, final_text=(
+        "The nearest center is at 120 Broadway, open until 7."
+    ))
+    result = inv_grounding(added, case)
+    assert result is not None and not result.passed

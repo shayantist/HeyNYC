@@ -93,16 +93,24 @@ _ENGLISH_FUNCTION_WORDS = {
 }
 
 
-def asserts_specifics(text: str) -> bool:
+def asserts_specifics(text: str, query: str = "") -> bool:
     """True if the answer states concrete specifics (address/distance/hours/date/price).
 
     Heuristic: any digit that isn't part of a {cite:Sn} marker or a civic routing
     number (911/311/...). Deliberately crude and LLM-free, the agent-as-judge
-    (Tier 2) catches non-numeric fabrications."""
+    (Tier 2) catches non-numeric fabrications.
+
+    F082: a digit run echoed verbatim from the resident's own query is not an asserted
+    specific; you cannot hallucinate what the resident themselves wrote, and a clarify
+    like "which corner of 116th and Broadway?" must not demand a citation. Digit runs
+    the model ADDS still count, so amounts, addresses, and hours keep their gate."""
     stripped = _CITE_RE.sub("", text or "")
     for num in _ROUTING_NUMBERS:
         stripped = stripped.replace(num, "")
-    return bool(re.search(r"\d", stripped))
+    if not query:
+        return bool(re.search(r"\d", stripped))
+    query_runs = set(re.findall(r"\d+", query))
+    return any(run not in query_runs for run in re.findall(r"\d+", stripped))
 
 
 def _norm(s: str) -> str:
@@ -188,7 +196,7 @@ def _answer_supported_by_citations(trace: Trace, citation_ids: set[str]) -> bool
 def inv_grounding(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
     if not case.invariants.get("must_ground"):
         return None
-    if not asserts_specifics(trace.final_text):
+    if not asserts_specifics(trace.final_text, query=trace.query):
         return CheckResult("grounding", passed=True, detail="no specifics asserted")
     has_cite = bool(trace.citations)
     has_fetch = bool(_grounding_spans(trace))
@@ -201,7 +209,7 @@ def inv_attribution(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
     """Attribution: asserted specifics carry a citation (claim is attributed to a source)."""
     if not case.invariants.get("must_cite_if_asserting"):
         return None
-    if not asserts_specifics(trace.final_text):
+    if not asserts_specifics(trace.final_text, query=trace.query):
         return CheckResult("attribution", passed=True, detail="no specifics asserted")
     passed = bool(trace.citations)
     return CheckResult("attribution", passed=passed,
@@ -327,7 +335,7 @@ def inv_currentness(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
 
 def inv_tool_sanity(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
     """Permissive: a substantive (answered) turn used SOME grounding tool. Order/choice free."""
-    if trace.outcome != "answered" or not asserts_specifics(trace.final_text):
+    if trace.outcome != "answered" or not asserts_specifics(trace.final_text, query=trace.query):
         return None
     passed = bool(_grounding_spans(trace))
     return CheckResult("tool_sanity", passed=passed, blocking=False,
