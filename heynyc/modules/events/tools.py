@@ -270,15 +270,23 @@ def _broad_temporal_query(query: str) -> bool:
 
 
 def _editorial_query(query: str, window_start: str, window_end: Optional[str]) -> str:
+    # F085: an open window (end=None) appends NO dates; appending today's date biased
+    # retrieval toward date-roundup guides and away from named series pages.
+    if window_end is None:
+        return query
     dates = [date.fromisoformat(window_start).strftime("%B %-d, %Y")]
-    if window_end and window_end != window_start:
+    if window_end != window_start:
         dates.append(date.fromisoformat(window_end).strftime("%B %-d, %Y"))
     return f"{query} {' '.join(dates)}"
 
 
 def _windowed_context(text: str, window_start: str, window_end: Optional[str]) -> str:
+    # F085: None used to collapse to window_start, turning "open-ended" into "today only"
+    # and stripping a named series' July 27 blocks from a July 22 question.
+    if window_end is None:
+        return text
     start = date.fromisoformat(window_start)
-    end = date.fromisoformat(window_end or window_start)
+    end = date.fromisoformat(window_end)
     patterns = []
     current = start
     while current <= end:
@@ -304,27 +312,39 @@ def _nyc_for_free_items(
         root = _safe_fromstring(rss_text)
     except Exception:
         return "", []
-    dates = [date.fromisoformat(window_start)]
-    if window_end and window_end != window_start:
-        dates.append(date.fromisoformat(window_end))
-    patterns = [
-        re.compile(
-            rf"\b{day.strftime('%B')}\s+{day.day}(?:st|nd|rd|th)?"
-            rf"(?:,?\s+{day.year})?\b",
-            re.IGNORECASE,
-        )
-        for day in dates
-    ]
+    if window_end is None:
+        patterns = None  # F085: open window, no date gate; the model judges relevance
+    else:
+        days = []
+        current = date.fromisoformat(window_start)
+        end = date.fromisoformat(window_end)
+        while current <= end:  # every day in the range, not just the endpoints
+            days.append(current)
+            current += timedelta(days=1)
+        patterns = [
+            re.compile(
+                rf"\b{day.strftime('%B')}\s+{day.day}(?:st|nd|rd|th)?"
+                rf"(?:,?\s+{day.year})?\b",
+                re.IGNORECASE,
+            )
+            for day in days
+        ]
     items = []
     for item in root.findall(".//item"):
         title = (item.findtext("title") or "").strip()
         url = (item.findtext("link") or "").strip()
         _unused, body = clean_html(item.findtext("description") or "")
-        matched = next(
-            (match.group(0) for pattern in patterns if (match := pattern.search(f"{title} {body}"))),
-            "",
-        )
-        if title and url and matched:
+        if patterns is None:
+            matched = ""
+        else:
+            matched = next(
+                (match.group(0) for pattern in patterns
+                 if (match := pattern.search(f"{title} {body}"))),
+                "",
+            )
+            if not matched:
+                continue
+        if title and url:
             items.append((title, url, matched))
     return (root.findtext(".//lastBuildDate") or "").strip(), items
 
@@ -385,7 +405,9 @@ async def _editorial_context(
     if not isinstance(free_rss, BaseException):
         built, items = _nyc_for_free_items(free_rss, window_start, window_end)
         for title, url, matched_date in items[:3]:
-            snippet = f"{title}. This event page explicitly mentions {matched_date}."
+            snippet = f"{title}." + (
+                f" This event page explicitly mentions {matched_date}." if matched_date else ""
+            )
             cite = ctx.citations.register(
                 url, snippet=snippet, title=title, kind="WEB", valid_as_of=built,
             )
@@ -411,7 +433,21 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
-    window_start, window_end = _requested_window(ctx.query, today)
+
+    def _valid_iso(value):
+        try:
+            return date.fromisoformat(value).isoformat()
+        except (TypeError, ValueError):
+            return None
+
+    # F085: the resident's timeframe is the model's to state (a date, a range, a month, the
+    # past); the deterministic relative phrases remain the fallback when no args arrive.
+    arg_start = _valid_iso((args.get("window_start") or "").strip() or None)
+    arg_end = _valid_iso((args.get("window_end") or "").strip() or None)
+    if arg_start or arg_end:
+        window_start, window_end = arg_start or today, arg_end
+    else:
+        window_start, window_end = _requested_window(ctx.query, today)
     start_dt = (
         f"{window_start}T00:00:00Z"
         if window_start != today
@@ -533,10 +569,31 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                         **({"near": borough} if borough else {}),
                     }
                 sources.append((tool.name, tool.handler(tool_args, ctx)))
+    if keyword and not preparation_context:
+        # F085: a named keyword ("Bryant Park movie series") gets the scoped search as a
+        # PARALLEL corroborating lane, query = the exact keyword, no date suffix, results
+        # never window-stripped. The structured lanes are structurally blind to unticketed,
+        # out-of-window, or un-permitted series; retrieval absence there is not evidence.
+        # Preparation turns are excluded: they already run the identity-anchored keyword
+        # search (identity_web), and an unfiltered famous-other-date row must not re-enter
+        # the composition around that anchor (F053).
+        for tool in _context_tools(ctx):
+            if tool.name == "web_search":
+                sources.append(("keyword_web", tool.handler({"query": keyword}, ctx)))
+                break
     gathered = await asyncio.gather(*(
         asyncio.wait_for(call, timeout=_SOURCE_TIMEOUT_S) for _, call in sources
     ), return_exceptions=True)
     results = dict(zip((name for name, _ in sources), gathered))
+    keyword_context = results.get("keyword_web")
+    if keyword_context is None or isinstance(keyword_context, BaseException):
+        keyword_block = ""
+    else:
+        # F085: never window-stripped; a named series legitimately lives outside today.
+        keyword_block = (
+            "\n\nScoped search on the resident's exact keyword (parallel corroboration, "
+            "not window-filtered; cite if used):\n" + str(keyword_context)
+        )
     raw_tm = [] if isinstance(results["ticketmaster"], BaseException) else results["ticketmaster"]
     raw_parks = [] if isinstance(results["parks"], BaseException) else results["parks"]
     raw_permitted = [] if isinstance(results["permitted"], BaseException) else results["permitted"]
@@ -593,7 +650,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         broadened = bool(events)
 
     if not events and not broad_context:
-        return _NO_RESULTS
+        return f"{_NO_RESULTS}{keyword_block}" if keyword_block else _NO_RESULTS
 
     blocks = []
     for ev in events:
@@ -627,7 +684,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
     catalog = header + "\n".join(blocks) if blocks else _NO_RESULTS
     if not broad_context:
-        return catalog
+        return f"{catalog}{keyword_block}"
 
     index_results = [value for name, value in results.items() if name.startswith("index_search")]
     index_contexts = [value for value in index_results if not isinstance(value, BaseException)]
@@ -661,8 +718,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         else:
             # Prefer the asked date's rows from schedule-bearing pages so a more famous
             # match on another date cannot anchor the answer; fall back to the unfiltered
-            # result when no row carries the date.
-            dated = _windowed_context(str(identity_context), window_start, window_end)
+            # result when no row carries the date. Identity ANCHORS to a date by design, so
+            # an open window pins to its start (today) here; the F085 open-window
+            # pass-through applies to discovery lanes, never this one (F053).
+            dated = _windowed_context(
+                str(identity_context), window_start, window_end or window_start
+            )
             identity_context = dated or str(identity_context)
         identity_block = (
             "Event identity context (current trusted-web results; use these to resolve which "
@@ -679,7 +740,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f"Curated official and seasonal context:\n{index_context}\n\n"
         f"Official event and seasonal context:\n{web_context}\n\n"
         f"Current editorial event guides:\n{editorial_context}\n\n"
-        f"Current editorial and news discovery:\n{recent_context}\n\n"
+        f"Current editorial and news discovery:\n{recent_context}"
+        f"{keyword_block}\n\n"
         f"{synthesis_rules}"
     )
     # F057: lanes register citations while fetching, then windowing can drop their content
@@ -714,6 +776,8 @@ def get_tools() -> list[Tool]:
                     "keyword": {"type": "string", "description": "Topic/keyword, e.g. 'world cup', 'jazz', 'free'."},
                     "classification": {"type": "string", "description": "Optional Ticketmaster segment: Music, Sports, Arts & Theatre, etc."},
                     "borough": {"type": "string", "description": "Optional borough/city filter, e.g. 'Brooklyn'."},
+                    "window_start": {"type": "string", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
+                    "window_end": {"type": "string", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
                     "limit": {"type": "integer", "description": "Max events to return (default 12)."},
                 },
             },

@@ -111,3 +111,16 @@
     and routes there, never a canned scope wall and never a speculative pick.
   notes: RULED 2026-07-21 (evening), the mayoral-election case flips to a grounded-answer expectation.
     The mayor's public record and the election calendar are NYC civic content, not off-limits trivia.
+
+- id: events_named_series_never_premise_denied
+  query: "what shows can i watch in nyc? i heard theres apparently a bryant park movie series"
+  abstain: false
+  utility_criterion: >-
+    The resident named a real thing (Bryant Park Movie Nights, free Monday screenings in season,
+    listed on nycgovparks.org and the editorial pool). The reply must be grounded in a targeted
+    lookup of the named series: in season that means confirming it with a citation; out of
+    season, could-not-confirm plus the venue or official listing passes. A premise correction is
+    acceptable ONLY when the targeted lookup grounds it; inferring the resident is wrong from
+    the generic sweep's absence fails.
+  notes: F085, owner's live catch 2026-07-22, the premise-denial genre (kin to F046/F053/F058).
+    The scoped web_search finds this series on the first query; the failure was never calling it.

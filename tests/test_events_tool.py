@@ -868,3 +868,93 @@ def test_whats_on_events_owns_listings_and_thread_followups():
     assert "watch part" in desc                # watch parties are in-scope for the catalog
     assert "follow-up" in desc                 # follow-ups inside an events thread stay here
     assert "web_search" in desc                # explicitly tells the model to stay, not switch
+
+
+# --- F085: the window generalizes and the named keyword gets a parallel scoped search ---
+
+def test_editorial_query_omits_dates_on_an_open_window():
+    """The default window is (today, None): open-ended. Appending today's date to the search
+    query biased retrieval toward date-roundup guides and away from the named series."""
+    assert events._editorial_query("bryant park movie series", "2026-07-22", None) == (
+        "bryant park movie series"
+    )
+
+
+def test_windowed_context_passes_text_through_on_an_open_window():
+    text = "Movie Nights run Mondays.\n\nJuly 27, 2026 screening: The Truman Show."
+    assert events._windowed_context(text, "2026-07-22", None) == text
+
+
+def test_nyc_for_free_items_keep_all_dated_items_on_an_open_window():
+    rss = """<rss><channel><lastBuildDate>Wed, 22 Jul 2026</lastBuildDate>
+    <item><title>Movie Nights at Bryant Park</title><link>https://nycforfree.co/movies</link>
+    <description>Free screenings every Monday, next July 27, 2026.</description></item>
+    </channel></rss>"""
+    _built, items = events._nyc_for_free_items(rss, "2026-07-22", None)
+    assert [i[0] for i in items] == ["Movie Nights at Bryant Park"]
+
+
+def test_nyc_for_free_items_match_every_day_inside_a_bounded_window():
+    rss = """<rss><channel>
+    <item><title>Saturday Fair</title><link>https://nycforfree.co/fair</link>
+    <description>One day only: July 25, 2026.</description></item>
+    </channel></rss>"""
+    # Window Fri Jul 24 through Sun Jul 26: the Saturday-only mention must match.
+    _built, items = events._nyc_for_free_items(rss, "2026-07-24", "2026-07-26")
+    assert [i[0] for i in items] == ["Saturday Fair"]
+
+
+async def test_window_args_from_the_model_override_the_phrase_window(monkeypatch):
+    captured = {}
+
+    async def fake_ticketmaster(**kwargs):
+        captured["start_datetime"] = kwargs.get("start_datetime")
+        return []
+
+    async def fake_parks(dataset_id, **kwargs):
+        captured.setdefault("wheres", []).append(kwargs.get("where"))
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]),
+                      query="any concerts in early august?")
+    await events.get_tools()[0].handler(
+        {"keyword": "concerts", "window_start": "2026-08-03", "window_end": "2026-08-05"}, ctx,
+    )
+    assert captured["start_datetime"] == "2026-08-03T00:00:00Z"
+    assert any("startdate >= '2026-08-03'" in w and "2026-08-05" in w for w in captured["wheres"])
+
+
+async def test_named_keyword_runs_a_parallel_scoped_search_undiluted(monkeypatch):
+    """F085: the resident named a series; the coordinator's structured lanes are structurally
+    blind to unticketed, out-of-window series, so the scoped search runs IN PARALLEL on the
+    exact keyword, no date suffix, and its grounded result reaches the model."""
+    search_queries = []
+
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_parks(*args, **kwargs):
+        return []
+
+    async def web_handler(args, ctx):
+        search_queries.append(args["query"])
+        cite = ctx.citations.register(
+            "https://www.nycgovparks.org/events/free_summer_movies",
+            snippet="Bryant Park Movie Nights, Mondays through September 14",
+            title="Bryant Park Movie Nights", kind="WEB",
+        )
+        return f"Bryant Park Movie Nights, Mondays {{cite:{cite}}}"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: (
+        Tool("web_search", "", {}, web_handler),
+    ))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]),
+                      query="i heard theres a bryant park movie series")
+    out = await events.get_tools()[0].handler({"keyword": "Bryant Park movie series"}, ctx)
+    assert "Bryant Park movie series" in search_queries      # the exact keyword, undiluted
+    assert all("2026" not in q and "July" not in q for q in search_queries)
+    assert "Movie Nights" in out
