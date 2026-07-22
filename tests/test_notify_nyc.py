@@ -652,7 +652,11 @@ async def test_nyc_advisories_dedups_titles_already_delivered_this_conversation(
     assert "do not re-brief" in out.lower()
     assert "full_text" in out                                # the explicit escape hatch is named
     assert "in effect until" not in out                      # full payload withheld
-    assert "{cite:" not in out and len(citations) == 0       # nothing re-registered
+    # F083: the marker carries a PER-ITEM citation so a legitimate refer-back binds to the
+    # right source; a citation-free marker pushed the model to pin remembered facts on
+    # whatever fresh cite was at hand (observed live: waterbody claims cited to Belt Parkway).
+    assert "{cite:S1}" in out
+    assert citations.mapping()["S1"]["title"] == "Heat Advisory in effect for NYC"
 
 
 async def test_nyc_advisories_full_text_repeats_on_explicit_request():
@@ -688,6 +692,10 @@ async def test_nyc_advisories_delivers_only_the_new_advisory():
     assert "2099-07-02T19:45:28-04:00" not in out            # the old one's payload withheld
     assert "already shared" in out.lower()
     assert "Heat Advisory in effect for NYC" in out          # named, not re-briefed
+    # F083: the still-active mention carries its own citation for correct refer-backs.
+    assert "{cite:S2}" in out
+    titles = {c["title"] for c in citations.mapping().values()}
+    assert "Heat Advisory in effect for NYC" in titles
 
 
 async def test_nyc_advisories_empty_delivered_set_changes_nothing():

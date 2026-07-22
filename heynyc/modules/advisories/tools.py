@@ -272,32 +272,47 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             if _norm_title(note.title) not in cap_titles
         ] if recent.confirmed else []
         # F080: split current items into new vs already delivered this conversation.
+        # F083: already-shared mentions each carry their OWN citation, registered fresh, so a
+        # legitimate refer-back binds to the right source; a citation-free marker pushed the
+        # model to pin remembered facts on whatever fresh cite was at hand (observed live).
         old_caps = [a for a in cap_advisories
                     if _norm_title(a.headline or a.event) in delivered]
         new_caps = [a for a in cap_advisories if a not in old_caps]
         new_additions = [n for n in additions if _norm_title(n.title) not in delivered]
-        old_titles = sorted({a.headline or a.event for a in old_caps}
-                            | {n.title for n in additions if n not in new_additions})
+
+        def old_mentions() -> list[str]:
+            # Registered AFTER any new items so citation ids follow reading order.
+            return sorted(
+                [f"{a.headline or a.event} {{cite:{_advisory_citation(ctx, a)}}}"
+                 for a in old_caps]
+                + [f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in additions
+                   if n not in new_additions]
+            )
+
         if delivered and not new_caps and not new_additions:
-            return _ALREADY_SHARED.format(titles="; ".join(old_titles))
+            return _ALREADY_SHARED.format(titles="; ".join(old_mentions()))
         parts = []
         if new_caps:
             parts.append(_render_cap(ctx, new_caps, near))
         if new_additions:
             parts.append(_render_recent_additions(ctx, new_additions))
-        if old_titles:
-            parts.append(_STILL_ACTIVE.format(titles="; ".join(old_titles)))
+        mentions = old_mentions()
+        if mentions:
+            parts.append(_STILL_ACTIVE.format(titles="; ".join(mentions)))
         return "\n\n".join(parts)
     if feed.confirmed:
         if recent.confirmed and recent_notes:
             new_notes = [n for n in recent_notes if _norm_title(n.title) not in delivered]
+            old_notes = sorted(
+                (n for n in recent_notes if n not in new_notes), key=lambda n: n.title)
             if delivered and not new_notes:
-                return _ALREADY_SHARED.format(
-                    titles="; ".join(sorted(n.title for n in recent_notes)))
+                return _ALREADY_SHARED.format(titles="; ".join(
+                    f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in old_notes))
             rendered = _render_recent_additions(ctx, new_notes)
-            if len(new_notes) < len(recent_notes):
-                shared = sorted(n.title for n in recent_notes if n not in new_notes)
-                rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles='; '.join(shared))}"
+            if old_notes:
+                shared = "; ".join(
+                    f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in old_notes)
+                rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles=shared)}"
             return rendered
         # F067: our own forced game-day/prep check finding nothing is not news — return
         # nothing so there is no null result for the model to narrate as an "update".
