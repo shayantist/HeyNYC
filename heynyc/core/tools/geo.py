@@ -151,6 +151,73 @@ def _zip_centroid(zip5: str) -> Optional[tuple[float, float]]:
     return _ZIP_CENTROIDS.get(zip5)
 
 
+# F079: GeoSearch has no neighborhood layer, so a bare famous-neighborhood name fell through
+# to the fuzzy provider, which returned an arbitrary POI containing the words ("Upper West
+# Side" → a Bronx playground at provider confidence 1.0). Neighborhood names resolve from the
+# bundled NTA gazetteer (deterministic city data, rebuilt by scripts/build_nta_gazetteer.py)
+# BEFORE any provider, the same shape as the ZCTA table above.
+_NTA_GAZETTEER: Optional[dict[str, tuple[str, float, float]]] = None
+_NTA_PATH = Path(__file__).resolve().parent.parent / "data" / "nta_neighborhoods.tsv"
+_BOROUGH_WORD_RE = re.compile(r"\b(?:the\s+bronx|staten\s+island|bronx|brooklyn|manhattan|queens|nyc)\b")
+
+
+def _nta_table() -> dict[str, tuple[str, float, float]]:
+    """Lazily load `nta_neighborhoods.tsv` (key<TAB>borough<TAB>lat<TAB>lon<TAB>names).
+    A missing/unreadable file degrades to an empty table, never crashes."""
+    global _NTA_GAZETTEER
+    if _NTA_GAZETTEER is None:
+        table: dict[str, tuple[str, float, float]] = {}
+        try:
+            with _NTA_PATH.open(encoding="utf-8") as fh:
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) != 5:
+                        continue
+                    key, borough, lat, lon, _names = parts
+                    try:
+                        table[key] = (borough, float(lat), float(lon))
+                    except ValueError:
+                        continue
+        except OSError:
+            pass  # data file absent → neighborhoods fall through to the providers
+        _NTA_GAZETTEER = table
+    return _NTA_GAZETTEER
+
+
+def _normalize_area(text: str) -> str:
+    """The gazetteer key form: casefolded, no apostrophes/commas/periods, no leading
+    article, collapsed spaces. Mirrors normalize() in scripts/build_nta_gazetteer.py."""
+    t = text.casefold().replace("'", "").replace("’", "")
+    t = re.sub(r"[.,]", " ", t)
+    t = re.sub(r"^\s*the\s+", "", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _neighborhood_point(text: str) -> Optional["GeoPoint"]:
+    """A deterministic neighborhood hit from the bundled NTA gazetteer, or None.
+
+    Exact match on the normalized text first (so "Queens Village" survives), then with
+    borough words stripped (so "Upper West Side, Manhattan" hits). A borough named in the
+    query that contradicts the NTA's own borough is a miss, never an override."""
+    normalized = _normalize_area(text)
+    table = _nta_table()
+    key = normalized
+    hit = table.get(key)
+    if hit is None:
+        key = re.sub(r"\s+", " ", _BOROUGH_WORD_RE.sub(" ", normalized)).strip()
+        hit = table.get(key) if key else None
+    if hit is None:
+        return None
+    borough, lat, lon = hit
+    named = _detect_borough(text)
+    if named is not None and _BOROUGH_NAMES.get(named) != borough:
+        return None
+    return GeoPoint(
+        lat=lat, lon=lon, label=f"{key.title()}, {borough}",
+        confidence=1.0, match_type="nta",
+    )
+
+
 def _in_nyc(lat: float, lon: float) -> bool:
     """True if (lat, lon) falls inside `config.NYC_BBOX` (w,s,e,n)."""
     w, s, e, n = (float(x) for x in config.NYC_BBOX.split(","))
@@ -411,6 +478,11 @@ async def geocode(
                     return None
                 return point
             return None  # unknown or non-NYC ZIP → don't fall through to GeoSearch
+        # F079: neighborhoods resolve from the bundled NTA gazetteer, deterministic and
+        # offline, before any provider can fuzzy-match an arbitrary POI.
+        neighborhood = _neighborhood_point(text)
+        if neighborhood is not None:
+            return neighborhood
         # Borough-aware bias: a borough named in the query gives that borough's hard boundary.rect;
         # otherwise rect is None and _geosearch_geocode applies the citywide NYC floor. This is what
         # fixes "125th Street Manhattan" resolving to College Point, Queens.

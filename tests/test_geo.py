@@ -361,18 +361,39 @@ async def test_forgiving_fallback_when_geosearch_empty():
     assert "Apollo" in point.label
 
 
-async def test_named_neighborhood_with_borough_uses_forgiving_geocoder_first():
+async def test_gazetteer_beats_both_providers_for_known_neighborhoods():
+    """F079 supersedes the F064 forgiving-first route for neighborhoods the NTA gazetteer
+    knows: "Jackson Heights, Queens" resolves from city data, and neither GeoSearch (which
+    once fuzzy-matched TRCS JACKSON HEIGHTS in St. Albans) nor nominatim is consulted."""
+    async def no_forgiving(_text):
+        raise AssertionError("gazetteer-known neighborhood reached the fuzzy provider")
+
+    def no_geosearch(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("gazetteer-known neighborhood reached GeoSearch")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(no_geosearch))
+    point = await geocode("Jackson Heights, Queens", client=client, forgiving=no_forgiving)
+    await client.aclose()
+
+    assert point is not None and point.match_type == "nta"
+    assert "Queens" in point.label
+    assert 40.72 < point.lat < 40.78 and -73.92 < point.lon < -73.85
+
+
+async def test_named_area_unknown_to_gazetteer_uses_forgiving_geocoder_first():
+    """The F064 contract survives for named areas the gazetteer does NOT know: the
+    forgiving provider is asked before GeoSearch's PAD fuzzy match can win."""
     correct = GeoPoint(
-        40.7557, -73.8858, "Jackson Heights, Queens", confidence=0.8, match_type="nominatim"
+        40.7557, -73.8858, "Flurbville, Queens", confidence=0.8, match_type="nominatim"
     )
     forgiving = _fake_forgiving(correct)
 
     def wrong_pad_match(request: httpx.Request) -> httpx.Response:
-        return _geosearch_response(40.7003, -73.7717, "TRCS JACKSON HEIGHTS, St. Albans")
+        return _geosearch_response(40.7003, -73.7717, "TRCS FLURBVILLE, St. Albans")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(wrong_pad_match))
     point = await geocode(
-        "Jackson Heights, Queens", client=client, forgiving=forgiving,
+        "Flurbville, Queens", client=client, forgiving=forgiving,
         borough_contains=_fake_borough_contains(True),
     )
     await client.aclose()
@@ -732,3 +753,83 @@ def test_place_citation_is_row_addressed_and_carries_recomputable_provenance():
     assert prov["record_id"] == "row-9"
     assert prov["content_hash"] == content_hash(place.raw)
     assert prov["derivation"] == {"origin": [40.75, -73.87], "point": [40.74, -73.88], "distance_mi": 0.68}
+
+
+# --- F079: the bundled NTA neighborhood gazetteer resolves before any fuzzy provider ---
+
+def _no_network_client():
+    def handler(request):
+        raise AssertionError(f"gazetteer path must not reach the network: {request.url}")
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def _no_forgiving(_text):
+    raise AssertionError("neighborhood reached the fuzzy provider")
+
+
+async def test_neighborhood_resolves_from_bundled_gazetteer_before_any_provider():
+    """F079: "Upper West Side" once fuzzy-matched to a Bronx playground at provider
+    confidence 1.0. Famous neighborhoods resolve from the city's own NTA data, offline."""
+    client = _no_network_client()
+    point = await geocode("Upper West Side", client=client, forgiving=_no_forgiving)
+    await client.aclose()
+    assert point is not None
+    assert point.match_type == "nta"
+    assert "Manhattan" in point.label
+    assert 40.75 < point.lat < 40.82 and -74.01 < point.lon < -73.93
+    assert not point.low_confidence
+
+
+async def test_neighborhood_normalization_and_aliases():
+    cases = {
+        "the upper west side": "Manhattan",
+        "UWS": "Manhattan",
+        "FiDi": "Manhattan",
+        "upper west side, manhattan": "Manhattan",
+        "bed-stuy": "Brooklyn",
+        "Queens Village": "Queens",
+    }
+    for query, borough in cases.items():
+        client = _no_network_client()
+        point = await geocode(query, client=client, forgiving=_no_forgiving)
+        await client.aclose()
+        assert point is not None and point.match_type == "nta", query
+        assert borough in point.label, query
+
+
+async def test_neighborhood_with_contradictory_borough_falls_through():
+    """"Upper West Side Brooklyn" is not a gazetteer hit; it takes the existing provider
+    path (which fails closed here) instead of confidently answering for Manhattan."""
+    def handler(request):
+        return httpx.Response(200, json={"features": []})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await geocode(
+        "Upper West Side Brooklyn", client=client, forgiving=_fake_forgiving(None),
+    )
+    await client.aclose()
+    assert point is None
+
+
+async def test_unknown_area_still_uses_existing_path():
+    def handler(request):
+        return _geosearch_response(40.7, -73.9, "Somewhere, NYC")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await geocode("Flurbville", client=client, forgiving=_fake_forgiving(None))
+    await client.aclose()
+    assert point is not None and point.match_type == "geosearch"
+
+
+async def test_missing_gazetteer_file_degrades_to_provider_path(monkeypatch):
+    from pathlib import Path
+
+    from heynyc.core.tools import geo
+
+    monkeypatch.setattr(geo, "_NTA_PATH", Path("/nonexistent/nta.tsv"))
+    monkeypatch.setattr(geo, "_NTA_GAZETTEER", None)
+    def handler(request):
+        return httpx.Response(200, json={"features": []})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    point = await geocode("Upper West Side", client=client, forgiving=_fake_forgiving(None))
+    await client.aclose()
+    assert point is None
+    monkeypatch.setattr(geo, "_NTA_GAZETTEER", None)  # do not poison other tests' cache
