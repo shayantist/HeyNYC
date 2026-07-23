@@ -3011,6 +3011,8 @@ class Agent:
                 # reaches the model for its grounded answer.
                 if hint.name == "active_lockout" and _needs_current_lockout_guidance(user_message):
                     lockout_turn = True  # the deterministic lockout floors key off this
+                if hint.name == "snap_work_rules":
+                    snap_work_rule_turn = True  # F089: seeds the forced pantry prefetch below
                 if initial_forced_tool is None and has_current_source and hint.query:
                     initial_forced_tool, initial_forced_args = _current_source_call(
                         self.tools, hint.query, tuple(hint.urls),
@@ -3092,6 +3094,15 @@ class Agent:
             yield events.Done(status="error", num_turns=0, citations=result.citations, result=result)
             return
 
+        # F089 machinery: the forced-call QUEUE. Slot 0 is the situation's current-source
+        # search when one fired; a SNAP work-rule situation then ALSO forces the food-pantry
+        # prefetch (the advisories-forcing pattern): food help lands by construction, and with
+        # no location the tool's ask-for-location result IS the offer. Empty queue = no forcing.
+        initial_forced_calls: list[tuple[str, Optional[dict]]] = (
+            [(initial_forced_tool, initial_forced_args)] if initial_forced_tool else []
+        )
+        if snap_work_rule_turn and "nearest_food_pantry" in self.tools:
+            initial_forced_calls.append(("nearest_food_pantry", {"near": ""}))
         for i in range(max_iters):
             # SPEND-CAP GUARD (turn boundary). Before each model call, halt if this session's
             # cumulative cost has reached the configured ceiling, never spend past it silently.
@@ -3133,7 +3144,9 @@ class Agent:
             assistant: Optional[dict] = None
             model_started = time.perf_counter()
             try:
-                requested_tool = initial_forced_tool if i == 0 else None
+                requested_tool = (
+                    initial_forced_calls[i][0] if i < len(initial_forced_calls) else None
+                )
                 model_stream = (
                     self._litellm_stream(messages, tool_schemas, requested_tool)
                     if self._uses_litellm
@@ -3379,7 +3392,9 @@ class Agent:
 
                 tool_started = time.perf_counter()
                 arg_overrides = (
-                    initial_forced_args if i == 0 and name == initial_forced_tool else None
+                    initial_forced_calls[i][1]
+                    if i < len(initial_forced_calls) and initial_forced_calls[i][0] == name
+                    else None
                 )
                 async for ev, tool_result in self._invoke(
                     name, call["function"]["arguments"], tool, ctx, arg_overrides=arg_overrides,

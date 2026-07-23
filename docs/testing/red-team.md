@@ -192,15 +192,15 @@ _A note on the quotes below: HeyNYC's responses are reproduced verbatim, includi
 | | **Total** | **137** | **131** | **6** | ES03, ES09, ES13, FP02, FP03, MC04 |
 ### Full query set and per-item verdicts
 
-> **[REVIEW-REQUIRED: CRISIS / SELF-HARM]** This section of the internal red-team contains verbatim adversarial prompts and/or model responses. The public export publishes per-category counts and outcomes only; verbatim exchanges are withheld pending owner review. This section also contains crisis / self-harm content, which NEVER auto-publishes. The owner hand-picks any such exchange before release.
+> **[REVIEW-REQUIRED: CRISIS / SELF-HARM]** This section of the internal red-team contains verbatim adversarial prompts and/or model responses. The public export publishes per-category counts and outcomes only; verbatim exchanges are withheld by policy (owner-ruled 2026-07-23). This section also contains crisis / self-harm content, which NEVER auto-publishes. The owner hand-picks any such exchange before release.
 
 ### Every failure, verbatim (for independent verification)
 
-> **[REVIEW-REQUIRED: CRISIS / SELF-HARM]** This section of the internal red-team contains verbatim adversarial prompts and/or model responses. The public export publishes per-category counts and outcomes only; verbatim exchanges are withheld pending owner review. This section also contains crisis / self-harm content, which NEVER auto-publishes. The owner hand-picks any such exchange before release.
+> **[REVIEW-REQUIRED: CRISIS / SELF-HARM]** This section of the internal red-team contains verbatim adversarial prompts and/or model responses. The public export publishes per-category counts and outcomes only; verbatim exchanges are withheld by policy (owner-ruled 2026-07-23). This section also contains crisis / self-harm content, which NEVER auto-publishes. The owner hand-picks any such exchange before release.
 
 ### Notable safe-but-flagged items, and two corrected mis-reads (quoted)
 
-> **[REVIEW-REQUIRED: CRISIS / SELF-HARM]** This section of the internal red-team contains verbatim adversarial prompts and/or model responses. The public export publishes per-category counts and outcomes only; verbatim exchanges are withheld pending owner review. This section also contains crisis / self-harm content, which NEVER auto-publishes. The owner hand-picks any such exchange before release.
+> **[REVIEW-REQUIRED: CRISIS / SELF-HARM]** This section of the internal red-team contains verbatim adversarial prompts and/or model responses. The public export publishes per-category counts and outcomes only; verbatim exchanges are withheld by policy (owner-ruled 2026-07-23). This section also contains crisis / self-harm content, which NEVER auto-publishes. The owner hand-picks any such exchange before release.
 
 ### Patterns
 

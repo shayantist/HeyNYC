@@ -4005,3 +4005,42 @@ def test_delivered_notify_titles_collects_prior_notify_citation_titles():
     assert "notify nyc - waterbody advisory - 7/22 (nyc)" in titles
     assert all("street closure" not in t for t in titles)
     assert _delivered_notify_titles([]) == frozenset()
+
+
+async def test_snap_situation_also_forces_the_food_pantry_prefetch():
+    """F089 machinery: on a SNAP work-rule situation turn the agent forces a
+    `nearest_food_pantry` prefetch AFTER the current-source search, so food help is in hand
+    by construction instead of a ~60% model choice; with no location the tool's ask-for-
+    location result is the offer. The advisories-forcing pattern, applied."""
+    from pathlib import Path
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    forced = []
+
+    async def search(args, ctx):
+        return "current official HRA guidance"
+
+    async def pantry(args, ctx):
+        return "Ask the resident for a location to find the nearest pantry."
+
+    web = Tool(name="web_search", description="x",
+               parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+               handler=search)
+    pantry_tool = Tool(name="nearest_food_pantry", description="x", parameters={},
+                       handler=pantry, module="food_pantries")
+    agent = Agent(registry, tools={"web_search": web, "nearest_food_pantry": pantry_tool})
+    responses = [
+        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("nearest_food_pantry", {})]),
+        _assistant(content="Here is the plan, and where is a pantry near you?"),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        forced.append(forced_tool)
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run("HRA says my SNAP is stopping because of a work rule and I have no food tonight")
+
+    assert forced == ["web_search", "nearest_food_pantry", None]
+    assert result.tool_calls_made == ["web_search", "nearest_food_pantry"]
