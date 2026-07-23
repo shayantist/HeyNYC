@@ -2161,7 +2161,7 @@ async def test_snap_work_rule_query_forces_current_official_search():
     assert result.tool_calls_made == ["web_search"]
     assert all("housing_guidance" not in names for names in schemas_seen)
     prompt = "\n".join(str(message.get("content", "")) for message in first_messages)
-    assert "Do not call or mention unrelated service modules" in prompt
+    assert "ALWAYS offer the nearest food pantry" in prompt
 
 
 async def test_generic_snap_question_does_not_force_current_rule_search(empty_registry):
@@ -2223,7 +2223,7 @@ async def test_benefits_denial_forces_current_official_appeal_search(empty_regis
     assert all("housing_guidance" not in names for names in schemas_seen)
     assert all("benefits_search" not in names for names in schemas_seen)
     prompt = "\n".join(str(message.get("content", "")) for message in first_messages)
-    assert "Do not call or mention unrelated service modules" in prompt
+    assert "unrelated service modules unless the user separately asked" in prompt
 
 
 async def test_immigration_and_benefits_forces_current_eligibility_search(empty_registry):

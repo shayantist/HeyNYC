@@ -47,8 +47,10 @@ situations:
       - https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page
       - https://otda.ny.gov/hearings/request/
     reminder: >-
-      This turn is about SNAP work-rule recovery. Use current official SNAP guidance, the human
-      or fair-hearing path, and immediate food help if requested. Do not call or mention
+      This turn is about SNAP work-rule recovery. Use current official SNAP guidance and the
+      human or fair-hearing path. When the resident says they lack food or cannot eat, in any
+      language, ALWAYS offer the nearest food pantry via the tool: immediate food help is part
+      of this situation, never an unrelated module. Beyond that, do not call or mention
       unrelated service modules unless the user separately asked for them.
     focus_tools:
       - official_sources
