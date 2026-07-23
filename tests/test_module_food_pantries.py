@@ -306,8 +306,9 @@ async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_resident_lan
     assert seen == ["Union Square"]
 
 
-async def test_nearest_food_pantry_ranks_grounds_and_links():
-    now_day = _DAYS[datetime.now().weekday()]
+async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
     features = [
         _pantry_feature(-73.9600, 40.8000, program="Far Pantry", distadd="1 Far St",
                         distboro="Manhattan", distzip="10027", org_phone="212-555-0001",
