@@ -54,6 +54,38 @@ For the configured HeyNYC production WhatsApp sender and assigned ngrok developm
 
 Install the deps with `uv sync --extra whatsapp` (the messaging deps live in their own extra; the base `--extra dev` install does not pull them).
 
+## Single-host deployment and recovery
+
+The WSL pilot keeps `.env` and resident state outside versioned release directories. Each release links the shared `.env`, and `HEYNYC_DATA_DIR` points at the shared data directory. This keeps one encryption identity and one resident-data store across exact-SHA releases.
+
+[`scripts/deploy_wsl.sh`](../../scripts/deploy_wsl.sh) is the one manual deployment path. It accepts only a full commit contained in `origin/main`, takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then stops writes for a resident-state snapshot and temporary restore proof. It rejects modified or extra tracked release content, atomically switches the `current` release pointer, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
+
+Run it only after CI passes for the exact pushed SHA:
+
+```bash
+sudo -v
+./scripts/deploy_wsl.sh <40-character-sha>
+```
+
+[`scripts/state_snapshot.py`](../../scripts/state_snapshot.py) copies SQLite through Python's [online backup API](https://docs.python.org/3.11/library/sqlite3.html#sqlite3.Connection.backup), copies the rest of the data directory while writes are stopped, and records file sizes, SHA-256 hashes, the application commit, and SQLite schema version. Its restore proof also opens the schema through the current channel store and authenticates encrypted inbox, session, draft, and feedback records with the configured key without printing their content. `restore` refuses a nonempty destination. Recovery therefore restores into a new directory, verifies it, and uses an operator-controlled directory switch instead of overwriting live state:
+
+```bash
+uv run python scripts/state_snapshot.py verify <snapshot-directory>
+uv run python scripts/state_snapshot.py restore <snapshot-directory> --target <new-empty-data-directory>
+```
+
+After the new process starts, the deploy script never restores an older snapshot automatically. The process may already have accepted new work, so restoring old state could discard a resident message. A failed health check attempts to stop the service and prints the snapshot and previous release for supervised recovery, including a separate warning if systemd could not confirm the stop.
+
+Inbox inspection stays metadata-only. Operators may inspect `message_id`, `state`, `attempts`, `delivered_parts`, and timestamps, but not `payload` or `outbox`. A generation failure before the outbox is staged can run the model again and produce different wording or additional spend; the session turn is still uncommitted at that point. Delivery resumes from the staged outbox after it exists.
+
+```sql
+SELECT state, COUNT(*), MIN(updated_at), MAX(updated_at)
+FROM inbox GROUP BY state ORDER BY state;
+
+SELECT message_id, state, attempts, delivered_parts, updated_at
+FROM inbox WHERE state = 'failed' ORDER BY updated_at;
+```
+
 ## Flagging a bad answer
 
 A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, or 👎 to flag the previous reply. Nothing is shared until they confirm: the command stages a pointer and replies with consent copy naming exactly what a human will see (that one exchange, nothing else); only YES writes the flag, anything else cancels and is handled as a normal message. Confirmed flags are pointers only (no message content) joined to the encrypted session by `heynyc feedback` for local triage; the redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error view.
