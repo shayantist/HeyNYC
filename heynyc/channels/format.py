@@ -203,9 +203,6 @@ def render(result, channel: str = "whatsapp") -> list[str]:
             # into spaces (observed live as one wrapped blob), list items render one per line.
             f"- [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
             for cid, c in cited.items()
-            # or True is LOAD-BEARING post-linkification: the citation URL now appears inline
-            # (inside the link destination), so inline_urls would drop every cited source here.
-            if _canonical_url(c.get("url", "")) not in inline_urls or True
         ]
         footer = "Sources:\n" + "\n".join(rows) if rows else ""
     else:
