@@ -67,6 +67,10 @@ def _merge_results(pending: AgentResult, final: AgentResult) -> AgentResult:
             ]
         )
     )
+    usage["model_request_ms"] = [
+        *(pending.usage.get("model_request_ms") or ()),
+        *(final.usage.get("model_request_ms") or ()),
+    ]
     tool_calls = [*pending.tool_calls_made, *final.tool_calls_made]
     tool_calls.extend(
         name.removeprefix("confirm_").removesuffix("_facts")
@@ -249,6 +253,7 @@ def summarize_arm(
             if arm == "pydantic_ai"
             else "not_applicable"
         ),
+        "reasoning_effort": config.HEYNYC_REASONING_EFFORT,
     }
 
 
@@ -295,7 +300,7 @@ async def run_arms(
         "case_ids": [case.id for case in cases],
         "arm_order": list(order),
         "parallel": parallel,
-        "performance_comparison_valid": not parallel,
+        "performance_comparison_valid": not parallel and len(order) == 2,
         "arms": [],
     }
 
@@ -353,6 +358,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run arms concurrently; latency and cache comparisons are not valid",
     )
+    parser.add_argument(
+        "--arm",
+        choices=("production", "pydantic_ai"),
+        help="Run only one arm for a focused probe",
+    )
     return parser
 
 
@@ -390,6 +400,8 @@ async def _run(args: argparse.Namespace) -> int:
     retriever = _load_retriever(required=False)
     model = config.HEYNYC_MODEL
     factories = build_factories(registry, retriever, model)
+    if args.arm:
+        factories = {args.arm: factories[args.arm]}
     out_dir = Path(args.out) if args.out else (
         config.HEYNYC_DATA_DIR
         / "eval"
@@ -402,9 +414,13 @@ async def _run(args: argparse.Namespace) -> int:
         out_dir,
         model,
         arm_order=(
-            ("pydantic_ai", "production")
-            if args.seed % 2
-            else ("production", "pydantic_ai")
+            tuple(factories)
+            if args.arm
+            else (
+                ("pydantic_ai", "production")
+                if args.seed % 2
+                else ("production", "pydantic_ai")
+            )
         ),
         parallel=args.parallel,
     )

@@ -558,6 +558,7 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
 
     def __init__(self) -> None:
         self.elapsed_ms = 0.0
+        self.request_ms: list[float] = []
 
     async def wrap_model_request(
         self,
@@ -570,7 +571,9 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
         try:
             return await handler(request_context)
         finally:
-            self.elapsed_ms += (time.perf_counter() - started) * 1000.0
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self.elapsed_ms += elapsed_ms
+            self.request_ms.append(round(elapsed_ms, 3))
 
 
 class PydanticRuntimeAdapter:
@@ -803,6 +806,7 @@ class PydanticRuntimeAdapter:
                 model_time_ms=timing_capability.elapsed_ms,
                 status="max_turns",
             )
+            result.usage["model_request_ms"] = timing_capability.request_ms
             result.hit_max_iters = True
             return result, new_messages, None
         result = self._result(
@@ -811,6 +815,7 @@ class PydanticRuntimeAdapter:
             started,
             model_time_ms=timing_capability.elapsed_ms,
         )
+        result.usage["model_request_ms"] = timing_capability.request_ms
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
@@ -1268,6 +1273,7 @@ class _PydanticConversation:
             started,
             model_time_ms=timing_capability.elapsed_ms,
         )
+        result.usage["model_request_ms"] = timing_capability.request_ms
         self._history.extend(native.new_messages())
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None

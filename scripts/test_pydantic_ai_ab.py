@@ -147,6 +147,7 @@ def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
         "cost_status": "unpriced",
         "error_count": 0,
         "fact_confirmation_policy": "auto_confirm_confirm_star_facts_only_never_actions",
+        "reasoning_effort": pydantic_ai_ab.config.HEYNYC_REASONING_EFFORT,
     }
 
 
@@ -167,6 +168,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
             "requests": 1,
             "cost_usd": 0.01,
             "capabilities_used": ["food"],
+            "model_request_ms": [1.0],
         },
     )
     final = AgentResult(
@@ -185,6 +187,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
             "cost_usd": 0.02,
             "capabilities_used": ["benefits"],
             "executed_tool_calls": ["confirm_screen_facts"],
+            "model_request_ms": [2.0, 3.0],
         },
     )
 
@@ -228,6 +231,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
     assert result.usage["requests"] == 3
     assert result.usage["cost_usd"] == pytest.approx(0.03)
     assert result.usage["capabilities_used"] == ["food", "benefits"]
+    assert result.usage["model_request_ms"] == [1.0, 2.0, 3.0]
 
 
 def test_merge_does_not_alias_unexecuted_fact_confirmation() -> None:
@@ -452,3 +456,46 @@ def test_run_arms_persists_every_turn_and_honors_counterbalanced_order(
             "usage": {"input_tokens": 20},
         },
     ]
+
+
+def test_parser_can_select_one_benchmark_arm() -> None:
+    args = pydantic_ai_ab._parser().parse_args(
+        ["--case", "one", "--arm", "pydantic_ai"]
+    )
+
+    assert args.arm == "pydantic_ai"
+
+
+@pytest.mark.parametrize("arm", ["production", "pydantic_ai"])
+def test_single_arm_receipt_is_not_a_performance_comparison(
+    arm, tmp_path, monkeypatch
+) -> None:
+    result = SimpleNamespace(
+        case=SimpleNamespace(id="one"),
+        error=None,
+        turn_results=[SimpleNamespace(usage={})],
+    )
+    report = SimpleNamespace(passed_count=1, total=1)
+
+    async def fake_run_all(factory, cases, reminders):
+        return [result]
+
+    async def fake_evaluate(results):
+        return report
+
+    monkeypatch.setattr(pydantic_ai_ab, "run_all", fake_run_all)
+    monkeypatch.setattr(pydantic_ai_ab, "evaluate", fake_evaluate)
+    monkeypatch.setattr(pydantic_ai_ab, "write_run", lambda *args, **kwargs: None)
+
+    receipt = asyncio.run(
+        run_arms(
+            {arm: lambda: arm},
+            [SimpleNamespace(id="one")],
+            [],
+            tmp_path,
+            "openai/gpt-test",
+        )
+    )
+
+    assert receipt["performance_comparison_valid"] is False
+    assert [summary["arm"] for summary in receipt["arms"]] == [arm]

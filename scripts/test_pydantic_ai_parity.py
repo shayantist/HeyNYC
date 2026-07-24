@@ -536,6 +536,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     assert result.citations["S3"]["title"] == "ACCESS NYC screening"
     assert screened == [{"profile": {"age": 35, "worked": False}}]
     assert result.usage["executed_tool_calls"] == ["confirm_screen_facts"]
+    assert len(result.usage["model_request_ms"]) == result.usage["requests"]
     assert model_calls == 4
 
 
