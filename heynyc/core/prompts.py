@@ -286,11 +286,9 @@ _CONVERSATION_AND_LANGUAGE_RULES = (
 )
 
 
-def _stable_tier(registry: Registry) -> str:
-    """The cacheable prefix: all safety rules, the always-on capability menu, and the byte-static
-    conversation-interpretation and reply-language rules. No query- or time-dependent content, so it
-    is identical across calls and safe to mark as a cache prefix."""
-    menu = _capability_menu_text(registry)
+def _stable_tier(registry: Registry, *, include_module_guidance: bool = True) -> str:
+    """The cacheable safety and conversation prefix, plus the legacy module menu when requested."""
+    menu = _capability_menu_text(registry) if include_module_guidance else ""
     base = f"{BASE_SYSTEM_PROMPT}\n\n{menu}" if menu else BASE_SYSTEM_PROMPT
     return base + _CONVERSATION_AND_LANGUAGE_RULES
 
@@ -308,22 +306,37 @@ def _selected_blurbs(registry: Registry, query: Optional[str]) -> str:
     return registry.capability_blurbs(only=matched)
 
 
-def _volatile_tier(registry: Registry, now: Optional[datetime], query: Optional[str]) -> str:
-    """The uncacheable suffix: query-selected blurbs + the current-date line. Both vary between
-    calls, so they must sit AFTER the cached stable prefix and (in the agent) after the growing
-    history, never inside any cached block."""
-    blurbs = _selected_blurbs(registry, query)
+def _volatile_tier(
+    registry: Registry,
+    now: Optional[datetime],
+    query: Optional[str],
+    *,
+    include_module_guidance: bool = True,
+) -> str:
+    """The current-date suffix, plus legacy query-selected module blurbs when requested."""
+    blurbs = _selected_blurbs(registry, query) if include_module_guidance else ""
     section = f"\n\n# How to use the relevant services\n{blurbs}" if blurbs else ""
     return section + _now_line(now)
 
 
 def build_system_prompt_tiers(
-    registry: Registry, now: Optional[datetime] = None, query: Optional[str] = None
+    registry: Registry,
+    now: Optional[datetime] = None,
+    query: Optional[str] = None,
+    *,
+    include_module_guidance: bool = True,
 ) -> tuple[str, str]:
     """The system prompt split into (stable, volatile) tiers. `stable` is the cacheable prefix
-    (base safety rules + capability menu); `volatile` is the query-selected blurbs + the date line.
-    The hosted Anthropic path caches `stable`; every other caller just concatenates the two."""
-    return _stable_tier(registry), _volatile_tier(registry, now, query)
+    and `volatile` is the changing date and per-turn guidance. Native capabilities can own module
+    discovery and instructions by setting `include_module_guidance=False`."""
+    return _stable_tier(
+        registry, include_module_guidance=include_module_guidance
+    ), _volatile_tier(
+        registry,
+        now,
+        query,
+        include_module_guidance=include_module_guidance,
+    )
 
 
 def build_system_prompt(

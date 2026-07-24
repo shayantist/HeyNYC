@@ -472,6 +472,7 @@ def screen_eligibility_tool() -> Tool:
         parameters=screening.request_schema(),
         handler=_screen_handler,
         open_world=True,
+        resident_fact_scope=("/household", "/persons"),
     )
 
 

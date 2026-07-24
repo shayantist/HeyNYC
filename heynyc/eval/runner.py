@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from .cases import EvalCase
+
+NYC_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -15,20 +19,29 @@ class CaseResult:
     citations: dict = field(default_factory=dict)
     messages: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=dict)  # {input_tokens, output_tokens, ...} for cost tracking
+    turn_results: list[object] = field(default_factory=list)
+    turn_started_at: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
 
 async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None) -> CaseResult:
     try:
+        turn_results = []
+        turn_started_at = []
         if len(case.turns) > 1:
             # A conversational case plays through one Conversation so history flows exactly
             # as it does for the live surfaces; checks grade the final turn's result.
             convo = agent.conversation()
             for turn in case.turns[:-1]:
-                await convo.send(turn, reminders=reminders)
+                turn_started_at.append(datetime.now(NYC_TZ).isoformat(timespec="seconds"))
+                turn_results.append(await convo.send(turn, reminders=reminders))
+            turn_started_at.append(datetime.now(NYC_TZ).isoformat(timespec="seconds"))
             result = await convo.send(case.turns[-1], reminders=reminders)
+            turn_results.append(result)
         else:
+            turn_started_at.append(datetime.now(NYC_TZ).isoformat(timespec="seconds"))
             result = await agent.run(case.query, reminders=reminders)
+            turn_results.append(result)
     except Exception as exc:  # a crash is a failed case, not a crashed run
         return CaseResult(case=case, error=str(exc))
     return CaseResult(
@@ -38,6 +51,8 @@ async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None)
         citations=result.citations,
         messages=result.messages,
         usage=getattr(result, "usage", {}) or {},
+        turn_results=turn_results,
+        turn_started_at=turn_started_at,
     )
 
 

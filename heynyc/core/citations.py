@@ -140,5 +140,33 @@ class CitationRegistry:
         """{ "S1": {url, title, snippet, kind}, ... } in registration order."""
         return {c.id: asdict(c) for c in self._ordered}
 
+    def dump_state(self) -> dict:
+        """Serialize exact ids so a paused tool turn can resume without rebinding markers."""
+        return {"citations": self.mapping(), "counter": self._counter}
+
+    @classmethod
+    def from_state(cls, state: dict) -> "CitationRegistry":
+        """Restore a registry previously returned by `dump_state`."""
+        registry = cls()
+        raw_citations = state.get("citations", {})
+        counter = int(state.get("counter", 0))
+        for cite_id, raw in raw_citations.items():
+            if raw.get("id") != cite_id or not re.fullmatch(r"S\d+", cite_id):
+                raise ValueError(f"Invalid citation state id: {cite_id!r}")
+            citation = Citation(**raw)
+            key = (citation.kind, citation.url, citation.snippet[:120])
+            if key in registry._by_key:
+                raise ValueError(f"Duplicate citation state key: {cite_id!r}")
+            registry._by_key[key] = citation
+            registry._ordered.append(citation)
+        highest = max(
+            (int(citation.id.removeprefix("S")) for citation in registry._ordered),
+            default=0,
+        )
+        if counter < highest:
+            raise ValueError("Citation state counter is behind its registered ids")
+        registry._counter = counter
+        return registry
+
     def __len__(self) -> int:
         return len(self._ordered)
