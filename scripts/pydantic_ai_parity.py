@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Awaitable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,6 +37,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     ToolSearchCallPart,
@@ -460,14 +462,21 @@ def _native_orchestration_history(
     )
     request_parts = (LoadCapabilityReturnPart, ToolSearchReturnPart)
     for message in messages:
-        part_types = response_parts if isinstance(message, ModelResponse) else request_parts
-        parts = [part for part in message.parts if isinstance(part, part_types)]
-        if parts:
-            preserved.append(
-                ModelResponse(parts=parts)
-                if isinstance(message, ModelResponse)
-                else ModelRequest(parts=parts)
+        if isinstance(message, ModelResponse):
+            has_state = any(
+                isinstance(part, response_parts) for part in message.parts
             )
+            parts = [
+                part
+                for part in message.parts
+                if has_state and isinstance(part, (ThinkingPart, *response_parts))
+            ]
+        else:
+            parts = [
+                part for part in message.parts if isinstance(part, request_parts)
+            ]
+        if parts:
+            preserved.append(replace(message, parts=parts))
     return preserved
 
 

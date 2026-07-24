@@ -25,6 +25,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import ProcessHistory, Thinking
 from pydantic_ai.messages import (
+    LoadCapabilityCallPart,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -33,6 +34,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -69,6 +71,7 @@ from scripts.pydantic_ai_parity import (
     _measurement_messages,
     _native_cache_settings,
     _native_cost,
+    _native_orchestration_history,
     _resident_fact_errors,
     adapt_tool,
     build_module_capabilities,
@@ -2473,6 +2476,32 @@ def test_context_measurement_counts_native_tool_search_state() -> None:
     assert measured[0]["tool_calls"][0]["function"]["name"] == "tool_search"
     assert measured[1]["role"] == "tool"
     assert "screen_eligibility" in measured[1]["content"]
+
+
+def test_native_orchestration_history_keeps_required_reasoning_part() -> None:
+    preserved = _native_orchestration_history(
+        [
+            ModelResponse(
+                parts=[
+                    ThinkingPart(
+                        "encrypted reasoning",
+                        id="reasoning-1",
+                        provider_name="openai",
+                    ),
+                    LoadCapabilityCallPart(
+                        args={"id": "benefits"},
+                        tool_call_id="load-1",
+                    ),
+                ],
+                provider_name="openai",
+            )
+        ]
+    )
+
+    assert isinstance(preserved[0].parts[0], ThinkingPart)
+    assert preserved[0].parts[0].id == "reasoning-1"
+    assert isinstance(preserved[0].parts[1], LoadCapabilityCallPart)
+    assert preserved[0].provider_name == "openai"
 
 
 async def test_default_context_measurement_counts_structured_continuity_once(
