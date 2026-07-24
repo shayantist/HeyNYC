@@ -306,3 +306,87 @@ def test_run_arms_uses_existing_runner_grader_and_writer(
         "production",
         "pydantic_ai",
     ]
+
+
+def test_run_arms_persists_every_turn_and_honors_counterbalanced_order(
+    tmp_path, monkeypatch
+) -> None:
+    calls = []
+    case = SimpleNamespace(id="multi", turns=["first", "second"])
+    first = AgentResult(
+        text="first answer",
+        citations={"S1": {"title": "First", "url": "https://nyc.gov/first"}},
+        tool_calls_made=["first_tool"],
+        messages=[{"role": "assistant", "content": "first answer"}],
+        usage={"input_tokens": 10},
+    )
+    second = AgentResult(
+        text="second answer",
+        citations={"S2": {"title": "Second", "url": "https://nyc.gov/second"}},
+        tool_calls_made=["second_tool"],
+        messages=[{"role": "assistant", "content": "second answer"}],
+        usage={"input_tokens": 20},
+    )
+    result = SimpleNamespace(
+        case=case,
+        error=None,
+        turn_results=[first, second],
+        turn_started_at=["2026-07-24T10:00:00", "2026-07-24T10:00:01"],
+    )
+    report = SimpleNamespace(passed_count=1, total=1)
+
+    async def fake_run_all(factory, cases, reminders):
+        calls.append(factory())
+        return [result]
+
+    async def fake_evaluate(results):
+        return report
+
+    monkeypatch.setattr(pydantic_ai_ab, "run_all", fake_run_all)
+    monkeypatch.setattr(pydantic_ai_ab, "evaluate", fake_evaluate)
+    monkeypatch.setattr(pydantic_ai_ab, "write_run", lambda *args, **kwargs: None)
+
+    receipt = asyncio.run(
+        run_arms(
+            {"production": lambda: "prod", "pydantic_ai": lambda: "candidate"},
+            [case],
+            [],
+            tmp_path,
+            "openai/gpt-test",
+            arm_order=("pydantic_ai", "production"),
+        )
+    )
+
+    assert calls == ["candidate", "prod"]
+    assert receipt["arm_order"] == ["pydantic_ai", "production"]
+    artifact = pydantic_ai_ab.json.loads(
+        (tmp_path / "pydantic_ai" / "turns.json").read_text()
+    )
+    assert artifact["cases"][0]["turns"] == [
+        {
+            "turn": 1,
+            "started_at": "2026-07-24T10:00:00",
+            "resident_message": "first",
+            "text": "first answer",
+            "status": "success",
+            "tool_calls": ["first_tool"],
+            "citations": {
+                "S1": {"title": "First", "url": "https://nyc.gov/first"}
+            },
+            "messages": [{"role": "assistant", "content": "first answer"}],
+            "usage": {"input_tokens": 10},
+        },
+        {
+            "turn": 2,
+            "started_at": "2026-07-24T10:00:01",
+            "resident_message": "second",
+            "text": "second answer",
+            "status": "success",
+            "tool_calls": ["second_tool"],
+            "citations": {
+                "S2": {"title": "Second", "url": "https://nyc.gov/second"}
+            },
+            "messages": [{"role": "assistant", "content": "second answer"}],
+            "usage": {"input_tokens": 20},
+        },
+    ]

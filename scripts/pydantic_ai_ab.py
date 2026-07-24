@@ -238,19 +238,56 @@ def summarize_arm(
     }
 
 
+def _write_turn_artifacts(directory: Path, results: list[Any]) -> None:
+    """Persist every turn so qualitative review cannot hide an earlier failure."""
+    cases = []
+    for result in results:
+        turns = []
+        prompts = getattr(result.case, "turns", ())
+        started = getattr(result, "turn_started_at", ())
+        for index, turn in enumerate(getattr(result, "turn_results", ())):
+            turns.append(
+                {
+                    "turn": index + 1,
+                    "started_at": started[index] if index < len(started) else None,
+                    "resident_message": prompts[index] if index < len(prompts) else None,
+                    "text": getattr(turn, "text", ""),
+                    "status": getattr(turn, "status", "success"),
+                    "tool_calls": getattr(turn, "tool_calls_made", []),
+                    "citations": getattr(turn, "citations", {}),
+                    "messages": getattr(turn, "messages", []),
+                    "usage": getattr(turn, "usage", {}),
+                }
+            )
+        cases.append({"case_id": result.case.id, "error": result.error, "turns": turns})
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "turns.json").write_text(
+        json.dumps({"cases": cases}, indent=2, default=str)
+    )
+
+
 async def run_arms(
     factories: dict[str, Any],
     cases: list[Any],
     reminders: list[str],
     out_dir: Path,
     model: str,
+    *,
+    arm_order: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    receipt = {"case_ids": [case.id for case in cases], "arms": []}
-    for arm, factory in factories.items():
+    order = arm_order or tuple(factories)
+    receipt = {
+        "case_ids": [case.id for case in cases],
+        "arm_order": list(order),
+        "arms": [],
+    }
+    for arm in order:
+        factory = factories[arm]
         results = await run_all(factory, cases, reminders=reminders)
         report = await evaluate(results)
         summary = summarize_arm(arm, model, results, report)
         write_run(out_dir / arm, report, metadata=summary)
+        _write_turn_artifacts(out_dir / arm, results)
         receipt["arms"].append(summary)
     (out_dir / "comparison.json").write_text(json.dumps(receipt, indent=2))
     return receipt
@@ -335,6 +372,11 @@ async def _run(args: argparse.Namespace) -> int:
         _default_reminders(),
         out_dir,
         model,
+        arm_order=(
+            ("pydantic_ai", "production")
+            if args.seed % 2
+            else ("production", "pydantic_ai")
+        ),
     )
     print(json.dumps(receipt, indent=2))
     print(f"Comparison written to {out_dir}")
