@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import data_provenance
@@ -91,6 +91,20 @@ def _next_open(record: dict, now: datetime) -> tuple[int, int, str] | None:
             if best is None or candidate[:2] < best[:2]:
                 best = candidate
     return best
+
+
+def _scheduled_hours(record: dict, weekday: int) -> str:
+    displayed = str(record.get(_DAY_NAMES[weekday]) or "").strip()
+    if displayed:
+        return displayed
+    day = _DAYS[weekday]
+    intervals = []
+    for interval in (1, 2):
+        opened = str(record.get(f"cc_{day}_open{interval}") or "").strip()
+        closed = str(record.get(f"cc_{day}_close{interval}") or "").strip()
+        if opened and closed:
+            intervals.append(f"{opened}-{closed}")
+    return ", ".join(intervals)
 
 
 def _value(record: dict, mixed: str, upper: str) -> str:
@@ -227,20 +241,35 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         return "No matching NYC Cool Options were found near that location."
 
     now = _nyc_now()
+    requested_on = str(args.get("on") or "").strip()
+    try:
+        target_date = date.fromisoformat(requested_on) if requested_on else now.date()
+    except ValueError:
+        return "The `on` date must use YYYY-MM-DD. Ask the resident to clarify the date."
+    planning_ahead = target_date != now.date()
+    target_day_name = _DAY_NAMES[target_date.weekday()]
     for item in unique:
         item["open_now"] = _open_now(item["record"], now)
+        item["target_hours"] = _scheduled_hours(item["record"], target_date.weekday())
         item["distance_m"] = haversine_m(origin.lat, origin.lon, item["lat"], item["lon"])
-    unique.sort(
-        key=lambda item: (
-            0 if item["open_now"] is True else 2 if item["open_now"] is False else 1,
-            item["distance_m"],
+    if planning_ahead:
+        unique.sort(key=lambda item: (0 if item["target_hours"] else 1, item["distance_m"]))
+    else:
+        unique.sort(
+            key=lambda item: (
+                0 if item["open_now"] is True else 2 if item["open_now"] is False else 1,
+                item["distance_m"],
+            )
         )
-    )
 
     # F068: when the nearest open site is farther than sites that are closed right
     # now, say so in data terms so the answer is framed honestly instead of reading
     # "nearest option is a pet store 2 miles away" with no context.
-    nearest_open = next((item for item in unique if item["open_now"] is True), None)
+    nearest_open = (
+        None
+        if planning_ahead
+        else next((item for item in unique if item["open_now"] is True), None)
+    )
     closer_closed = (
         [
             item
@@ -254,7 +283,18 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     limit = _requested_result_limit(args.get("limit", 3), ctx.query)
     selected = unique[:limit]
     day_name = _DAY_NAMES[now.weekday()]
-    lines = [f"NYC Cool Options near {origin.label}:", _resolution_note(near, origin)]
+    target_date_label = (
+        f"{target_date.strftime('%A, %B')} {target_date.day}, {target_date.year}"
+    )
+    date_scope = f" for {target_date_label}" if planning_ahead else ""
+    lines = [
+        f"NYC Cool Options{date_scope} near {origin.label}:",
+        _resolution_note(near, origin),
+    ]
+    if planning_ahead:
+        lines.append(
+            "Activation status is current at lookup time, not a guarantee for the requested date."
+        )
     if closer_closed:
         count = len(closer_closed)
         note = (
@@ -278,14 +318,21 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             lines.append(f"   Audience: {label} (age-restricted, not open to all ages)")
         if item["address"]:
             lines.append(f"   {item['address']}")
-        hours = str(item["record"].get(day_name) or "").strip()
-        if item["open_now"] is True:
-            status = "scheduled open now"
-        elif item["open_now"] is False:
-            status = "scheduled closed now"
+        if planning_ahead and item["target_hours"]:
+            lines.append(
+                f"   Scheduled {target_date_label}: {item['target_hours']}"
+            )
+        elif planning_ahead:
+            lines.append(f"   No {target_day_name} hours are listed in this City record")
         else:
-            status = "current schedule unclear"
-        lines.append(f"   {status}" + (f". {day_name}: {hours}" if hours else ""))
+            hours = str(item["record"].get(day_name) or "").strip()
+            if item["open_now"] is True:
+                status = "scheduled open now"
+            elif item["open_now"] is False:
+                status = "scheduled closed now"
+            else:
+                status = "current schedule unclear"
+            lines.append(f"   {status}" + (f". {day_name}: {hours}" if hours else ""))
         flags = []
         if item["accessible"]:
             flags.append(f"Accessible: {item['accessible']}")
@@ -304,10 +351,17 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     if restricted_shown and len(restricted_shown) * 2 >= len(selected):
         shown_ids = {id(item) for item in selected}
         all_ages = next(
-            (item for item in unique
-             if not item["age_restricted"]
-             and item["open_now"] is not False
-             and id(item) not in shown_ids),
+            (
+                item
+                for item in unique
+                if not item["age_restricted"]
+                and (
+                    bool(item["target_hours"])
+                    if planning_ahead
+                    else item["open_now"] is not False
+                )
+                and id(item) not in shown_ids
+            ),
             None,
         )
         note = (
@@ -322,7 +376,10 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             )
         lines.append(note)
 
-    lines.append("Hours and policies can change. The City advises calling ahead before visiting.")
+    lines.append(
+        "Weekly hours, holiday schedules, one-off closures, and access policies can change. "
+        "The City advises calling ahead before visiting."
+    )
     if general_failed:
         lines.append("The general Cool Options feed was unavailable for this lookup.")
     if active_failed:
@@ -336,7 +393,9 @@ def get_tools() -> list[Tool]:
             name="cool_options_lookup",
             description=(
                 "Find live NYC Cool Options. Use kind='cooling_center' for activated centers, "
-                "kind='indoor' for indoor A/C options, or kind='all' for any heat-relief option."
+                "kind='indoor' for indoor A/C options, or kind='all' for any heat-relief option. "
+                "Pass `on` when the resident asks about a specific day or date; the result will "
+                "rank and report that date's City-listed weekly schedule instead of today's status."
             ),
             parameters={
                 "type": "object",
@@ -354,6 +413,14 @@ def get_tools() -> list[Tool]:
                         "maximum": 10,
                         "default": 3,
                         "description": "Maximum results; use the user's requested count",
+                    },
+                    "on": {
+                        "type": "string",
+                        "format": "date",
+                        "description": (
+                            "Optional visit date in YYYY-MM-DD. Pass this when the resident names "
+                            "a day or date; omit only for a current right-now lookup."
+                        ),
                     },
                 },
                 "required": ["near"],

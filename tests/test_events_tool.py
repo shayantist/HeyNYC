@@ -851,6 +851,8 @@ async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypa
     )
 
     assert output == events._NO_RESULTS
+    assert events.PARKS_SOURCE_URL in output
+    assert events.PERMITTED_SOURCE_URL in output
     assert "Bronx Event" not in output
     assert editorial_calls == 0
 

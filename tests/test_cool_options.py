@@ -395,3 +395,70 @@ def test_cooling_next_open_skips_todays_passed_intervals():
     now = datetime(2026, 7, 18, 20, 30, tzinfo=ZoneInfo("America/New_York"))  # Saturday
 
     assert cooling._next_open(record, now) == (1, 540, "Sunday 09:00 AM")
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        if url == cooling.COOL_OPTIONS_URL:
+            return []
+        return [
+            {
+                "OBJECTID": 1,
+                "NYCEM_ID": "CLOSER",
+                "FACILITY_NAME": "Closer Friday Library",
+                "ADDRESS": "1 Main St",
+                "lat": 40.7581,
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "Friday": "10a-6p",
+                "cc_fri_open1": "10:00 AM",
+                "cc_fri_close1": "06:00 PM",
+            },
+            {
+                "OBJECTID": 2,
+                "NYCEM_ID": "SATURDAY",
+                "FACILITY_NAME": "Saturday Library",
+                "ADDRESS": "2 Main St",
+                "lat": 40.7590,
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "cc_sat_open1": "10:00 AM",
+                "cc_sat_close1": "05:00 PM",
+            },
+        ]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 24, 13, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await cooling.get_tools()[0].handler(
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "limit": 1,
+            "on": "2026-07-25",
+        },
+        ctx,
+    )
+
+    assert "Saturday Library" in output
+    assert "Saturday, July 25, 2026: 10:00 AM-05:00 PM" in output
+    assert "Activation status is current at lookup time" in output
+    assert "one-off closures" in output
+    assert "Friday" not in output
+    assert "scheduled open now" not in output
+
+    schema = cooling.get_tools()[0].parameters
+    assert schema["properties"]["on"]["format"] == "date"
+    assert "on" not in schema["required"]

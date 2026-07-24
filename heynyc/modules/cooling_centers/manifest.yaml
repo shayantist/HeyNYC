@@ -58,10 +58,13 @@ tools: tools.py
 prompt: |
   For heat-relief questions, call cool_options_lookup. Use kind="cooling_center" when the user
   specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
-  and kind="all" for a general place to cool off. Pass limit when the user requests a count.
+  and kind="all" for a general place to cool off. Pass `on` as an ISO date whenever the resident
+  names a day or date; omit it only for a current right-now lookup. Pass limit when the user
+  requests a count.
   Preserve the tool's distinction between activated cooling centers and other Cool Options,
   including outdoor options. Report its scheduled status, hours, access details, and citations.
-  A scheduled-open result is not a guarantee of entry, so preserve the call-ahead warning.
+  City-listed weekly hours are not a guarantee of holiday hours or entry, so preserve the
+  call-ahead warning.
   If no activated center is returned, offer other indoor Cool Options instead of merely linking
   to the finder. Do not invent capacity, occupancy, amenities, or emergency status.
 eval: eval.yaml

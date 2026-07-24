@@ -175,8 +175,9 @@ def _requested_window(query: str, today: str) -> tuple[str, str | None]:
 _NO_RESULTS = (
     "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
     "NYC Permitted Events). "
-    "Don't invent events, tell the user nothing grounded came up and suggest they check the "
-    "official source directly."
+    "Don't invent events; say that nothing grounded matched. "
+    f"Official indexes the resident can check directly: NYC Parks {PARKS_SOURCE_URL} and "
+    f"NYC Permitted Events {PERMITTED_SOURCE_URL}."
 )
 
 _SHORTLIST_SYNTHESIS_RULES = (
