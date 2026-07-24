@@ -413,7 +413,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             return (
                 f"The official screener returned {len(eligible)} likely matches {_ESTIMATE} "
                 f"{{cite:{verdict}}}. Which need matters most right now? Tell me in your own words, "
-                "then reply `/screen` again. Reply `/screen all` if you want every match."
+                "or ask me to show every match."
             )
         eligible_rows = [by_code[program.get("code", "")] for program in eligible
                          if program.get("code", "") in by_code]
@@ -424,7 +424,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             return (
                 f"The official screener returned {len(eligible)} likely matches {_ESTIMATE} "
                 f"{{cite:{verdict}}}, but I couldn't reliably match them to '{goal}'. Tell me a "
-                "different need, then reply `/screen` again, or reply `/screen all`."
+                "different need, or ask me to show every match."
             )
     else:
         displayed = eligible
@@ -452,7 +452,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     remaining = len(eligible) - len(displayed)
     if remaining:
         lines.append(f"There {'is' if remaining == 1 else 'are'} {remaining} other "
-                     f"match{'es' if remaining != 1 else ''}. Reply `/screen all` to see them.")
+                     f"match{'es' if remaining != 1 else ''}. Ask me to show them.")
     lines.append("A program not listed here doesn't mean you're ineligible. Want help applying?")
     return "\n".join(lines)
 

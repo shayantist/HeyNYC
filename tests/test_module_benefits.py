@@ -227,6 +227,10 @@ def test_benefits_prompt_keeps_screening_results_actionable_on_a_phone():
     assert "offer to show the rest" in prompt
     assert "official ranking" in prompt
     assert "only legal name and home address are required" in prompt
+    assert "/screen" not in prompt
+    assert "once the profile is complete, call screen_eligibility" in prompt
+    assert "if any value is uncertain" in prompt
+    assert "correct or confirm it" in prompt
 
 
 def test_fairness_metamorphic_cases_present_and_well_formed():
@@ -331,6 +335,7 @@ async def test_screen_eligibility_asks_for_a_goal_instead_of_dumping_matches(mon
 
     assert "4 likely" in out.lower()
     assert "which need matters most" in out.lower()
+    assert "/screen" not in out
     assert not any(program["name"] in out for program in programs)
     assert len(reg.mapping()) == 1
 
@@ -384,6 +389,7 @@ async def test_screen_eligibility_uses_goal_to_show_three_grounded_matches(monke
     assert rows[3]["program_name"] not in out
     assert "phone-friendly shortlist, not an official ranking" in out.lower()
     assert "1 other" in out.lower()
+    assert "/screen" not in out
     assert len(reg.mapping()) == 4
 
 
