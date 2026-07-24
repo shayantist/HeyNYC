@@ -493,7 +493,7 @@ class PydanticRuntimeAdapter:
                 self.tools[confirmation.name] = confirmation
         self.model = getattr(model, "model_name", type(model).__name__)
         self._current_awareness = current_awareness
-        self._usage_limits = usage_limits
+        self._usage_limits = usage_limits or UsageLimits(request_limit=8)
         self._answer_model_route = answer_model_route
         self._context_budget = (
             context_capacity(answer_model_route, None, True)

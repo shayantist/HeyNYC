@@ -2039,6 +2039,14 @@ def test_build_runtime_accepts_a_provider_native_model() -> None:
     assert runtime._agent.model is model
 
 
+def test_build_runtime_matches_production_turn_request_limit() -> None:
+    model = FunctionModel(lambda messages, info: ModelResponse([TextPart("Done")]))
+
+    runtime = build_runtime(Registry([]), tools={}, model=model)
+
+    assert runtime._usage_limits == UsageLimits(request_limit=8)
+
+
 def test_build_runtime_enables_default_memory_only_for_explicit_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
