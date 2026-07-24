@@ -91,6 +91,34 @@ async def test_benefits_search_citation_preserves_row_evidence():
     assert len(cite["provenance"]["content_hash"]) == 64
 
 
+async def test_benefits_search_citation_preview_keeps_eligibility_before_long_application_copy():
+    row = dict(
+        _FAKE_ROW,
+        **{
+            "plain_language_eligibility": (
+                "Household size and income are considered for this program."
+            ),
+            "how_to_apply_summary": "Apply using these detailed steps: " + ("step " * 300),
+        },
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    citations = CitationRegistry()
+    ctx = ToolContext(
+        citations=citations,
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+    )
+
+    await tool.handler({"query": "could I qualify for SNAP"}, ctx)
+    await client.aclose()
+
+    snippet = citations.mapping()["S1"]["snippet"]
+    assert "Household size and income are considered" in snippet
+    assert snippet.index("Household size") < snippet.index("Apply using")
+
+
 async def test_benefits_search_does_not_treat_dataset_date_as_current_verification():
     tool, registry = _benefits_tool()
     client, _ = _client_returning([_FAKE_ROW])

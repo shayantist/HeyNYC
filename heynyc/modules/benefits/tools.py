@@ -210,11 +210,11 @@ def _citation_snippet(record: dict) -> str:
     fields = (
         "program_name",
         "plain_language_program_name",
+        "plain_language_eligibility",
+        "heads_up",
         "how_to_apply_summary",
         "get_help_summary",
         "get_help_online",
-        "plain_language_eligibility",
-        "heads_up",
     )
     return " | ".join(filter(None, (_clean(record.get(field)) for field in fields)))[:1000]
 
