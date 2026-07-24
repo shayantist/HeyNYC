@@ -384,6 +384,10 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     assert "offer to search farther" in out
     assert "Today's listed weekly hours: 9:00 AM-5:00 PM" in out
     assert "As of: 2025-11-04" in out
+    assert (
+        ctx.citations.mapping()["S1"]["provenance"]["derivation"]["temporal_basis"]
+        == "weekly_schedule"
+    )
 
     schema = get_tools()[0].parameters
     assert schema["properties"]["urgent"]["type"] == "boolean"

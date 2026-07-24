@@ -296,7 +296,7 @@ def _pantry_citation(ctx: ToolContext, pantry: FoodPantry, *,
         record_id=pantry.global_id,
         field_pointer="/",
         derivation={"origin": [origin_lat, origin_lon], "point": [pantry.lat, pantry.lon],
-                    "distance_mi": dist_mi},
+                    "distance_mi": dist_mi, "temporal_basis": "weekly_schedule"},
     )
     return ctx.citations.register(
         url,

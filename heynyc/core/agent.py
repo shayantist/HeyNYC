@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from . import config, events
 from .citations import CitationRegistry, used_citations
 from .crisis_lines import compose_crisis_floor
+from .freshness import attach_temporal_provenance
 from .grounding import GroundingResult, check_grounding
 from .memory import (
     ContextCapacityError,
@@ -181,8 +182,6 @@ event (get to, attend, watch, or stay safe at it, so its identity must be resolv
 happening, without naming one event to plan around (whether there is a game today, and
 what-happened identity questions, are discovery); "none" whenever the turn is not about attending a
 public event. Return only the supplied schema."""
-
-SCREEN_SHORTLIST_DISCLOSURE = "This is a phone-friendly shortlist, not an official ranking."
 
 _SNAP_TERMS_RE = re.compile(
     r"\b(?:snap|ebt|food stamps?|food[- ]benefits?|food assistance|cupones? de alimentos?|"
@@ -2767,7 +2766,6 @@ class Agent:
                           delivered_notify_titles=_delivered_notify_titles(history))
         tools_made: list[str] = []
         tool_citation_ids: set[str] = set()
-        screen_shortlist_used = False
         guard_retries = 0  # how many times the grounding guard has bounced a terminal answer back
         reply_script = _dominant_non_latin_script(user_message)
         language_retries = 0
@@ -3279,13 +3277,8 @@ class Agent:
                                                    f"({guard_retries}/{self.guard_max_retries})"))
                     messages.append({"role": "user", "content": _grounding_feedback(gr)})
                     continue
-                if (
-                    action == "pass"
-                    and screen_shortlist_used
-                    and text != GROUNDING_ABSTAIN_FALLBACK
-                    and SCREEN_SHORTLIST_DISCLOSURE.lower() not in text.lower()
-                ):
-                    text = f"{text.rstrip()}\n\n{SCREEN_SHORTLIST_DISCLOSURE}"
+                if action == "pass":
+                    text = attach_temporal_provenance(text, citations.mapping())
                 # "pass" (grounded, or only soft mismatches) or "abstain" (Tier 4 rewrote `text`).
                 assistant["content"] = text
                 if reply_script is not None:
@@ -3319,11 +3312,6 @@ class Agent:
                     if tool_result is None:
                         yield ev  # an approval-required event
                         continue
-                    if (
-                        name == "screen_eligibility"
-                        and SCREEN_SHORTLIST_DISCLOSURE.lower() in tool_result.lower()
-                    ):
-                        screen_shortlist_used = True
                     messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_result})
                     tool_citation_ids.update(_CITE_MARKER_RE.findall(tool_result))
                     # Broad shortlist turns lean on the tool's coordinated lanes; preparation

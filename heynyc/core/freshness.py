@@ -53,9 +53,10 @@ def attach_temporal_provenance(text: str, citations: dict[str, dict]) -> str:
             citation.get("kind") != "DATA"
             or not derivation.get("temporal_basis")
             or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of)
-            or as_of in text
         ):
             continue
         marker = f"{{cite:{citation_id}}}"
+        if f"{marker} (🗓 {as_of})" in text:
+            continue
         text = text.replace(marker, f"{marker} (🗓 {as_of})", 1)
     return text

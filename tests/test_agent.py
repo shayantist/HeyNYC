@@ -3221,7 +3221,66 @@ async def test_forced_tool_arguments_override_model_values(empty_registry):
     )
 
     assert calls == [{"show_all": False}]
-    assert "phone-friendly shortlist, not an official ranking" in result.text
+    assert result.text == "done"
+
+
+async def test_non_english_screen_answer_does_not_append_english_shortlist_copy(
+    empty_registry,
+):
+    async def screen(args, ctx):
+        return "screened\nThis is a phone-friendly shortlist, not an official ranking."
+
+    tool = Tool(
+        name="screen_eligibility", description="x",
+        parameters={"type": "object", "properties": {}}, handler=screen,
+    )
+    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    responses = [
+        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(content="Estos son algunos resultados; puedo mostrarte los demás."),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run(
+        "Muéstrame los beneficios que podrían corresponderme.",
+        forced_tool="screen_eligibility",
+    )
+
+    assert result.text == "Estos son algunos resultados; puedo mostrarte los demás."
+
+
+async def test_final_answer_surfaces_schedule_source_date(empty_registry):
+    async def schedule(args, ctx):
+        cite = ctx.citations.register(
+            "https://example.nyc.gov/schedule/1",
+            snippet="Site schedule",
+            title="Official schedule",
+            kind="DATA",
+            valid_as_of="2025-11-04",
+            provenance={"derivation": {"temporal_basis": "weekly_schedule"}},
+        )
+        return f"Site is scheduled open {{cite:{cite}}}"
+
+    tool = Tool(
+        name="schedule", description="x",
+        parameters={"type": "object", "properties": {}}, handler=schedule,
+    )
+    agent = Agent(empty_registry, tools={"schedule": tool})
+    responses = [
+        _assistant(tool_calls=[_tool_call("schedule", {})]),
+        _assistant(content="El sitio figura abierto. {cite:S1}"),
+    ]
+
+    async def fake_litellm(messages, tool_schemas, forced_tool=None):
+        yield {"type": "message", "message": responses.pop(0)}
+
+    agent._litellm_stream = fake_litellm
+    result = await agent.run("¿Está abierto el sitio?")
+
+    assert result.text == "El sitio figura abierto. {cite:S1} (🗓 2025-11-04)"
 
 
 async def test_count_only_screen_response_does_not_claim_to_be_a_shortlist(empty_registry):
