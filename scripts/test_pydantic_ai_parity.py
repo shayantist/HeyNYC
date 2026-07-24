@@ -485,7 +485,10 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal model_calls
         model_calls += 1
+        definitions = {tool.name: tool for tool in info.function_tools}
         if model_calls == 1:
+            assert "screen" not in definitions
+            assert "confirm_screen_facts" in definitions
             return ModelResponse([ToolCallPart("benefit", {}, "benefit-call")])
         if model_calls == 2:
             return ModelResponse([TextPart("SNAP help {cite:S1}")])
@@ -501,6 +504,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
                 ]
             )
         if model_calls == 4:
+            assert "screen" in definitions
             return ModelResponse(
                 [
                     ToolCallPart(

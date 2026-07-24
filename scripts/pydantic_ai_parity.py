@@ -160,6 +160,19 @@ def adapt_tool(tool: Tool) -> PydanticTool:
     )
     adapted.requires_approval = tool.requires_approval
     adapted.strict = tool.strict
+    if tool.resident_fact_scope:
+
+        def expose_after_confirmation(ctx: RunContext[ToolContext], definition: Any):
+            has_scoped_facts = any(
+                any(
+                    path == scope or path.startswith(f"{scope}/")
+                    for scope in tool.resident_fact_scope
+                )
+                for path in ctx.deps.resident_facts
+            )
+            return definition if has_scoped_facts else None
+
+        adapted.prepare = expose_after_confirmation
     adapted.metadata = {
         "title": tool.title or tool.name,
         "readOnlyHint": tool.read_only,
