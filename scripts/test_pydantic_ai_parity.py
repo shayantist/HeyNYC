@@ -76,6 +76,7 @@ from scripts.pydantic_ai_parity import (
     adapt_tool,
     build_module_capabilities,
     build_runtime,
+    resident_fact_confirmation_tool,
 )
 from scripts.pydantic_ai_repl import _resolve_pending
 
@@ -479,6 +480,9 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
         description="Find immediate food help",
         parameters={"type": "object", "properties": {}},
         handler=lookup_handler,
+    )
+    assert "enabled but hidden until this review is approved" in (
+        resident_fact_confirmation_tool(source).description
     )
     model_calls = 0
 
@@ -2705,7 +2709,8 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
     assert capability.get_instructions() == [
         "UNIQUE BENEFITS INSTRUCTIONS\n\n"
         "This capability has no module-specific action tools enabled. Do not collect "
-        "inputs for or claim to perform a module action."
+        "inputs for or claim to perform a module action. An action absent from this "
+        "enabled list is disabled even if earlier instructions describe it conditionally."
     ]
 
 

@@ -204,8 +204,10 @@ def resident_fact_confirmation_tool(tool: Tool) -> Tool:
     return Tool(
         name=f"confirm_{tool.name}_facts",
         description=(
-            f"Ask the resident to confirm the exact structured profile before {tool.name}. "
-            "This records facts only and does not call an external service."
+            f"Use after the resident provides a profile and asks to run {tool.name}. "
+            f"{tool.name} is enabled but hidden until this review is approved. "
+            "This opens the exact structured facts for resident approval, records them "
+            "without calling an external service, and then unlocks the requested action."
         ),
         parameters=tool.parameters,
         handler=confirm,
@@ -257,10 +259,14 @@ def build_module_capabilities(
             "Enabled module action tools: "
             + ", ".join(f"`{tool.name}`" for tool in available_tools)
             + ". These are the only module actions currently available. Do not collect "
-            "inputs for or claim to perform any other module action."
+            "inputs for or claim to perform any other module action. An action absent "
+            "from this enabled list is disabled even if earlier instructions describe "
+            "it conditionally."
             if available_tools
             else "This capability has no module-specific action tools enabled. Do not "
-            "collect inputs for or claim to perform a module action."
+            "collect inputs for or claim to perform a module action. An action absent "
+            "from this enabled list is disabled even if earlier instructions describe "
+            "it conditionally."
         )
         instructions = "\n\n".join(part for part in (instructions, availability) if part)
         capabilities.append(
