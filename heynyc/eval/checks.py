@@ -87,6 +87,24 @@ def looks_like_abstention(text: str) -> bool:
     return any(marker in low for marker in _ABSTAIN_MARKERS)
 
 
+def check_turn_completion(cr: CaseResult) -> Optional[CheckResult]:
+    """Fail a case when any resident turn ended without a deliverable answer."""
+    incomplete = [
+        f"turn {index}: status={getattr(turn, 'status', None)}, "
+        f"text={'present' if str(getattr(turn, 'text', '')).strip() else 'empty'}"
+        for index, turn in enumerate(cr.turn_results, 1)
+        if getattr(turn, "status", None) != "success"
+        or not str(getattr(turn, "text", "")).strip()
+    ]
+    if not cr.turn_results:
+        return None
+    return CheckResult(
+        "turn_completion",
+        passed=not incomplete,
+        detail="" if not incomplete else "; ".join(incomplete),
+    )
+
+
 def check_expected_tools(cr: CaseResult) -> Optional[CheckResult]:
     if not cr.case.expect_tools:
         return None
@@ -313,6 +331,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
     if cr.error:
         return [CheckResult("run", passed=False, detail=f"agent error: {cr.error}")]
     checks = [
+        check_turn_completion(cr),
         check_expected_tools(cr),
         check_forbidden_tools(cr),
         check_cite_kinds(cr),

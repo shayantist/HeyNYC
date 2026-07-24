@@ -8,11 +8,14 @@ that a genuinely fabricated phone / address / number / name still FAILS.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from heynyc.core.citations import content_hash
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.checks import (
     _CITED_CLAIM_GROUNDING_BLOCKING,
     check_cited_claim_grounding,
+    check_turn_completion,
 )
 from heynyc.eval.runner import CaseResult
 
@@ -38,6 +41,34 @@ def _doc_cite(snippet: str, *, title="How to apply for SNAP", kind="DOC", url="h
 
 
 # --- no-op / skip conditions ----------------------------------------------
+
+def test_incomplete_approval_turn_blocks_the_eval_gate():
+    result = _result("")
+    result.turn_results = [
+        SimpleNamespace(text="First answer", status="success"),
+        SimpleNamespace(text="", status="approval_required"),
+    ]
+
+    check = check_turn_completion(result)
+
+    assert check is not None and not check.passed
+    assert check.blocking
+    assert "turn 2" in check.detail
+    assert "approval_required" in check.detail
+
+
+def test_turn_completion_requires_explicit_success_and_accepts_normal_turns():
+    missing_status = _result("Answer")
+    missing_status.turn_results = [SimpleNamespace(text="Answer")]
+    successful = _result("Answer")
+    successful.turn_results = [
+        SimpleNamespace(text="First answer", status="success"),
+        SimpleNamespace(text="Second answer", status="success"),
+    ]
+
+    assert not check_turn_completion(missing_status).passed
+    assert check_turn_completion(successful).passed
+
 
 def test_no_citation_markers_returns_none():
     assert check_cited_claim_grounding(_result("The nearest center is close by.")) is None
