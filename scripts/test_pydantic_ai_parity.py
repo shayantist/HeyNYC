@@ -28,6 +28,8 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    NativeToolSearchCallPart,
+    NativeToolSearchReturnPart,
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
@@ -677,6 +679,128 @@ async def test_runtime_adapter_can_use_deferred_module_capabilities() -> None:
     assert result.tool_calls_made[0] == "load_capability"
     assert result.tool_calls_made[-1] == "whats_on_events"
     assert result.usage["capabilities_used"] == ["events"]
+
+
+async def test_loaded_module_capability_survives_redundant_follow_up_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    measured: list[list[dict]] = []
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 10_000,
+    )
+
+    def count(model, messages, schemas, counter=None):
+        measured.append(messages)
+        return len(messages)
+
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.request_tokens",
+        count,
+    )
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        calls.append("benefits")
+        return "Screening result"
+
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Help with SNAP",
+                prompt="Use the screening tool.",
+            )
+        ]
+    )
+    source = Tool(
+        name="screen_eligibility",
+        description="Run the official benefits screener",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        module="benefits",
+    )
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        definitions = {tool.name: tool for tool in info.function_tools}
+        if model_calls == 1:
+            assert definitions["screen_eligibility"].defer_loading is True
+            return ModelResponse(
+                [ToolCallPart("load_capability", {"id": "benefits"}, "load-first")]
+            )
+        assert any(
+            isinstance(part, ToolCallPart) and part.tool_name == "load_capability"
+            for message in messages
+            for part in message.parts
+        )
+        assert any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "load_capability"
+            for message in messages
+            for part in message.parts
+        )
+        assert definitions["screen_eligibility"].defer_loading is False
+        if model_calls == 2:
+            return ModelResponse([TextPart("Ready")])
+        if model_calls == 3:
+            return ModelResponse(
+                [ToolCallPart("load_capability", {"id": "benefits"}, "load-again")]
+            )
+        if model_calls == 4:
+            assert any(
+                isinstance(part, RetryPromptPart)
+                and "already available" in str(part.content)
+                for message in messages
+                for part in message.parts
+            )
+            return ModelResponse(
+                [ToolCallPart("screen_eligibility", {}, "screen-call")]
+            )
+        return ModelResponse([TextPart("Done")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=registry,
+        tools={"screen_eligibility": source},
+        use_module_capabilities=True,
+        guard_grounding=False,
+        answer_model_route="openai/gpt-test",
+    )
+
+    conversation = runtime.conversation()
+    first = await conversation.send("Can you help me check SNAP?")
+    second = await conversation.send("Yes, run the estimate.")
+
+    assert first.text == "Ready"
+    assert second.text == "Done"
+    assert calls == ["benefits"]
+    follow_up_measurements = [
+        messages
+        for messages in measured
+        if any(
+            message["role"] == "user"
+            and message["content"] == "Yes, run the estimate."
+            for message in messages
+        )
+    ]
+    assert follow_up_measurements
+    assert all(
+        any(
+            call["function"]["name"] == "load_capability"
+            for message in messages
+            for call in message.get("tool_calls") or ()
+        )
+        for messages in follow_up_measurements
+    )
+    assert all(
+        any(
+            message["role"] == "tool" and message["tool_call_id"] == "load-first"
+            for message in messages
+        )
+        for messages in follow_up_measurements
+    )
 
 
 async def test_adapter_preserves_schema_and_retries_invalid_arguments() -> None:
@@ -2324,6 +2448,31 @@ def test_context_measurement_counts_structured_continuity_only_once() -> None:
     contents = [str(message.get("content") or "") for message in measured]
     assert any("Current advisory" in content for content in contents)
     assert all(reminder not in content for content in contents)
+
+
+def test_context_measurement_counts_native_tool_search_state() -> None:
+    messages = [
+        ModelResponse(
+            parts=[
+                NativeToolSearchCallPart(
+                    args={"queries": ["SNAP screening"]},
+                    tool_call_id="search-1",
+                ),
+                NativeToolSearchReturnPart(
+                    content={
+                        "discovered_tools": [{"name": "screen_eligibility"}]
+                    },
+                    tool_call_id="search-1",
+                ),
+            ]
+        ),
+    ]
+
+    measured = _measurement_messages(messages)
+
+    assert measured[0]["tool_calls"][0]["function"]["name"] == "tool_search"
+    assert measured[1]["role"] == "tool"
+    assert "screen_eligibility" in measured[1]["content"]
 
 
 async def test_default_context_measurement_counts_structured_continuity_once(

@@ -25,15 +25,21 @@ from pydantic_ai.capabilities import (
     WrapModelRequestHandler,
 )
 from pydantic_ai.messages import (
+    LoadCapabilityCallPart,
+    LoadCapabilityReturnPart,
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    NativeToolSearchCallPart,
+    NativeToolSearchReturnPart,
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    ToolSearchCallPart,
+    ToolSearchReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models import ModelRequestContext
@@ -265,7 +271,7 @@ def _openai_messages(messages: Sequence[ModelMessage]) -> list[dict]:
                     },
                 }
                 for part in message.parts
-                if isinstance(part, ToolCallPart)
+                if isinstance(part, (ToolCallPart, NativeToolSearchCallPart))
             ]
             translated.append(
                 {
@@ -274,11 +280,27 @@ def _openai_messages(messages: Sequence[ModelMessage]) -> list[dict]:
                     "tool_calls": calls or None,
                 }
             )
+            translated.extend(
+                {
+                    "role": "tool",
+                    "tool_call_id": part.tool_call_id,
+                    "content": json.dumps(part.content, separators=(",", ":")),
+                }
+                for part in message.parts
+                if isinstance(part, NativeToolSearchReturnPart)
+            )
         elif isinstance(message, ModelRequest):
             for part in message.parts:
                 if isinstance(part, UserPromptPart):
                     translated.append({"role": "user", "content": part.content})
-                elif isinstance(part, (ToolReturnPart, RetryPromptPart)):
+                elif isinstance(
+                    part,
+                    (
+                        ToolReturnPart,
+                        RetryPromptPart,
+                        NativeToolSearchReturnPart,
+                    ),
+                ):
                     translated.append(
                         {
                             "role": "tool",
@@ -423,6 +445,30 @@ def _native_history(history: Sequence[dict]) -> list[ModelMessage]:
         else ModelResponse(parts=[TextPart(message["content"])])
         for message in history
     ]
+
+
+def _native_orchestration_history(
+    messages: Sequence[ModelMessage],
+) -> list[ModelMessage]:
+    """Keep PydanticAI state that its capability and tool-search loaders replay."""
+    preserved: list[ModelMessage] = []
+    response_parts = (
+        LoadCapabilityCallPart,
+        ToolSearchCallPart,
+        NativeToolSearchCallPart,
+        NativeToolSearchReturnPart,
+    )
+    request_parts = (LoadCapabilityReturnPart, ToolSearchReturnPart)
+    for message in messages:
+        part_types = response_parts if isinstance(message, ModelResponse) else request_parts
+        parts = [part for part in message.parts if isinstance(part, part_types)]
+        if parts:
+            preserved.append(
+                ModelResponse(parts=parts)
+                if isinstance(message, ModelResponse)
+                else ModelRequest(parts=parts)
+            )
+    return preserved
 
 
 def _function_tool_schemas(request_context: ModelRequestContext) -> list[dict]:
@@ -954,7 +1000,11 @@ class _PydanticConversation:
             history: list[dict],
             continuity: ContinuityRecord | None,
         ) -> int:
-            projected = [*_native_history(history), *current]
+            projected = [
+                *_native_history(history),
+                *_native_orchestration_history(messages[:current_index]),
+                *current,
+            ]
             measured = _measurement_messages(
                 projected,
                 omit_instruction=(
@@ -1054,7 +1104,11 @@ class _PydanticConversation:
                     request.instructions = "\n\n".join(
                         part for part in (request.instructions, reminder) if part
                     )
-        processed = [*_native_history(plan.history), *current]
+        processed = [
+            *_native_history(plan.history),
+            *_native_orchestration_history(messages[:current_index]),
+            *current,
+        ]
         if system_parts and not any(
             isinstance(part, SystemPromptPart)
             for message in processed
