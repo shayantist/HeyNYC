@@ -14,7 +14,9 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelRetry,
     RunContext,
+    UsageLimitExceeded,
     UsageLimits,
+    capture_run_messages,
 )
 from pydantic_ai.capabilities import (
     AbstractCapability,
@@ -37,9 +39,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_ai.tools import Tool as PydanticTool
+from pydantic_ai.usage import RunUsage
 
 from heynyc.core import config
 from heynyc.core.agent import (
+    EMPTY_ANSWER_FALLBACK,
     AgentResult,
     _emergency_backstop,
     _internal_config_backstop,
@@ -346,6 +350,20 @@ def _complete_cost(
     return fallback, "litellm-fallback" if fallback is not None else "unpriced"
 
 
+def _captured_usage(messages: Sequence[ModelMessage]) -> RunUsage:
+    usage = RunUsage()
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            usage.incr(message.usage)
+            usage.requests += 1
+    usage.tool_calls = sum(
+        isinstance(part, ToolReturnPart)
+        for message in messages
+        for part in message.parts
+    )
+    return usage
+
+
 def _native_cache_settings(model: Any) -> dict[str, Any] | None:
     """Use each provider's PydanticAI-native prompt cache controls."""
     system = getattr(model, "system", "")
@@ -650,19 +668,51 @@ class PydanticRuntimeAdapter:
             awareness = await self._current_awareness()
             if awareness:
                 instructions.append(awareness)
-        native = await self._agent.run(
-            user_message,
-            message_history=message_history or None,
-            instructions=_dynamic_instructions(instructions),
-            deps=deps,
-            usage_limits=self._usage_limits,
-            capabilities=(
-                [
-                    timing_capability,
-                    *([memory_capability] if memory_capability is not None else []),
-                ]
-            ),
-        )
+        try:
+            with capture_run_messages() as captured:
+                native = await self._agent.run(
+                    user_message,
+                    message_history=message_history or None,
+                    instructions=_dynamic_instructions(instructions),
+                    deps=deps,
+                    usage_limits=self._usage_limits,
+                    capabilities=(
+                        [
+                            timing_capability,
+                            *(
+                                [memory_capability]
+                                if memory_capability is not None
+                                else []
+                            ),
+                        ]
+                    ),
+                )
+        except UsageLimitExceeded:
+            current_index = max(
+                (
+                    index
+                    for index, message in enumerate(captured)
+                    if isinstance(message, ModelRequest)
+                    and any(
+                        isinstance(part, UserPromptPart)
+                        and part.content == user_message
+                        for part in message.parts
+                    )
+                ),
+                default=len(message_history),
+            )
+            new_messages = captured[current_index:]
+            result = self._project_result(
+                new_messages,
+                _captured_usage(new_messages),
+                EMPTY_ANSWER_FALLBACK,
+                citations,
+                started,
+                model_time_ms=timing_capability.elapsed_ms,
+                status="max_turns",
+            )
+            result.hit_max_iters = True
+            return result, new_messages, None
         result = self._result(
             native,
             citations,
@@ -682,8 +732,26 @@ class PydanticRuntimeAdapter:
         *,
         model_time_ms: float,
     ) -> AgentResult:
-        new_messages = native.new_messages()
-        usage = native.usage
+        return self._project_result(
+            native.new_messages(),
+            native.usage,
+            native.output,
+            citations,
+            started,
+            model_time_ms=model_time_ms,
+        )
+
+    def _project_result(
+        self,
+        new_messages: Sequence[ModelMessage],
+        usage: RunUsage,
+        output: str | DeferredToolRequests,
+        citations: CitationRegistry,
+        started: float,
+        *,
+        model_time_ms: float,
+        status: str | None = None,
+    ) -> AgentResult:
         tool_calls = [
             part.tool_name
             for message in new_messages
@@ -702,14 +770,14 @@ class PydanticRuntimeAdapter:
                 and "id" in part.args_as_dict()
             )
         )
-        pending = isinstance(native.output, DeferredToolRequests)
+        pending = isinstance(output, DeferredToolRequests)
         iterations = sum(isinstance(message, ModelResponse) for message in new_messages)
         cost, cost_source = _complete_cost(self.model, new_messages, usage)
         text = (
             ""
             if pending
             else attach_temporal_provenance(
-                str(native.output),
+                str(output),
                 citations.mapping(),
             )
         )
@@ -718,7 +786,7 @@ class PydanticRuntimeAdapter:
             citations=citations.mapping(),
             tool_calls_made=tool_calls,
             iterations=iterations,
-            status="approval_required" if pending else "success",
+            status=status or ("approval_required" if pending else "success"),
             messages=_openai_messages(new_messages),
             usage={
                 "input_tokens": usage.input_tokens,

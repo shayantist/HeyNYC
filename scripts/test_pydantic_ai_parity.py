@@ -21,7 +21,6 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelRetry,
     RunContext,
-    UsageLimitExceeded,
     UsageLimits,
 )
 from pydantic_ai.capabilities import ProcessHistory, Thinking
@@ -1927,7 +1926,7 @@ async def test_completed_tool_turns_collapse_but_pending_calls_remain_exact() ->
     ]
 
 
-async def test_runtime_enforces_native_request_limit() -> None:
+async def test_runtime_projects_native_request_limit_as_max_turns() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         return "Done"
 
@@ -1950,8 +1949,14 @@ async def test_runtime_enforces_native_request_limit() -> None:
         usage_limits=UsageLimits(request_limit=1),
     )
 
-    with pytest.raises(UsageLimitExceeded, match="request_limit of 1"):
-        await runtime.run("Look it up")
+    result = await runtime.run("Look it up")
+
+    assert result.status == "max_turns"
+    assert result.hit_max_iters is True
+    assert result.iterations == 1
+    assert result.tool_calls_made == ["lookup"]
+    assert result.usage["requests"] == 1
+    assert result.messages
 
 
 async def test_runtime_result_uses_existing_sms_and_whatsapp_renderers() -> None:
