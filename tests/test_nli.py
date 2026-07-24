@@ -178,6 +178,84 @@ def test_prompted_nli_builds_prompt_and_parses_unsupported():
     assert capture["kwargs"]["response_format"].__name__ == "NLIBatchResponse"
 
 
+def test_prompted_nli_marks_clarifying_questions_as_questions() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"follow-up","label":"supported",'
+            '"reason":"a neutral clarification question"}]}',
+            capture,
+        )
+    )
+
+    checker.check_many([
+        nli.NLIInput(
+            id="follow-up",
+            claim="Did you receive a notice?",
+            source="Resident message: Will my benefits stop?",
+            kind="question",
+        )
+    ])
+
+    user = capture["messages"][1]["content"]
+    system = capture["messages"][0]["content"]
+    assert '"kind": "question"' in user
+    assert "need not be entailed" in system
+    assert "unsupported premise" in system
+    assert "data-minimization reminder" in system
+    assert "other factual or procedural advice" in system
+
+
+def test_prompted_nli_marks_conversational_framing_as_not_always_grounded() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"ack","label":"supported",'
+            '"reason":"non-factual empathy and uncertainty"}]}',
+            capture,
+        )
+    )
+
+    checker.check_many([
+        nli.NLIInput(
+            id="ack",
+            claim="I understand why you are worried. I cannot tell from this message alone.",
+            source="Resident message: Will my benefits stop?",
+            kind="framing",
+        )
+    ])
+
+    user = capture["messages"][1]["content"]
+    system = capture["messages"][0]["content"]
+    assert '"kind": "framing"' in user
+    assert "doesn't require grounding" in system
+    assert "external factual or procedural claim" in system
+
+
+def test_prompted_nli_preserves_leading_question_for_fail_closed_review() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"leading","label":"unsupported",'
+            '"reason":"the question assumes a work-rule cause"}]}',
+            capture,
+        )
+    )
+
+    verdict = checker.check_many([
+        nli.NLIInput(
+            id="leading",
+            claim="Did your SNAP stop because of the work rule?",
+            source="Resident message: Will my benefits stop?",
+            kind="question",
+        )
+    ])[0]
+
+    assert '"kind": "question"' in capture["messages"][1]["content"]
+    assert "because of the work rule" in capture["messages"][1]["content"]
+    assert verdict.supported is False
+
+
 def test_prompted_nli_parses_supported_true():
     capture: dict = {}
     fake = _fake_completion(

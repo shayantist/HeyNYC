@@ -64,6 +64,7 @@ from heynyc.eval.runner import run_case
 from heynyc.eval.trace import build_trace
 from scripts.pydantic_ai_parity import (
     PydanticApprovalFlow,
+    PydanticRunFailure,
     PydanticRuntimeAdapter,
     _approval_copy,
     _complete_cost,
@@ -1487,7 +1488,7 @@ async def test_existing_grounding_guard_can_retry_as_output_validator() -> None:
     def enforce_grounding(run: RunContext[ToolContext], output: str) -> str:
         verdict = check_grounding(output, run.deps.citations.mapping(), run.deps.query)
         if verdict is not None and verdict.blocking:
-            raise ModelRetry(verdict.detail)
+            raise ModelRetry("A deterministic grounding check rejected at least one claim.")
         return output
 
     result = await agent.run("Give me the official phone", deps=ctx)
@@ -1495,10 +1496,10 @@ async def test_existing_grounding_guard_can_retry_as_output_validator() -> None:
     assert result.output == "Call (212) 555-0100 {cite:S1}."
     retries = _parts(result.all_messages(), RetryPromptPart)
     assert len(retries) == 1
-    assert "(212) 555-9999" in str(retries[0].content)
+    assert "(212) 555-9999" not in str(retries[0].content)
 
 
-async def test_structured_grounding_retries_unknown_citations_and_renders_markers() -> None:
+async def test_structured_grounding_retries_unknown_citations_and_normalizes_markers() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -1521,7 +1522,10 @@ async def test_structured_grounding_retries_unknown_citations_and_renders_marker
         calls += 1
         if calls == 1:
             return ModelResponse([ToolCallPart("official_guidance", {}, "guidance-1")])
-        citation_id = "S9" if calls == 2 else "S1"
+        citation_id = "(212) 555-9999" if calls == 2 else "S1"
+        if calls == 3:
+            feedback = str(_parts(messages, RetryPromptPart)[-1].content)
+            assert "(212) 555-9999" not in feedback
         text = (
             "Call 311 for current case help. {cite:S1}"
             if calls == 3
@@ -1555,7 +1559,7 @@ async def test_structured_grounding_retries_unknown_citations_and_renders_marker
 
     result = await runtime.run("What should I do?")
 
-    assert calls == 4
+    assert calls == 3
     assert result.text == (
         "I can help.\n\n"
         "Call 311 for current case help. {cite:S1}\n\n"
@@ -1570,7 +1574,7 @@ async def test_structured_grounding_retries_unknown_citations_and_renders_marker
     assert result.usage["executed_tool_calls"] == ["official_guidance"]
 
 
-async def test_structured_grounding_projects_only_the_validated_output_call() -> None:
+async def test_structured_grounding_rejects_an_empty_answer() -> None:
     calls = 0
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -1600,10 +1604,124 @@ async def test_structured_grounding_projects_only_the_validated_output_call() ->
         structured_grounding=True,
     )
 
-    result = await runtime.run("Help")
+    with pytest.raises(PydanticRunFailure) as caught:
+        await runtime.run("Help")
+
+    assert calls == 3
+    assert caught.value.partial_result.status == "error"
+    assert caught.value.partial_result.usage["requests"] == 3
+
+
+async def test_approval_resume_retains_usage_after_output_retry_failure() -> None:
+    async def handler(_args: dict, _ctx: ToolContext) -> str:
+        return "done"
+
+    action = Tool(
+        name="act",
+        description="Complete an approved action",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        requires_approval=True,
+    )
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("act", {}, "act-call")])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "grounded_blocks": [
+                                {
+                                    "text": "Unsupported answer.",
+                                    "citation_ids": ["resident-secret"],
+                            }
+                        ]
+                    },
+                    f"final-{calls}",
+                )
+            ],
+            usage=RequestUsage(input_tokens=10, output_tokens=5),
+        )
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"act": action},
+        structured_grounding=True,
+    )
+    conversation = runtime.conversation()
+    pending = await conversation.send("Do it")
+
+    assert pending.status == "approval_required"
+    with pytest.raises(PydanticRunFailure) as caught:
+        await conversation.resume_approvals({"act-call": True})
+
+    partial = caught.value.partial_result
+    assert partial.status == "error"
+    assert partial.usage["input_tokens"] == 30
+    assert partial.usage["output_tokens"] == 15
+    assert partial.usage["requests"] == 3
+    assert partial.usage["retry_kinds"] == ["unknown_citation"] * 2
+    assert "resident-secret" not in json.dumps(partial.usage)
+
+
+async def test_approval_resume_honors_runtime_request_limit() -> None:
+    async def handler(_args: dict, _ctx: ToolContext) -> str:
+        return "done"
+
+    action = Tool(
+        name="act",
+        description="Complete an approved action",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        requires_approval=True,
+    )
+    calls = 0
+
+    async def model(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("act", {}, "act-call")])
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [
+                        {
+                            "text": "Unsupported answer.",
+                            "citation_ids": ["unknown"],
+                        }
+                    ]
+                },
+                "final",
+            )
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"act": action},
+        structured_grounding=True,
+        usage_limits=UsageLimits(request_limit=1),
+    )
+    conversation = runtime.conversation()
+    await conversation.send("Do it")
+
+    result = await conversation.resume_approvals({"act-call": True})
 
     assert calls == 2
-    assert result.text == "I can help.\n\nWhich service do you need?"
+    assert result.hit_max_iters
+    assert result.status == "max_turns"
+    assert result.usage["requests"] == 1
 
 
 def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
@@ -1805,6 +1923,7 @@ async def test_f106_runtime_grounding_retry_requests_a_complete_replacement() ->
                 [TextPart("Likely eligible. Pantry phone: (212) 555-9999 {cite:S1}")]
             )
         feedback = str(retries[-1].content).lower()
+        assert "(212) 555-9999" not in feedback
         assert "complete replacement answer" in feedback
         assert "preserve all still-supported requested outcomes" in feedback
         return ModelResponse(
@@ -1888,6 +2007,53 @@ async def test_runtime_adapter_runs_through_existing_eval_and_trace_contract() -
     assert tool_span.name == "lookup"
     assert tool_span.input == {"borough": "Queens"}
     assert tool_span.output == "Queens result {cite:S1}"
+
+
+async def test_eval_retains_usage_after_output_retry_failure() -> None:
+    async def model(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "grounded_blocks": [
+                            {
+                                "text": "Unsupported answer.",
+                                "citation_ids": ["resident-secret"],
+                            }
+                        ],
+                    },
+                    "final",
+                )
+            ],
+            usage=RequestUsage(input_tokens=10, output_tokens=5),
+        )
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+    )
+    case = EvalCase(
+        id="pydantic-output-retries",
+        module="parity",
+        query="Will my benefit change?",
+    )
+
+    result = await run_case(runtime, case)
+
+    assert result.error == "Exceeded maximum output retries (2)"
+    assert result.usage["input_tokens"] == 30
+    assert result.usage["output_tokens"] == 15
+    assert result.usage["requests"] == 3
+    assert result.usage["retry_kinds"] == ["unknown_citation"] * 2
+    assert result.turn_results[0].status == "error"
+    assert "resident-secret" not in json.dumps(result.usage)
+    assert result.diagnostics == {"semantic_verifier_runs": []}
 
 
 async def test_runtime_adapter_conversation_preserves_history_through_eval_runner() -> (
@@ -2737,9 +2903,21 @@ async def test_default_memory_rejects_unfit_current_tool_schema_before_model(
 @pytest.mark.parametrize(
     ("system", "expected"),
     [
-        ("openai", {"openai_prompt_cache_key": "heynyc-pydantic-v1"}),
-        ("anthropic", {"anthropic_cache_instructions": True}),
-        ("function", None),
+        (
+            "openai",
+            {
+                "timeout": 60,
+                "openai_prompt_cache_key": "heynyc-pydantic-v1",
+            },
+        ),
+        (
+            "anthropic",
+            {
+                "timeout": 60,
+                "anthropic_cache_instructions": True,
+            },
+        ),
+        ("function", {"timeout": 60}),
     ],
 )
 def test_native_cache_settings_use_provider_support(
@@ -2753,6 +2931,16 @@ def test_native_cache_settings_use_provider_support(
     model.system = system
 
     assert _native_cache_settings(model) == expected
+
+
+def test_candidate_bounds_native_tool_calls() -> None:
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda: "done"),
+        registry=Registry([]),
+        tools={},
+    )
+
+    assert runtime._agent._tool_timeout == 30
 
 
 def test_volatile_run_instructions_are_callable_for_cache_ordering() -> None:

@@ -16,6 +16,7 @@ from pydantic_ai import (
     ModelRetry,
     RunContext,
     ToolOutput,
+    UnexpectedModelBehavior,
     UsageLimitExceeded,
     UsageLimits,
     capture_run_messages,
@@ -59,9 +60,9 @@ from heynyc.core.agent import (
     _reply_script_feedback,
     _sensitive_identifier_backstop,
 )
-from heynyc.core.citations import CitationRegistry
+from heynyc.core.citations import CitationRegistry, used_citations
 from heynyc.core.freshness import attach_temporal_provenance
-from heynyc.core.grounding import check_grounding, citation_evidence
+from heynyc.core.grounding import check_grounding
 from heynyc.core.memory import (
     CompactFn,
     ContextCapacityError,
@@ -85,6 +86,12 @@ from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 _DEFERRED_REQUESTS = TypeAdapter(DeferredToolRequests)
 _RESIDENT_FACTS = TypeAdapter(dict[str, ResidentFact])
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
+_SEMANTIC_EVIDENCE_CHARS = 1_200
+_STRUCTURED_GROUNDING_SYSTEM_PROMPT = (
+    "For the final GroundedAnswer output, do not write inline citation markers. "
+    "Put retrieved source IDs only in citation_ids. The runtime renders citation "
+    "markers after validation."
+)
 
 
 class GroundedBlock(BaseModel):
@@ -103,8 +110,10 @@ class GroundedAnswer(BaseModel):
         default="",
         max_length=240,
         description=(
-            "A brief empathetic reaction only, in the resident's language. "
-            "No advice, predictions, eligibility, actions, names, dates, or other claims."
+            "A brief empathetic reaction and, when needed, an explicit limitation on "
+            "what can be determined, in the resident's language. No external factual "
+            "or procedural claims, advice, predictions, eligibility, actions, names, "
+            "or dates."
         ),
     )
     grounded_blocks: list[GroundedBlock] = Field(default_factory=list)
@@ -112,9 +121,38 @@ class GroundedAnswer(BaseModel):
         default="",
         max_length=240,
         description=(
-            "An optional question only. Do not add factual or procedural claims."
+            "An optional neutral clarification question. It may include a narrow "
+            "data-minimization reminder not to share sensitive identifiers. Do not "
+            "add other factual or procedural claims or direct another action."
         ),
     )
+
+
+class PydanticRunFailure(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        partial_result: AgentResult,
+        diagnostics: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.partial_result = partial_result
+        self.diagnostics = diagnostics
+
+
+def _grounded_block_text(block: GroundedBlock) -> str:
+    text = block.text
+    for citation_id in dict.fromkeys(block.citation_ids):
+        text = text.replace(f"{{cite:{citation_id}}}", "")
+    return text.strip()
+
+
+def _semantic_citation_evidence(citation: dict) -> str:
+    """Prefer the tool's bounded evidence chunk; keep full snapshots for deterministic audit."""
+    return " ".join(
+        str(citation.get(field) or "").strip()
+        for field in ("snippet", "title")
+    ).strip()[:_SEMANTIC_EVIDENCE_CHARS]
 
 
 def _render_grounded_answer(answer: GroundedAnswer) -> str:
@@ -122,7 +160,7 @@ def _render_grounded_answer(answer: GroundedAnswer) -> str:
     parts.extend(
         " ".join(
             (
-                block.text.strip(),
+                _grounded_block_text(block),
                 " ".join(
                     f"{{cite:{citation_id}}}"
                     for citation_id in dict.fromkeys(block.citation_ids)
@@ -526,14 +564,39 @@ def _captured_usage(messages: Sequence[ModelMessage]) -> RunUsage:
     return usage
 
 
-def _native_cache_settings(model: Any) -> dict[str, Any] | None:
-    """Use each provider's PydanticAI-native prompt cache controls."""
+def _retry_kinds(messages: Sequence[ModelMessage]) -> list[str]:
+    prefixes = {
+        "Use only citation IDs returned": "unknown_citation",
+        "When a grounded block includes legacy citation markers": "citation_mismatch",
+        "Do not write citation markers": "citation_marker",
+        "Return a complete replacement answer to the resident's full request": "grounding",
+        "Return a complete replacement answer. Keep every supported outcome": "semantic_grounding",
+    }
+    return [
+        next(
+            (
+                kind
+                for prefix, kind in prefixes.items()
+                if str(part.content).startswith(prefix)
+            ),
+            "output_validation",
+        )
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, RetryPromptPart)
+    ]
+
+
+def _native_cache_settings(model: Any) -> dict[str, Any]:
+    """Bound requests and add provider-native prompt cache controls."""
+    settings: dict[str, Any] = {"timeout": 60}
     system = getattr(model, "system", "")
     if system == "openai":
-        return {"openai_prompt_cache_key": "heynyc-pydantic-v1"}
-    if system == "anthropic":
-        return {"anthropic_cache_instructions": True}
-    return None
+        settings["openai_prompt_cache_key"] = "heynyc-pydantic-v1"
+    elif system == "anthropic":
+        settings["anthropic_cache_instructions"] = True
+    return settings
 
 
 def _dynamic_instructions(parts: Sequence[str]) -> Callable[[], str] | None:
@@ -724,6 +787,11 @@ class PydanticRuntimeAdapter:
             else ([adapt_tool(tool) for tool in self.tools.values()], [])
         )
         agent_model = InstrumentedModel(model, instrument) if instrument else model
+        if structured_grounding:
+            system_prompt = "\n\n".join(filter(None, (
+                system_prompt,
+                _STRUCTURED_GROUNDING_SYSTEM_PROMPT,
+            )))
         self._agent = PydanticAgent(
             agent_model,
             deps_type=ToolContext,
@@ -735,14 +803,24 @@ class PydanticRuntimeAdapter:
             ],
             system_prompt=system_prompt,
             model_settings=_native_cache_settings(model),
+            tool_timeout=30,
             output_type=[
                 (
                     ToolOutput(
                         GroundedAnswer,
                         name=_GROUNDED_OUTPUT_TOOL,
                         description=(
-                            "Return resident-facing factual and procedural claims "
-                            "as atomic grounded blocks with retrieved citation IDs."
+                            "Answer the resident's actual question first, in the first "
+                            "grounded block, not in the acknowledgment. If the resident's "
+                            "individual outcome cannot be determined from retrieved "
+                            "evidence, state that limitation in the acknowledgment, then "
+                            "give the supported general guidance and next step. Return each "
+                            "resident-facing factual or procedural claim as an atomic "
+                            "grounded block with retrieved citation IDs. If the evidence "
+                            "gives only general rules, plainly distinguish them from the "
+                            "resident's individual outcome. When the resident asks what "
+                            "will happen or how to protect or access a service, include a "
+                            "concrete official next step supported by a retrieved source."
                         ),
                     )
                     if structured_grounding
@@ -765,6 +843,10 @@ class PydanticRuntimeAdapter:
         if isinstance(output, DeferredToolRequests):
             return output
         if isinstance(output, GroundedAnswer):
+            if not output.grounded_blocks:
+                raise ModelRetry(
+                    "Answer with at least one grounded block supported by a retrieved source."
+                )
             mapping = ctx.deps.citations.mapping()
             unknown = sorted({
                 citation_id
@@ -774,13 +856,20 @@ class PydanticRuntimeAdapter:
             })
             if unknown:
                 raise ModelRetry(
-                    "Use only citation IDs returned by tools in this run. "
-                    f"Unknown citation IDs: {unknown}"
+                    "Use only citation IDs returned by tools in this run."
                 )
+            for block in output.grounded_blocks:
+                embedded = set(used_citations(block.text, mapping))
+                declared = set(block.citation_ids)
+                if embedded and embedded != declared:
+                    raise ModelRetry(
+                        "When a grounded block includes legacy citation markers, those "
+                        "markers must exactly match citation_ids."
+                    )
             authored = [
                 output.acknowledgment,
                 output.follow_up_question,
-                *(block.text for block in output.grounded_blocks),
+                *(_grounded_block_text(block) for block in output.grounded_blocks),
             ]
             if any("{cite:" in text for text in authored):
                 raise ModelRetry(
@@ -799,27 +888,28 @@ class PydanticRuntimeAdapter:
             raise ModelRetry(
                 "Return a complete replacement answer to the resident's full request, "
                 "not a correction or addendum. Preserve all still-supported requested "
-                "outcomes from prior tool results, fix the grounding failure below, and "
-                f"cite every factual claim.\n\nGrounding failure: {verdict.detail}"
+                "outcomes from prior tool results, omit unsupported details, and cite every "
+                "factual claim. A deterministic grounding check rejected at least one claim."
             )
         if isinstance(output, GroundedAnswer) and self._semantic_verifier is not None:
             mapping = ctx.deps.citations.mapping()
-            resident_source = f"Resident message:\n{ctx.deps.query}"
             inputs = []
             if output.acknowledgment.strip():
                 inputs.append(NLIInput(
                     id="acknowledgment",
                     claim=output.acknowledgment,
-                    source=resident_source,
+                    source="",
+                    kind="framing",
                 ))
             inputs.extend(
                 NLIInput(
                     id=f"block-{index}",
-                    claim=block.text,
+                    claim=_grounded_block_text(block),
                     source="\n\n".join(
-                        f"[{citation_id}] {citation_evidence(mapping[citation_id]) or ''}"
+                        f"[{citation_id}] "
+                        f"{_semantic_citation_evidence(mapping[citation_id])}"
                         for citation_id in block.citation_ids
-                    ),
+                    )[:_SEMANTIC_EVIDENCE_CHARS],
                 )
                 for index, block in enumerate(output.grounded_blocks)
             )
@@ -827,7 +917,8 @@ class PydanticRuntimeAdapter:
                 inputs.append(NLIInput(
                     id="follow-up-question",
                     claim=output.follow_up_question,
-                    source=resident_source,
+                    source="",
+                    kind="question",
                 ))
             semantic = await self._semantic_verifier.arun_many(inputs)
             ctx.deps.semantic_verifier_runs.append({
@@ -838,6 +929,16 @@ class PydanticRuntimeAdapter:
                 "latency_ms": semantic.latency_ms,
                 "error": semantic.error,
                 "labels": [verdict.label for verdict in semantic.verdicts],
+                "items": [
+                    {
+                        "position": position,
+                        "kind": item.kind,
+                        "label": verdict.label,
+                    }
+                    for position, (item, verdict) in enumerate(
+                        zip(inputs, semantic.verdicts, strict=True)
+                    )
+                ],
             })
             if semantic.error is not None:
                 return GroundedAnswer(
@@ -846,18 +947,14 @@ class PydanticRuntimeAdapter:
                         "right now. Please try again."
                     )
                 )
-            failures = [
-                f"{item.id}: {verdict.label}"
-                + (f" ({verdict.reason})" if verdict.reason else "")
-                for item, verdict in zip(inputs, semantic.verdicts, strict=True)
-                if not verdict.supported
-            ]
-            if failures:
+            if any(not verdict.supported for verdict in semantic.verdicts):
                 raise ModelRetry(
                     "Return a complete replacement answer. Keep every supported outcome, "
                     "but remove or narrow claims that the cited evidence does not support. "
-                    "Do not add uncited procedural advice.\n\nSemantic grounding failure: "
-                    + "; ".join(failures)
+                    "Each grounded block must be one claim wholly supported by its cited "
+                    "evidence. Remove unsupported conditions and conclusions, keep neutral "
+                    "clarification in follow_up_question, and do not add uncited procedural "
+                    "advice."
                 )
         if feedback := _reply_script_feedback(ctx.deps.query, rendered):
             raise ModelRetry(feedback)
@@ -908,6 +1005,30 @@ class PydanticRuntimeAdapter:
 
     def conversation(self) -> "_PydanticConversation":
         return _PydanticConversation(self)
+
+    def _failed_result(
+        self,
+        messages: Sequence[ModelMessage],
+        *,
+        citations: CitationRegistry,
+        started: float,
+        timing_capability: _ModelTimingCapability,
+        semantic_verifier_runs: list[dict[str, Any]],
+        status: str,
+    ) -> AgentResult:
+        result = self._project_result(
+            messages,
+            _captured_usage(messages),
+            EMPTY_ANSWER_FALLBACK,
+            citations,
+            started,
+            model_time_ms=timing_capability.elapsed_ms,
+            status=status,
+        )
+        result.usage["model_request_ms"] = timing_capability.request_ms
+        result.usage["retry_kinds"] = _retry_kinds(messages)
+        self._merge_semantic_usage(result, semantic_verifier_runs)
+        return result
 
     def conversation_from_state(self, state: bytes) -> "_PydanticConversation":
         return _PydanticConversation.from_state(self, state)
@@ -1029,7 +1150,7 @@ class PydanticRuntimeAdapter:
                         ]
                     ),
                 )
-        except UsageLimitExceeded:
+        except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
             current_index = max(
                 (
                     index
@@ -1044,17 +1165,24 @@ class PydanticRuntimeAdapter:
                 default=len(message_history),
             )
             new_messages = captured[current_index:]
-            result = self._project_result(
+            result = self._failed_result(
                 new_messages,
-                _captured_usage(new_messages),
-                EMPTY_ANSWER_FALLBACK,
-                citations,
-                started,
-                model_time_ms=timing_capability.elapsed_ms,
-                status="max_turns",
+                citations=citations,
+                started=started,
+                timing_capability=timing_capability,
+                semantic_verifier_runs=deps.semantic_verifier_runs,
+                status=(
+                    "max_turns"
+                    if isinstance(exc, UsageLimitExceeded)
+                    else "error"
+                ),
             )
-            result.usage["model_request_ms"] = timing_capability.request_ms
-            self._merge_semantic_usage(result, deps.semantic_verifier_runs)
+            if isinstance(exc, UnexpectedModelBehavior):
+                raise PydanticRunFailure(
+                    exc.message,
+                    result,
+                    {"semantic_verifier_runs": deps.semantic_verifier_runs},
+                ) from exc
             result.hit_max_iters = True
             return result, new_messages, None
         result = self._result(
@@ -1514,12 +1642,37 @@ class _PydanticConversation:
         )
         started = time.perf_counter()
         timing_capability = _ModelTimingCapability()
-        native = await self.runtime._agent.run(
-            message_history=self._history,
-            deferred_tool_results=DeferredToolResults(approvals=approvals),
-            deps=deps,
-            capabilities=[timing_capability],
-        )
+        try:
+            with capture_run_messages() as captured:
+                native = await self.runtime._agent.run(
+                    message_history=self._history,
+                    deferred_tool_results=DeferredToolResults(approvals=approvals),
+                    deps=deps,
+                    capabilities=[timing_capability],
+                    usage_limits=self.runtime._usage_limits,
+                )
+        except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
+            new_messages = captured[len(self._history):]
+            result = self.runtime._failed_result(
+                new_messages,
+                citations=citations,
+                started=started,
+                timing_capability=timing_capability,
+                semantic_verifier_runs=deps.semantic_verifier_runs,
+                status=(
+                    "max_turns"
+                    if isinstance(exc, UsageLimitExceeded)
+                    else "error"
+                ),
+            )
+            if isinstance(exc, UnexpectedModelBehavior):
+                raise PydanticRunFailure(
+                    exc.message,
+                    result,
+                    {"semantic_verifier_runs": deps.semantic_verifier_runs},
+                ) from exc
+            result.hit_max_iters = True
+            return result
         result = self.runtime._result(
             native,
             citations,

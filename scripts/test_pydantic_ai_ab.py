@@ -432,6 +432,7 @@ def test_run_arms_persists_every_turn_and_honors_counterbalanced_order(
     result = SimpleNamespace(
         case=case,
         error=None,
+        diagnostics={"semantic_verifier_runs": [{"items": [{"id": "block-0"}]}]},
         turn_results=[first, second],
         turn_started_at=["2026-07-24T10:00:00", "2026-07-24T10:00:01"],
     )
@@ -464,6 +465,9 @@ def test_run_arms_persists_every_turn_and_honors_counterbalanced_order(
     artifact = pydantic_ai_ab.json.loads(
         (tmp_path / "pydantic_ai" / "turns.json").read_text()
     )
+    assert artifact["cases"][0]["diagnostics"] == {
+        "semantic_verifier_runs": [{"items": [{"id": "block-0"}]}]
+    }
     assert artifact["cases"][0]["turns"] == [
         {
             "turn": 1,

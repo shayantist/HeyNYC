@@ -21,6 +21,7 @@ class CaseResult:
     usage: dict = field(default_factory=dict)  # {input_tokens, output_tokens, ...} for cost tracking
     turn_results: list[object] = field(default_factory=list)
     turn_started_at: list[str] = field(default_factory=list)
+    diagnostics: dict = field(default_factory=dict)
     error: Optional[str] = None
 
 
@@ -43,7 +44,22 @@ async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None)
             result = await agent.run(case.query, reminders=reminders)
             turn_results.append(result)
     except Exception as exc:  # a crash is a failed case, not a crashed run
-        return CaseResult(case=case, error=str(exc))
+        partial = getattr(exc, "partial_result", None)
+        if partial is None:
+            return CaseResult(case=case, error=str(exc))
+        turn_results.append(partial)
+        return CaseResult(
+            case=case,
+            text=partial.text,
+            tool_calls_made=partial.tool_calls_made,
+            citations=partial.citations,
+            messages=partial.messages,
+            usage=partial.usage,
+            turn_results=turn_results,
+            turn_started_at=turn_started_at,
+            diagnostics=getattr(exc, "diagnostics", {}),
+            error=str(exc),
+        )
     return CaseResult(
         case=case,
         text=result.text,

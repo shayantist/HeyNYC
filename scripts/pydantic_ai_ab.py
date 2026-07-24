@@ -293,7 +293,12 @@ def _write_turn_artifacts(directory: Path, results: list[Any]) -> None:
                     "usage": getattr(turn, "usage", {}),
                 }
             )
-        cases.append({"case_id": result.case.id, "error": result.error, "turns": turns})
+        cases.append({
+            "case_id": result.case.id,
+            "error": result.error,
+            "diagnostics": getattr(result, "diagnostics", {}),
+            "turns": turns,
+        })
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "turns.json").write_text(
         json.dumps({"cases": cases}, indent=2, default=str)
