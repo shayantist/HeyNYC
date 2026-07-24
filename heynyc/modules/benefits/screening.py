@@ -67,12 +67,19 @@ def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits
 
 def request_schema() -> dict:
     """The one screening contract used by both model tools and runtime validation."""
+    specific_housing_flags = (
+        "livingRenting",
+        "livingOwner",
+        "livingStayingWithFriend",
+        "livingHotel",
+        "livingShelter",
+    )
     household_flags = {
-        name: {"type": "boolean"} for name in (
-            "livingRenting", "livingOwner", "livingStayingWithFriend", "livingHotel",
-            "livingShelter", "livingPreferNotToSay",
-        )
+        name: {"type": "boolean"} for name in (*specific_housing_flags, "livingPreferNotToSay")
     }
+    household_flags["livingPreferNotToSay"]["description"] = (
+        "True only when every specific housing flag is false or omitted."
+    )
     person_flags = {
         name: {"type": "boolean"} for name in (
             "student", "studentFulltime", "pregnant", "unemployed",
@@ -106,6 +113,20 @@ def request_schema() -> dict:
                 "additionalProperties": False,
                 "description": "Household-level housing and cash-on-hand fields. PII-free.",
                 "properties": household_properties,
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {"livingPreferNotToSay": {"const": True}},
+                            "required": ["livingPreferNotToSay"],
+                        },
+                        "then": {
+                            "properties": {
+                                name: {"const": False}
+                                for name in specific_housing_flags
+                            }
+                        },
+                    }
+                ],
             },
             "persons": {
                 "type": "array", "minItems": 1, "maxItems": 8,
@@ -248,6 +269,11 @@ def validate_arguments(request: object) -> None:
     path = ".".join(str(part) for part in error.absolute_path) or "request"
     if error.validator == "contains":
         detail = "at least one person must have householdMemberType HeadOfHousehold"
+    elif error.validator == "const" and "allOf" in error.absolute_schema_path:
+        detail = (
+            "livingPreferNotToSay cannot be true with a specific housing flag; "
+            "omit it when the resident supplied a housing situation"
+        )
     else:
         detail = error.message
     raise ValueError(f"invalid screening profile at {path}: {detail}")

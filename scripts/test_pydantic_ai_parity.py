@@ -543,6 +543,77 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     assert screened == [{"profile": {"age": 35, "worked": False}}]
 
 
+async def test_screen_fact_confirmation_rejects_conflicting_housing_before_approval() -> (
+    None
+):
+    from heynyc.modules.benefits.tools import screen_eligibility_tool
+
+    confirmation = resident_fact_confirmation_tool(screen_eligibility_tool())
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        confirmation.name,
+                        {
+                            "household": {
+                                "livingRenting": True,
+                                "livingPreferNotToSay": True,
+                            },
+                            "persons": [
+                                {
+                                    "age": 35,
+                                    "householdMemberType": "HeadOfHousehold",
+                                }
+                            ],
+                        },
+                        "invalid-confirmation",
+                    )
+                ]
+            )
+        retries = _parts(messages, RetryPromptPart)
+        assert retries[-1].tool_call_id == "invalid-confirmation"
+        assert "Invalid arguments" in str(retries[-1].content)
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    confirmation.name,
+                    {
+                        "household": {"livingRenting": True},
+                        "persons": [
+                            {
+                                "age": 35,
+                                "householdMemberType": "HeadOfHousehold",
+                            }
+                        ],
+                    },
+                    "valid-confirmation",
+                )
+            ]
+        )
+
+    ctx = _context()
+    agent = Agent(
+        FunctionModel(model),
+        deps_type=ToolContext,
+        tools=[adapt_tool(confirmation)],
+        output_type=[str, DeferredToolRequests],
+    )
+
+    pending = await agent.run("Screen me", deps=ctx)
+
+    assert isinstance(pending.output, DeferredToolRequests)
+    assert pending.output.approvals[0].tool_call_id == "valid-confirmation"
+    assert pending.output.approvals[0].args["household"] == {
+        "livingRenting": True
+    }
+    assert ctx.resident_facts == {}
+
+
 async def test_rejected_fact_confirmation_does_not_unlock_screening() -> None:
     screened: list[dict] = []
 

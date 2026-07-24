@@ -174,6 +174,38 @@ async def test_screen_requires_a_head_of_household_before_network():
     assert calls["n"] == 0
 
 
+@pytest.mark.parametrize(
+    "specific_flag",
+    (
+        "livingRenting",
+        "livingOwner",
+        "livingStayingWithFriend",
+        "livingHotel",
+        "livingShelter",
+    ),
+)
+async def test_screen_rejects_prefer_not_to_say_with_specific_housing_before_network(
+    specific_flag,
+):
+    calls = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={})
+
+    c = _client(handler)
+    with pytest.raises(ValueError, match="livingPreferNotToSay"):
+        await screen(
+            c,
+            "https://sb",
+            "tok",
+            {"livingPreferNotToSay": True, specific_flag: True},
+            [{"age": 35, "householdMemberType": "HeadOfHousehold"}],
+        )
+    await c.aclose()
+    assert calls["n"] == 0
+
+
 async def test_screen_rejects_program_names_as_filters_before_network():
     calls = {"n": 0}
 
