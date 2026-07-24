@@ -381,15 +381,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 "for immediate food help; do not offer to search farther in the same feed."
             )
         else:
-            farther_open = next(
-                pantry for pantry in unique[k:] if _open_now(pantry.raw, now) is True
+            lines.append(
+                "Lead with call 311 or https://finder.nyc.gov/foodhelp for immediate food help, "
+                "then offer to search farther if the resident wants. Do not include a farther "
+                "site until they ask to widen the search."
             )
-            dist_mi = miles(haversine_m(origin.lat, origin.lon, farther_open.lat, farther_open.lon))
-            cite = _pantry_citation(
-                ctx, farther_open, origin_lat=origin.lat, origin_lon=origin.lon, dist_mi=dist_mi,
-            )
-            lines.append("Nearest farther site scheduled open now:")
-            lines.append(_pantry_block(farther_open, cite, dist_mi, now))
     for pantry in ranked:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon))
         cite = _pantry_citation(ctx, pantry, origin_lat=origin.lat, origin_lon=origin.lon,

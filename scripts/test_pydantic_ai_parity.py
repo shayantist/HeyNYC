@@ -2698,7 +2698,11 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
         if getattr(capability, "id", None) == "benefits"
     )
     assert capability.get_description() == "Help with SNAP"
-    assert capability.get_instructions() == ["UNIQUE BENEFITS INSTRUCTIONS"]
+    assert capability.get_instructions() == [
+        "UNIQUE BENEFITS INSTRUCTIONS\n\n"
+        "This capability has no module-specific action tools enabled. Do not collect "
+        "inputs for or claim to perform a module action."
+    ]
 
 
 def test_native_cost_matches_existing_cache_aware_pricing() -> None:

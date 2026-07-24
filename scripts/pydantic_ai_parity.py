@@ -239,12 +239,23 @@ def build_module_capabilities(
             for member in descendants[module.name]
             if member.prompt.strip()
         )
+        available_tools = module_tools.get(module.name, ())
+        availability = (
+            "Enabled module action tools: "
+            + ", ".join(f"`{tool.name}`" for tool in available_tools)
+            + ". These are the only module actions currently available. Do not collect "
+            "inputs for or claim to perform any other module action."
+            if available_tools
+            else "This capability has no module-specific action tools enabled. Do not "
+            "collect inputs for or claim to perform a module action."
+        )
+        instructions = "\n\n".join(part for part in (instructions, availability) if part)
         capabilities.append(
             Capability(
                 id=module.name,
                 description=module.description or f"NYC {module.category} help",
-                instructions=instructions or None,
-                tools=module_tools.get(module.name, ()),
+                instructions=instructions,
+                tools=available_tools,
                 defer_loading=True,
             )
         )

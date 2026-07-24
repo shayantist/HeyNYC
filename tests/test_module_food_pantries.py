@@ -385,7 +385,9 @@ async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
     assert "No City-listed site in this feed is scheduled open now" not in out
 
 
-async def test_nearest_food_pantry_returns_nearest_farther_open_site(monkeypatch):
+async def test_nearest_food_pantry_offers_farther_search_after_immediate_fallback(
+    monkeypatch,
+):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
     features = [
@@ -408,8 +410,10 @@ async def test_nearest_food_pantry_returns_nearest_farther_open_site(monkeypatch
     await client.aclose()
 
     assert "Nearby Closed Pantry" in out
-    assert "Nearest farther site scheduled open now" in out
-    assert "Farther Open Pantry" in out
+    assert "call 311" in out
+    assert "finder.nyc.gov/foodhelp" in out
+    assert "offer to search farther" in out
+    assert "Farther Open Pantry" not in out
 
 
 async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):
