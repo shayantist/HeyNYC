@@ -506,7 +506,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             is_event_preparation_query(ctx.query) and not _broad_temporal_query(ctx.query)
         )
         discovery_context = _broad_temporal_query(ctx.query)
-    broad_context = discovery_context or preparation_context
+    broad_context = (discovery_context or preparation_context) and not borough
     sources = [
         ("ticketmaster", ticketmaster_source()),
         ("parks", parks_source()),
@@ -565,7 +565,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                         **({"near": borough} if borough else {}),
                     }
                 sources.append((tool.name, tool.handler(tool_args, ctx)))
-    if keyword and not preparation_context:
+    if keyword and not preparation_context and not borough:
         # F085: a named keyword ("Bryant Park movie series") gets the scoped search as a
         # PARALLEL corroborating lane, query = the exact keyword, no date suffix, results
         # never window-stripped. The structured lanes are structurally blind to unticketed,

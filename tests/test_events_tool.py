@@ -765,6 +765,8 @@ async def test_whats_on_events_never_falls_back_across_requested_borough(
 
 
 async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
+    web_calls = 0
+
     async def fake_ticketmaster(**kwargs):
         return []
 
@@ -781,6 +783,8 @@ async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
         }]
 
     async def web_handler(args, ctx):
+        nonlocal web_calls
+        web_calls += 1
         return "Bronx Event from web search"
 
     monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
@@ -799,6 +803,7 @@ async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
 
     output = await get_tools()[0].handler(
         {
+            "keyword": "kids",
             "borough": "Queens",
             "window_start": "2099-07-25",
             "window_end": "2099-07-25",
@@ -808,9 +813,12 @@ async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
 
     assert "Queens Event" in output
     assert "Bronx Event" not in output
+    assert web_calls == 0
 
 
 async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypatch):
+    editorial_calls = 0
+
     async def fake_ticketmaster(**kwargs):
         return []
 
@@ -818,6 +826,8 @@ async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypa
         return []
 
     async def editorial(*args, **kwargs):
+        nonlocal editorial_calls
+        editorial_calls += 1
         return "Bronx Event from an editorial guide"
 
     monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
@@ -842,6 +852,7 @@ async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypa
 
     assert output == events._NO_RESULTS
     assert "Bronx Event" not in output
+    assert editorial_calls == 0
 
 
 async def test_permitted_lane_filters_sport_noise_by_agency_field_not_event_name(monkeypatch):
