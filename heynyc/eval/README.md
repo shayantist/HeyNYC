@@ -62,6 +62,14 @@ Do not schedule the full live suite merely because time passed. Run source-drift
 
 The default semantic reviewer is a fresh-context coding agent reading saved traces. Use the paid API judge only for a release-grade reproducible number, a model comparison, or a disputed verdict. Calibrate any automated judge against human-reviewed examples before treating it as an authority. This follows [OpenAI's evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices), which calls for task-specific datasets, production failures, continuous evaluation, and human calibration, and [Anthropic's agent-eval guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents), which separates deterministic checks from model-graded outcomes and emphasizes complete traces. The release gate and monitoring cadence are risk-based in the sense of the [NIST Generative AI Profile](https://www.nist.gov/publications/artificial-intelligence-risk-management-framework-generative-artificial-intelligence): more consequential changes receive broader pre-deployment testing and post-deployment monitoring.
 
+## Semantic-verifier calibration
+
+[`semantic_verifier_pilot.yaml`](semantic_verifier_pilot.yaml) is a small human-labeled
+claim-to-evidence corpus for calibrating an automated checker before it can affect resident output.
+It preserves truncated evidence when that is what the answer actually saw. `partial`,
+`unsupported`, and `contradicted` are rejects. The file is not a production gate, and running a
+hosted checker against it remains an owner-approved paid eval.
+
 ## The agent-judge rubric
 
 To get the semantic verdict, point your coding agent at a finished run:
