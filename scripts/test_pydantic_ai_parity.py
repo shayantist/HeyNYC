@@ -73,6 +73,7 @@ from scripts.pydantic_ai_parity import (
     _native_cost,
     _native_orchestration_history,
     _resident_fact_errors,
+    _resident_history,
     adapt_tool,
     build_module_capabilities,
     build_runtime,
@@ -1495,6 +1496,168 @@ async def test_existing_grounding_guard_can_retry_as_output_validator() -> None:
     retries = _parts(result.all_messages(), RetryPromptPart)
     assert len(retries) == 1
     assert "(212) 555-9999" in str(retries[0].content)
+
+
+async def test_structured_grounding_retries_unknown_citations_and_renders_markers() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        cid = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official guidance",
+            kind="WEB",
+            snippet="Call 311 for current case help.",
+        )
+        return f"Call 311 for current case help. {{cite:{cid}}}"
+
+    source = Tool(
+        name="official_guidance",
+        description="Get current official guidance",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("official_guidance", {}, "guidance-1")])
+        citation_id = "S9" if calls == 2 else "S1"
+        text = (
+            "Call 311 for current case help. {cite:S1}"
+            if calls == 3
+            else "Call 311 for current case help."
+        )
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "acknowledgment": "I can help.",
+                        "grounded_blocks": [
+                            {
+                                "text": text,
+                                "citation_ids": [citation_id],
+                            }
+                        ],
+                        "follow_up_question": "Do you want the phone link?",
+                    },
+                    f"final-{calls}",
+                )
+            ]
+        )
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={source.name: source},
+        structured_grounding=True,
+    )
+
+    result = await runtime.run("What should I do?")
+
+    assert calls == 4
+    assert result.text == (
+        "I can help.\n\n"
+        "Call 311 for current case help. {cite:S1}\n\n"
+        "Do you want the phone link?"
+    )
+    assert result.tool_calls_made == ["official_guidance"]
+    assert result.messages[-1] == {
+        "role": "assistant",
+        "content": result.text,
+        "tool_calls": None,
+    }
+    assert result.usage["executed_tool_calls"] == ["official_guidance"]
+
+
+async def test_structured_grounding_projects_only_the_validated_output_call() -> None:
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        args = (
+            {
+                "grounded_blocks": [
+                    {"text": "Missing citation IDs"},
+                ],
+            }
+            if calls == 1
+            else {
+                "acknowledgment": "I can help.",
+                "grounded_blocks": [],
+                "follow_up_question": "Which service do you need?",
+            }
+        )
+        return ModelResponse(
+            [ToolCallPart(info.output_tools[0].name, args, f"final-{calls}")]
+        )
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+    )
+
+    result = await runtime.run("Help")
+
+    assert calls == 2
+    assert result.text == "I can help.\n\nWhich service do you need?"
+
+
+def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
+    messages = [
+        ModelRequest(parts=[UserPromptPart("Help")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "grounded_answer",
+                    {"grounded_blocks": [{"text": "Invalid"}]},
+                    "invalid",
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                RetryPromptPart(
+                    "Missing citation IDs",
+                    tool_name="grounded_answer",
+                    tool_call_id="invalid",
+                )
+            ]
+        ),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "grounded_answer",
+                    {
+                        "acknowledgment": "I can help.",
+                        "grounded_blocks": [],
+                        "follow_up_question": "Which service do you need?",
+                    },
+                    "accepted",
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    "grounded_answer",
+                    "Final result processed.",
+                    "accepted",
+                )
+            ]
+        ),
+    ]
+
+    assert _resident_history(messages) == [
+        {"role": "user", "content": "Help"},
+        {
+            "role": "assistant",
+            "content": "I can help.\n\nWhich service do you need?",
+        },
+    ]
 
 
 @pytest.mark.parametrize(

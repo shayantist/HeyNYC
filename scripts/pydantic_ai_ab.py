@@ -294,12 +294,14 @@ async def run_arms(
     *,
     arm_order: tuple[str, ...] | None = None,
     parallel: bool = False,
+    structured_grounding: bool = False,
 ) -> dict[str, Any]:
     order = arm_order or tuple(factories)
     receipt = {
         "case_ids": [case.id for case in cases],
         "arm_order": list(order),
         "parallel": parallel,
+        "structured_grounding": structured_grounding,
         "performance_comparison_valid": not parallel and len(order) == 2,
         "arms": [],
     }
@@ -322,7 +324,22 @@ async def run_arms(
     return receipt
 
 
-def build_factories(registry: Registry, retriever: Any, model: str) -> dict[str, Any]:
+def build_factories(
+    registry: Registry,
+    retriever: Any,
+    model: str,
+    *,
+    structured_grounding: bool = False,
+) -> dict[str, Any]:
+    candidate_kwargs = {
+        "model": _comparison_model(model),
+        "answer_model_route": model,
+        "index": retriever,
+        "use_module_capabilities": True,
+        "current_awareness": current_awareness,
+    }
+    if structured_grounding:
+        candidate_kwargs["structured_grounding"] = True
     return {
         "production": lambda: Agent(
             registry,
@@ -332,14 +349,7 @@ def build_factories(registry: Registry, retriever: Any, model: str) -> dict[str,
             scope_gate=True,
         ),
         "pydantic_ai": lambda: _PydanticEvalAgent(
-            build_runtime(
-                registry,
-                model=_comparison_model(model),
-                answer_model_route=model,
-                index=retriever,
-                use_module_capabilities=True,
-                current_awareness=current_awareness,
-            )
+            build_runtime(registry, **candidate_kwargs)
         ),
     }
 
@@ -363,10 +373,18 @@ def _parser() -> argparse.ArgumentParser:
         choices=("production", "pydantic_ai"),
         help="Run only one arm for a focused probe",
     )
+    parser.add_argument(
+        "--structured-grounding",
+        action="store_true",
+        help="Use typed grounded answer blocks in the PydanticAI candidate",
+    )
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if args.structured_grounding and args.arm == "production":
+        print("--structured-grounding only applies to the pydantic_ai arm.")
+        return 2
     registry = Registry.discover(
         config.MODULES_DIR,
         config.BASE_ALLOWLIST,
@@ -399,7 +417,12 @@ async def _run(args: argparse.Namespace) -> int:
 
     retriever = _load_retriever(required=False)
     model = config.HEYNYC_MODEL
-    factories = build_factories(registry, retriever, model)
+    factories = build_factories(
+        registry,
+        retriever,
+        model,
+        structured_grounding=args.structured_grounding,
+    )
     if args.arm:
         factories = {args.arm: factories[args.arm]}
     out_dir = Path(args.out) if args.out else (
@@ -423,6 +446,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
         ),
         parallel=args.parallel,
+        structured_grounding=args.structured_grounding,
     )
     print(json.dumps(receipt, indent=2))
     print(f"Comparison written to {out_dir}")

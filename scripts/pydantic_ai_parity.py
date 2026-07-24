@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator
-from pydantic import TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ModelRetry,
     RunContext,
+    ToolOutput,
     UsageLimitExceeded,
     UsageLimits,
     capture_run_messages,
@@ -82,6 +83,94 @@ from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 
 _DEFERRED_REQUESTS = TypeAdapter(DeferredToolRequests)
 _RESIDENT_FACTS = TypeAdapter(dict[str, ResidentFact])
+_GROUNDED_OUTPUT_TOOL = "grounded_answer"
+
+
+class GroundedBlock(BaseModel):
+    text: str = Field(
+        min_length=1,
+        description="One factual or procedural claim, without citation markers.",
+    )
+    citation_ids: list[str] = Field(
+        min_length=1,
+        description="IDs of retrieved sources that support the whole claim.",
+    )
+
+
+class GroundedAnswer(BaseModel):
+    acknowledgment: str = Field(
+        default="",
+        max_length=240,
+        description=(
+            "A brief empathetic reaction only, in the resident's language. "
+            "No advice, predictions, eligibility, actions, names, dates, or other claims."
+        ),
+    )
+    grounded_blocks: list[GroundedBlock] = Field(default_factory=list)
+    follow_up_question: str = Field(
+        default="",
+        max_length=240,
+        description=(
+            "An optional question only. Do not add factual or procedural claims."
+        ),
+    )
+
+
+def _render_grounded_answer(answer: GroundedAnswer) -> str:
+    parts = [answer.acknowledgment.strip()]
+    parts.extend(
+        " ".join(
+            (
+                block.text.strip(),
+                " ".join(
+                    f"{{cite:{citation_id}}}"
+                    for citation_id in dict.fromkeys(block.citation_ids)
+                ),
+            )
+        )
+        for block in answer.grounded_blocks
+    )
+    parts.append(answer.follow_up_question.strip())
+    return "\n\n".join(part for part in parts if part)
+
+
+def _accepted_grounded_outputs(
+    messages: Sequence[ModelMessage],
+) -> dict[str, str]:
+    accepted = {
+        part.tool_call_id
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+        and part.tool_name == _GROUNDED_OUTPUT_TOOL
+    }
+    return {
+        part.tool_call_id: _render_grounded_answer(
+            GroundedAnswer.model_validate(part.args_as_dict())
+        )
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, ToolCallPart)
+        and part.tool_name == _GROUNDED_OUTPUT_TOOL
+        and part.tool_call_id in accepted
+    }
+
+
+def _response_text(
+    message: ModelResponse,
+    accepted_outputs: dict[str, str],
+) -> str:
+    parts = [part.content for part in message.parts if isinstance(part, TextPart)]
+    for part in message.parts:
+        if (
+            isinstance(part, ToolCallPart)
+            and part.tool_name == _GROUNDED_OUTPUT_TOOL
+            and part.tool_call_id in accepted_outputs
+        ):
+            parts.append(accepted_outputs[part.tool_call_id])
+    return "".join(parts)
 
 
 def _fact_leaves(value: object, path: str) -> list[tuple[str, object]]:
@@ -288,14 +377,21 @@ def build_module_capabilities(
     return shared_tools, capabilities
 
 
-def _openai_messages(messages: Sequence[ModelMessage]) -> list[dict]:
+def _openai_messages(
+    messages: Sequence[ModelMessage],
+    *,
+    accepted_outputs: dict[str, str] | None = None,
+) -> list[dict]:
     """Translate native PydanticAI messages into HeyNYC's existing trace contract."""
+    accepted_outputs = (
+        _accepted_grounded_outputs(messages)
+        if accepted_outputs is None
+        else accepted_outputs
+    )
     translated: list[dict] = []
     for message in messages:
         if isinstance(message, ModelResponse):
-            text = "".join(
-                part.content for part in message.parts if isinstance(part, TextPart)
-            )
+            text = _response_text(message, accepted_outputs)
             calls = [
                 {
                     "id": part.tool_call_id,
@@ -311,6 +407,7 @@ def _openai_messages(messages: Sequence[ModelMessage]) -> list[dict]:
                 }
                 for part in message.parts
                 if isinstance(part, (ToolCallPart, NativeToolSearchCallPart))
+                and part.tool_name != _GROUNDED_OUTPUT_TOOL
             ]
             translated.append(
                 {
@@ -339,7 +436,7 @@ def _openai_messages(messages: Sequence[ModelMessage]) -> list[dict]:
                         RetryPromptPart,
                         NativeToolSearchReturnPart,
                     ),
-                ):
+                ) and part.tool_name != _GROUNDED_OUTPUT_TOOL:
                     translated.append(
                         {
                             "role": "tool",
@@ -356,6 +453,7 @@ def _measurement_messages(
     omit_instruction: str = "",
 ) -> list[dict]:
     """Include request controls that the public trace intentionally omits."""
+    accepted_outputs = _accepted_grounded_outputs(messages)
     translated: list[dict] = []
     for message in messages:
         if isinstance(message, ModelRequest):
@@ -377,7 +475,9 @@ def _measurement_messages(
                     translated.append(
                         {"role": "system", "content": instructions}
                     )
-        translated.extend(_openai_messages([message]))
+        translated.extend(
+            _openai_messages([message], accepted_outputs=accepted_outputs)
+        )
     return translated
 
 
@@ -443,6 +543,7 @@ def _dynamic_instructions(parts: Sequence[str]) -> Callable[[], str] | None:
 
 def _resident_history(messages: Sequence[ModelMessage]) -> list[dict]:
     """Collapse native traces to complete resident/final-assistant exchanges."""
+    accepted_outputs = _accepted_grounded_outputs(messages)
     history: list[dict] = []
     user: str | None = None
     assistant: str | None = None
@@ -462,9 +563,7 @@ def _resident_history(messages: Sequence[ModelMessage]) -> list[dict]:
                 )
             user, assistant = prompts[-1], None
         if isinstance(message, ModelResponse):
-            text = "".join(
-                part.content for part in message.parts if isinstance(part, TextPart)
-            )
+            text = _response_text(message, accepted_outputs)
             if text:
                 assistant = text
     if user is not None and assistant is not None:
@@ -597,6 +696,7 @@ class PydanticRuntimeAdapter:
         measure_context: MeasureFn | None = None,
         compact_context: CompactFn | None = None,
         answer_model_route: str | None = None,
+        structured_grounding: bool = False,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -632,7 +732,21 @@ class PydanticRuntimeAdapter:
             ],
             system_prompt=system_prompt,
             model_settings=_native_cache_settings(model),
-            output_type=[str, DeferredToolRequests],
+            output_type=[
+                (
+                    ToolOutput(
+                        GroundedAnswer,
+                        name=_GROUNDED_OUTPUT_TOOL,
+                        description=(
+                            "Return resident-facing factual and procedural claims "
+                            "as atomic grounded blocks with retrieved citation IDs."
+                        ),
+                    )
+                    if structured_grounding
+                    else str
+                ),
+                DeferredToolRequests,
+            ],
             retries={"tools": 1, "output": 2},
         )
         if prompt_builder is not None:
@@ -643,11 +757,41 @@ class PydanticRuntimeAdapter:
     @staticmethod
     def _validate_grounding(
         ctx: RunContext[ToolContext],
-        output: str | DeferredToolRequests,
-    ) -> str | DeferredToolRequests:
-        if not isinstance(output, str):
+        output: str | GroundedAnswer | DeferredToolRequests,
+    ) -> str | GroundedAnswer | DeferredToolRequests:
+        if isinstance(output, DeferredToolRequests):
             return output
-        verdict = check_grounding(output, ctx.deps.citations.mapping(), ctx.deps.query)
+        if isinstance(output, GroundedAnswer):
+            mapping = ctx.deps.citations.mapping()
+            unknown = sorted({
+                citation_id
+                for block in output.grounded_blocks
+                for citation_id in block.citation_ids
+                if citation_id not in mapping
+            })
+            if unknown:
+                raise ModelRetry(
+                    "Use only citation IDs returned by tools in this run. "
+                    f"Unknown citation IDs: {unknown}"
+                )
+            authored = [
+                output.acknowledgment,
+                output.follow_up_question,
+                *(block.text for block in output.grounded_blocks),
+            ]
+            if any("{cite:" in text for text in authored):
+                raise ModelRetry(
+                    "Do not write citation markers. Put source IDs in citation_ids; "
+                    "the runtime renders markers."
+                )
+            rendered = _render_grounded_answer(output)
+        else:
+            rendered = output
+        verdict = check_grounding(
+            rendered,
+            ctx.deps.citations.mapping(),
+            ctx.deps.query,
+        )
         if verdict is not None and verdict.blocking:
             raise ModelRetry(
                 "Return a complete replacement answer to the resident's full request, "
@@ -655,7 +799,7 @@ class PydanticRuntimeAdapter:
                 "outcomes from prior tool results, fix the grounding failure below, and "
                 f"cite every factual claim.\n\nGrounding failure: {verdict.detail}"
             )
-        if feedback := _reply_script_feedback(ctx.deps.query, output):
+        if feedback := _reply_script_feedback(ctx.deps.query, rendered):
             raise ModelRetry(feedback)
         return output
 
@@ -842,7 +986,7 @@ class PydanticRuntimeAdapter:
         self,
         new_messages: Sequence[ModelMessage],
         usage: RunUsage,
-        output: str | DeferredToolRequests,
+        output: str | GroundedAnswer | DeferredToolRequests,
         citations: CitationRegistry,
         started: float,
         *,
@@ -855,6 +999,7 @@ class PydanticRuntimeAdapter:
             if isinstance(message, ModelResponse)
             for part in message.parts
             if isinstance(part, ToolCallPart)
+            and part.tool_name != _GROUNDED_OUTPUT_TOOL
         ]
         capabilities_used = list(
             dict.fromkeys(
@@ -873,18 +1018,21 @@ class PydanticRuntimeAdapter:
             if isinstance(message, ModelRequest)
             for part in message.parts
             if isinstance(part, ToolReturnPart)
+            and part.tool_name != _GROUNDED_OUTPUT_TOOL
         ]
         pending = isinstance(output, DeferredToolRequests)
         iterations = sum(isinstance(message, ModelResponse) for message in new_messages)
         cost, cost_source = _complete_cost(self.model, new_messages, usage)
-        text = (
-            ""
-            if pending
-            else attach_temporal_provenance(
-                str(output),
+        text = ""
+        if not pending:
+            text = attach_temporal_provenance(
+                (
+                    _render_grounded_answer(output)
+                    if isinstance(output, GroundedAnswer)
+                    else str(output)
+                ),
                 citations.mapping(),
             )
-        )
         return AgentResult(
             text=text,
             citations=citations.mapping(),
@@ -1421,6 +1569,7 @@ def build_runtime(
     current_awareness: Callable[[], Awaitable[str]] | None = None,
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
+    structured_grounding: bool = False,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
     stable_prompt, _ = build_system_prompt_tiers(
@@ -1442,4 +1591,5 @@ def build_runtime(
         current_awareness=current_awareness,
         extra_capabilities=extra_capabilities,
         answer_model_route=answer_model_route,
+        structured_grounding=structured_grounding,
     )

@@ -90,6 +90,31 @@ def test_build_factories_gives_both_arms_the_same_live_awareness(
     ]
 
 
+def test_build_factories_can_enable_structured_grounding(monkeypatch) -> None:
+    built = []
+
+    def fake_runtime(registry, **kwargs):
+        built.append(kwargs)
+        return "pydantic_ai"
+
+    monkeypatch.setattr(pydantic_ai_ab, "build_runtime", fake_runtime)
+    monkeypatch.setattr(
+        pydantic_ai_ab,
+        "_comparison_model",
+        lambda model: f"chat:{model}",
+    )
+
+    factories = build_factories(
+        "registry",
+        "retriever",
+        "openai/gpt-test",
+        structured_grounding=True,
+    )
+    factories["pydantic_ai"]()
+
+    assert built[0]["structured_grounding"] is True
+
+
 def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
     results = [
         SimpleNamespace(
@@ -464,6 +489,35 @@ def test_parser_can_select_one_benchmark_arm() -> None:
     )
 
     assert args.arm == "pydantic_ai"
+
+
+def test_parser_can_enable_structured_grounding_for_candidate() -> None:
+    args = pydantic_ai_ab._parser().parse_args(
+        [
+            "--case",
+            "one",
+            "--arm",
+            "pydantic_ai",
+            "--structured-grounding",
+        ]
+    )
+
+    assert args.structured_grounding is True
+
+
+async def test_structured_grounding_rejects_production_only_receipt(capsys) -> None:
+    args = pydantic_ai_ab._parser().parse_args(
+        [
+            "--case",
+            "one",
+            "--arm",
+            "production",
+            "--structured-grounding",
+        ]
+    )
+
+    assert await pydantic_ai_ab._run(args) == 2
+    assert "only applies to the pydantic_ai arm" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("arm", ["production", "pydantic_ai"])
