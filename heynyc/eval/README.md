@@ -74,6 +74,12 @@ The judge reads the **whole trace**, not just the final text, whether each asser
 
 **Per case:** (1) classify the outcome, `answered` / `abstained` / `redirected` / `error`; (2) score each criterion 0–10; (3) decide `pass` (rule below); (4) write a sentence of `explanation` citing the trace.
 
+Check every material factual or procedural proposition in every answer field, including
+acknowledgments, headings, caveats, and follow-up questions. Pure empathy needs no citation, but an
+acknowledgment is not a citation-free slot for factual or procedural claims. Match each proposition
+to the source IDs attached to it: topical relevance or a valid citation ID is not support, and a
+block that mixes supported and unsupported propositions fails faithfulness.
+
 **Criteria (score bands):**
 - **grounding**, every specific traces to a tool/retriever span in *this* trace. 9–10 all grounded +
   cited · 6–8 minor ungrounded aside · 3–5 a material claim ungrounded · 0–2 fabricated specifics.

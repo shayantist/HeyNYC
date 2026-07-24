@@ -211,8 +211,10 @@ async def test_judge_uses_resident_outcome_criterion_for_designated_case():
 async def test_resident_outcome_still_requires_semantic_grounding():
     case = EvalCase(id="U2", module="events", query="What is happening this weekend?")
     case.utility_criterion = "Give current actionable events."
+    seen = {}
 
     async def grade(prompt):
+        seen["prompt"] = prompt
         return '{"grounded": false, "useful": true, "reason": "Useful format but unsupported event"}'
 
     judge = make_api_judge("anthropic/claude-sonnet-4-6")
@@ -220,6 +222,10 @@ async def test_resident_outcome_still_requires_semantic_grounding():
 
     assert result.name == "resident_outcome"
     assert result.passed is False
+    prompt = " ".join(seen["prompt"].split())
+    assert "every material factual or procedural proposition in every answer field" in prompt
+    assert "Pure empathy needs no citation" in prompt
+    assert "mixes supported and unsupported propositions" in prompt
 
 
 async def test_ordinary_judge_receives_expected_response_language():
@@ -235,6 +241,28 @@ async def test_ordinary_judge_receives_expected_response_language():
 
     assert "Expected response language: es" in seen["prompt"]
     assert "changes a number" in seen["prompt"]
+
+
+async def test_ordinary_judge_checks_every_material_proposition_against_its_own_evidence():
+    seen = {}
+
+    async def grounded(prompt):
+        seen["prompt"] = prompt
+        return '{"grounded": false, "reason": "The acknowledgment adds an unsupported claim"}'
+
+    judge = make_api_judge("anthropic/claude-sonnet-4-6")
+    case = EvalCase(id="F115", module="benefits", query="Will my SNAP stop?", language="bn")
+    result = await judge(
+        CaseResult(case=case, text="I understand. Your SNAP will not stop.", citations={}),
+        complete_fn=grounded,
+    )
+
+    assert result.passed is False
+    prompt = " ".join(seen["prompt"].split())
+    assert "every material factual or procedural proposition in every answer field" in prompt
+    assert "Pure empathy needs no citation" in prompt
+    assert "Topical relevance or a valid citation ID is not support" in prompt
+    assert "mixes supported and unsupported propositions" in prompt
 
 
 # --- the loader: the frozen suite becomes EvalCases -------------------------

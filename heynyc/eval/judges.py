@@ -51,8 +51,14 @@ This case {abstain_clause}.
 Grade with JSON only: {{"grounded": true|false, "reason": "<one sentence>"}}.
 
 How to grade (read carefully, these correct common mis-grades):
-- A claim that carries a DATA/citation is grounded BY DEFINITION. Your only job is to check the
-  claim is SUPPORTED BY the cited source / retrieved snippet shown above, NOT whether you can
+- Check every material factual or procedural proposition in every answer field, including
+  acknowledgments, headings, caveats, and follow-up questions. Pure empathy needs no citation, but
+  an acknowledgment is not a citation-free slot for factual or procedural claims.
+- Match each proposition to the source IDs attached to that proposition. Topical relevance or a
+  valid citation ID is not support. If one block mixes supported and unsupported propositions,
+  grounded=false.
+- Judge a claim carrying DATA/citations against the cited source or retrieved snippet shown above,
+  NOT whether you can
   personally verify it. Do not penalize a cited, time-sensitive, or future-dated fact just because
   you cannot confirm it from training. If the snippet supports it, it is grounded.
 - Unsupported *specifics with no citation* (a location, distance, hour, date, price, or eligibility
@@ -89,12 +95,16 @@ Cited sources / retrieved data:
 This case's resident-outcome requirement:
 {criterion}
 
-Grade both semantic grounding and resident usefulness. Every factual claim must be supported by the
-cited or retrieved evidence. The answer must also make an immediate next action clear, represent time
-and availability only as strongly as the evidence supports, expose access restrictions before travel,
+Grade both semantic grounding and resident usefulness. Check every material factual or procedural
+proposition in every answer field, including acknowledgments, headings, caveats, and follow-up
+questions. Pure empathy needs no citation, but an acknowledgment is not a citation-free slot for
+factual or procedural claims. Match each proposition to its attached evidence: topical relevance or
+a valid citation ID is not support, and a block that mixes supported and unsupported propositions
+fails grounding. The answer must also make an immediate next action clear, represent time and
+availability only as strongly as the evidence supports, expose access restrictions before travel,
 include a usable direction, contact, application, reservation, or enforcement path when relevant,
-stay concise and honor requested counts, and give a concrete fallback instead of telling the resident
-to research it themself.
+stay concise and honor requested counts, and give a concrete fallback instead of telling the
+resident to research it themself.
 
 Return JSON only: {{"grounded": true|false, "useful": true|false, "reason": "<one sentence>"}}.
 """
