@@ -206,6 +206,9 @@ def resident_fact_confirmation_tool(tool: Tool) -> Tool:
         description=(
             f"Use after the resident provides a profile and asks to run {tool.name}. "
             f"{tool.name} is enabled but hidden until this review is approved. "
+            "Once its required fields are supported by the conversation, use this "
+            "confirmation immediately. Do not delay for optional fields; omit unknown "
+            "optional values. Include only exact resident-provided or confirmed facts. "
             "This opens the exact structured facts for resident approval, records them "
             "without calling an external service, and then unlocks the requested action."
         ),

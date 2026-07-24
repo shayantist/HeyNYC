@@ -484,6 +484,9 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     assert "enabled but hidden until this review is approved" in (
         resident_fact_confirmation_tool(source).description
     )
+    assert "Do not delay for optional fields" in (
+        resident_fact_confirmation_tool(source).description
+    )
     model_calls = 0
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:

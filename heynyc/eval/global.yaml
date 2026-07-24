@@ -217,7 +217,7 @@
   abstain: false
   capability: multi-intent
   language: es
-  tags: [F100, F105, F106, F107, F108, conversation, cross-module, multilingual, current-information, must-win]
+  tags: [F100, F105, F106, F107, F108, F113, conversation, cross-module, multilingual, current-information, must-win]
   utility_criterion: >-
     After the resident supplies this sufficient PII-free household profile, run the official
     read-only screener and label the result as an estimate, not a final eligibility decision.
