@@ -150,7 +150,14 @@ def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
             ],
         )
     ]
-    report = SimpleNamespace(passed_count=1, total=1)
+    report = SimpleNamespace(
+        passed_count=1,
+        mechanical_passed_count=1,
+        qualitative_pending_count=1,
+        promotion_ready_count=0,
+        promotion_ready=False,
+        total=1,
+    )
 
     assert summarize_arm("pydantic_ai", "openai/gpt-test", results, report) == {
         "arm": "pydantic_ai",
@@ -159,6 +166,10 @@ def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
         "runtime_route": "pydantic-ai:openai-chat:gpt-test",
         "case_ids": ["multi"],
         "passed": 1,
+        "mechanical_passed": 1,
+        "qualitative_pending": 1,
+        "promotion_ready": 0,
+        "promotion_gate_passed": False,
         "total": 1,
         "input_tokens": 30,
         "output_tokens": 7,

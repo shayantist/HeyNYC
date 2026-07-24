@@ -182,6 +182,16 @@ def summarize_arm(
         for turn in (getattr(result, "turn_results", None) or ())
     ]
     usages = [getattr(turn, "usage", {}) or {} for turn in turns]
+    mechanical_passed = getattr(
+        report, "mechanical_passed_count", report.passed_count
+    )
+    qualitative_pending = getattr(report, "qualitative_pending_count", 0)
+    promotion_ready = getattr(
+        report, "promotion_ready_count", report.passed_count
+    )
+    promotion_gate_passed = getattr(
+        report, "promotion_ready", promotion_ready == report.total
+    )
     total_cost = 0.0
     priced = True
     for usage in usages:
@@ -210,6 +220,10 @@ def summarize_arm(
         "runtime_route": _runtime_route(arm, model),
         "case_ids": [result.case.id for result in results],
         "passed": report.passed_count,
+        "mechanical_passed": mechanical_passed,
+        "qualitative_pending": qualitative_pending,
+        "promotion_ready": promotion_ready,
+        "promotion_gate_passed": promotion_gate_passed,
         "total": report.total,
         "input_tokens": sum(int(u.get("input_tokens", 0) or 0) for u in usages),
         "output_tokens": sum(int(u.get("output_tokens", 0) or 0) for u in usages),

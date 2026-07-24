@@ -374,6 +374,104 @@ async def test_gate_with_injected_judge():
     assert any(c.name == "api_grounded" for c in report.reports[0].checks)
 
 
+async def test_utility_case_requires_qualitative_review_before_promotion(tmp_path):
+    from heynyc.eval.report import write_run
+
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+    report = await evaluate([_result(case, text="A mechanically valid answer")])
+
+    assert report.passed
+    assert report.mechanical_passed_count == 1
+    assert report.qualitative_pending_count == 1
+    assert not report.promotion_ready
+    assert "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED" in report.render()
+
+    write_run(tmp_path, report)
+    import json
+
+    data = json.loads((tmp_path / "report.json").read_text())
+    assert data["mechanical_passed"] is True
+    assert data["qualitative_review_required"] is True
+    assert data["qualitative_pending_count"] == 1
+    assert data["promotion_ready"] is False
+    assert data["cases"][0]["promotion_ready"] is False
+
+
+async def test_utility_case_promotes_only_after_passing_qualitative_review():
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+
+    async def judge(cr):
+        from heynyc.eval.checks import CheckResult
+
+        return CheckResult("resident_outcome", passed=True, detail="grounded and useful")
+
+    report = await evaluate(
+        [_result(case, text="A useful grounded answer")],
+        judge=judge,
+    )
+
+    assert report.qualitative_pending_count == 0
+    assert report.promotion_ready
+    assert "(PASS)" in report.render()
+
+
+async def test_failed_qualitative_review_does_not_erase_mechanical_pass():
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+
+    async def judge(cr):
+        from heynyc.eval.checks import CheckResult
+
+        return CheckResult("resident_outcome", passed=False, detail="not useful")
+
+    report = await evaluate([_result(case, text="A valid but unhelpful answer")], judge=judge)
+
+    assert report.mechanical_passed_count == 1
+    assert report.passed_count == 0
+    assert not report.promotion_ready
+    assert "(FAIL)" in report.render()
+
+
+async def test_resident_outcome_named_check_is_mechanical_without_utility_criterion():
+    from heynyc.eval.checks import CheckResult
+    from heynyc.eval.report import CaseReport
+
+    report = CaseReport(
+        case_id="ordinary",
+        module="m",
+        checks=[CheckResult("resident_outcome", passed=False)],
+    )
+
+    assert not report.mechanical_passed
+    assert not report.promotion_ready
+
+
+async def test_nonblocking_judge_cannot_satisfy_required_qualitative_review():
+    from heynyc.eval.checks import CheckResult
+
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+
+    async def judge(cr):
+        return CheckResult(
+            "resident_outcome",
+            passed=True,
+            detail="advisory only",
+            blocking=False,
+        )
+
+    report = await evaluate([_result(case, text="A valid answer")], judge=judge)
+
+    assert not report.promotion_ready
+
+
+async def test_case_without_utility_criterion_keeps_existing_pass_behavior():
+    report = await evaluate([_result(_case(id="ordinary"), text="A valid answer")])
+
+    assert report.passed
+    assert report.qualitative_pending_count == 0
+    assert report.promotion_ready
+    assert "(PASS)" in report.render()
+
+
 def test_looks_like_abstention_recognizes_scope_and_prediction_declines():
     # Real abstentions the warm/direct voice produces that the marker list missed
     # (false negatives — the gate scored a correct decline as "answered").

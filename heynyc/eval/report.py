@@ -24,12 +24,37 @@ class CaseReport:
     module: str
     checks: list[CheckResult]
     trace: Optional[Trace] = None
+    qualitative_review_required: bool = False
+    qualitative_review: Optional[CheckResult] = None
 
     @property
     def passed(self) -> bool:
         # Declared safety and structural checks block. Advisory readability, legacy abstention,
         # and metamorphic checks remain visible without deciding the gate.
         return all(c.passed for c in self.checks if c.blocking)
+
+    @property
+    def mechanical_passed(self) -> bool:
+        return all(
+            c.passed
+            for c in self.checks
+            if c.blocking and c is not self.qualitative_review
+        )
+
+    @property
+    def qualitative_reviewed(self) -> bool:
+        return self.qualitative_review is not None
+
+    @property
+    def promotion_ready(self) -> bool:
+        return self.mechanical_passed and (
+            not self.qualitative_review_required
+            or (
+                self.qualitative_review is not None
+                and self.qualitative_review.blocking
+                and self.qualitative_review.passed
+            )
+        )
 
 
 @dataclass
@@ -45,8 +70,28 @@ class GateReport:
         return sum(1 for r in self.reports if r.passed)
 
     @property
+    def mechanical_passed_count(self) -> int:
+        return sum(1 for r in self.reports if r.mechanical_passed)
+
+    @property
+    def qualitative_pending_count(self) -> int:
+        return sum(
+            1
+            for r in self.reports
+            if r.qualitative_review_required and not r.qualitative_reviewed
+        )
+
+    @property
+    def promotion_ready_count(self) -> int:
+        return sum(1 for r in self.reports if r.promotion_ready)
+
+    @property
     def passed(self) -> bool:
         return self.total > 0 and self.passed_count == self.total
+
+    @property
+    def promotion_ready(self) -> bool:
+        return self.total > 0 and self.promotion_ready_count == self.total
 
     def failures(self) -> list[CaseReport]:
         return [r for r in self.reports if not r.passed]
@@ -63,8 +108,19 @@ class GateReport:
         return {name: f"{ok}/{n}" for name, (ok, n) in sorted(totals.items())}
 
     def render(self) -> str:
-        lines = [f"HeyNYC eval gate: {self.passed_count}/{self.total} cases passed "
-                 f"({'PASS' if self.passed else 'FAIL'})", ""]
+        if self.mechanical_passed_count != self.total:
+            status = "FAIL"
+        elif self.qualitative_pending_count:
+            status = "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED"
+        elif self.promotion_ready:
+            status = "PASS"
+        else:
+            status = "FAIL"
+        lines = [
+            f"HeyNYC eval gate: {self.mechanical_passed_count}/{self.total} "
+            f"cases mechanically passed ({status})",
+            "",
+        ]
         for name, rate in self.metric_summary().items():
             lines.append(f"  {name:16} {rate}")
         if self.failures():
@@ -89,9 +145,22 @@ async def evaluate(
         traces[cr.case.id] = trace
         checks = await run_checks(cr, link_checker=link_checker)
         checks.extend(build_invariant_checks(trace, cr.case))
+        qualitative_review = None
         if judge is not None:
-            checks.append(await judge(cr))
-        reports.append(CaseReport(case_id=cr.case.id, module=cr.case.module, checks=checks, trace=trace))
+            judgment = await judge(cr)
+            checks.append(judgment)
+            if cr.case.utility_criterion:
+                qualitative_review = judgment
+        reports.append(
+            CaseReport(
+                case_id=cr.case.id,
+                module=cr.case.module,
+                checks=checks,
+                trace=trace,
+                qualitative_review_required=bool(cr.case.utility_criterion),
+                qualitative_review=qualitative_review,
+            )
+        )
     # Second pass: metamorphic INV pairing (needs the base case's trace).
     for cr, report in zip(case_results, reports):
         if cr.case.test_type == "INV" and cr.case.base in traces:
@@ -113,10 +182,24 @@ def write_run(directory, report: "GateReport", metadata: Optional[dict] = None) 
         "metadata": metadata or {},
         "passed": report.passed,
         "passed_count": report.passed_count,
+        "mechanical_passed": (
+            report.total > 0 and report.mechanical_passed_count == report.total
+        ),
+        "mechanical_passed_count": report.mechanical_passed_count,
+        "qualitative_review_required": any(
+            r.qualitative_review_required for r in report.reports
+        ),
+        "qualitative_pending_count": report.qualitative_pending_count,
+        "promotion_ready": report.promotion_ready,
+        "promotion_ready_count": report.promotion_ready_count,
         "total": report.total,
         "metrics": report.metric_summary(),
         "cases": [
             {"case_id": r.case_id, "module": r.module, "passed": r.passed,
+             "mechanical_passed": r.mechanical_passed,
+             "qualitative_review_required": r.qualitative_review_required,
+             "qualitative_reviewed": r.qualitative_reviewed,
+             "promotion_ready": r.promotion_ready,
              "checks": [{"name": c.name, "passed": c.passed, "blocking": c.blocking,
                          "detail": c.detail} for c in r.checks]}
             for r in report.reports
