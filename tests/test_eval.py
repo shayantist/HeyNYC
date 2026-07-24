@@ -36,6 +36,8 @@ def test_load_cases_from_real_modules():
     assert "wc_made_up_match" in ids
     assert "benefits_cross_module_snap_center" in ids
     assert "clinic_cross_module_pregnancy_care" in ids
+    assert "cross_module_family_events_and_cooling_preserve_evidence" in ids
+    assert "convo_spanish_snap_screen_and_food_tonight" in ids
     # every module's abstain cases are present
     assert any(c.abstain for c in cases)
 

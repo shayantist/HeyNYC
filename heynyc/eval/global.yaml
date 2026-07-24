@@ -174,3 +174,56 @@
     first turn's overview and not restart discovery from scratch.
   notes: >-
     Owner-requested 2026-07-21: depth-on-request is the complement of the narrowing case.
+
+- id: cross_module_events_and_cooling_keep_separate_constraints
+  query: "taking my friends out in queens on saturday, any free events, and if it hits 95 again where can we duck in somewhere cool near flushing?"
+  expect_tools: [whats_on_events, cool_options_lookup]
+  abstain: false
+  capability: multi-intent
+  tags: [F090, F091, cross-module, multi-intent, current-information, must-win]
+  utility_criterion: >-
+    Answer both requests without mixing their constraints. Event options must be in Queens,
+    apply to Saturday, and be called free only when the evidence establishes that; unknown
+    cost may be labeled for confirmation. Cooling options must be near Flushing and describe
+    Saturday availability or clearly state that future-day hours could not be verified.
+    Do not substitute current-night status, Manhattan locations, or a different borough.
+    Include direct event and directions links so the resident can act on the answer.
+  notes: >-
+    Exact owner probe from 2026-07-23. Queens belongs to events while Flushing belongs to cooling.
+
+- id: cross_module_family_events_and_cooling_preserve_evidence
+  query: "taking my niece and her friends out in queens on saturday, any free events for kids, and if it hits 95 again where can we duck in somewhere cool near flushing?"
+  expect_tools: [whats_on_events, cool_options_lookup]
+  abstain: false
+  capability: multi-intent
+  tags: [F104, cross-module, multi-intent, current-information, must-win]
+  utility_criterion: >-
+    Answer both requests without mixing their constraints. Event options must be in Queens and
+    apply to Saturday. Call an event free or suitable for children only when the retrieved
+    evidence establishes that claim; otherwise label cost or audience as unconfirmed. Cooling
+    options must be near Flushing and describe Saturday availability or clearly state that
+    future-day hours could not be verified. Include direct event and directions links.
+  notes: >-
+    Exact owner probe from the 2026-07-23 PydanticAI parity gate. Both runtimes called generic
+    permit listings family-friendly without evidence.
+
+- id: convo_spanish_snap_screen_and_food_tonight
+  turns:
+    - "perdí mi trabajo y no sé si califico para SNAP. ¿me pueden ayudar a revisar y llenar la solicitud? mientras tanto necesito comida para mis hijos esta noche"
+    - "Somos 3: yo tengo 35 años y mis hijos 8 y 11. Ahora no tengo ingresos. Vivimos en Corona, Queens y alquilamos. Nadie está embarazada, es estudiante universitario, tiene discapacidad ni es veterano."
+  expect_tools: [screen_eligibility, nearest_food_pantry]
+  abstain: false
+  capability: multi-intent
+  language: es
+  tags: [F100, F105, F106, F107, F108, conversation, cross-module, multilingual, current-information, must-win]
+  utility_criterion: >-
+    After the resident supplies this sufficient PII-free household profile, run the official
+    read-only screener and label the result as an estimate, not a final eligibility decision.
+    Stay in warm Spanish. If a nearby food site can be established for tonight, give its address,
+    phone or directions, source date, and schedule limitation. If the nearest records are not
+    scheduled open or cannot establish availability, do not present them as tonight options:
+    lead with the current 311 or FoodHelp fallback and offer to search farther. Offer consented
+    application preparation without claiming to submit anything.
+  notes: >-
+    Exact owner probe from the 2026-07-23 PydanticAI parity gate. The Pydantic eval arm
+    auto-confirms only its native structured-fact review; it never auto-approves an action.
