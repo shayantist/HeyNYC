@@ -1169,6 +1169,46 @@ class PydanticApprovalFlow:
                 self.conversation.dump_state(),
                 ttl_s=self.ttl_s,
             )
+            result.text = self.review_text()
+
+    def review_text(self) -> str:
+        requests = tuple(self.conversation.pending_approvals.values())
+        copies = tuple(_approval_copy(request["tool_name"]) for request in requests)
+        mixed = len(set(copies)) > 1
+        heading, question = (
+            (
+                "Review each item below:",
+                "Reply YES to confirm all facts and approve all actions, "
+                "or NO to correct or deny them.",
+            )
+            if mixed
+            else copies[0]
+        )
+        lines = [heading]
+        for request, (item_heading, _) in zip(requests, copies, strict=True):
+            arguments = json.dumps(
+                request["args"],
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            if mixed:
+                lines.extend(("", item_heading))
+            lines.extend(("", request["tool_name"], arguments))
+        lines.extend(("", question))
+        return "\n".join(lines)
+
+
+def _approval_copy(tool_name: str) -> tuple[str, str]:
+    if tool_name.startswith("confirm_") and tool_name.endswith("_facts"):
+        return (
+            "Review the structured facts I understood:",
+            "Reply YES if these facts are accurate, or NO to correct them.",
+        )
+    return (
+        "Review the proposed action and exact values:",
+        "Reply YES to approve, or NO to deny.",
+    )
 
 
 def build_runtime(

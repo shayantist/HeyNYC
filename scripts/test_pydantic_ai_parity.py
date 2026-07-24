@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
@@ -61,6 +62,7 @@ from heynyc.eval.trace import build_trace
 from scripts.pydantic_ai_parity import (
     PydanticApprovalFlow,
     PydanticRuntimeAdapter,
+    _approval_copy,
     _complete_cost,
     _dynamic_instructions,
     _measurement_messages,
@@ -71,7 +73,7 @@ from scripts.pydantic_ai_parity import (
     build_module_capabilities,
     build_runtime,
 )
-from scripts.pydantic_ai_repl import _approval_copy, _approval_review
+from scripts.pydantic_ai_repl import _resolve_pending
 
 
 def _context() -> ToolContext:
@@ -956,7 +958,12 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
                 [
                     ToolCallPart(
                         "prepare_application",
-                        {"draft_id": "draft-123"},
+                        {
+                            "draft_id": (
+                                "**draft** _123_ ~final~ ```literal``` "
+                                "\N{EM DASH}"
+                            )
+                        },
                         "approval-call",
                     )
                 ]
@@ -981,12 +988,24 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
     pending = await first_process.send("Prepare my application")
 
     assert pending.status == "approval_required"
+    for channel in ("console", "sms_twilio", "whatsapp_twilio"):
+        projected = "\n".join(render(pending, channel))
+        assert "prepare_application" in projected
+        assert (
+            '"draft_id": "**draft** _123_ ~final~ ```literal``` '
+            '\N{EM DASH}"'
+        ) in projected
+        assert "Reply YES" in projected
     assert executed == []
     restarted = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
     assert restarted.conversation.pending_approvals == {
         "approval-call": {
             "tool_name": "prepare_application",
-            "args": {"draft_id": "draft-123"},
+            "args": {
+                "draft_id": (
+                    "**draft** _123_ ~final~ ```literal``` \N{EM DASH}"
+                )
+            },
         }
     }
     with pytest.raises(ValueError, match="must match pending calls"):
@@ -998,7 +1017,13 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
     result = await restarted.resume(approved)
 
     assert result.text == ("Prepared" if approved else "Cancelled")
-    expected = [{"draft_id": "draft-123"}] if approved else []
+    expected = [
+        {
+            "draft_id": (
+                "**draft** _123_ ~final~ ```literal``` \N{EM DASH}"
+            )
+        }
+    ] if approved else []
     assert executed == expected
     with pytest.raises(ValueError, match="expired or already consumed"):
         await restarted.resume(True)
@@ -2325,28 +2350,95 @@ async def test_default_context_measurement_counts_structured_continuity_once(
     assert sum(reminder in content for content in contents) == 1
 
 
-def test_repl_approval_review_shows_tool_and_arguments() -> None:
-    review = _approval_review(
-        {
-            "tool_name": "prepare_snap_application",
-            "args": {"slots": {"name": "Resident supplied value"}, "confirmed": False},
-        }
-    )
-
-    assert "prepare_snap_application" in review
-    assert "Resident supplied value" in review
-    assert '"confirmed": false' in review
-
-
 def test_repl_labels_fact_confirmation_as_accuracy_review() -> None:
     assert _approval_copy("confirm_screen_facts") == (
         "Review the structured facts I understood:",
-        "Are these facts accurate?",
+        "Reply YES if these facts are accurate, or NO to correct them.",
     )
     assert _approval_copy("prepare_snap_application") == (
         "Review the proposed action and exact values:",
-        "Approve this action?",
+        "Reply YES to approve, or NO to deny.",
     )
+
+
+def test_fact_confirmation_projects_as_accuracy_review() -> None:
+    conversation = SimpleNamespace(
+        pending_approvals={
+            "facts-call": {
+                "tool_name": "confirm_screen_facts",
+                "args": {"profile": {"age": 35}},
+            }
+        }
+    )
+    flow = object.__new__(PydanticApprovalFlow)
+    flow.conversation = conversation
+
+    review = flow.review_text()
+
+    assert review.startswith("Review the structured facts I understood:")
+    assert "Reply YES if these facts are accurate, or NO to correct them." in review
+    assert "proposed action" not in review
+
+
+def test_mixed_approval_projects_fact_and_action_meanings() -> None:
+    conversation = SimpleNamespace(
+        pending_approvals={
+            "facts-call": {
+                "tool_name": "confirm_screen_facts",
+                "args": {"profile": {"age": 35}},
+            },
+            "action-call": {
+                "tool_name": "prepare_application",
+                "args": {"draft_id": "draft-123"},
+            },
+        }
+    )
+    flow = object.__new__(PydanticApprovalFlow)
+    flow.conversation = conversation
+
+    review = flow.review_text()
+
+    assert "Review the structured facts I understood:" in review
+    assert "Review the proposed action and exact values:" in review
+    assert (
+        "Reply YES to confirm all facts and approve all actions, "
+        "or NO to correct or deny them."
+    ) in review
+
+
+async def test_repl_uses_one_shared_review_and_whole_batch_decision() -> None:
+    class Console:
+        def __init__(self) -> None:
+            self.printed: list[str] = []
+            self.prompts: list[str] = []
+
+        def print(self, text: str) -> None:
+            self.printed.append(text)
+
+        def input(self, prompt: str) -> str:
+            self.prompts.append(prompt)
+            return "yes"
+
+    class Flow:
+        def __init__(self) -> None:
+            self.decisions: list[bool] = []
+
+        def review_text(self) -> str:
+            return "Shared approval review"
+
+        async def resume(self, decision: bool) -> str:
+            self.decisions.append(decision)
+            return "resumed"
+
+    console = Console()
+    flow = Flow()
+
+    result = await _resolve_pending(console, flow)
+
+    assert result == "resumed"
+    assert console.printed == ["Shared approval review"]
+    assert len(console.prompts) == 1
+    assert flow.decisions == [True]
 
 
 async def test_build_runtime_keeps_stable_prompt_out_of_dynamic_instructions() -> None:

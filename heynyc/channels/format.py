@@ -182,7 +182,9 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     session and telemetry persist. This layer never adds, drops, or alters a factual claim, it only
     formats: SMS gets plain text, WhatsApp gets its native dialect, and both share one link policy.
     """
-    if channel == "console":
+    if getattr(result, "status", None) == "approval_required":
+        body = result.text
+    elif channel == "console":
         # The REPL is the rich surface: inline {cite:Sn} markers STAY visible (texters lose
         # them only because SMS/WhatsApp can't render them usefully), markdown stays raw for
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.

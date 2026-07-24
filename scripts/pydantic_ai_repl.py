@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 
 from dotenv import load_dotenv
@@ -20,34 +19,16 @@ from heynyc.core.citations import text_fragment_url, used_citations
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
 from heynyc.modules.advisories.tools import current_awareness
-from scripts.pydantic_ai_parity import PydanticApprovalFlow, build_runtime
-
-
-def _approval_review(request: dict) -> str:
-    return (
-        f"{request['tool_name']}\n"
-        f"{json.dumps(request['args'], ensure_ascii=False, indent=2, sort_keys=True)}"
-    )
-
-
-def _approval_copy(tool_name: str) -> tuple[str, str]:
-    if tool_name.startswith("confirm_") and tool_name.endswith("_facts"):
-        return (
-            "Review the structured facts I understood:",
-            "Are these facts accurate?",
-        )
-    return "Review the proposed action and exact values:", "Approve this action?"
+from scripts.pydantic_ai_parity import (
+    PydanticApprovalFlow,
+    build_runtime,
+)
 
 
 async def _resolve_pending(console: Console, flow: PydanticApprovalFlow):
-    approvals = {}
-    for call_id, request in flow.conversation.pending_approvals.items():
-        heading, question = _approval_copy(request["tool_name"])
-        console.print(f"[yellow]{heading}[/]")
-        console.print(_approval_review(request))
-        answer = console.input(f"[yellow]{question}[/] [y/N] ")
-        approvals[call_id] = answer.strip().lower() in {"y", "yes"}
-    return await flow.resume(approvals)
+    console.print(flow.review_text())
+    answer = console.input("[yellow]Reply YES or NO[/] [y/N] ")
+    return await flow.resume(answer.strip().lower() in {"y", "yes"})
 
 
 def _configured_model():
