@@ -751,6 +751,7 @@ async def test_whats_on_events_never_falls_back_across_requested_borough(
 
     output = await get_tools()[0].handler(
         {
+            "keyword": "kids",
             "borough": "Queens",
             "window_start": "2099-07-25",
             "window_end": "2099-07-25",
@@ -758,7 +759,8 @@ async def test_whats_on_events_never_falls_back_across_requested_borough(
         ctx,
     )
 
-    assert output == events._NO_RESULTS
+    assert output.startswith(events._NO_RESULTS)
+    assert "already retried the complete catalog without the keyword" in output
     assert "Bronx Event" not in output
 
 

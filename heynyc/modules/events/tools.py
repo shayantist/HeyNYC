@@ -645,8 +645,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         events = _window_filter(retried)
         broadened = bool(events)
 
+    no_results = _NO_RESULTS
+    if not events and keyword:
+        no_results += (
+            " This lookup already retried the complete catalog without the keyword. "
+            "Do not call this tool again with synonyms for the same date and borough."
+        )
     if not events and not broad_context:
-        return f"{_NO_RESULTS}{keyword_block}" if keyword_block else _NO_RESULTS
+        return f"{no_results}{keyword_block}" if keyword_block else no_results
 
     blocks = []
     for ev in events:
@@ -678,7 +684,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "markets, block parties, parades, and plaza events). "
         "Each links to its official page, cite them and don't add events that aren't listed here:\n"
     )
-    catalog = header + "\n".join(blocks) if blocks else _NO_RESULTS
+    catalog = header + "\n".join(blocks) if blocks else no_results
     if borough:
         return catalog
     if not broad_context:
