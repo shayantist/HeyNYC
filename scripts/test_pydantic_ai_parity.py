@@ -43,6 +43,11 @@ from heynyc.core import pii_crypto
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.grounding import check_grounding
 from heynyc.core.manifest import ServiceModule
+from heynyc.core.memory import (
+    ContextCapacityError,
+    ContinuityRecord,
+    continuity_reminder,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
@@ -55,6 +60,7 @@ from scripts.pydantic_ai_parity import (
     PydanticRuntimeAdapter,
     _complete_cost,
     _dynamic_instructions,
+    _measurement_messages,
     _native_cache_settings,
     _native_cost,
     _resident_fact_errors,
@@ -375,13 +381,11 @@ async def test_resident_fact_ledger_survives_conversation_state_round_trip() -> 
     )
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if len(_parts(messages, UserPromptPart)) > len(
-            _parts(messages, ToolReturnPart)
-        ):
-            return ModelResponse(
-                [ToolCallPart("screen", {"profile": {"age": 35}}, "screen-call")]
-            )
-        return ModelResponse([TextPart("screened")])
+        if _parts([messages[-1]], ToolReturnPart):
+            return ModelResponse([TextPart("screened")])
+        return ModelResponse(
+            [ToolCallPart("screen", {"profile": {"age": 35}}, "screen-call")]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -857,12 +861,25 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         }
     }
     assert executed == []
+    with pytest.raises(ValueError, match="approval is pending"):
+        await conversation.send("Start another turn")
 
     state = conversation.dump_state()
     tampered = json.loads(state)
     tampered["pending"]["approvals"][0]["args"]["draft_id"] = "different-draft"
     with pytest.raises(ValueError, match="does not match message history"):
         runtime.conversation_from_state(json.dumps(tampered).encode())
+    orphaned = json.loads(state)
+    orphaned["messages"] = [
+        message
+        for message in orphaned["messages"]
+        if not any(
+            part.get("tool_call_id") == "approval-call"
+            for part in message["parts"]
+        )
+    ]
+    with pytest.raises(ValueError, match="does not match message history"):
+        runtime.conversation_from_state(json.dumps(orphaned).encode())
 
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     encrypted_state = pii_crypto.encrypt(state.decode())
@@ -873,6 +890,18 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
     with pytest.raises(ValueError, match="Approval IDs must match"):
         await restored.resume_approvals({"different-call": approved})
     assert executed == []
+    restored._history = [
+        message
+        for message in restored._history
+        if not _parts([message], ToolCallPart)
+    ]
+    with pytest.raises(ValueError, match="does not match message history"):
+        await restored.resume_approvals({"approval-call": approved})
+    assert executed == []
+
+    restored = runtime.conversation_from_state(
+        pii_crypto.decrypt(encrypted_state).encode()
+    )
 
     result = await restored.resume_approvals({"approval-call": approved})
 
@@ -1389,6 +1418,357 @@ async def test_runtime_applies_native_history_processing_before_model_request() 
     assert _parts(seen[1], UserPromptPart)[-1].content == "Second"
 
 
+async def test_native_history_compacts_and_serializes_structured_continuity() -> None:
+    seen: list[list[ModelMessage]] = []
+    compacted: list[list[dict]] = []
+
+    def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
+        return len(history)
+
+    async def compact(
+        history: list[dict],
+        continuity: ContinuityRecord | None,
+    ) -> ContinuityRecord:
+        compacted.append(history)
+        return ContinuityRecord(
+            goal="Find food and cooling help near home",
+            unresolved_questions=["Which locations are open tonight?"],
+        )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        prompt = _parts(messages, UserPromptPart)[-1].content
+        return ModelResponse([TextPart(f"Answer to {prompt}")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        context_budget=3,
+        measure_context=measure,
+        compact_context=compact,
+    )
+    conversation = runtime.conversation()
+    conversation._resident_facts = {
+        "/food_pantries/location": ResidentFact(
+            value="Jackson Heights",
+            source_turn_id="turn-1",
+            status="confirmed",
+        ),
+        "/cooling_centers/location": ResidentFact(
+            value="Elmhurst",
+            source_turn_id="turn-2",
+            status="confirmed",
+        ),
+    }
+    assert conversation._citations.register(
+        "https://www.nyc.gov/food",
+        title="NYC food help",
+    ) == "S1"
+    discarded = conversation._citations.register(
+        "https://www.nyc.gov/discarded",
+        title="Discarded source",
+    )
+    conversation._citations.discard({discarded})
+
+    await conversation.send(
+        "Find food and cooling help near home. Which locations are open tonight?"
+    )
+    await conversation.send("Keep the newest completed exchange")
+    await conversation.send("Trigger compaction")
+    restored = runtime.conversation_from_state(conversation.dump_state())
+
+    assert compacted == [[
+        {
+            "role": "user",
+            "content": (
+                "Find food and cooling help near home. "
+                "Which locations are open tonight?"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "Answer to Find food and cooling help near home. "
+                "Which locations are open tonight?"
+            ),
+        },
+    ]]
+    assert restored.continuity == ContinuityRecord(
+        goal="Find food and cooling help near home",
+        unresolved_questions=["Which locations are open tonight?"],
+    )
+    assert restored._resident_facts == conversation._resident_facts
+    assert restored._citations.mapping() == conversation._citations.mapping()
+    assert restored._citations.register(
+        "https://www.nyc.gov/cooling",
+        title="NYC cooling help",
+    ) == "S3"
+    request = next(
+        message
+        for message in reversed(seen[-1])
+        if isinstance(message, ModelRequest)
+    )
+    assert continuity_reminder(restored.continuity) in (request.instructions or "")
+    assert _parts(seen[-1], UserPromptPart)[-2].content == (
+        "Keep the newest completed exchange"
+    )
+    assert _parts(seen[-1], TextPart)[-1].content == (
+        "Answer to Keep the newest completed exchange"
+    )
+
+
+async def test_restored_continuity_compacts_again_and_is_injected_once() -> None:
+    seen: list[list[ModelMessage]] = []
+
+    def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
+        return len(history)
+
+    async def compact(
+        history: list[dict],
+        continuity: ContinuityRecord | None,
+    ) -> ContinuityRecord:
+        return ContinuityRecord(goal="Keep helping with food")
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        request = next(
+            message
+            for message in reversed(messages)
+            if isinstance(message, ModelRequest)
+        )
+        prompt = _parts([request], UserPromptPart)[-1].content
+        return ModelResponse([TextPart(f"Answer to {prompt}")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        context_budget=3,
+        measure_context=measure,
+        compact_context=compact,
+    )
+    conversation = runtime.conversation()
+    await conversation.send("Keep helping with food")
+    await conversation.send("Compact now")
+    restored = runtime.conversation_from_state(conversation.dump_state())
+
+    await restored.send("Compact after restore")
+    await restored.send("Later turn")
+
+    reminder = continuity_reminder(restored.continuity)
+    for messages in seen[2:]:
+        request = next(
+            message
+            for message in reversed(messages)
+            if isinstance(message, ModelRequest)
+        )
+        assert (request.instructions or "").count(reminder) == 1
+
+
+async def test_full_final_request_fails_closed_when_current_prompt_exceeds_budget() -> (
+    None
+):
+    def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
+        return sum(len(str(message.get("content") or "")) for message in history)
+
+    async def compact(
+        history: list[dict],
+        continuity: ContinuityRecord | None,
+    ) -> ContinuityRecord:
+        return ContinuityRecord()
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda messages, info: ModelResponse([TextPart("unused")])),
+        registry=Registry([]),
+        tools={},
+        context_budget=5,
+        measure_context=measure,
+        compact_context=compact,
+    )
+
+    with pytest.raises(ContextCapacityError, match="context capacity"):
+        await runtime.conversation().send("too long")
+
+
+async def test_current_request_triggers_compaction_when_prior_history_alone_fits() -> (
+    None
+):
+    compacted: list[list[dict]] = []
+
+    def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
+        return len(history)
+
+    async def compact(
+        history: list[dict],
+        continuity: ContinuityRecord | None,
+    ) -> ContinuityRecord:
+        compacted.append(history)
+        return ContinuityRecord(goal=history[0]["content"])
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _parts(messages, UserPromptPart)[-1].content
+        return ModelResponse([TextPart(f"Answer to {prompt}")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        context_budget=4,
+        measure_context=measure,
+        compact_context=compact,
+    )
+    conversation = runtime.conversation()
+    await conversation.send("First")
+    await conversation.send("Second")
+
+    result = await conversation.send("Third")
+
+    assert result.text == "Answer to Third"
+    assert compacted == [[
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": "Answer to First"},
+    ]]
+
+
+async def test_final_request_measurement_includes_system_prompt() -> None:
+    def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
+        return sum(len(str(message.get("content") or "")) for message in history)
+
+    async def compact(
+        history: list[dict],
+        continuity: ContinuityRecord | None,
+    ) -> ContinuityRecord:
+        return ContinuityRecord()
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda messages, info: ModelResponse([TextPart("unused")])),
+        registry=Registry([]),
+        tools={},
+        system_prompt="12345",
+        context_budget=5,
+        measure_context=measure,
+        compact_context=compact,
+    )
+
+    with pytest.raises(ContextCapacityError, match="context capacity"):
+        await runtime.conversation().send("x")
+
+
+async def test_processed_history_preserves_system_prompt_and_full_run_messages() -> None:
+    seen: list[list[ModelMessage]] = []
+
+    def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
+        return len(history)
+
+    async def compact(
+        history: list[dict],
+        continuity: ContinuityRecord | None,
+    ) -> ContinuityRecord:
+        return ContinuityRecord(goal="First")
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        prompt = _parts(messages, UserPromptPart)[-1].content
+        return ModelResponse([TextPart(f"Answer to {prompt}")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        system_prompt="Stable safety rules",
+        context_budget=4,
+        measure_context=measure,
+        compact_context=compact,
+    )
+    conversation = runtime.conversation()
+    await conversation.send("First")
+    await conversation.send("Second")
+    result = await conversation.send("Third")
+
+    assert _parts(seen[-1], SystemPromptPart)[0].content == "Stable safety rules"
+    assert len(_parts(seen[-1], UserPromptPart)) == 2
+    assert [message["content"] for message in result.messages if message["role"] == "user"] == [
+        "Third"
+    ]
+    assert any(
+        message["content"] == "Answer to Third"
+        for message in result.messages
+        if message["role"] == "assistant"
+    )
+    assert len(_parts(conversation._history, UserPromptPart)) == 3
+
+
+async def test_completed_tool_turns_collapse_but_pending_calls_remain_exact() -> None:
+    executed: list[str] = []
+    seen: list[list[ModelMessage]] = []
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        executed.append(args["value"])
+        return f"tool result {args['value']}"
+
+    source = Tool(
+        name="act",
+        description="Run one action",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+        },
+        handler=handler,
+        requires_approval=True,
+    )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        prompt = _parts(messages, UserPromptPart)[-1].content
+        returns = _parts(messages, ToolReturnPart)
+        if prompt == "First" and not returns:
+            return ModelResponse([ToolCallPart("act", {"value": "one"}, "call-1")])
+        if prompt == "Pending" and not any(
+            part.tool_call_id == "call-2" for part in returns
+        ):
+            return ModelResponse([ToolCallPart("act", {"value": "two"}, "call-2")])
+        return ModelResponse([TextPart(f"Finished {prompt}")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"act": source},
+        guard_grounding=False,
+    )
+    conversation = runtime.conversation()
+
+    await conversation.send("First")
+    await conversation.resume_approvals({"call-1": True})
+    pending = await conversation.send("Pending")
+
+    assert pending.status == "approval_required"
+    assert any(
+        part.tool_call_id == "call-2"
+        for part in _parts(conversation._history, ToolCallPart)
+    )
+    await conversation.resume_approvals({"call-2": True})
+
+    assert executed == ["one", "two"]
+    assert [part.content for part in _parts(conversation._history, UserPromptPart)] == [
+        "First",
+        "Pending",
+    ]
+    assert [part.content for part in _parts(conversation._history, TextPart)] == [
+        "Finished First",
+        "Finished Pending",
+    ]
+    assert len(_parts(conversation._history, ToolCallPart)) == 2
+    assert len(_parts(conversation._history, ToolReturnPart)) == 2
+    assert "call-2" in [
+        part.tool_call_id for part in _parts(seen[-1], ToolCallPart)
+    ]
+    assert "call-2" in [
+        part.tool_call_id for part in _parts(seen[-1], ToolReturnPart)
+    ]
+
+
 async def test_runtime_enforces_native_request_limit() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         return "Done"
@@ -1527,6 +1907,24 @@ def test_volatile_run_instructions_are_callable_for_cache_ordering() -> None:
 
     assert callable(dynamic)
     assert dynamic() == "current advisory\n\nresident reminder"
+
+
+def test_context_measurement_counts_structured_continuity_only_once() -> None:
+    continuity = ContinuityRecord(goal="Keep helping with food")
+    reminder = continuity_reminder(continuity)
+    request = ModelRequest(
+        parts=[UserPromptPart("What next?")],
+        instructions=f"Current advisory\n\n{reminder}",
+    )
+
+    measured = _measurement_messages(
+        [request],
+        omit_instruction=reminder,
+    )
+
+    contents = [str(message.get("content") or "") for message in measured]
+    assert any("Current advisory" in content for content in contents)
+    assert all(reminder not in content for content in contents)
 
 
 def test_repl_approval_review_shows_tool_and_arguments() -> None:

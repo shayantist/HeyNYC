@@ -16,13 +16,14 @@ from pydantic_ai import (
     RunContext,
     UsageLimits,
 )
-from pydantic_ai.capabilities import Capability, ReinjectSystemPrompt
+from pydantic_ai.capabilities import Capability, ProcessHistory, ReinjectSystemPrompt
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
+    SystemPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -41,6 +42,13 @@ from heynyc.core.agent import (
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.freshness import attach_temporal_provenance
 from heynyc.core.grounding import check_grounding
+from heynyc.core.memory import (
+    CompactFn,
+    ContinuityRecord,
+    MeasureFn,
+    continuity_reminder,
+    prepare_context,
+)
 from heynyc.core.prompts import build_system_prompt_tiers
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
@@ -264,6 +272,37 @@ def _openai_messages(messages: Sequence[ModelMessage]) -> list[dict]:
     return translated
 
 
+def _measurement_messages(
+    messages: Sequence[ModelMessage],
+    *,
+    omit_instruction: str = "",
+) -> list[dict]:
+    """Include request controls that the public trace intentionally omits."""
+    translated: list[dict] = []
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            translated.extend(
+                {"role": "system", "content": part.content}
+                for part in message.parts
+                if isinstance(part, SystemPromptPart)
+                and part.content
+            )
+            if message.instructions:
+                instructions = message.instructions
+                if omit_instruction:
+                    instructions = instructions.replace(
+                        omit_instruction,
+                        "",
+                        1,
+                    ).strip()
+                if instructions:
+                    translated.append(
+                        {"role": "system", "content": instructions}
+                    )
+        translated.extend(_openai_messages([message]))
+    return translated
+
+
 def _native_cost(messages: Sequence[ModelMessage]) -> float | None:
     """Sum PydanticAI's native per-response prices, or mark the run unpriced."""
     total = 0.0
@@ -310,6 +349,51 @@ def _dynamic_instructions(parts: Sequence[str]) -> Callable[[], str] | None:
     return (lambda: text) if text else None
 
 
+def _resident_history(messages: Sequence[ModelMessage]) -> list[dict]:
+    """Collapse native traces to complete resident/final-assistant exchanges."""
+    history: list[dict] = []
+    user: str | None = None
+    assistant: str | None = None
+    for message in messages:
+        prompts = [
+            part.content
+            for part in message.parts
+            if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+        ]
+        if prompts:
+            if user is not None and assistant is not None:
+                history.extend(
+                    [
+                        {"role": "user", "content": user},
+                        {"role": "assistant", "content": assistant},
+                    ]
+                )
+            user, assistant = prompts[-1], None
+        if isinstance(message, ModelResponse):
+            text = "".join(
+                part.content for part in message.parts if isinstance(part, TextPart)
+            )
+            if text:
+                assistant = text
+    if user is not None and assistant is not None:
+        history.extend(
+            [
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": assistant},
+            ]
+        )
+    return history
+
+
+def _native_history(history: Sequence[dict]) -> list[ModelMessage]:
+    return [
+        ModelRequest(parts=[UserPromptPart(message["content"])])
+        if message["role"] == "user"
+        else ModelResponse(parts=[TextPart(message["content"])])
+        for message in history
+    ]
+
+
 class PydanticRuntimeAdapter:
     """Run existing HeyNYC tools through PydanticAI without changing production runtime code."""
 
@@ -327,6 +411,9 @@ class PydanticRuntimeAdapter:
         extra_capabilities: Sequence[Any] = (),
         usage_limits: UsageLimits | None = None,
         instrument: InstrumentationSettings | None = None,
+        context_budget: int | None = None,
+        measure_context: MeasureFn | None = None,
+        compact_context: CompactFn | None = None,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -337,6 +424,9 @@ class PydanticRuntimeAdapter:
         self.model = getattr(model, "model_name", type(model).__name__)
         self._current_awareness = current_awareness
         self._usage_limits = usage_limits
+        self._context_budget = context_budget
+        self._measure_context = measure_context
+        self._compact_context = compact_context
         adapted_tools, capabilities = (
             build_module_capabilities(registry, self.tools)
             if use_module_capabilities
@@ -419,6 +509,10 @@ class PydanticRuntimeAdapter:
         drafts: Any,
         resident_facts: dict[str, ResidentFact] | None,
         citations: CitationRegistry | None = None,
+        history_processor: Callable[
+            [list[ModelMessage]], Awaitable[list[ModelMessage]]
+        ]
+        | None = None,
     ) -> tuple[
         AgentResult,
         list[ModelMessage],
@@ -467,7 +561,7 @@ class PydanticRuntimeAdapter:
                         ),
                     },
                 ),
-                [*message_history, *new_messages],
+                new_messages,
                 None,
             )
         deps = ToolContext(
@@ -492,12 +586,17 @@ class PydanticRuntimeAdapter:
             instructions=_dynamic_instructions(instructions),
             deps=deps,
             usage_limits=self._usage_limits,
+            capabilities=(
+                [ProcessHistory(history_processor)]
+                if history_processor is not None
+                else None
+            ),
         )
         result = self._result(native, citations, started)
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
-        return result, native.all_messages(), pending
+        return result, native.new_messages(), pending
 
     def _result(
         self,
@@ -573,6 +672,7 @@ class _PydanticConversation:
         self._pending: DeferredToolRequests | None = None
         self._resident_facts: dict[str, ResidentFact] = {}
         self._citations = CitationRegistry()
+        self.continuity: ContinuityRecord | None = None
 
     @classmethod
     def from_state(
@@ -589,6 +689,8 @@ class _PydanticConversation:
         conversation._resident_facts = _RESIDENT_FACTS.validate_python(
             payload.get("resident_facts", {})
         )
+        if continuity := payload.get("continuity"):
+            conversation.continuity = ContinuityRecord.model_validate(continuity)
         if citations := payload.get("citations") or payload.get("pending_citations"):
             conversation._citations = CitationRegistry.from_state(citations)
         if payload["pending"] is not None:
@@ -640,6 +742,11 @@ class _PydanticConversation:
                     self._resident_facts,
                     mode="json",
                 ),
+                "continuity": (
+                    self.continuity.model_dump(mode="json")
+                    if self.continuity is not None
+                    else None
+                ),
                 "pending": (
                     _DEFERRED_REQUESTS.dump_python(self._pending, mode="json")
                     if self._pending is not None
@@ -649,6 +756,92 @@ class _PydanticConversation:
             },
             separators=(",", ":"),
         ).encode()
+
+    async def _process_history(
+        self,
+        messages: list[ModelMessage],
+    ) -> list[ModelMessage]:
+        current_index = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if any(isinstance(part, UserPromptPart) for part in message.parts)
+            ),
+            default=len(messages),
+        )
+        current = messages[current_index:]
+        system_parts = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, SystemPromptPart)
+            and part.content
+        ]
+        if (
+            self.runtime._measure_context is None
+            or self.runtime._compact_context is None
+        ):
+            return messages
+
+        def measure_complete(
+            history: list[dict],
+            continuity: ContinuityRecord | None,
+        ) -> int:
+            projected = [*_native_history(history), *current]
+            measured = _measurement_messages(
+                projected,
+                omit_instruction=(
+                    continuity_reminder(continuity) if continuity is not None else ""
+                ),
+            )
+            if system_parts and not any(
+                isinstance(part, SystemPromptPart)
+                for message in projected
+                for part in message.parts
+            ):
+                measured[:0] = [
+                    {"role": "system", "content": part.content}
+                    for part in system_parts
+                ]
+            return self.runtime._measure_context(measured, continuity)
+
+        plan = await prepare_context(
+            _resident_history(messages[:current_index]),
+            self.continuity,
+            budget=self.runtime._context_budget,
+            measure=measure_complete,
+            compact=self.runtime._compact_context,
+        )
+        self.continuity = plan.continuity
+        if self.continuity is not None:
+            request = next(
+                (
+                    message
+                    for message in current
+                    if isinstance(message, ModelRequest)
+                    and any(
+                        isinstance(part, UserPromptPart) for part in message.parts
+                    )
+                ),
+                None,
+            )
+            if request is not None:
+                reminder = continuity_reminder(self.continuity)
+                if reminder not in (request.instructions or ""):
+                    request.instructions = "\n\n".join(
+                        part for part in (request.instructions, reminder) if part
+                    )
+        processed = [*_native_history(plan.history), *current]
+        if system_parts and not any(
+            isinstance(part, SystemPromptPart)
+            for message in processed
+            for part in message.parts
+        ):
+            request = next(
+                message for message in processed if isinstance(message, ModelRequest)
+            )
+            request.parts[:0] = system_parts
+        return processed
 
     async def send(
         self,
@@ -660,9 +853,11 @@ class _PydanticConversation:
         resident_facts: dict[str, ResidentFact] | None = None,
         **_: Any,
     ) -> AgentResult:
+        if self._pending is not None:
+            raise ValueError("Cannot start a new turn while approval is pending")
         if resident_facts:
             self._resident_facts.update(resident_facts)
-        result, self._history, self._pending = await self.runtime._run(
+        result, new_messages, self._pending = await self.runtime._run(
             user_message,
             message_history=self._history,
             prior_user_turns=self._user_turns,
@@ -671,7 +866,9 @@ class _PydanticConversation:
             drafts=drafts,
             resident_facts=self._resident_facts,
             citations=self._citations,
+            history_processor=self._process_history,
         )
+        self._history.extend(new_messages)
         self._user_turns = (*self._user_turns, user_message)
         return result
 
@@ -684,6 +881,7 @@ class _PydanticConversation:
     ) -> AgentResult:
         if self._pending is None:
             raise ValueError("No deferred approval is pending")
+        self._validate_pending_history()
         expected = set(self.pending_approvals)
         if set(approvals) != expected:
             raise ValueError(
@@ -707,8 +905,9 @@ class _PydanticConversation:
             message_history=self._history,
             deferred_tool_results=DeferredToolResults(approvals=approvals),
             deps=deps,
+            capabilities=[ProcessHistory(self._process_history)],
         )
-        self._history = native.all_messages()
+        self._history.extend(native.new_messages())
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
