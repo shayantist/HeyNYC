@@ -2,10 +2,40 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai.models.openai import OpenAIResponsesModel
 
 from heynyc.core.agent import AgentResult
 from scripts import pydantic_ai_ab
 from scripts.pydantic_ai_ab import build_factories, run_arms, summarize_arm
+
+
+def test_comparison_model_matches_litellm_responses_bridge(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr(pydantic_ai_ab.config, "HEYNYC_REASONING_EFFORT", "medium")
+
+    model = pydantic_ai_ab._comparison_model("openai/gpt-5.4-mini")
+
+    assert isinstance(model, OpenAIResponsesModel)
+    assert model.settings["openai_reasoning_effort"] == "medium"
+    assert (
+        pydantic_ai_ab._runtime_route("pydantic_ai", "openai/gpt-5.4-mini")
+        == "pydantic-ai:openai-responses:gpt-5.4-mini"
+    )
+    assert (
+        pydantic_ai_ab._runtime_route("production", "openai/gpt-5.4-mini")
+        == "litellm:openai-responses-bridge:openai/gpt-5.4-mini"
+    )
+
+
+def test_responses_bridge_requires_tools(monkeypatch) -> None:
+    monkeypatch.setattr(pydantic_ai_ab.config, "HEYNYC_REASONING_EFFORT", "medium")
+
+    assert not pydantic_ai_ab._uses_openai_responses(
+        "openai/gpt-5.4-mini",
+        has_tools=False,
+    )
 
 
 def test_build_factories_gives_both_arms_the_same_live_awareness(

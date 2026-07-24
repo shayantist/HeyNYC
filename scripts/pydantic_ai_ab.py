@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from litellm.main import responses_api_bridge_check
 from pydantic_ai.models import infer_model
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
 from heynyc.__main__ import _default_reminders, _load_retriever
 from heynyc.core import config
@@ -116,17 +117,36 @@ def _comparison_model(model: str) -> Any:
             }.items()
             if value is not None
         }
-        return OpenAIChatModel(
+        model_type = (
+            OpenAIResponsesModel if _uses_openai_responses(model) else OpenAIChatModel
+        )
+        return model_type(
             model.removeprefix("openai/"),
             settings=settings,
         )
     return infer_model(model.replace("/", ":", 1))
 
 
+def _uses_openai_responses(model: str, *, has_tools: bool = True) -> bool:
+    if not model.startswith("openai/"):
+        return False
+    model_info, _ = responses_api_bridge_check(
+        model.removeprefix("openai/"),
+        "openai",
+        tools=[{}] if has_tools else [],
+        reasoning_effort=config.HEYNYC_REASONING_EFFORT,
+    )
+    return model_info.get("mode") == "responses"
+
+
 def _runtime_route(arm: str, model: str) -> str:
     if arm == "production":
+        if _uses_openai_responses(model):
+            return f"litellm:openai-responses-bridge:{model}"
         return f"litellm.acompletion:{model}"
     if model.startswith("openai/"):
+        if _uses_openai_responses(model):
+            return f"pydantic-ai:openai-responses:{model.removeprefix('openai/')}"
         return f"pydantic-ai:openai-chat:{model.removeprefix('openai/')}"
     return f"pydantic-ai:{model.replace('/', ':', 1)}"
 
