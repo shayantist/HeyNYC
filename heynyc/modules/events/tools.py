@@ -605,7 +605,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if "tonight" in ctx.query.lower():
             kept = _tonight_only(kept, now)
         if borough:
-            kept = [e for e in kept if borough in e.borough.lower()] or kept
+            kept = [e for e in kept if borough in e.borough.lower()]
         return _shortlist(kept, limit)
 
     events = _window_filter(events)
@@ -679,6 +679,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "Each links to its official page, cite them and don't add events that aren't listed here:\n"
     )
     catalog = header + "\n".join(blocks) if blocks else _NO_RESULTS
+    if borough:
+        return catalog
     if not broad_context:
         return f"{catalog}{keyword_block}"
 

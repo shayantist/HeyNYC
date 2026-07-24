@@ -724,6 +724,124 @@ async def test_whats_on_events_includes_permitted_street_events():
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
 
 
+async def test_whats_on_events_never_falls_back_across_requested_borough(
+    monkeypatch,
+):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [{
+            "event_name": "Bronx Event",
+            "start_date_time": "2099-07-25T10:00:00.000",
+            "event_agency": "Street Activity Permit Office",
+            "event_type": "Block Party",
+            "event_borough": "Bronx",
+            "event_location": "Grand Concourse",
+        }]
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="events",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert output == events._NO_RESULTS
+    assert "Bronx Event" not in output
+
+
+async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [{
+            "event_name": "Queens Event",
+            "start_date_time": "2099-07-25T10:00:00.000",
+            "event_agency": "Street Activity Permit Office",
+            "event_type": "Block Party",
+            "event_borough": "Queens",
+            "event_location": "Flushing",
+        }]
+
+    async def web_handler(args, ctx):
+        return "Bronx Event from web search"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(
+        events,
+        "_context_tools",
+        lambda ctx: (Tool("web_search", "", {}, web_handler),),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="events on Saturday",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert "Queens Event" in output
+    assert "Bronx Event" not in output
+
+
+async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypatch):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(*args, **kwargs):
+        return []
+
+    async def editorial(*args, **kwargs):
+        return "Bronx Event from an editorial guide"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_editorial_context", editorial)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="events on Saturday",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert output == events._NO_RESULTS
+    assert "Bronx Event" not in output
+
+
 async def test_permitted_lane_filters_sport_noise_by_agency_field_not_event_name(monkeypatch):
     """Hard rule: cut the ~6.5k/week sport-reservation noise by the dataset's own agency/type
     fields, never by keyword-matching event names."""
