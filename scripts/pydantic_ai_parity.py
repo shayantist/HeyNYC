@@ -1303,11 +1303,7 @@ class PydanticApprovalFlow:
             isinstance(value, bool) for value in decision.values()
         ):
             raise ValueError("Approval decisions must be booleans")
-        state = self.store.pop_pending_approval(self.user_key)
-        if state is None:
-            raise ValueError("Pending approval expired or already consumed")
-        self.conversation = self.runtime.conversation_from_state(state)
-        approvals = (
+        decisions = (
             {
                 call_id: decision
                 for call_id in self.conversation.pending_approvals
@@ -1315,7 +1311,28 @@ class PydanticApprovalFlow:
             if isinstance(decision, bool)
             else decision
         )
-        result = await self.conversation.resume_approvals(approvals, **kwargs)
+        retry_safe = all(
+            not approved
+            or request["tool_name"].startswith("confirm_")
+            and request["tool_name"].endswith("_facts")
+            or (
+                (tool := self.runtime.tools.get(request["tool_name"])) is not None
+                and tool.idempotent
+            )
+            for call_id, request in self.conversation.pending_approvals.items()
+            for approved in (decisions[call_id],)
+        )
+        state = (
+            self.store.get_pending_approval(self.user_key)
+            if retry_safe
+            else self.store.pop_pending_approval(self.user_key)
+        )
+        if state is None:
+            raise ValueError("Pending approval expired or already consumed")
+        self.conversation = self.runtime.conversation_from_state(state)
+        result = await self.conversation.resume_approvals(decisions, **kwargs)
+        if retry_safe:
+            self.store.pop_pending_approval(self.user_key)
         self._persist_if_pending(result)
         return result
 

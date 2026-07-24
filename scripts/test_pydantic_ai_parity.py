@@ -1164,6 +1164,76 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
     assert executed == expected
 
 
+@pytest.mark.parametrize(
+    ("idempotent", "remains_pending"),
+    [(True, True), (False, False)],
+)
+async def test_approval_retry_preserves_only_idempotent_pending_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    idempotent: bool,
+    remains_pending: bool,
+) -> None:
+    attempts = 0
+    fail_once = True
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        nonlocal attempts
+        attempts += 1
+        return "Prepared"
+
+    source = Tool(
+        name="prepare_application",
+        description="Prepare an idempotent draft",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        read_only=False,
+        requires_approval=True,
+        idempotent=idempotent,
+    )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal fail_once
+        if not _parts(messages, ToolReturnPart):
+            return ModelResponse(
+                [ToolCallPart("prepare_application", {}, "approval-call")]
+            )
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("provider unavailable")
+        return ModelResponse([TextPart("Prepared")])
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"prepare_application": source},
+        guard_grounding=False,
+    )
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    flow = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+    await flow.send("Prepare it")
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await flow.resume(True)
+
+    assert store.has_pending_approval("resident-a") is remains_pending
+    if not remains_pending:
+        assert attempts == 1
+        return
+    restarted = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+    result = await restarted.resume(True)
+
+    assert result.text == "Prepared"
+    assert store.has_pending_approval("resident-a") is False
+    assert attempts == 2
+
+
 async def test_approval_flow_rejects_external_deferral_before_persistence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
