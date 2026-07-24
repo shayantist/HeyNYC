@@ -130,7 +130,7 @@ def _stringify(obj) -> str:
     return str(obj)
 
 
-def _citation_blob(c: dict) -> Optional[str]:
+def citation_evidence(c: dict) -> Optional[str]:
     """The captured source content for a citation: the DATA `snapshot` (or, for an auditable API
     exchange, the captured `response`, never the redacted request_summary), plus snippet + title
     (DOC/WEB carry only snippet + title). None if the source has none, then it cannot be verified."""
@@ -363,7 +363,7 @@ def check_grounding(
         complete = excerpt = 0
         for cid in cited:
             c = citations.get(cid)
-            blob = _citation_blob(c) if c else None
+            blob = citation_evidence(c) if c else None
             if blob is None:
                 continue  # empty capture
             blobs[cid] = blob
@@ -411,8 +411,8 @@ def check_grounding(
     # get a cheap second look too.
     if nli is not None:
         for claim_text, cited in _cited_sentences(text):
-            blobs = {cid: _citation_blob(citations[cid]) for cid in cited
-                     if citations.get(cid) and _citation_blob(citations[cid]) is not None}
+            blobs = {cid: citation_evidence(citations[cid]) for cid in cited
+                     if citations.get(cid) and citation_evidence(citations[cid]) is not None}
             if not blobs:
                 continue  # every cited source is an empty capture, nothing to check against
             verdict = nli.check(claim_text, " ".join(blobs.values()))

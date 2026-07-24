@@ -15,6 +15,7 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from heynyc.__main__ import _default_reminders, _load_retriever
 from heynyc.core import config
 from heynyc.core.agent import Agent, AgentResult
+from heynyc.core.nli import PromptedNLI
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.eval.cases import load_cases, select_cases
@@ -295,6 +296,7 @@ async def run_arms(
     arm_order: tuple[str, ...] | None = None,
     parallel: bool = False,
     structured_grounding: bool = False,
+    semantic_verifier_model: str | None = None,
 ) -> dict[str, Any]:
     order = arm_order or tuple(factories)
     receipt = {
@@ -302,6 +304,7 @@ async def run_arms(
         "arm_order": list(order),
         "parallel": parallel,
         "structured_grounding": structured_grounding,
+        "semantic_verifier_model": semantic_verifier_model,
         "performance_comparison_valid": not parallel and len(order) == 2,
         "arms": [],
     }
@@ -330,6 +333,7 @@ def build_factories(
     model: str,
     *,
     structured_grounding: bool = False,
+    semantic_verifier: Any = None,
 ) -> dict[str, Any]:
     candidate_kwargs = {
         "model": _comparison_model(model),
@@ -340,6 +344,8 @@ def build_factories(
     }
     if structured_grounding:
         candidate_kwargs["structured_grounding"] = True
+    if semantic_verifier is not None:
+        candidate_kwargs["semantic_verifier"] = semantic_verifier
     return {
         "production": lambda: Agent(
             registry,
@@ -378,12 +384,19 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use typed grounded answer blocks in the PydanticAI candidate",
     )
+    parser.add_argument(
+        "--semantic-verifier-model",
+        help="Candidate-only claim verifier model; requires --structured-grounding",
+    )
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
     if args.structured_grounding and args.arm == "production":
         print("--structured-grounding only applies to the pydantic_ai arm.")
+        return 2
+    if args.semantic_verifier_model and not args.structured_grounding:
+        print("--semantic-verifier-model requires --structured-grounding.")
         return 2
     registry = Registry.discover(
         config.MODULES_DIR,
@@ -417,11 +430,17 @@ async def _run(args: argparse.Namespace) -> int:
 
     retriever = _load_retriever(required=False)
     model = config.HEYNYC_MODEL
+    semantic_verifier = (
+        PromptedNLI(model=args.semantic_verifier_model)
+        if args.semantic_verifier_model
+        else None
+    )
     factories = build_factories(
         registry,
         retriever,
         model,
         structured_grounding=args.structured_grounding,
+        semantic_verifier=semantic_verifier,
     )
     if args.arm:
         factories = {args.arm: factories[args.arm]}
@@ -447,6 +466,7 @@ async def _run(args: argparse.Namespace) -> int:
         ),
         parallel=args.parallel,
         structured_grounding=args.structured_grounding,
+        semantic_verifier_model=args.semantic_verifier_model,
     )
     print(json.dumps(receipt, indent=2))
     print(f"Comparison written to {out_dir}")

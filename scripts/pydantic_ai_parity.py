@@ -61,7 +61,7 @@ from heynyc.core.agent import (
 )
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.freshness import attach_temporal_provenance
-from heynyc.core.grounding import check_grounding
+from heynyc.core.grounding import check_grounding, citation_evidence
 from heynyc.core.memory import (
     CompactFn,
     ContextCapacityError,
@@ -74,6 +74,7 @@ from heynyc.core.memory import (
     prepare_context,
     request_tokens,
 )
+from heynyc.core.nli import NLIInput
 from heynyc.core.prompts import build_system_prompt_tiers
 from heynyc.core.registry import Registry
 from heynyc.core.spend import SpendGuard
@@ -697,6 +698,7 @@ class PydanticRuntimeAdapter:
         compact_context: CompactFn | None = None,
         answer_model_route: str | None = None,
         structured_grounding: bool = False,
+        semantic_verifier: Any = None,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -708,6 +710,7 @@ class PydanticRuntimeAdapter:
         self._current_awareness = current_awareness
         self._usage_limits = usage_limits or UsageLimits(request_limit=8)
         self._answer_model_route = answer_model_route
+        self._semantic_verifier = semantic_verifier
         self._context_budget = (
             context_capacity(answer_model_route, None, True)
             if context_budget is None and answer_model_route is not None
@@ -754,8 +757,8 @@ class PydanticRuntimeAdapter:
         if guard_grounding:
             self._agent.output_validator(self._validate_grounding)
 
-    @staticmethod
-    def _validate_grounding(
+    async def _validate_grounding(
+        self,
         ctx: RunContext[ToolContext],
         output: str | GroundedAnswer | DeferredToolRequests,
     ) -> str | GroundedAnswer | DeferredToolRequests:
@@ -799,9 +802,109 @@ class PydanticRuntimeAdapter:
                 "outcomes from prior tool results, fix the grounding failure below, and "
                 f"cite every factual claim.\n\nGrounding failure: {verdict.detail}"
             )
+        if isinstance(output, GroundedAnswer) and self._semantic_verifier is not None:
+            mapping = ctx.deps.citations.mapping()
+            resident_source = f"Resident message:\n{ctx.deps.query}"
+            inputs = []
+            if output.acknowledgment.strip():
+                inputs.append(NLIInput(
+                    id="acknowledgment",
+                    claim=output.acknowledgment,
+                    source=resident_source,
+                ))
+            inputs.extend(
+                NLIInput(
+                    id=f"block-{index}",
+                    claim=block.text,
+                    source="\n\n".join(
+                        f"[{citation_id}] {citation_evidence(mapping[citation_id]) or ''}"
+                        for citation_id in block.citation_ids
+                    ),
+                )
+                for index, block in enumerate(output.grounded_blocks)
+            )
+            if output.follow_up_question.strip():
+                inputs.append(NLIInput(
+                    id="follow-up-question",
+                    claim=output.follow_up_question,
+                    source=resident_source,
+                ))
+            semantic = await self._semantic_verifier.arun_many(inputs)
+            ctx.deps.semantic_verifier_runs.append({
+                "input_tokens": semantic.input_tokens,
+                "output_tokens": semantic.output_tokens,
+                "cached_input_tokens": semantic.cached_input_tokens,
+                "cost_usd": semantic.cost_usd,
+                "latency_ms": semantic.latency_ms,
+                "error": semantic.error,
+                "labels": [verdict.label for verdict in semantic.verdicts],
+            })
+            if semantic.error is not None:
+                return GroundedAnswer(
+                    acknowledgment=(
+                        "I'm sorry, I couldn't verify the sources needed to answer safely "
+                        "right now. Please try again."
+                    )
+                )
+            failures = [
+                f"{item.id}: {verdict.label}"
+                + (f" ({verdict.reason})" if verdict.reason else "")
+                for item, verdict in zip(inputs, semantic.verdicts, strict=True)
+                if not verdict.supported
+            ]
+            if failures:
+                raise ModelRetry(
+                    "Return a complete replacement answer. Keep every supported outcome, "
+                    "but remove or narrow claims that the cited evidence does not support. "
+                    "Do not add uncited procedural advice.\n\nSemantic grounding failure: "
+                    + "; ".join(failures)
+                )
         if feedback := _reply_script_feedback(ctx.deps.query, rendered):
             raise ModelRetry(feedback)
         return output
+
+    @staticmethod
+    def _merge_semantic_usage(result: AgentResult, runs: list[dict[str, Any]]) -> None:
+        if not runs:
+            return
+        input_tokens = sum(int(run["input_tokens"]) for run in runs)
+        output_tokens = sum(int(run["output_tokens"]) for run in runs)
+        cached_tokens = sum(int(run["cached_input_tokens"]) for run in runs)
+        costs = [run.get("cost_usd") for run in runs]
+        semantic_cost = (
+            sum(float(cost) for cost in costs)
+            if all(isinstance(cost, (int, float)) for cost in costs)
+            else None
+        )
+        result.usage.update({
+            "semantic_verifier_requests": len(runs),
+            "semantic_verifier_input_tokens": input_tokens,
+            "semantic_verifier_output_tokens": output_tokens,
+            "semantic_verifier_cached_input_tokens": cached_tokens,
+            "semantic_verifier_cost_usd": semantic_cost,
+            "semantic_verifier_time_ms": sum(float(run["latency_ms"]) for run in runs),
+        })
+        if errors := [run["error"] for run in runs if run.get("error")]:
+            result.usage["semantic_verifier_error"] = errors[-1]
+        labels: dict[str, int] = {}
+        for run in runs:
+            for label in run["labels"]:
+                labels[label] = labels.get(label, 0) + 1
+        result.usage["semantic_verifier_labels"] = labels
+        result.usage["input_tokens"] += input_tokens
+        result.usage["output_tokens"] += output_tokens
+        result.usage["cached_input_tokens"] += cached_tokens
+        result.usage["requests"] += len(runs)
+        result.usage["n_model_calls"] += len(runs)
+        answer_cost = result.usage.get("cost_usd")
+        result.usage["cost_usd"] = (
+            float(answer_cost) + semantic_cost
+            if isinstance(answer_cost, (int, float)) and semantic_cost is not None
+            else None
+        )
+        result.usage["cost_status"] = (
+            "priced" if result.usage["cost_usd"] is not None else "unpriced"
+        )
 
     def conversation(self) -> "_PydanticConversation":
         return _PydanticConversation(self)
@@ -951,6 +1054,7 @@ class PydanticRuntimeAdapter:
                 status="max_turns",
             )
             result.usage["model_request_ms"] = timing_capability.request_ms
+            self._merge_semantic_usage(result, deps.semantic_verifier_runs)
             result.hit_max_iters = True
             return result, new_messages, None
         result = self._result(
@@ -960,6 +1064,7 @@ class PydanticRuntimeAdapter:
             model_time_ms=timing_capability.elapsed_ms,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        self._merge_semantic_usage(result, deps.semantic_verifier_runs)
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
@@ -1422,6 +1527,7 @@ class _PydanticConversation:
             model_time_ms=timing_capability.elapsed_ms,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        self.runtime._merge_semantic_usage(result, deps.semantic_verifier_runs)
         self._history.extend(native.new_messages())
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
@@ -1570,6 +1676,7 @@ def build_runtime(
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
     structured_grounding: bool = False,
+    semantic_verifier: Any = None,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
     stable_prompt, _ = build_system_prompt_tiers(
@@ -1592,4 +1699,5 @@ def build_runtime(
         extra_capabilities=extra_capabilities,
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
+        semantic_verifier=semantic_verifier,
     )
