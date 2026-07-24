@@ -1,6 +1,8 @@
 import sqlite3
 import time
 
+import pytest
+
 from heynyc.channels.store import ChannelStore
 from heynyc.core import pii_crypto
 
@@ -44,7 +46,22 @@ def test_old_seen_schema_migrates_into_the_single_inbox_dedup_table(tmp_path, mo
     }
     assert "inbox" in tables
     assert "seen" not in tables
-    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert "approval_pending" in tables
+    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_store_refuses_to_downgrade_a_newer_schema(tmp_path):
+    path = tmp_path / "ch.sqlite3"
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA user_version = 99")
+    db.commit()
+    db.close()
+
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        _store(tmp_path)
+
+    reopened = sqlite3.connect(path)
+    assert reopened.execute("PRAGMA user_version").fetchone()[0] == 99
 
 
 def test_inbox_claim_decrypts_payload_that_is_encrypted_at_rest(tmp_path, monkeypatch):
@@ -166,6 +183,46 @@ def test_pending_delete_stages_and_pops_once(tmp_path):
     assert s.pop_pending_delete("u1") is None   # consumed once
 
 
+def test_pending_approval_is_encrypted_resident_bound_and_consumed_once(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    now = 100.0
+    monkeypatch.setattr("heynyc.channels.store.time.time", lambda: now)
+    s = _store(tmp_path)
+    state = b'{"pending":{"tool":"prepare_snap_form","address":"private"}}'
+
+    s.set_pending_approval("u1", state, ttl_s=60)
+
+    stored = s._db.execute(
+        "SELECT state FROM approval_pending WHERE user_key = ?", ("u1",)
+    ).fetchone()[0]
+    assert isinstance(stored, bytes)
+    assert b"prepare_snap_form" not in stored
+    assert b"private" not in stored
+    assert s.has_pending_approval("u1") is True
+    assert s.has_pending_approval("u2") is False
+    assert s.pop_pending_approval("u2") is None
+    assert s.pop_pending_approval("u1") == state
+    assert s.pop_pending_approval("u1") is None
+
+
+def test_pending_approval_expires_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    now = 100.0
+    monkeypatch.setattr("heynyc.channels.store.time.time", lambda: now)
+    s = _store(tmp_path)
+    s.set_pending_approval("u1", b"state", ttl_s=30)
+
+    now = 131.0
+
+    assert s.has_pending_approval("u1") is False
+    assert s.pop_pending_approval("u1") is None
+    assert s._db.execute(
+        "SELECT 1 FROM approval_pending WHERE user_key = ?", ("u1",)
+    ).fetchone() is None
+
+
 def test_delete_user_removes_flags_and_inbox_but_keeps_spend(tmp_path, monkeypatch):
     """DELETE MY DATA wipes the resident's own flag rows (pending + confirmed) but leaves the
     anonymized daily spend record standing for abuse control (the survivor promised in the copy)."""
@@ -174,6 +231,7 @@ def test_delete_user_removes_flags_and_inbox_but_keeps_spend(tmp_path, monkeypat
     s.set_pending_flag("u1", 3, "report")
     s.add_flag("u1", 5, "report")
     s.set_pending_delete("u1")
+    s.set_pending_approval("u1", b"pending state", ttl_s=60)
     s.add_spend("u1", "2026-07-20", 0.07)
     assert s.first_contact("u1") is True
     assert s.allow("u1") is True
@@ -187,6 +245,7 @@ def test_delete_user_removes_flags_and_inbox_but_keeps_spend(tmp_path, monkeypat
     assert [f["user_key"] for f in remaining] == ["u2"]   # only the other user's flag is left
     assert s.pop_pending_flag("u1") is None
     assert s.pop_pending_delete("u1") is None
+    assert s.pop_pending_approval("u1") is None
     assert abs(s.daily_spend("u1", "2026-07-20") - 0.07) < 1e-9   # spend survives
     assert s._db.execute(
         "SELECT message_id FROM inbox ORDER BY message_id"

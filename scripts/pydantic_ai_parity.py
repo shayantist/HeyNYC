@@ -810,6 +810,18 @@ class _PydanticConversation:
             for call in self._pending.approvals
         }
 
+    @property
+    def pending_calls(self) -> dict[str, dict]:
+        if self._pending is None:
+            return {}
+        return {
+            call.tool_call_id: {
+                "tool_name": call.tool_name,
+                "args": call.args_as_dict(),
+            }
+            for call in self._pending.calls
+        }
+
     def dump_state(self) -> bytes:
         """Serialize native state; the caller must use authenticated encrypted storage."""
         return json.dumps(
@@ -1085,6 +1097,78 @@ class _PydanticConversation:
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
         return result
+
+
+class PydanticApprovalFlow:
+    """Persist and resume native Pydantic approvals through the shared encrypted store."""
+
+    def __init__(
+        self,
+        runtime: PydanticRuntimeAdapter,
+        store: Any,
+        user_key: str,
+        *,
+        ttl_s: float,
+    ) -> None:
+        self.runtime = runtime
+        self.store = store
+        self.user_key = user_key
+        self.ttl_s = ttl_s
+        state = store.get_pending_approval(user_key)
+        self.conversation = (
+            runtime.conversation_from_state(state)
+            if state is not None
+            else runtime.conversation()
+        )
+
+    async def send(self, user_message: str, **kwargs: Any) -> AgentResult:
+        if self.store.has_pending_approval(self.user_key):
+            raise ValueError("Cannot start a new turn while approval is pending")
+        result = await self.conversation.send(user_message, **kwargs)
+        self._persist_if_pending(result)
+        return result
+
+    async def resume(
+        self,
+        decision: bool | dict[str, bool],
+        **kwargs: Any,
+    ) -> AgentResult:
+        expected = set(self.conversation.pending_approvals)
+        if not isinstance(decision, bool) and set(decision) != expected:
+            raise ValueError(
+                f"Approval IDs must match pending calls: {sorted(expected)}"
+            )
+        if not isinstance(decision, bool) and not all(
+            isinstance(value, bool) for value in decision.values()
+        ):
+            raise ValueError("Approval decisions must be booleans")
+        state = self.store.pop_pending_approval(self.user_key)
+        if state is None:
+            raise ValueError("Pending approval expired or already consumed")
+        self.conversation = self.runtime.conversation_from_state(state)
+        approvals = (
+            {
+                call_id: decision
+                for call_id in self.conversation.pending_approvals
+            }
+            if isinstance(decision, bool)
+            else decision
+        )
+        result = await self.conversation.resume_approvals(approvals, **kwargs)
+        self._persist_if_pending(result)
+        return result
+
+    def _persist_if_pending(self, result: AgentResult) -> None:
+        if result.status == "approval_required":
+            if self.conversation.pending_calls:
+                raise ValueError(
+                    "External deferred calls are not supported by this approval flow"
+                )
+            self.store.set_pending_approval(
+                self.user_key,
+                self.conversation.dump_state(),
+                ttl_s=self.ttl_s,
+            )
 
 
 def build_runtime(

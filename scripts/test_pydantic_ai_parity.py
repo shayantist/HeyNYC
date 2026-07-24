@@ -40,6 +40,7 @@ from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.usage import RequestUsage
 
 from heynyc.channels.format import render
+from heynyc.channels.store import ChannelStore
 from heynyc.core import pii_crypto
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.grounding import check_grounding
@@ -58,6 +59,7 @@ from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
 from heynyc.eval.trace import build_trace
 from scripts.pydantic_ai_parity import (
+    PydanticApprovalFlow,
     PydanticRuntimeAdapter,
     _complete_cost,
     _dynamic_instructions,
@@ -808,6 +810,7 @@ async def test_adapter_preserves_approval_and_resumes_exact_call() -> None:
 async def test_runtime_conversation_persists_and_resumes_exact_approval(
     approved: bool,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     executed: list[dict] = []
 
@@ -883,11 +886,18 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         runtime.conversation_from_state(json.dumps(orphaned).encode())
 
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
-    encrypted_state = pii_crypto.encrypt(state.decode())
-    assert b"draft-123" not in encrypted_state
-    restored = runtime.conversation_from_state(
-        pii_crypto.decrypt(encrypted_state).encode()
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
     )
+    store.set_pending_approval("resident-a", state, ttl_s=60)
+    assert store.pop_pending_approval("resident-b") is None
+    persisted = store.pop_pending_approval("resident-a")
+    assert persisted is not None
+    assert store.pop_pending_approval("resident-a") is None
+    restored = runtime.conversation_from_state(persisted)
     with pytest.raises(ValueError, match="Approval IDs must match"):
         await restored.resume_approvals({"different-call": approved})
     assert executed == []
@@ -900,9 +910,10 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         await restored.resume_approvals({"approval-call": approved})
     assert executed == []
 
-    restored = runtime.conversation_from_state(
-        pii_crypto.decrypt(encrypted_state).encode()
-    )
+    store.set_pending_approval("resident-valid", state, ttl_s=60)
+    persisted = store.pop_pending_approval("resident-valid")
+    assert persisted is not None
+    restored = runtime.conversation_from_state(persisted)
 
     async def reject_memory_processing(*args, **kwargs):
         raise AssertionError("approval resume must preserve the exact pending trace")
@@ -913,6 +924,123 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
     assert result.text == ("Prepared" if approved else "Cancelled")
     assert executed == ([{"draft_id": "draft-123"}] if approved else [])
     assert restored.pending_approvals == {}
+
+
+@pytest.mark.parametrize("approved", [True, False])
+async def test_approval_flow_survives_restart_and_rejects_replay(
+    approved: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[dict] = []
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        executed.append(args)
+        return "Prepared"
+
+    source = Tool(
+        name="prepare_application",
+        description="Prepare an application artifact",
+        parameters={
+            "type": "object",
+            "properties": {"draft_id": {"type": "string"}},
+            "required": ["draft_id"],
+        },
+        handler=handler,
+        requires_approval=True,
+    )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not _parts(messages, ToolReturnPart):
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        "prepare_application",
+                        {"draft_id": "draft-123"},
+                        "approval-call",
+                    )
+                ]
+            )
+        return ModelResponse([TextPart("Prepared" if approved else "Cancelled")])
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"prepare_application": source},
+        guard_grounding=False,
+    )
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    first_process = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+
+    pending = await first_process.send("Prepare my application")
+
+    assert pending.status == "approval_required"
+    assert executed == []
+    restarted = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+    assert restarted.conversation.pending_approvals == {
+        "approval-call": {
+            "tool_name": "prepare_application",
+            "args": {"draft_id": "draft-123"},
+        }
+    }
+    with pytest.raises(ValueError, match="must match pending calls"):
+        await restarted.resume({"different-call": approved})
+    assert store.has_pending_approval("resident-a") is True
+    with pytest.raises(ValueError, match="must be booleans"):
+        await restarted.resume({"approval-call": "yes"})
+    assert store.has_pending_approval("resident-a") is True
+    result = await restarted.resume(approved)
+
+    assert result.text == ("Prepared" if approved else "Cancelled")
+    expected = [{"draft_id": "draft-123"}] if approved else []
+    assert executed == expected
+    with pytest.raises(ValueError, match="expired or already consumed"):
+        await restarted.resume(True)
+    assert executed == expected
+
+
+async def test_approval_flow_rejects_external_deferral_before_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        raise CallDeferred({"job_id": "job-1"})
+
+    source = Tool(
+        name="external_lookup",
+        description="Start an external lookup",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse([ToolCallPart("external_lookup", {}, "call-1")])
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"external_lookup": source},
+        guard_grounding=False,
+    )
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    flow = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+
+    with pytest.raises(ValueError, match="External deferred calls are not supported"):
+        await flow.send("Start the lookup")
+
+    assert store.has_pending_approval("resident-a") is False
 
 
 async def test_adapter_resumes_deferred_result_without_reexecuting_tool() -> None:

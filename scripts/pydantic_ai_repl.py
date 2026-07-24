@@ -14,12 +14,13 @@ from rich.markdown import Markdown
 load_dotenv()
 
 from heynyc.__main__ import _default_reminders, _load_retriever
+from heynyc.channels.store import ChannelStore
 from heynyc.core import config
 from heynyc.core.citations import text_fragment_url, used_citations
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
 from heynyc.modules.advisories.tools import current_awareness
-from scripts.pydantic_ai_parity import build_runtime
+from scripts.pydantic_ai_parity import PydanticApprovalFlow, build_runtime
 
 
 def _approval_review(request: dict) -> str:
@@ -36,6 +37,17 @@ def _approval_copy(tool_name: str) -> tuple[str, str]:
             "Are these facts accurate?",
         )
     return "Review the proposed action and exact values:", "Approve this action?"
+
+
+async def _resolve_pending(console: Console, flow: PydanticApprovalFlow):
+    approvals = {}
+    for call_id, request in flow.conversation.pending_approvals.items():
+        heading, question = _approval_copy(request["tool_name"])
+        console.print(f"[yellow]{heading}[/]")
+        console.print(_approval_review(request))
+        answer = console.input(f"[yellow]{question}[/] [y/N] ")
+        approvals[call_id] = answer.strip().lower() in {"y", "yes"}
+    return await flow.resume(approvals)
 
 
 def _configured_model():
@@ -70,7 +82,18 @@ async def main() -> None:
         use_module_capabilities=True,
         current_awareness=current_awareness,
     )
-    conversation = runtime.conversation()
+    approval_store = ChannelStore(
+        config.HEYNYC_DATA_DIR / "pydantic-candidate.sqlite3",
+        rate_limit=1,
+        window_s=1,
+        dedup_ttl_s=1,
+    )
+    flow = PydanticApprovalFlow(
+        runtime,
+        approval_store,
+        "local-pydantic-repl",
+        ttl_s=15 * 60,
+    )
     console.print(
         "[bold]HeyNYC PydanticAI candidate[/]\n"
         "[dim]Local debug only. NEW clears model-visible history; EXIT quits. "
@@ -78,30 +101,33 @@ async def main() -> None:
     )
 
     while True:
-        try:
-            query = console.input("[bold green]you ▸ [/]").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not query:
-            continue
-        if query.upper() in {"EXIT", "QUIT"}:
-            break
-        if query.upper() == "NEW":
-            conversation = runtime.conversation()
-            console.print("[dim]Started a fresh candidate conversation.[/]\n")
-            continue
+        if flow.conversation.pending_approvals:
+            with console.status("restoring pending approval"):
+                result = await _resolve_pending(console, flow)
+        else:
+            try:
+                query = console.input("[bold green]you ▸ [/]").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not query:
+                continue
+            if query.upper() in {"EXIT", "QUIT"}:
+                break
+            if query.upper() == "NEW":
+                approval_store.pop_pending_approval("local-pydantic-repl")
+                flow = PydanticApprovalFlow(
+                    runtime,
+                    approval_store,
+                    "local-pydantic-repl",
+                    ttl_s=15 * 60,
+                )
+                console.print("[dim]Started a fresh candidate conversation.[/]\n")
+                continue
 
-        with console.status("thinking"):
-            result = await conversation.send(query, reminders=_default_reminders())
-            if result.status == "approval_required":
-                approvals = {}
-                for call_id, request in conversation.pending_approvals.items():
-                    heading, question = _approval_copy(request["tool_name"])
-                    console.print(f"[yellow]{heading}[/]")
-                    console.print(_approval_review(request))
-                    answer = console.input(f"[yellow]{question}[/] [y/N] ")
-                    approvals[call_id] = answer.strip().lower() in {"y", "yes"}
-                result = await conversation.resume_approvals(approvals)
+            with console.status("thinking"):
+                result = await flow.send(query, reminders=_default_reminders())
+                if result.status == "approval_required":
+                    result = await _resolve_pending(console, flow)
 
         body = re.sub(r"\{cite:(S\d+)\}", r"[\1]", result.text)
         console.print(Markdown(body))

@@ -8,6 +8,8 @@ from pathlib import Path
 
 from heynyc.core import pii_crypto
 
+_SCHEMA_VERSION = 3
+
 
 class InboxPayloadError(RuntimeError):
     def __init__(self, message_id: str) -> None:
@@ -22,6 +24,13 @@ class ChannelStore:
         self.dedup_ttl_s = dedup_ttl_s
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False, timeout=30.0)
+        schema_version = int(self._db.execute("PRAGMA user_version").fetchone()[0])
+        if schema_version > _SCHEMA_VERSION:
+            self._db.close()
+            raise RuntimeError(
+                f"channel database schema {schema_version} is newer than supported "
+                f"{_SCHEMA_VERSION}"
+            )
         tables = {
             row[0]
             for row in self._db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -52,7 +61,6 @@ class ChannelStore:
         for name, declaration in additions.items():
             if name not in columns:
                 self._db.execute(f"ALTER TABLE inbox ADD COLUMN {name} {declaration}")
-        self._db.execute("PRAGMA user_version = 2")
         self._db.execute("CREATE TABLE IF NOT EXISTS rate (user_key TEXT, ts REAL)")
         self._db.execute("CREATE INDEX IF NOT EXISTS rate_key ON rate (user_key, ts)")
         self._db.execute(
@@ -77,11 +85,17 @@ class ChannelStore:
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS delete_pending (user_key TEXT PRIMARY KEY, ts REAL NOT NULL)"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS approval_pending "
+            "(user_key TEXT PRIMARY KEY, state BLOB NOT NULL, ts REAL NOT NULL, "
+            "expires_at REAL NOT NULL)"
+        )
         # First-contact marker: a durable once-EVER flag so a never-seen user gets the welcome
         # footer exactly once (the `seen` table is TTL-pruned, so it can't answer "ever").
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS welcomed (user_key TEXT PRIMARY KEY, ts REAL NOT NULL)"
         )
+        self._db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._db.commit()
 
     def seen(self, message_id: str, user_key: str = "") -> bool:
@@ -279,6 +293,65 @@ class ChannelStore:
         self._db.commit()
         return {"ts": float(row[0])}
 
+    def set_pending_approval(self, user_key: str, state: bytes, *, ttl_s: float) -> None:
+        """Replace this resident's deferred Pydantic run with encrypted native state."""
+        if ttl_s <= 0:
+            raise ValueError("approval ttl must be positive")
+        now = time.time()
+        self._db.execute(
+            "INSERT INTO approval_pending (user_key, state, ts, expires_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(user_key) DO UPDATE SET "
+            "state = excluded.state, ts = excluded.ts, expires_at = excluded.expires_at",
+            (user_key, pii_crypto.encrypt(state.decode("utf-8")), now, now + ttl_s),
+        )
+        self._db.commit()
+
+    def has_pending_approval(self, user_key: str) -> bool:
+        """Whether this resident has an unexpired deferred run."""
+        now = time.time()
+        self._db.execute(
+            "DELETE FROM approval_pending WHERE user_key = ? AND expires_at <= ?",
+            (user_key, now),
+        )
+        row = self._db.execute(
+            "SELECT 1 FROM approval_pending WHERE user_key = ?", (user_key,)
+        ).fetchone()
+        self._db.commit()
+        return row is not None
+
+    def get_pending_approval(self, user_key: str) -> bytes | None:
+        """Read one unexpired deferred run without consuming it."""
+        if not self.has_pending_approval(user_key):
+            return None
+        row = self._db.execute(
+            "SELECT state FROM approval_pending WHERE user_key = ?", (user_key,)
+        ).fetchone()
+        return pii_crypto.decrypt(row[0]).encode("utf-8")
+
+    def pop_pending_approval(self, user_key: str) -> bytes | None:
+        """Consume one unexpired resident-bound deferred run. Expired state fails closed."""
+        now = time.time()
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT state, expires_at FROM approval_pending WHERE user_key = ?",
+                (user_key,),
+            ).fetchone()
+            if row is None or float(row[1]) <= now:
+                self._db.execute(
+                    "DELETE FROM approval_pending WHERE user_key = ?", (user_key,)
+                )
+                self._db.commit()
+                return None
+            self._db.execute(
+                "DELETE FROM approval_pending WHERE user_key = ?", (user_key,)
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        return pii_crypto.decrypt(row[0]).encode("utf-8")
+
     def delete_user(self, user_key: str) -> None:
         """Erase this resident's inbox and control-plane rows on DELETE MY DATA. The daily
         `spend` record stays as the anonymized abuse-control survivor promised in the copy."""
@@ -286,6 +359,7 @@ class ChannelStore:
         self._db.execute("DELETE FROM flag WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM flag_pending WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM delete_pending WHERE user_key = ?", (user_key,))
+        self._db.execute("DELETE FROM approval_pending WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM welcomed WHERE user_key = ?", (user_key,))
         self._db.execute("DELETE FROM rate WHERE user_key = ?", (user_key,))
         self._db.commit()
