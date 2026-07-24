@@ -160,6 +160,7 @@ def build_factories(registry: Registry, retriever: Any, model: str) -> dict[str,
         "pydantic_ai": lambda: build_runtime(
             registry,
             model=_comparison_model(model),
+            answer_model_route=model,
             index=retriever,
             use_module_capabilities=True,
             current_awareness=current_awareness,

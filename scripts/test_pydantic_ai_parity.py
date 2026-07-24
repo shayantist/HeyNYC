@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -903,6 +904,10 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         pii_crypto.decrypt(encrypted_state).encode()
     )
 
+    async def reject_memory_processing(*args, **kwargs):
+        raise AssertionError("approval resume must preserve the exact pending trace")
+
+    monkeypatch.setattr(restored, "_prepare_model_request", reject_memory_processing)
     result = await restored.resume_approvals({"approval-call": approved})
 
     assert result.text == ("Prepared" if approved else "Cancelled")
@@ -1881,6 +1886,234 @@ def test_build_runtime_accepts_a_provider_native_model() -> None:
     assert runtime._agent.model is model
 
 
+def test_build_runtime_enables_default_memory_only_for_explicit_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 123,
+    )
+    model = FunctionModel(lambda messages, info: ModelResponse([TextPart("Done")]))
+
+    injected = build_runtime(Registry([]), tools={}, model=model)
+    configured = build_runtime(
+        Registry([]),
+        tools={},
+        model=model,
+        answer_model_route="openai/gpt-test",
+    )
+
+    assert injected._context_budget is None
+    assert injected._answer_model_route is None
+    assert configured._context_budget == 123
+    assert configured._answer_model_route == "openai/gpt-test"
+
+
+async def test_memory_capability_counts_only_currently_exposed_function_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measured: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 10_000,
+    )
+
+    def count(model, messages, schemas, counter=None):
+        measured.append([schema["function"]["name"] for schema in schemas])
+        return 1
+
+    monkeypatch.setattr("scripts.pydantic_ai_parity.request_tokens", count)
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Help with SNAP",
+                prompt="Use the lookup.",
+            )
+        ]
+    )
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "Done"
+
+    source = Tool(
+        name="lookup",
+        description="Look up SNAP",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        module="benefits",
+    )
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                [ToolCallPart("load_capability", {"id": "benefits"}, "load")]
+            )
+        return ModelResponse([TextPart("Done")])
+
+    runtime = build_runtime(
+        registry,
+        tools={"lookup": source},
+        model=FunctionModel(model),
+        use_module_capabilities=True,
+        answer_model_route="openai/gpt-test",
+    )
+
+    await runtime.run("Help")
+
+    assert "lookup" not in measured[0]
+    assert "lookup" in measured[1]
+
+
+async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compacted: list[list[dict]] = []
+
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 3,
+    )
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.request_tokens",
+        lambda model, messages, schemas, counter=None: sum(
+            message["role"] in {"user", "assistant"} for message in messages
+        ),
+    )
+
+    async def compact(history, continuity, spend):
+        compacted.append(history)
+        return ContinuityRecord(goal="First"), {
+            "memory_model": "openai/gpt-5.4-nano",
+            "memory_input_tokens": 7,
+            "memory_output_tokens": 3,
+            "memory_cost_usd": 0.01,
+            "memory_time_ms": 2.0,
+        }
+
+    monkeypatch.setattr("scripts.pydantic_ai_parity.compact_memory", compact)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(
+            [TextPart("Done")],
+            usage=RequestUsage(input_tokens=10, output_tokens=2),
+        )
+
+    runtime = build_runtime(
+        Registry([]),
+        tools={},
+        model=FunctionModel(model),
+        answer_model_route="openai/gpt-test",
+    )
+    compacting = runtime.conversation()
+    independent = runtime.conversation()
+    await compacting.send("First")
+    await compacting.send("Second")
+
+    compacted_result, independent_result = await asyncio.gather(
+        compacting.send("Third"),
+        independent.send("Only"),
+    )
+
+    assert compacted == [[
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": "Done"},
+    ]]
+    assert compacted_result.usage["memory_compactions"] == 1
+    assert compacted_result.usage["memory_model"] == "openai/gpt-5.4-nano"
+    assert compacted_result.usage["input_tokens"] == 17
+    assert compacted_result.usage["output_tokens"] == 5
+    assert compacted_result.usage["requests"] == 2
+    assert compacted_result.usage["n_model_calls"] == 2
+    assert compacted_result.usage["model_time_ms"] > 2.0
+    assert independent_result.usage["memory_compactions"] == 0
+    assert "memory_model" not in independent_result.usage
+    assert compacting._memory_usage == {}
+    assert independent._memory_usage == {}
+
+
+async def test_default_compactor_failure_fails_before_answer_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 3,
+    )
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.request_tokens",
+        lambda model, messages, schemas, counter=None: sum(
+            message["role"] in {"user", "assistant"} for message in messages
+        ),
+    )
+
+    async def compact(history, continuity, spend):
+        raise RuntimeError("compactor unavailable")
+
+    monkeypatch.setattr("scripts.pydantic_ai_parity.compact_memory", compact)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return ModelResponse([TextPart("Done")])
+
+    conversation = build_runtime(
+        Registry([]),
+        tools={},
+        model=FunctionModel(model),
+        answer_model_route="openai/gpt-test",
+    ).conversation()
+    await conversation.send("First")
+    await conversation.send("Second")
+
+    with pytest.raises(ContextCapacityError, match="unavailable"):
+        await conversation.send("Third")
+
+    assert calls == 2
+    assert conversation._memory_usage == {}
+
+
+async def test_default_memory_rejects_unfit_current_tool_schema_before_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 1,
+    )
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.request_tokens",
+        lambda model, messages, schemas, counter=None: 2 if schemas else 1,
+    )
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "unused"
+
+    source = Tool(
+        name="lookup",
+        description="Look up help",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise AssertionError("unfit request must fail before the answer model")
+
+    runtime = build_runtime(
+        Registry([]),
+        tools={"lookup": source},
+        model=FunctionModel(model),
+        answer_model_route="openai/gpt-test",
+    )
+
+    with pytest.raises(ContextCapacityError, match="context capacity"):
+        await runtime.run("Help")
+
+
 @pytest.mark.parametrize(
     ("system", "expected"),
     [
@@ -1925,6 +2158,43 @@ def test_context_measurement_counts_structured_continuity_only_once() -> None:
     contents = [str(message.get("content") or "") for message in measured]
     assert any("Current advisory" in content for content in contents)
     assert all(reminder not in content for content in contents)
+
+
+async def test_default_context_measurement_counts_structured_continuity_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measured: list[list[dict]] = []
+
+    monkeypatch.setattr(
+        "scripts.pydantic_ai_parity.context_capacity",
+        lambda model, limit, uses_litellm: 1_000,
+    )
+
+    def count(model, messages, schemas, counter=None):
+        measured.append(messages)
+        return 1
+
+    monkeypatch.setattr("scripts.pydantic_ai_parity.request_tokens", count)
+    runtime = build_runtime(
+        Registry([]),
+        tools={},
+        model=FunctionModel(
+            lambda messages, info: ModelResponse([TextPart("Done")])
+        ),
+        answer_model_route="openai/gpt-test",
+    )
+    conversation = runtime.conversation()
+    await conversation.send("Keep helping with food")
+    conversation.continuity = ContinuityRecord(goal="Keep helping with food")
+
+    await conversation.send("What next?")
+
+    reminder = continuity_reminder(conversation.continuity)
+    contents = [
+        str(message.get("content") or "")
+        for message in measured[-1]
+    ]
+    assert sum(reminder in content for content in contents) == 1
 
 
 def test_repl_approval_review_shows_tool_and_arguments() -> None:

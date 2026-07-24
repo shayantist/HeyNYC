@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from heynyc.core.agent import Agent, _history_messages, _routing_query
+from heynyc.core.agent import _history_messages, _routing_query
 from heynyc.core.memory import (
     ContextCapacityError,
     ContinuityRecord,
+    compact_memory,
+    merge_memory_usage,
     prepare_context,
 )
 
@@ -204,10 +206,9 @@ async def test_malformed_compaction_still_accrues_spend(monkeypatch):
 
     monkeypatch.setattr("litellm.acompletion", acompletion)
     monkeypatch.setattr(
-        "heynyc.core.agent.priced_cost_usd", lambda model, input_tokens, output_tokens: 0.01,
+        "heynyc.core.memory.priced_cost_usd", lambda model, input_tokens, output_tokens: 0.01,
     )
-    agent = Agent.__new__(Agent)
-    agent._spend = type("Spend", (), {
+    spend = type("Spend", (), {
         "recorded": [],
         "halt_reason": lambda self: None,
         "record": lambda self, model, input_tokens, output_tokens: self.recorded.append(
@@ -217,9 +218,9 @@ async def test_malformed_compaction_still_accrues_spend(monkeypatch):
     })()
 
     with pytest.raises(Exception):
-        await agent._compact_memory([], None)
+        await compact_memory([], None, spend)
 
-    assert agent._spend.recorded == [("openai/gpt-5.4-nano", 11, 7)]
+    assert spend.recorded == [("openai/gpt-5.4-nano", 11, 7)]
 
 
 @pytest.mark.asyncio
@@ -237,10 +238,9 @@ async def test_empty_compaction_response_still_accrues_spend(monkeypatch):
 
     monkeypatch.setattr("litellm.acompletion", acompletion)
     monkeypatch.setattr(
-        "heynyc.core.agent.priced_cost_usd", lambda model, input_tokens, output_tokens: 0.01,
+        "heynyc.core.memory.priced_cost_usd", lambda model, input_tokens, output_tokens: 0.01,
     )
-    agent = Agent.__new__(Agent)
-    agent._spend = type("Spend", (), {
+    spend = type("Spend", (), {
         "recorded": [],
         "halt_reason": lambda self: None,
         "record": lambda self, model, input_tokens, output_tokens: self.recorded.append(
@@ -250,9 +250,78 @@ async def test_empty_compaction_response_still_accrues_spend(monkeypatch):
     })()
 
     with pytest.raises(Exception):
-        await agent._compact_memory([], None)
+        await compact_memory([], None, spend)
 
-    assert agent._spend.recorded == [("openai/gpt-5.4-nano", 13, 0)]
+    assert spend.recorded == [("openai/gpt-5.4-nano", 13, 0)]
+
+
+def test_memory_usage_merge_preserves_resident_turn_contract():
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "requests": 1,
+        "n_model_calls": 1,
+        "model_time_ms": 4.0,
+        "latency_ms": 9.0,
+        "cost_usd": 0.02,
+    }
+
+    merge_memory_usage(
+        usage,
+        {
+            "memory_model": "openai/gpt-5.4-nano",
+            "memory_input_tokens": 7,
+            "memory_output_tokens": 3,
+            "memory_time_ms": 2.0,
+            "memory_cost_usd": 0.01,
+            "memory_compactions": 1,
+        },
+    )
+
+    assert usage == {
+        "input_tokens": 17,
+        "output_tokens": 8,
+        "requests": 2,
+        "n_model_calls": 2,
+        "model_time_ms": 6.0,
+        "latency_ms": 11.0,
+        "cost_usd": 0.03,
+        "memory_model": "openai/gpt-5.4-nano",
+        "memory_input_tokens": 7,
+        "memory_output_tokens": 3,
+        "memory_time_ms": 2.0,
+        "memory_cost_usd": 0.01,
+        "memory_compactions": 1,
+    }
+
+
+def test_memory_usage_merge_does_not_double_count_inclusive_latency():
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "requests": 1,
+        "n_model_calls": 1,
+        "model_time_ms": 4.0,
+        "latency_ms": 9.0,
+        "cost_usd": 0.02,
+    }
+
+    merge_memory_usage(
+        usage,
+        {
+            "memory_model": "openai/gpt-5.4-nano",
+            "memory_input_tokens": 7,
+            "memory_output_tokens": 3,
+            "memory_time_ms": 2.0,
+            "memory_cost_usd": 0.01,
+        },
+        latency_already_included=True,
+    )
+
+    assert usage["requests"] == 2
+    assert usage["n_model_calls"] == 2
+    assert usage["model_time_ms"] == 6.0
+    assert usage["latency_ms"] == 9.0
 
 
 @pytest.mark.asyncio

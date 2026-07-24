@@ -23,7 +23,12 @@ from typing import Optional
 from . import pii_crypto
 from .agent import Agent, AgentResult, Conversation, turn_timestamp
 from .citations import used_citations
-from .memory import ContextCapacityError, ContinuityRecord, continuity_reminder
+from .memory import (
+    ContextCapacityError,
+    ContinuityRecord,
+    continuity_reminder,
+    merge_memory_usage,
+)
 
 
 def _encode_line(message: dict) -> str:
@@ -144,7 +149,7 @@ class Session:
         )
         if result.status == "context_limit":
             raise ContextCapacityError("current request exceeds context capacity")
-        _merge_memory_usage(result.usage, memory_usage)
+        merge_memory_usage(result.usage, memory_usage)
         return PendingTurn(
             user_message=user_message,
             result=result,
@@ -187,28 +192,3 @@ class Session:
     @property
     def turns(self) -> list[dict]:
         return self.convo.turns
-
-
-def _merge_memory_usage(usage: dict, memory: dict) -> None:
-    """Fold an optional compaction model call into the resident turn's accounting."""
-    usage.update({
-        key: value for key, value in memory.items()
-        if key.startswith("memory_")
-    })
-    if not memory.get("memory_model"):
-        return
-    input_tokens = int(memory.get("memory_input_tokens", 0) or 0)
-    output_tokens = int(memory.get("memory_output_tokens", 0) or 0)
-    elapsed_ms = float(memory.get("memory_time_ms", 0.0) or 0.0)
-    usage["input_tokens"] = int(usage.get("input_tokens", 0) or 0) + input_tokens
-    usage["output_tokens"] = int(usage.get("output_tokens", 0) or 0) + output_tokens
-    usage["n_model_calls"] = int(usage.get("n_model_calls", 0) or 0) + 1
-    usage["model_time_ms"] = float(usage.get("model_time_ms", 0.0) or 0.0) + elapsed_ms
-    usage["latency_ms"] = float(usage.get("latency_ms", 0.0) or 0.0) + elapsed_ms
-    memory_cost = memory.get("memory_cost_usd")
-    answer_cost = usage.get("cost_usd")
-    if memory_cost is None or answer_cost is None:
-        usage["cost_usd"] = None
-        usage["cost_status"] = "unpriced"
-    else:
-        usage["cost_usd"] = float(answer_cost) + float(memory_cost)

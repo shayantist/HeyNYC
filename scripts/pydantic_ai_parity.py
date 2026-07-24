@@ -16,7 +16,12 @@ from pydantic_ai import (
     RunContext,
     UsageLimits,
 )
-from pydantic_ai.capabilities import Capability, ProcessHistory, ReinjectSystemPrompt
+from pydantic_ai.capabilities import (
+    AbstractCapability,
+    Capability,
+    ReinjectSystemPrompt,
+    WrapModelRequestHandler,
+)
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -29,9 +34,11 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_ai.tools import Tool as PydanticTool
 
+from heynyc.core import config
 from heynyc.core.agent import (
     AgentResult,
     _emergency_backstop,
@@ -44,13 +51,19 @@ from heynyc.core.freshness import attach_temporal_provenance
 from heynyc.core.grounding import check_grounding
 from heynyc.core.memory import (
     CompactFn,
+    ContextCapacityError,
     ContinuityRecord,
     MeasureFn,
+    compact_memory,
+    context_capacity,
     continuity_reminder,
+    merge_memory_usage,
     prepare_context,
+    request_tokens,
 )
 from heynyc.core.prompts import build_system_prompt_tiers
 from heynyc.core.registry import Registry
+from heynyc.core.spend import SpendGuard
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
@@ -394,6 +407,62 @@ def _native_history(history: Sequence[dict]) -> list[ModelMessage]:
     ]
 
 
+def _function_tool_schemas(request_context: ModelRequestContext) -> list[dict]:
+    """Translate only function tools exposed on this exact native request."""
+    schemas = []
+    for tool in request_context.model_request_parameters.function_tools:
+        if tool.defer_loading:
+            continue
+        function = {
+            "name": tool.name,
+            "description": tool.description or "",
+            "parameters": tool.parameters_json_schema,
+        }
+        if tool.strict:
+            function["strict"] = True
+        schemas.append({"type": "function", "function": function})
+    return schemas
+
+
+class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
+    """Adapt HeyNYC memory at PydanticAI's complete-request seam."""
+
+    def __init__(self, conversation: "_PydanticConversation") -> None:
+        self.conversation = conversation
+        self.visible_history: list[dict] | None = None
+        self.compacted = False
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[ToolContext],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        return await self.conversation._prepare_model_request(
+            request_context,
+            self,
+        )
+
+
+class _ModelTimingCapability(AbstractCapability[ToolContext]):
+    """Measure only native provider requests, excluding tools and orchestration."""
+
+    def __init__(self) -> None:
+        self.elapsed_ms = 0.0
+
+    async def wrap_model_request(
+        self,
+        ctx: RunContext[ToolContext],
+        *,
+        request_context: ModelRequestContext,
+        handler: WrapModelRequestHandler,
+    ) -> ModelResponse:
+        started = time.perf_counter()
+        try:
+            return await handler(request_context)
+        finally:
+            self.elapsed_ms += (time.perf_counter() - started) * 1000.0
+
+
 class PydanticRuntimeAdapter:
     """Run existing HeyNYC tools through PydanticAI without changing production runtime code."""
 
@@ -414,6 +483,7 @@ class PydanticRuntimeAdapter:
         context_budget: int | None = None,
         measure_context: MeasureFn | None = None,
         compact_context: CompactFn | None = None,
+        answer_model_route: str | None = None,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -424,7 +494,12 @@ class PydanticRuntimeAdapter:
         self.model = getattr(model, "model_name", type(model).__name__)
         self._current_awareness = current_awareness
         self._usage_limits = usage_limits
-        self._context_budget = context_budget
+        self._answer_model_route = answer_model_route
+        self._context_budget = (
+            context_capacity(answer_model_route, None, True)
+            if context_budget is None and answer_model_route is not None
+            else context_budget
+        )
         self._measure_context = measure_context
         self._compact_context = compact_context
         adapted_tools, capabilities = (
@@ -487,16 +562,13 @@ class PydanticRuntimeAdapter:
         resident_facts: dict[str, ResidentFact] | None = None,
         **_: Any,
     ) -> AgentResult:
-        result, _, _ = await self._run(
+        return await self.conversation().send(
             user_message,
-            message_history=(),
-            prior_user_turns=(),
             reminders=reminders,
             output_dir=output_dir,
             drafts=drafts,
             resident_facts=resident_facts,
         )
-        return result
 
     async def _run(
         self,
@@ -508,11 +580,9 @@ class PydanticRuntimeAdapter:
         output_dir: Path | None,
         drafts: Any,
         resident_facts: dict[str, ResidentFact] | None,
+        timing_capability: _ModelTimingCapability,
         citations: CitationRegistry | None = None,
-        history_processor: Callable[
-            [list[ModelMessage]], Awaitable[list[ModelMessage]]
-        ]
-        | None = None,
+        memory_capability: _BoundedMemoryCapability | None = None,
     ) -> tuple[
         AgentResult,
         list[ModelMessage],
@@ -587,12 +657,18 @@ class PydanticRuntimeAdapter:
             deps=deps,
             usage_limits=self._usage_limits,
             capabilities=(
-                [ProcessHistory(history_processor)]
-                if history_processor is not None
-                else None
+                [
+                    timing_capability,
+                    *([memory_capability] if memory_capability is not None else []),
+                ]
             ),
         )
-        result = self._result(native, citations, started)
+        result = self._result(
+            native,
+            citations,
+            started,
+            model_time_ms=timing_capability.elapsed_ms,
+        )
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
@@ -603,6 +679,8 @@ class PydanticRuntimeAdapter:
         native: Any,
         citations: CitationRegistry,
         started: float,
+        *,
+        model_time_ms: float,
     ) -> AgentResult:
         new_messages = native.new_messages()
         usage = native.usage
@@ -659,6 +737,7 @@ class PydanticRuntimeAdapter:
                 "cost_usd": cost,
                 "cost_status": "priced" if cost is not None else "unpriced",
                 "cost_source": cost_source,
+                "model_time_ms": model_time_ms,
                 "latency_ms": round((time.perf_counter() - started) * 1000),
             },
         )
@@ -673,6 +752,8 @@ class _PydanticConversation:
         self._resident_facts: dict[str, ResidentFact] = {}
         self._citations = CitationRegistry()
         self.continuity: ContinuityRecord | None = None
+        self._memory_usage: dict = {}
+        self._memory_spend = SpendGuard(config.HEYNYC_SPEND_CAP)
 
     @classmethod
     def from_state(
@@ -757,10 +838,12 @@ class _PydanticConversation:
             separators=(",", ":"),
         ).encode()
 
-    async def _process_history(
+    async def _prepare_model_request(
         self,
-        messages: list[ModelMessage],
-    ) -> list[ModelMessage]:
+        request_context: ModelRequestContext,
+        capability: _BoundedMemoryCapability,
+    ) -> ModelRequestContext:
+        messages = request_context.messages
         current_index = max(
             (
                 index
@@ -778,10 +861,14 @@ class _PydanticConversation:
             and part.content
         ]
         if (
-            self.runtime._measure_context is None
-            or self.runtime._compact_context is None
+            self.runtime._answer_model_route is None
+            and (
+                self.runtime._measure_context is None
+                or self.runtime._compact_context is None
+            )
         ):
-            return messages
+            return request_context
+        schemas = _function_tool_schemas(request_context)
 
         def measure_complete(
             history: list[dict],
@@ -803,16 +890,72 @@ class _PydanticConversation:
                     {"role": "system", "content": part.content}
                     for part in system_parts
                 ]
-            return self.runtime._measure_context(measured, continuity)
+            if self.runtime._measure_context is not None:
+                return self.runtime._measure_context(measured, continuity)
+            assert self.runtime._answer_model_route is not None
+            reminder = (
+                continuity_reminder(continuity)
+                if continuity is not None
+                else ""
+            )
+            if reminder and not any(
+                reminder in str(message.get("content") or "")
+                for message in measured
+            ):
+                measured.append({"role": "system", "content": reminder})
+            return request_tokens(
+                self.runtime._answer_model_route,
+                measured,
+                schemas,
+            )
+
+        async def compact(
+            older: list[dict],
+            current_continuity: ContinuityRecord | None,
+        ) -> ContinuityRecord | dict:
+            try:
+                if capability.compacted:
+                    return current_continuity or ContinuityRecord()
+                if self.runtime._compact_context is not None:
+                    record = await self.runtime._compact_context(
+                        older,
+                        current_continuity,
+                    )
+                else:
+                    record, usage = await compact_memory(
+                        older,
+                        current_continuity,
+                        self._memory_spend,
+                    )
+                    self._memory_usage.update(usage)
+                capability.compacted = True
+                return record
+            except ContextCapacityError:
+                raise
+            except Exception as exc:
+                raise ContextCapacityError(
+                    "continuity compaction is unavailable"
+                ) from exc
 
         plan = await prepare_context(
-            _resident_history(messages[:current_index]),
+            (
+                capability.visible_history
+                if capability.visible_history is not None
+                else _resident_history(messages[:current_index])
+            ),
             self.continuity,
             budget=self.runtime._context_budget,
             measure=measure_complete,
-            compact=self.runtime._compact_context,
+            compact=compact,
         )
+        capability.visible_history = plan.history
         self.continuity = plan.continuity
+        if plan.compacted or not self._memory_usage:
+            self._memory_usage.update({
+                "memory_compactions": int(plan.compacted),
+                "memory_pre_tokens": plan.pre_compaction_tokens,
+                "memory_post_tokens": plan.post_compaction_tokens,
+            })
         if self.continuity is not None:
             request = next(
                 (
@@ -841,7 +984,8 @@ class _PydanticConversation:
                 message for message in processed if isinstance(message, ModelRequest)
             )
             request.parts[:0] = system_parts
-        return processed
+        request_context.messages = processed
+        return request_context
 
     async def send(
         self,
@@ -857,17 +1001,39 @@ class _PydanticConversation:
             raise ValueError("Cannot start a new turn while approval is pending")
         if resident_facts:
             self._resident_facts.update(resident_facts)
-        result, new_messages, self._pending = await self.runtime._run(
-            user_message,
-            message_history=self._history,
-            prior_user_turns=self._user_turns,
-            reminders=reminders,
-            output_dir=output_dir,
-            drafts=drafts,
-            resident_facts=self._resident_facts,
-            citations=self._citations,
-            history_processor=self._process_history,
+        self._memory_usage.clear()
+        memory_capability = (
+            _BoundedMemoryCapability(self)
+            if (
+                self.runtime._answer_model_route is not None
+                or (
+                    self.runtime._measure_context is not None
+                    and self.runtime._compact_context is not None
+                )
+            )
+            else None
         )
+        timing_capability = _ModelTimingCapability()
+        try:
+            result, new_messages, self._pending = await self.runtime._run(
+                user_message,
+                message_history=self._history,
+                prior_user_turns=self._user_turns,
+                reminders=reminders,
+                output_dir=output_dir,
+                drafts=drafts,
+                resident_facts=self._resident_facts,
+                citations=self._citations,
+                memory_capability=memory_capability,
+                timing_capability=timing_capability,
+            )
+            merge_memory_usage(
+                result.usage,
+                self._memory_usage,
+                latency_already_included=True,
+            )
+        finally:
+            self._memory_usage.clear()
         self._history.extend(new_messages)
         self._user_turns = (*self._user_turns, user_message)
         return result
@@ -901,17 +1067,24 @@ class _PydanticConversation:
             resident_facts=self._resident_facts,
         )
         started = time.perf_counter()
+        timing_capability = _ModelTimingCapability()
         native = await self.runtime._agent.run(
             message_history=self._history,
             deferred_tool_results=DeferredToolResults(approvals=approvals),
             deps=deps,
-            capabilities=[ProcessHistory(self._process_history)],
+            capabilities=[timing_capability],
+        )
+        result = self.runtime._result(
+            native,
+            citations,
+            started,
+            model_time_ms=timing_capability.elapsed_ms,
         )
         self._history.extend(native.new_messages())
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
-        return self.runtime._result(native, citations, started)
+        return result
 
 
 def build_runtime(
@@ -923,6 +1096,7 @@ def build_runtime(
     use_module_capabilities: bool = False,
     current_awareness: Callable[[], Awaitable[str]] | None = None,
     extra_capabilities: Sequence[Any] = (),
+    answer_model_route: str | None = None,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
     stable_prompt, _ = build_system_prompt_tiers(
@@ -943,4 +1117,5 @@ def build_runtime(
         use_module_capabilities=use_module_capabilities,
         current_awareness=current_awareness,
         extra_capabilities=extra_capabilities,
+        answer_model_route=answer_model_route,
     )

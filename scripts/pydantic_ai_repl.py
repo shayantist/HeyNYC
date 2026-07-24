@@ -65,6 +65,7 @@ async def main() -> None:
     runtime = build_runtime(
         registry,
         model=_configured_model(),
+        answer_model_route=config.HEYNYC_MODEL,
         tools=build_toolbox(registry, index=_load_retriever(required=False)),
         use_module_capabilities=True,
         current_awareness=current_awareness,

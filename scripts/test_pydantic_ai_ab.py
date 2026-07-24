@@ -48,6 +48,7 @@ def test_build_factories_gives_both_arms_the_same_live_awareness(
             "registry",
             {
                 "model": "chat:openai/gpt-test",
+                "answer_model_route": "openai/gpt-test",
                 "index": "retriever",
                 "use_module_capabilities": True,
                 "current_awareness": pydantic_ai_ab.current_awareness,
