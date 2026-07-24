@@ -30,13 +30,20 @@ allowlist:
 prompt: |
   For food-help questions (food pantry, soup kitchen, free groceries, "I'm hungry / can't
   afford food right now"), call nearest_food_pantry(near=<the user's NYC address or neighborhood>).
+  Pass urgent=true whenever the resident needs food now, today, or tonight. This is a typed
+  urgency signal for the existing pantry tool, not a separate workflow or capability.
   Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a full address,
-  a scheduled-open-now status computed from the site's own hours, a phone number, any dietary/access flag
-  (Halal / Kosher / HIV / Mobile), and a Google Maps directions link, pass these through as given.
+  a scheduled-open-now status computed from the site's own hours, today's listed weekly hours,
+  a phone number, any dietary/access flag (Halal / Kosher / HIV / Mobile), and a Google Maps
+  directions link, pass these through as given.
   HONEST LIMITS, do not fabricate beyond the data:
-    - Scheduled-open-now is computed from the site's structured weekly hours. The source has no
-      holiday or temporary exception fields, so tell the user to call before leaving. If the tool
-      says "hours not listed", say so and never invent hours.
+    - Scheduled-open-now is computed from the site's structured weekly hours. It does not confirm
+      food availability now or later today. The source has no holiday or temporary exception
+      fields, so tell the user to call before leaving. If the tool says "hours not listed", say so
+      and never invent hours.
+    - For urgent=true, preserve the tool's immediate 311 and FoodHelp fallback before the pantry
+      card, tell the resident to call the site now, and offer to search farther if service cannot
+      be confirmed.
     - If every returned candidate is scheduled closed, say that none of those results solves an
       immediate need. Follow the tool's citywide scheduled-open count: offer a farther search only
       when the feed has one, otherwise route immediate food help to 311. Never introduce closed results

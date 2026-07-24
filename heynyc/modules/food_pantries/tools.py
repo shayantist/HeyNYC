@@ -182,6 +182,18 @@ def _status_label(open_now: bool | None) -> str:
     return "hours not listed, call ahead"
 
 
+def _listed_hours(record: dict, weekday: int) -> str:
+    prefix = _prefix(record)
+    day = _DAYS[weekday]
+    slots = []
+    for n in ("1", "2", "3"):
+        opened = _clean(record.get(f"{prefix}_{day}_open{n}"))
+        closed = _clean(record.get(f"{prefix}_{day}_close{n}"))
+        if opened and closed:
+            slots.append(f"{opened}-{closed}")
+    return ", ".join(slots)
+
+
 # --- record → pantry -------------------------------------------------------
 
 @dataclass
@@ -302,6 +314,9 @@ def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) 
     status = _status_label(_open_now(pantry.raw, now))
     parts = [f"- {pantry.name}{flag_str} ({pantry.address or 'NYC'}), "
              f"{dist_mi:.2f} mi straight-line, {status} {{cite:{cite}}}"]
+    hours = _listed_hours(pantry.raw, now.weekday())
+    if hours:
+        parts.append(f"  Today's listed weekly hours: {hours}")
     if pantry.phone:
         parts.append(f"  Phone: {pantry.phone}")
     if pantry.notes:
@@ -358,6 +373,13 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "Nearest City-listed food pantry candidates from NYC FoodHelp "
         "(finder.nyc.gov/foodhelp), report only these, cite each:",
     ]
+    if args.get("urgent") is True:
+        lines.append(
+            "Immediate food need: a weekly schedule does not confirm food availability now or "
+            "later today. Lead with asking the resident to call the listed site now. If the site "
+            "cannot confirm service, tell them to call 311 or use "
+            "https://finder.nyc.gov/foodhelp, then offer to search farther."
+        )
     scheduled_open_count = sum(_open_now(pantry.raw, now) is True for pantry in ranked)
     citywide_scheduled_open = sum(_open_now(pantry.raw, now) is True for pantry in unique)
     citywide_unknown_hours = sum(_open_now(pantry.raw, now) is None for pantry in unique)
@@ -407,6 +429,8 @@ def get_tools() -> list[Tool]:
                 "user's NYC address or neighborhood; optional `k` (default 5). Returns each site's "
                 "name, full address, scheduled-open-now status, phone, dietary/access type "
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
+                "Set `urgent=true` when the resident needs food now, today, or tonight so the "
+                "result leads with the immediate fallback and does not overstate weekly hours. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
                 "The source has no language info and eligibility notes are often blank, don't invent."
             ),
@@ -417,6 +441,13 @@ def get_tools() -> list[Tool]:
                              "description": "The NYC address or neighborhood to search near."},
                     "k": {"type": "integer",
                           "description": "How many pantries to return (default 5).", "default": 5},
+                    "urgent": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "True when the resident needs food immediately, today, or tonight"
+                        ),
+                    },
                 },
                 "required": ["near"],
             },

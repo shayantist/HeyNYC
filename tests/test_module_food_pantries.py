@@ -332,6 +332,7 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert "Far Pantry" in site_lines[1]
     assert "Halal" in site_lines[0]                    # dietary/access flag surfaced
     assert "open now" in site_lines[0].lower()         # open-now computed from structured hours
+    assert "Immediate food need" not in out             # ordinary lookup keeps the normal ordering
     assert "212-555-0002" in out                       # phone surfaced
     assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
     assert "{cite:S1}" in out                          # grounded, cited
@@ -342,6 +343,51 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
     assert citations.mapping()["S1"]["valid_as_of"] == ""
     assert "Source date unavailable" in out
+
+
+async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Pantry",
+            distadd="2 Near Ave",
+            distboro="Manhattan",
+            distzip="10001",
+            org_phone="212-555-0002",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="urgent-near",
+            EditDate="2025-11-04",
+            **{
+                f"fp_{now_day}_open1": "9:00 AM",
+                f"fp_{now_day}_close1": "5:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "urgent": True},
+        ctx,
+    )
+    await client.aclose()
+
+    assert out.index("Immediate food need") < out.index("Nearby Pantry")
+    assert "does not confirm food availability now or later today" in out
+    assert "call the listed site now" in out
+    assert "call 311" in out
+    assert "https://finder.nyc.gov/foodhelp" in out
+    assert "offer to search farther" in out
+    assert "Today's listed weekly hours: 9:00 AM-5:00 PM" in out
+    assert "As of: 2025-11-04" in out
+
+    schema = get_tools()[0].parameters
+    assert schema["properties"]["urgent"]["type"] == "boolean"
+    assert "urgent" not in schema["required"]
 
 
 async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_now(monkeypatch):
