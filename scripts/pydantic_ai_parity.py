@@ -186,6 +186,10 @@ def adapt_tool(tool: Tool) -> PydanticTool:
 
 def resident_fact_confirmation_tool(tool: Tool) -> Tool:
     """Reuse a governed tool's schema for native structured fact confirmation."""
+    if not tool.read_only or tool.destructive or not tool.idempotent:
+        raise ValueError(
+            "Resident fact confirmation can only wrap read-only idempotent tools"
+        )
 
     async def confirm(args: dict, ctx: ToolContext) -> str:
         source_turn_id = f"turn-{len(ctx.user_turns)}"
@@ -199,7 +203,7 @@ def resident_fact_confirmation_tool(tool: Tool) -> Tool:
                     source_turn_id=source_turn_id,
                     status="confirmed",
                 )
-        return f"Resident confirmed the structured facts for {tool.name}."
+        return await tool.handler(args, ctx)
 
     return Tool(
         name=f"confirm_{tool.name}_facts",
@@ -209,8 +213,8 @@ def resident_fact_confirmation_tool(tool: Tool) -> Tool:
             "Once its required fields are supported by the conversation, use this "
             "confirmation immediately. Do not delay for optional fields; omit unknown "
             "optional values. Include only exact resident-provided or confirmed facts. "
-            "This opens the exact structured facts for resident approval, records them "
-            "without calling an external service, and then unlocks the requested action."
+            "This opens the exact structured facts for resident approval and runs the "
+            "requested read-only check after approval."
         ),
         parameters=tool.parameters,
         handler=confirm,
@@ -858,6 +862,13 @@ class PydanticRuntimeAdapter:
                 and "id" in part.args_as_dict()
             )
         )
+        executed_tool_calls = [
+            part.tool_name
+            for message in new_messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
         pending = isinstance(output, DeferredToolRequests)
         iterations = sum(isinstance(message, ModelResponse) for message in new_messages)
         cost, cost_source = _complete_cost(self.model, new_messages, usage)
@@ -888,6 +899,7 @@ class PydanticRuntimeAdapter:
                 "n_model_calls": usage.requests,
                 "n_answer_model_calls": usage.requests,
                 "n_tool_calls": usage.tool_calls,
+                "executed_tool_calls": executed_tool_calls,
                 "iterations": iterations,
                 "capabilities_used": capabilities_used,
                 "cost_usd": cost,
@@ -1384,7 +1396,8 @@ def _approval_copy(tool_name: str) -> tuple[str, str]:
     if tool_name.startswith("confirm_") and tool_name.endswith("_facts"):
         return (
             "Review the structured facts I understood:",
-            "Reply YES if these facts are accurate, or NO to correct them.",
+            "Reply YES if these facts are accurate and run the requested read-only "
+            "check, or NO to correct them.",
         )
     return (
         "Review the proposed action and exact values:",

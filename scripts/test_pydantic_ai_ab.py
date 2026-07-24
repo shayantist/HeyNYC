@@ -175,7 +175,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
             "S1": {"url": "https://nyc.gov/food"},
             "S2": {"url": "https://access.nyc.gov"},
         },
-        tool_calls_made=["screen_eligibility"],
+        tool_calls_made=[],
         messages=[{"role": "tool", "content": "screened"}],
         usage={
             "input_tokens": 20,
@@ -184,6 +184,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
             "requests": 2,
             "cost_usd": 0.02,
             "capabilities_used": ["benefits"],
+            "executed_tool_calls": ["confirm_screen_facts"],
         },
     )
 
@@ -210,7 +211,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
     assert result.tool_calls_made == [
         "nearest_food_pantry",
         "confirm_screen_facts",
-        "screen_eligibility",
+        "screen",
     ]
     assert result.citations == {
         "S0": {"url": "https://nyc.gov/pending-only"},
@@ -227,6 +228,25 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
     assert result.usage["requests"] == 3
     assert result.usage["cost_usd"] == pytest.approx(0.03)
     assert result.usage["capabilities_used"] == ["food", "benefits"]
+
+
+def test_merge_does_not_alias_unexecuted_fact_confirmation() -> None:
+    pending = AgentResult(
+        text="",
+        citations={},
+        tool_calls_made=["confirm_screen_facts"],
+        status="approval_required",
+    )
+    final = AgentResult(
+        text="Could not run the check",
+        citations={},
+        tool_calls_made=[],
+        usage={"executed_tool_calls": []},
+    )
+
+    result = pydantic_ai_ab._merge_results(pending, final)
+
+    assert result.tool_calls_made == ["confirm_screen_facts"]
 
 
 async def test_eval_conversation_never_auto_approves_an_action() -> None:
@@ -255,6 +275,48 @@ async def test_eval_conversation_never_auto_approves_an_action() -> None:
     ).send("prepare it")
 
     assert result is pending
+
+
+async def test_run_arms_can_execute_in_parallel(tmp_path, monkeypatch) -> None:
+    both_started = asyncio.Event()
+    active = 0
+    peak = 0
+    result = SimpleNamespace(
+        case=SimpleNamespace(id="one"),
+        error=None,
+        turn_results=[SimpleNamespace(usage={})],
+    )
+    report = SimpleNamespace(passed_count=1, total=1)
+
+    async def fake_run_all(factory, cases, reminders):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        active -= 1
+        return [result]
+
+    monkeypatch.setattr(pydantic_ai_ab, "run_all", fake_run_all)
+    async def fake_evaluate(results):
+        return report
+
+    monkeypatch.setattr(pydantic_ai_ab, "evaluate", fake_evaluate)
+    monkeypatch.setattr(pydantic_ai_ab, "write_run", lambda *args, **kwargs: None)
+
+    receipt = await run_arms(
+        {"production": lambda: "prod", "pydantic_ai": lambda: "candidate"},
+        [SimpleNamespace(id="one")],
+        [],
+        tmp_path,
+        "openai/gpt-test",
+        parallel=True,
+    )
+
+    assert peak == 2
+    assert receipt["parallel"] is True
+    assert receipt["performance_comparison_valid"] is False
 
 
 def test_run_arms_uses_existing_runner_grader_and_writer(

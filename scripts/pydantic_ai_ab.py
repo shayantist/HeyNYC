@@ -59,10 +59,24 @@ def _merge_results(pending: AgentResult, final: AgentResult) -> AgentResult:
             ]
         )
     )
+    usage["executed_tool_calls"] = list(
+        dict.fromkeys(
+            [
+                *(pending.usage.get("executed_tool_calls") or ()),
+                *(final.usage.get("executed_tool_calls") or ()),
+            ]
+        )
+    )
+    tool_calls = [*pending.tool_calls_made, *final.tool_calls_made]
+    tool_calls.extend(
+        name.removeprefix("confirm_").removesuffix("_facts")
+        for name in final.usage.get("executed_tool_calls", ())
+        if name.startswith("confirm_") and name.endswith("_facts")
+    )
     return AgentResult(
         text=final.text,
         citations={**pending.citations, **final.citations},
-        tool_calls_made=[*pending.tool_calls_made, *final.tool_calls_made],
+        tool_calls_made=tool_calls,
         iterations=pending.iterations + final.iterations,
         hit_max_iters=pending.hit_max_iters or final.hit_max_iters,
         status=final.status,
@@ -274,21 +288,31 @@ async def run_arms(
     model: str,
     *,
     arm_order: tuple[str, ...] | None = None,
+    parallel: bool = False,
 ) -> dict[str, Any]:
     order = arm_order or tuple(factories)
     receipt = {
         "case_ids": [case.id for case in cases],
         "arm_order": list(order),
+        "parallel": parallel,
+        "performance_comparison_valid": not parallel,
         "arms": [],
     }
-    for arm in order:
+
+    async def run_arm(arm: str) -> dict[str, Any]:
         factory = factories[arm]
         results = await run_all(factory, cases, reminders=reminders)
         report = await evaluate(results)
         summary = summarize_arm(arm, model, results, report)
         write_run(out_dir / arm, report, metadata=summary)
         _write_turn_artifacts(out_dir / arm, results)
-        receipt["arms"].append(summary)
+        return summary
+
+    if parallel:
+        receipt["arms"] = list(await asyncio.gather(*(run_arm(arm) for arm in order)))
+    else:
+        for arm in order:
+            receipt["arms"].append(await run_arm(arm))
     (out_dir / "comparison.json").write_text(json.dumps(receipt, indent=2))
     return receipt
 
@@ -324,6 +348,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample", type=int)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--all", dest="run_all_cases", action="store_true")
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Run arms concurrently; latency and cache comparisons are not valid",
+    )
     return parser
 
 
@@ -377,6 +406,7 @@ async def _run(args: argparse.Namespace) -> int:
             if args.seed % 2
             else ("production", "pydantic_ai")
         ),
+        parallel=args.parallel,
     )
     print(json.dumps(receipt, indent=2))
     print(f"Comparison written to {out_dir}")

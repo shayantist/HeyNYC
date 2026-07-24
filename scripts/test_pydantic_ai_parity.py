@@ -481,7 +481,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
         parameters={"type": "object", "properties": {}},
         handler=lookup_handler,
     )
-    assert "enabled but hidden until this review is approved" in (
+    assert "runs the requested read-only check after approval" in (
         resident_fact_confirmation_tool(source).description
     )
     assert "Do not delay for optional fields" in (
@@ -510,17 +510,8 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
                     )
                 ]
             )
-        if model_calls == 4:
-            assert "screen" in definitions
-            return ModelResponse(
-                [
-                    ToolCallPart(
-                        "screen",
-                        {"profile": {"age": 35, "worked": False}},
-                        "screen-call",
-                    )
-                ]
-            )
+        assert model_calls == 4
+        assert "screen" in definitions
         return ModelResponse([TextPart("Food help {cite:S2}; screened {cite:S3}")])
 
     runtime = build_runtime(
@@ -544,6 +535,26 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     assert result.citations["S2"]["title"] == "NYC FoodHelp"
     assert result.citations["S3"]["title"] == "ACCESS NYC screening"
     assert screened == [{"profile": {"age": 35, "worked": False}}]
+    assert result.usage["executed_tool_calls"] == ["confirm_screen_facts"]
+    assert model_calls == 4
+
+
+def test_fact_confirmation_rejects_destructive_tool() -> None:
+    async def handler(args, ctx):
+        return "changed"
+
+    destructive = Tool(
+        name="change_record",
+        description="Change a record",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        destructive=True,
+        requires_approval=True,
+        resident_fact_scope=("/record",),
+    )
+
+    with pytest.raises(ValueError, match="read-only idempotent"):
+        resident_fact_confirmation_tool(destructive)
 
 
 async def test_screen_fact_confirmation_rejects_conflicting_housing_before_approval() -> (
@@ -2696,7 +2707,8 @@ async def test_default_context_measurement_counts_structured_continuity_once(
 def test_repl_labels_fact_confirmation_as_accuracy_review() -> None:
     assert _approval_copy("confirm_screen_facts") == (
         "Review the structured facts I understood:",
-        "Reply YES if these facts are accurate, or NO to correct them.",
+        "Reply YES if these facts are accurate and run the requested read-only "
+        "check, or NO to correct them.",
     )
     assert _approval_copy("prepare_snap_application") == (
         "Review the proposed action and exact values:",
@@ -2719,7 +2731,10 @@ def test_fact_confirmation_projects_as_accuracy_review() -> None:
     review = flow.review_text()
 
     assert review.startswith("Review the structured facts I understood:")
-    assert "Reply YES if these facts are accurate, or NO to correct them." in review
+    assert (
+        "Reply YES if these facts are accurate and run the requested read-only "
+        "check, or NO to correct them."
+    ) in review
     assert "proposed action" not in review
 
 
