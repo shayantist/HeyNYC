@@ -185,8 +185,8 @@ def _apply_url(record: dict) -> str:
     )
 
 
-_HELP_FIELDS = ("get_help_online", "get_help_summary", "how_to_apply_summary",
-                "how_to_apply_or_enroll_online")
+_HELP_FIELDS = ("how_to_apply_or_enroll_online", "how_to_apply_summary",
+                "get_help_online", "get_help_summary")
 
 
 def _help_url(record: dict) -> str:

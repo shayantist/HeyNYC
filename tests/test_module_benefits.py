@@ -224,6 +224,30 @@ async def test_benefits_search_strips_html_and_normalizes_null():
     assert url.startswith("https://data.cityofnewyork.us")  # fell back to the dataset source
 
 
+async def test_benefits_search_prefers_application_link_over_help_link():
+    row = dict(_FAKE_ROW)
+    row["url_of_online_application"] = "NULL"
+    row["get_help_online"] = (
+        '<a href="https://www.nyc.gov/old-help-page">Enrollment help</a>'
+    )
+    row["how_to_apply_or_enroll_online"] = (
+        '<a href="https://nystateofhealth.ny.gov/">Apply through NY State of Health</a>'
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+    )
+
+    await tool.handler({"query": "health insurance"}, ctx)
+    await client.aclose()
+
+    assert ctx.citations.mapping()["S1"]["url"] == "https://nystateofhealth.ny.gov/"
+
+
 def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     # For a denial/problem with a benefit, the benefits blurb must surface the human/appeal
     # path — call the agency / 311 and the right to a fair hearing.

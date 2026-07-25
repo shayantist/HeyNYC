@@ -327,6 +327,19 @@ def test_static_conversation_and_language_rules_live_in_the_stable_prefix():
     assert "nearest_food_pantry(near=" not in stable
 
 
+def test_conversation_rules_preserve_transform_only_followups_without_retrieval():
+    from heynyc.core.prompts import build_system_prompt_tiers
+
+    stable, _ = build_system_prompt_tiers(_real_registry())
+    low = stable.lower()
+    assert "translate, repeat, shorten, or reformat" in low
+    assert "do not call a discovery or retrieval tool" in low
+    assert "preserve the same items" in low
+    assert "retrieve again only when the resident asks for updated or new facts" in low
+    assert "earlier answer lacks the evidence" in low
+    assert "when a new or current factual answer is needed" in low
+
+
 def test_capability_blurbs_only_filters_to_named_modules():
     reg = _real_registry()
     only = reg.capability_blurbs(only={"food_pantries"})

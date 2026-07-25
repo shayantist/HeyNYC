@@ -337,9 +337,18 @@ def inv_tool_sanity(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
     """Permissive: a substantive (answered) turn used SOME grounding tool. Order/choice free."""
     if trace.outcome != "answered" or not asserts_specifics(trace.final_text, query=trace.query):
         return None
-    passed = bool(_grounding_spans(trace))
+    cited_ids = {
+        marker.removeprefix("{cite:").removesuffix("}")
+        for marker in _CITE_RE.findall(trace.final_text or "")
+    }
+    carried_evidence = (
+        bool(cited_ids)
+        and cited_ids <= set(trace.citations)
+        and case.invariants.get("allow_historical_evidence") is True
+    )
+    passed = bool(_grounding_spans(trace)) or bool(carried_evidence)
     return CheckResult("tool_sanity", passed=passed, blocking=False,
-                       detail="" if passed else "answered with specifics but called no grounding tool")
+                       detail="" if passed else "answered with specifics but used no available evidence")
 
 
 def inv_resident_outcome(trace: Trace, case: EvalCase) -> Optional[CheckResult]:

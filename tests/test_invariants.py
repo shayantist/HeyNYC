@@ -13,6 +13,7 @@ from heynyc.eval.invariants import (
     inv_grounding,
     inv_harm_routing,
     inv_resident_outcome,
+    inv_tool_sanity,
     outcome_class,
 )
 from heynyc.eval.trace import Span, Trace
@@ -76,6 +77,27 @@ def test_grounding_requires_citation_and_fetch_when_asserting():
     ungrounded = Trace(case_id="c", query="q", spans=[],
                        final_text="It's at 120 Broadway.", citations={}, outcome="answered")
     assert not inv_grounding(ungrounded, case).passed
+
+
+def test_tool_sanity_allows_explicitly_carried_historical_evidence():
+    trace = Trace(
+        case_id="c",
+        query="repeat that in Spanish",
+        spans=[],
+        final_text="La oficina cierra a las 5 p.m. {cite:S1}",
+        citations={"S1": {"kind": "DATA", "url": "u", "snippet": "Closes at 5 p.m."}},
+        outcome="answered",
+    )
+
+    assert not inv_tool_sanity(trace, _case()).passed
+    assert not inv_tool_sanity(
+        trace,
+        _case(invariants={"allow_historical_evidence": "false"}),
+    ).passed
+    assert inv_tool_sanity(
+        trace,
+        _case(invariants={"allow_historical_evidence": True}),
+    ).passed
 
 
 def test_faithfulness_flags_citation_not_in_any_output():
