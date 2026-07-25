@@ -69,6 +69,8 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "  'rev-parse --is-inside-work-tree') echo true ;;\n"
         "  'rev-parse HEAD') basename \"$worktree\" ;;\n"
         "  'status --porcelain') echo '?? .heynyc-ready' ;;\n"
+        "  'show-ref --verify') [ \"$4\" = \"$EXPECTED_DEPLOY_REF\" ] ;;\n"
+        "  'merge-base --is-ancestor') [ \"$4\" = \"$EXPECTED_DEPLOY_REF\" ] ;;\n"
         "esac\n",
     )
     _executable(fake_bin / "uv", "#!/bin/sh\nexit 0\n")
@@ -87,6 +89,7 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "HEYNYC_DEPLOY_ROOT": str(root),
         "HEYNYC_SOURCE_REPO": str(source),
         "STOP_COUNT": str(tmp_path / "stop-count"),
+        "EXPECTED_DEPLOY_REF": "refs/remotes/origin/main",
     }
     return env, root, previous, log
 
@@ -167,6 +170,31 @@ def test_wsl_deploy_rebuilds_a_cached_release(tmp_path: Path) -> None:
     assert f"worktree remove --force {cached}" in commands
     assert f"worktree add --detach {cached} {NEW_SHA}" in commands
     assert (cached / ".heynyc-ready").read_text() == ""
+
+
+def test_wsl_deploy_can_verify_an_explicit_candidate_ref(tmp_path: Path) -> None:
+    env, _, _, log = _deploy_fixture(tmp_path)
+    env["HEYNYC_DEPLOY_REF"] = "origin/codex/pydantic-ai-refactor"
+    env["EXPECTED_DEPLOY_REF"] = "refs/remotes/origin/codex/pydantic-ai-refactor"
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"merge-base --is-ancestor {NEW_SHA} "
+        "refs/remotes/origin/codex/pydantic-ai-refactor"
+        in log.read_text()
+    )
+
+
+def test_wsl_deploy_rejects_a_local_only_candidate_ref(tmp_path: Path) -> None:
+    env, _, _, _ = _deploy_fixture(tmp_path)
+    env["HEYNYC_DEPLOY_REF"] = "refs/heads/codex/pydantic-ai-refactor"
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 64
+    assert "must name a pushed origin ref" in result.stderr
 
 
 def test_wsl_deploy_recovers_when_stop_partially_fails(tmp_path: Path) -> None:

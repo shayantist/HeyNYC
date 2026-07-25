@@ -79,13 +79,17 @@ approved.
 
 The WSL pilot keeps `.env` and resident state outside versioned release directories. Each release links the shared `.env`, and `HEYNYC_DATA_DIR` points at the shared data directory. This keeps one encryption identity and one resident-data store across exact-SHA releases.
 
-[`scripts/deploy_wsl.sh`](../../scripts/deploy_wsl.sh) is the one manual deployment path. It accepts only a full commit contained in `origin/main`, takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then stops writes for a resident-state snapshot and temporary restore proof. It rejects modified or extra tracked release content, atomically switches the `current` release pointer, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
+[`scripts/deploy_wsl.sh`](../../scripts/deploy_wsl.sh) is the one manual deployment path. It accepts only a full commit contained in the pushed `origin/main` ref by default; a supervised candidate can name another pushed `origin/*` ref through `HEYNYC_DEPLOY_REF`. It takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then stops writes for a resident-state snapshot and temporary restore proof. It rejects modified or extra tracked release content, atomically switches the `current` release pointer, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
 
 Run it only after CI passes for the exact pushed SHA:
 
 ```bash
 sudo -v
 ./scripts/deploy_wsl.sh <40-character-sha>
+
+# Supervised candidate:
+HEYNYC_DEPLOY_REF=origin/codex/pydantic-ai-refactor \
+  ./scripts/deploy_wsl.sh <40-character-sha>
 ```
 
 [`scripts/state_snapshot.py`](../../scripts/state_snapshot.py) copies SQLite through Python's [online backup API](https://docs.python.org/3.11/library/sqlite3.html#sqlite3.Connection.backup), copies the rest of the data directory while writes are stopped, and records file sizes, SHA-256 hashes, the application commit, and SQLite schema version. Its restore proof also opens the schema through the current channel store and authenticates encrypted inbox, session, draft, and feedback records with the configured key without printing their content. `restore` refuses a nonempty destination. Recovery therefore restores into a new directory, verifies it, and uses an operator-controlled directory switch instead of overwriting live state:
