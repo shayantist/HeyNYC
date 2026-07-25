@@ -788,7 +788,7 @@ async def test_loaded_module_capability_survives_redundant_follow_up_load(
     calls: list[str] = []
     measured: list[list[dict]] = []
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 10_000,
     )
 
@@ -797,7 +797,7 @@ async def test_loaded_module_capability_survives_redundant_follow_up_load(
         return len(messages)
 
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.request_tokens",
+        "heynyc.core.pydantic_runtime.runtime.request_tokens",
         count,
     )
 
@@ -2749,7 +2749,7 @@ def test_build_runtime_enables_default_memory_only_for_explicit_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 123,
     )
     model = FunctionModel(lambda messages, info: ModelResponse([TextPart("Done")]))
@@ -2774,7 +2774,7 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
     measured: list[list[str]] = []
 
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 10_000,
     )
 
@@ -2782,7 +2782,7 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
         measured.append([schema["function"]["name"] for schema in schemas])
         return 1
 
-    monkeypatch.setattr("heynyc.core.pydantic_runtime.request_tokens", count)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.runtime.request_tokens", count)
     registry = Registry(
         [
             ServiceModule(
@@ -2834,11 +2834,11 @@ async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
     compacted: list[list[dict]] = []
 
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 3,
     )
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.request_tokens",
+        "heynyc.core.pydantic_runtime.runtime.request_tokens",
         lambda model, messages, schemas, counter=None: sum(
             message["role"] in {"user", "assistant"} for message in messages
         ),
@@ -2854,7 +2854,7 @@ async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
             "memory_time_ms": 2.0,
         }
 
-    monkeypatch.setattr("heynyc.core.pydantic_runtime.compact_memory", compact)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.runtime.compact_memory", compact)
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(
@@ -2901,11 +2901,11 @@ async def test_default_compactor_failure_fails_before_answer_model(
     calls = 0
 
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 3,
     )
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.request_tokens",
+        "heynyc.core.pydantic_runtime.runtime.request_tokens",
         lambda model, messages, schemas, counter=None: sum(
             message["role"] in {"user", "assistant"} for message in messages
         ),
@@ -2914,7 +2914,7 @@ async def test_default_compactor_failure_fails_before_answer_model(
     async def compact(history, continuity, spend):
         raise RuntimeError("compactor unavailable")
 
-    monkeypatch.setattr("heynyc.core.pydantic_runtime.compact_memory", compact)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.runtime.compact_memory", compact)
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal calls
@@ -2941,11 +2941,11 @@ async def test_default_memory_rejects_unfit_current_tool_schema_before_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 1,
     )
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.request_tokens",
+        "heynyc.core.pydantic_runtime.runtime.request_tokens",
         lambda model, messages, schemas, counter=None: 2 if schemas else 1,
     )
 
@@ -3098,7 +3098,7 @@ async def test_default_context_measurement_counts_structured_continuity_once(
     measured: list[list[dict]] = []
 
     monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.context_capacity",
+        "heynyc.core.pydantic_runtime.runtime.context_capacity",
         lambda model, limit, uses_litellm: 1_000,
     )
 
@@ -3106,7 +3106,7 @@ async def test_default_context_measurement_counts_structured_continuity_once(
         measured.append(messages)
         return 1
 
-    monkeypatch.setattr("heynyc.core.pydantic_runtime.request_tokens", count)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.runtime.request_tokens", count)
     runtime = build_runtime(
         Registry([]),
         tools={},
