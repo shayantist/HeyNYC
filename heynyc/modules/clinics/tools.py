@@ -364,7 +364,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 # so the eval's faithfulness check (snippet ⊆ tool output) holds. Where the question crosses into
 # immigration-law consequences (public charge), the tool ROUTES to ActionNYC rather than assert a
 # volatile immigration-law conclusion.
-COVERAGE_VERIFIED_ON = "2026-07-16"
+COVERAGE_VERIFIED_ON = "2026-07-25"
 
 COVERAGE_INTRO = "Health coverage you can get in NYC regardless of immigration status:"
 
@@ -432,25 +432,34 @@ _COVERAGE: dict[str, _Fact] = {
     "public_charge": _Fact(
         url="https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page",
         title="Public Charge Rule, NYC Mayor's Office of Immigrant Affairs (MOIA)",
-        snippet=("Under the public charge rule currently in effect (the 2022 rule), using health coverage "
-                 "does not count against you: only cash assistance for income support (like SSI or "
-                 "Temporary Assistance) and long-term government-funded institutional care are weighed, "
-                 "while Medicaid other than long-term institutional care, Emergency Medicaid, NYC Care, "
-                 "SNAP, WIC, and housing help are not. Because your own case can be specific and these "
-                 "rules can change, confirm with free, confidential, trusted advice through ActionNYC "
-                 "(call 311 and ask for ActionNYC) or the MOIA immigration hotline at 800-354-0365 "
-                 "before you decide."),
-        body=("Under the public charge rule currently in effect (the 2022 rule), using health coverage "
-              "does not count against you: only cash assistance for income support (like SSI or "
-              "Temporary Assistance) and long-term government-funded institutional care are weighed, "
-              "while Medicaid other than long-term institutional care, Emergency Medicaid, NYC Care, SNAP, WIC, and housing help are not. A "
-              "stricter change was proposed in late 2025 but is not in effect, so as of this guidance "
-              "nothing has changed. Public charge also does not apply to every immigration situation. "
+        snippet=("Before September 18, 2026, the 2022 public charge rule remains in effect: SNAP, "
+                 "WIC, housing help, and Medicaid other than long-term institutional care do not count "
+                 "against you. Because your own case can be specific, confirm with free, confidential "
+                 "advice through ActionNYC or the MOIA immigration hotline at 800-354-0365."),
+        body=("Before September 18, 2026, the 2022 public charge rule remains in effect. Under that "
+              "rule, SNAP, WIC, housing help, and Medicaid other than long-term institutional care do "
+              "not count against you; immigration officials consider cash assistance for income "
+              "support and long-term government-funded institutional care. Public charge does not "
+              "apply to every immigration situation. "
               "Because your own case can be specific and these rules can change, confirm with free, "
               "confidential, trusted advice through ActionNYC (call 311 and ask for ActionNYC) or the "
               "MOIA immigration hotline at 800-354-0365 before you decide."),
     ),
 }
+
+PUBLIC_CHARGE_FINAL_RULE = _Fact(
+    url=("https://www.federalregister.gov/documents/2026/07/20/2026-14539/"
+         "public-charge-ground-of-inadmissibility"),
+    title="Public Charge Ground of Inadmissibility, DHS final rule (Federal Register)",
+    snippet=("DHS published a final rule effective September 18, 2026. Benefits received before that "
+             "date remain governed by the 2022 rule; for covered applications on or after that date, "
+             "officers may consider means-tested public benefits in an individualized review."),
+    body=("DHS published a final rule effective September 18, 2026. Benefits received before that "
+          "date remain governed by the 2022 rule. For applications for admission made on or after "
+          "September 18, or adjustment-of-status applications submitted on or after that date, "
+          "officers may consider receipt of means-tested public benefits as part of an individualized, "
+          "case-specific review. DHS said additional implementation guidance would follow."),
+)
 
 # free-text → canonical coverage topic (the model may hand us the user's words instead of a key).
 _COVERAGE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -487,18 +496,22 @@ async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
                 "questions) or 'emergency_medicaid' (coverage for a medical emergency regardless of "
                 "immigration status). To find a specific clinic use find_clinic; for anything else, "
                 "point the user to 311 or 646-NYC-CARE (646-692-2273).")
-    fact = _COVERAGE[topic]
-    cite = ctx.citations.register(fact.url, snippet=fact.snippet, title=fact.title, kind="DOC",
-                                  valid_as_of=COVERAGE_VERIFIED_ON)
-    return "\n".join([
-        COVERAGE_INTRO,
-        f"- {fact.body} {{cite:{cite}}}",
+    facts = (_COVERAGE[topic],)
+    if topic == "public_charge":
+        facts += (PUBLIC_CHARGE_FINAL_RULE,)
+    lines = [COVERAGE_INTRO]
+    for fact in facts:
+        cite = ctx.citations.register(fact.url, snippet=fact.snippet, title=fact.title, kind="DOC",
+                                      valid_as_of=COVERAGE_VERIFIED_ON)
+        lines.append(f"- {fact.body} {{cite:{cite}}}")
+    lines.extend([
         COVERAGE_CLOSING,
-        "Report ONLY this grounded fact with its {cite:Sn} and the ActionNYC routing line above. Do "
+        "Report ONLY these grounded facts with their {cite:Sn} and the ActionNYC routing line above. Do "
         "not add or change a phone number, a dollar figure, or an eligibility rule, and do not state "
         "a public-charge conclusion of your own; if the user needs more, that's 311 / 646-NYC-CARE / "
         "ActionNYC.",
     ])
+    return "\n".join(lines)
 
 
 def get_tools() -> list[Tool]:

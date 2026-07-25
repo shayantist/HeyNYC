@@ -268,15 +268,21 @@ async def test_health_coverage_nyc_care_grounds_body_and_cites():
 
 async def test_health_coverage_public_charge_grounds_body_and_cites():
     out, citations = await _run_coverage("public_charge")
-    assert "does not count against you" in out
-    assert "not in effect" in out
+    assert "do not count against you" in out
+    assert "final rule" in out
+    assert "September 18, 2026" in out
+    assert "means-tested public benefits" in out
+    assert "nothing has changed" not in out
     assert "800-354-0365" in out
     mapping = citations.mapping()
-    assert len(mapping) == 1
+    assert len(mapping) == 2
     assert mapping["S1"]["kind"] == "DOC"
     assert "nyc.gov/site/immigrants" in mapping["S1"]["url"]
     assert "800-354-0365" in mapping["S1"]["snippet"]
     assert "{cite:S1}" in out
+    assert mapping["S2"]["kind"] == "DOC"
+    assert "federalregister.gov/documents/2026/07/20/2026-14539" in mapping["S2"]["url"]
+    assert "{cite:S2}" in out
 
 
 async def test_health_coverage_free_text_maps_to_topic():
