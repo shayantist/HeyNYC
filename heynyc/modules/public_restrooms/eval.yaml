@@ -4,6 +4,10 @@
   capability: dataset_grounding
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Return at least one grounded nearby restroom with a usable map link and the source's
+    current-condition limits. Ask a location clarification only when the supplied NYC address
+    or landmark cannot be resolved reliably by the lookup tool.
   notes: Use public_restroom_lookup and cite every returned location.
 
 - id: restroom_nearest_address__inv_plain_language
