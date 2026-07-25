@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 from io import BytesIO
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from pypdf import PdfReader
@@ -37,6 +38,12 @@ def _relevant_chunks(text: str, query: str, limit: int = 2) -> list[str]:
     return [chunk for _, chunk, _score in ranked]
 
 
+def _approval_key(url: str) -> str:
+    parts = urlsplit(url)
+    path = parts.path[:-1] if parts.path.endswith("/") else parts.path
+    return urlunsplit(parts._replace(path=path))
+
+
 async def _fetch_official(url: str, client) -> tuple[str, str]:
     response = await client.get(
         url, follow_redirects=True, headers={"User-Agent": "HeyNYC/0.1"},
@@ -52,9 +59,9 @@ async def _fetch_official(url: str, client) -> tuple[str, str]:
 
 def official_source_tools() -> list[Tool]:
     async def _handler(args: dict, ctx: ToolContext) -> str:
-        approved = set(ctx.registry.seeds())
+        approved = {_approval_key(url) for url in ctx.registry.seeds()}
         urls = list(dict.fromkeys(args["urls"]))[:4]
-        rejected = [url for url in urls if url not in approved]
+        rejected = [url for url in urls if _approval_key(url) not in approved]
         if rejected:
             return "That URL is not an approved official source declared by a HeyNYC module."
 

@@ -92,6 +92,38 @@ async def test_official_sources_rejects_a_url_not_declared_by_a_module():
     assert client.urls == []
 
 
+async def test_official_sources_accepts_only_a_trailing_slash_variant():
+    declared = "https://access.nyc.gov/snap-work-requirements/"
+    requested = declared.rstrip("/")
+    registry = Registry([ServiceModule(name="benefits", seeds=[declared])])
+    client = _Client({
+        requested: "SNAP work requirements include exemptions and qualifying activities.",
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+    tool = official_source_tools()[0]
+
+    out = await tool.handler(
+        {"urls": [requested], "query": "SNAP work requirements exemptions activities"},
+        ctx,
+    )
+
+    assert client.urls == [requested]
+    assert "{cite:S1}" in out
+    assert ctx.citations.mapping()["S1"]["url"] == requested
+
+    for unapproved in (
+        "https://access.nyc.gov/snap-work-requirements//",
+        "https://access.nyc.gov/other-page",
+    ):
+        rejected = await tool.handler(
+            {
+                "urls": [unapproved],
+                "query": "SNAP work requirements",
+            },
+            ctx,
+        )
+        assert "not an approved official source" in rejected
+
 async def test_benefits_declares_current_snap_work_rule_pages():
     city = "https://www.nyc.gov/main/services/snap-benefits/abawd"
     state = "https://otda.ny.gov/programs/snap/work-requirements.asp"
