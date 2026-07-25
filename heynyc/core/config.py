@@ -17,9 +17,9 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 # silently run at ~3.3x the production price. Production sets HEYNYC_MODEL in .env (the pilot pins
 # gpt-5.6-luna at medium effort); this default only governs an unset environment.
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "openai/gpt-5.4-mini")
-# Runtime cutover is explicit and reversible. The current hand-rolled loop remains the default
-# until the Pydantic path clears the focused live promotion gate.
-HEYNYC_AGENT_RUNTIME = os.getenv("HEYNYC_AGENT_RUNTIME", "legacy").strip().lower()
+# The Pydantic runtime is the default after the focused live promotion gate. Operators can set
+# `HEYNYC_AGENT_RUNTIME=legacy` for the retained rollback path.
+HEYNYC_AGENT_RUNTIME = os.getenv("HEYNYC_AGENT_RUNTIME", "pydantic").strip().lower()
 # Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
 # the resident-answer model; deployments can override it independently.
 # RULED 2026-07-20 (the F058 tier decision): mini, not nano. Nano's ceiling was measured, not

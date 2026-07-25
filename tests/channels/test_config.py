@@ -7,7 +7,8 @@ def test_channel_config_defaults(monkeypatch):
     import dotenv
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: None)
     for var in ("WHATSAPP_PROVIDER", "HEYNYC_CHANNEL_RATE_LIMIT",
-                "HEYNYC_CHANNEL_MAX_CONCURRENCY", "HEYNYC_PII_SALT"):
+                "HEYNYC_CHANNEL_MAX_CONCURRENCY", "HEYNYC_PII_SALT",
+                "HEYNYC_AGENT_RUNTIME"):
         monkeypatch.delenv(var, raising=False)
     from heynyc.core import config
     importlib.reload(config)
@@ -16,6 +17,7 @@ def test_channel_config_defaults(monkeypatch):
         assert config.CHANNEL_RATE_LIMIT == 20
         assert config.CHANNEL_MAX_CONCURRENCY == 8
         assert config.HEYNYC_PII_SALT == ""
+        assert config.HEYNYC_AGENT_RUNTIME == "pydantic"
         assert hasattr(config, "TWILIO_WHATSAPP_FROM")
     finally:
         monkeypatch.undo()

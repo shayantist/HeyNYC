@@ -56,14 +56,15 @@ Install the deps with `uv sync --extra whatsapp` (the messaging deps live in the
 
 ## Agent runtime selection
 
-[`HEYNYC_AGENT_RUNTIME`](../core/config.py) selects one runtime for the entire process. `legacy` is
-the default. `pydantic` selects the opt-in PydanticAI candidate, which requires
+[`HEYNYC_AGENT_RUNTIME`](../core/config.py) selects one runtime for the entire process. `pydantic`
+is the default and requires
 `uv sync --extra pydantic-ai`. Both use the same channel orchestrator, encrypted transcript and
 channel store, tools, grounding policy, and SMS and WhatsApp renderers. Exact native snapshots are
 runtime-specific; the shared transcript preserves model-visible turns across a rollback. This is
 an operator switch, not per-resident traffic splitting.
 
-Do not change the runtime during an ordinary unattended restart. A production switch needs a
+Set `HEYNYC_AGENT_RUNTIME=legacy` for the retained rollback path. Do not change the runtime during
+an ordinary unattended restart. A production switch needs a
 supervised health check, real SMS and WhatsApp smoke, continuity and approval-resume checks, and
 an immediate rollback path to `legacy`. Starting the [`legacy` runtime](app.py) cancels
 [pending Pydantic tool proposals](store.py) so an old approval cannot reappear after intervening

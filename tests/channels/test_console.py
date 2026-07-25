@@ -115,9 +115,11 @@ def _console_deps(tmp_path, *, model=None):
     return build_console_deps(console=_recording_console(), model=model, data_dir=tmp_path)
 
 
-def test_build_console_deps_populates_every_dep_and_wires_the_approver(tmp_path):
+def test_build_console_deps_populates_every_dep_and_wires_the_approver(tmp_path, monkeypatch):
     from heynyc.channels.console import ConsoleSink
+    from heynyc.core import config
 
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
     deps = _console_deps(tmp_path)
     assert deps.agent is not None
     assert deps.store is not None
@@ -130,7 +132,10 @@ def test_build_console_deps_populates_every_dep_and_wires_the_approver(tmp_path)
     assert deps.agent._approver is not None             # forms would auto-deny without it
 
 
-def test_console_model_flag_reaches_the_console_agent(tmp_path):
+def test_console_model_flag_reaches_the_console_agent(tmp_path, monkeypatch):
+    from heynyc.core import config
+
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
     deps = _console_deps(tmp_path, model="openai/some-other-model")
     assert deps.agent.model == "openai/some-other-model"
 

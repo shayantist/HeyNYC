@@ -40,6 +40,7 @@ def test_build_agent_can_select_pydantic_runtime(monkeypatch):
 
 def test_legacy_startup_invalidates_pending_native_approvals(monkeypatch, tmp_path):
     appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "legacy")
 
     appmod.build_deps(SimpleNamespace())
 
@@ -48,6 +49,7 @@ def test_legacy_startup_invalidates_pending_native_approvals(monkeypatch, tmp_pa
 
 def test_native_startup_preserves_pending_native_approvals(monkeypatch, tmp_path):
     appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "pydantic")
     native = SimpleNamespace(conversation_from_state=lambda state: None)
 
     appmod.build_deps(native)
