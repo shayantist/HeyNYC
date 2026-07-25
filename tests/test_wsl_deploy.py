@@ -121,7 +121,7 @@ def test_wsl_deploy_is_exact_sha_locked_and_uses_shared_state() -> None:
 def test_wsl_deploy_prepares_before_the_short_stopped_window() -> None:
     text = SCRIPT.read_text()
 
-    sync = text.index("uv sync --frozen --extra whatsapp")
+    sync = text.index("uv sync --frozen --extra whatsapp --extra pydantic-ai")
     stop = text.index('systemctl stop "$SERVICE"')
     snapshot = text.index('state_snapshot.py" create')
     restore_probe = text.index('state_snapshot.py" restore')

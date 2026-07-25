@@ -97,7 +97,7 @@ elif [ -e "$release" ]; then
 fi
 git -C "$SOURCE" worktree add --detach "$release" "$sha"
 ln -s "$SHARED/.env" "$release/.env"
-(cd "$release" && uv sync --frozen --extra whatsapp)
+(cd "$release" && uv sync --frozen --extra whatsapp --extra pydantic-ai)
 : > "$release/.heynyc-ready"
 validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
