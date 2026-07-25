@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from litellm.main import responses_api_bridge_check
+from pydantic_ai import UsageLimits
 from pydantic_ai.models import infer_model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
@@ -97,6 +98,7 @@ def build_runtime(
         use_module_capabilities=use_module_capabilities,
         current_awareness=current_awareness,
         extra_capabilities=extra_capabilities,
+        usage_limits=UsageLimits(request_limit=10 if use_module_capabilities else 8),
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
         semantic_verifier=semantic_verifier,

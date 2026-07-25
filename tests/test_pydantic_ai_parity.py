@@ -2737,12 +2737,77 @@ def test_build_runtime_accepts_a_provider_native_model() -> None:
     assert runtime._agent.model is model
 
 
-def test_build_runtime_matches_production_turn_request_limit() -> None:
+def test_build_runtime_reserves_capability_discovery_requests() -> None:
     model = FunctionModel(lambda messages, info: ModelResponse([TextPart("Done")]))
 
-    runtime = build_runtime(Registry([]), tools={}, model=model)
+    direct = build_runtime(Registry([]), tools={}, model=model)
+    deferred = build_runtime(
+        Registry([]),
+        tools={},
+        model=model,
+        use_module_capabilities=True,
+    )
 
-    assert runtime._usage_limits == UsageLimits(request_limit=8)
+    assert direct._usage_limits == UsageLimits(request_limit=8)
+    assert deferred._usage_limits == UsageLimits(request_limit=10)
+
+
+async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_rounds() -> None:
+    calls = 0
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        nonlocal calls
+        calls += 1
+        return f"result {calls}"
+
+    registry = Registry(
+        [
+            ServiceModule(
+                name="events",
+                description="Find current NYC events",
+                prompt="Use the events tool for event discovery.",
+            )
+        ]
+    )
+    source = Tool(
+        name="whats_on_events",
+        description="Find current NYC events",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        module="events",
+    )
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse(
+                [ToolCallPart("load_capability", {"id": "events"}, "load-events")]
+            )
+        if model_calls == 2:
+            return ModelResponse(
+                [ToolCallPart("search_tools", {"queries": ["events"]}, "find-events")]
+            )
+        if model_calls < 10:
+            return ModelResponse(
+                [ToolCallPart("whats_on_events", {}, f"events-{model_calls}")]
+            )
+        return ModelResponse([TextPart("Done")])
+
+    runtime = build_runtime(
+        registry,
+        tools={"whats_on_events": source},
+        model=FunctionModel(model),
+        use_module_capabilities=True,
+    )
+
+    result = await runtime.run("Find events")
+
+    assert result.text == "Done"
+    assert result.status == "success"
+    assert calls == 7
+    assert result.usage["requests"] == 10
 
 
 def test_build_runtime_enables_default_memory_only_for_explicit_route(
