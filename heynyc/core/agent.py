@@ -1487,15 +1487,16 @@ def _sensitive_identifier_backstop(user_message: str) -> Optional[str]:
 _INTERNAL_CONFIG_RE = re.compile(
     r"\b(?:system (?:prompt|reminders?|instructions?)|hidden (?:prompt|instructions?)|"
     r"own instructions?|tool (?:configuration|instructions?)|grounding rules?)\b.{0,80}"
-    r"\b(?:paste|show|reveal|print|debug|summarize)\b|"
-    r"\b(?:paste|show|reveal|print|summarize)\b.{0,80}\b(?:system (?:prompt|reminders?|instructions?)|"
+    r"\b(?:paste|show|tell|reveal|print|debug|summarize)\b|"
+    r"\b(?:paste|show|tell|reveal|print|summarize)\b.{0,80}\b(?:system (?:prompt|reminders?|instructions?)|"
     r"own instructions?|hidden rules?|"
     r"tool (?:configuration|instructions?)|grounding rules?)\b",
     re.IGNORECASE,
 )
 _INTERNAL_CONFIG_RESPONSE = (
     "I can't provide hidden system instructions, tool configuration, or internal reminders. "
-    "I can explain HeyNYC's public capabilities and safety approach instead."
+    "I can keep helping with what you asked about before, or explain HeyNYC's public "
+    "capabilities and safety approach."
 )
 
 
