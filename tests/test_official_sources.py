@@ -4,6 +4,7 @@ from io import BytesIO
 
 from reportlab.pdfgen import canvas
 
+from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
@@ -89,6 +90,29 @@ async def test_official_sources_rejects_a_url_not_declared_by_a_module():
 
     assert "not an approved official source" in out
     assert client.urls == []
+
+
+async def test_benefits_declares_current_snap_work_rule_pages():
+    city = "https://www.nyc.gov/main/services/snap-benefits/abawd"
+    state = "https://otda.ny.gov/programs/snap/work-requirements.asp"
+    registry = Registry.discover(config.MODULES_DIR)
+    client = _Client({
+        city: "SNAP work requirements include work, volunteering, or training.",
+        state: "ABAWD work rules include exemptions and an 80-hour monthly requirement.",
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {
+            "urls": [state, city],
+            "query": "SNAP work rules exemptions volunteering training 80 hours",
+        },
+        ctx,
+    )
+
+    assert set(client.urls) == {city, state}
+    assert "not an approved official source" not in out
+    assert len(ctx.citations) == 2
 
 
 async def test_official_sources_extracts_text_from_an_approved_pdf():
