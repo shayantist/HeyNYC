@@ -54,10 +54,25 @@ def _load_retriever():
 
 
 def build_agent() -> Agent:
+    registry = Registry.discover(
+        config.MODULES_DIR,
+        config.BASE_ALLOWLIST,
+        config.NEWS_ALLOWLIST,
+    )
+    index = _load_retriever()
+    if config.HEYNYC_AGENT_RUNTIME == "pydantic":
+        from heynyc.core.pydantic_runtime import build_configured_runtime
+
+        return build_configured_runtime(
+            registry,
+            model=config.HEYNYC_MODEL,
+            index=index,
+            current_awareness=current_awareness,
+        )
     return Agent(
-        Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST),
+        registry,
         model=config.HEYNYC_MODEL,
-        index=_load_retriever(),
+        index=index,
         notify_awareness=current_awareness,
         scope_gate=True,
     )

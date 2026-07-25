@@ -8,21 +8,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from litellm.main import responses_api_bridge_check
-from pydantic_ai.models import infer_model
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
-
 from heynyc.__main__ import _default_reminders, _load_retriever
 from heynyc.core import config
 from heynyc.core.agent import Agent, AgentResult
 from heynyc.core.nli import PromptedNLI
+from heynyc.core.pydantic_runtime import (
+    _uses_openai_responses,
+    build_runtime,
+)
+from heynyc.core.pydantic_runtime import (
+    configured_model as _comparison_model,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.eval.cases import load_cases, select_cases
 from heynyc.eval.report import evaluate, write_run
 from heynyc.eval.runner import run_all
 from heynyc.modules.advisories.tools import current_awareness
-from scripts.pydantic_ai_parity import build_runtime
 
 _ADDITIVE_USAGE_KEYS = {
     "input_tokens",
@@ -124,38 +126,6 @@ class _PydanticEvalAgent:
 
     async def run(self, message: str, **kwargs: Any) -> AgentResult:
         return await self.conversation().send(message, **kwargs)
-
-
-def _comparison_model(model: str) -> Any:
-    if model.startswith("openai/"):
-        settings = {
-            key: value
-            for key, value in {
-                "openai_reasoning_effort": config.HEYNYC_REASONING_EFFORT,
-                "openai_service_tier": config.HEYNYC_SERVICE_TIER,
-            }.items()
-            if value is not None
-        }
-        model_type = (
-            OpenAIResponsesModel if _uses_openai_responses(model) else OpenAIChatModel
-        )
-        return model_type(
-            model.removeprefix("openai/"),
-            settings=settings,
-        )
-    return infer_model(model.replace("/", ":", 1))
-
-
-def _uses_openai_responses(model: str, *, has_tools: bool = True) -> bool:
-    if not model.startswith("openai/"):
-        return False
-    model_info, _ = responses_api_bridge_check(
-        model.removeprefix("openai/"),
-        "openai",
-        tools=[{}] if has_tools else [],
-        reasoning_effort=config.HEYNYC_REASONING_EFFORT,
-    )
-    return model_info.get("mode") == "responses"
 
 
 def _runtime_route(arm: str, model: str) -> str:

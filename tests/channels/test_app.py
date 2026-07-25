@@ -1,9 +1,25 @@
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from heynyc.core import pii_crypto
+
+
+def test_build_agent_can_select_pydantic_runtime(monkeypatch):
+    from heynyc.channels import app as appmod
+
+    built = SimpleNamespace()
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+    monkeypatch.setattr(appmod, "_load_retriever", lambda: "index")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_configured_runtime",
+        lambda registry, **kwargs: built,
+    )
+
+    assert appmod.build_agent() is built
 
 
 def test_health_and_twilio_route_mounted(monkeypatch, tmp_path):

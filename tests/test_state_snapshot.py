@@ -67,7 +67,7 @@ def test_snapshot_verify_and_restore_round_trip(tmp_path: Path) -> None:
 
     assert manifest["format_version"] == 1
     assert manifest["app_sha"] == "a" * 40
-    assert manifest["sqlite_user_version"] == 3
+    assert manifest["sqlite_user_version"] == 4
     assert {entry["path"] for entry in manifest["files"]} == {
         "channels.sqlite3",
         "drafts/resident.json",

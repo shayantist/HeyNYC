@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -15,7 +16,7 @@ from heynyc.channels.orchestrator import (
 )
 from heynyc.channels.store import ChannelStore
 from heynyc.core import config
-from heynyc.core.agent import Agent
+from heynyc.core.agent import Agent, AgentResult
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool
 
@@ -559,6 +560,208 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
     assert _answers(replier) == [
         "Reply /screen when ready", "Reply /screen when ready", "Reply /screen when ready",
     ]
+
+
+async def test_native_approval_is_reviewed_and_resumed_through_the_channel(
+    tmp_path,
+    monkeypatch,
+):
+    from heynyc.core import pii_crypto
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+
+    class NativeConversation:
+        def __init__(self, phase="new"):
+            self.phase = phase
+
+        @property
+        def pending_approvals(self):
+            if self.phase != "pending":
+                return {}
+            return {
+                "call-1": {
+                    "tool_name": "submit_request",
+                    "args": {"borough": "Queens"},
+                }
+            }
+
+        @property
+        def pending_calls(self):
+            return {}
+
+        async def send(self, message, **kwargs):
+            self.phase = "pending"
+            return result("", "approval_required")
+
+        async def resume_approvals(self, approvals, **kwargs):
+            assert approvals == {"call-1": True}
+            self.phase = "done"
+            return result("Submitted after your approval")
+
+        def dump_state(self):
+            return json.dumps({"phase": self.phase}).encode()
+
+    class NativeAgent:
+        model = "fake-native"
+        registry = Registry.discover(config.MODULES_DIR)
+        tools = {
+            "submit_request": Tool(
+                name="submit_request",
+                description="Submit",
+                parameters={"type": "object", "properties": {}},
+                handler=lambda args, ctx: None,
+                read_only=False,
+                requires_approval=True,
+            )
+        }
+
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation(json.loads(state)["phase"])
+
+    def result(text, status="success"):
+        return AgentResult(
+            text=text,
+            citations={},
+            tool_calls_made=[],
+            iterations=1,
+            status=status,
+            messages=[],
+            usage={"cost_usd": 0.0},
+        )
+
+    deps = _deps(tmp_path)
+    deps.agent = NativeAgent()
+    _burn_welcome(deps)
+
+    review = FakeReplier()
+    await handle(_msg(text="submit it", mid="approval-1"), review, deps)
+    assert "submit_request" in review.sent[0]
+    assert "Reply YES to approve, or NO to deny" in review.sent[0]
+
+    shorthand = FakeReplier()
+    await handle(_msg(text="Y", mid="approval-short"), shorthand, deps)
+    assert shorthand.sent == [review.sent[0]]
+
+    approved = FakeReplier()
+    await handle(_msg(text="YES", mid="approval-2"), approved, deps)
+    assert approved.sent == ["Submitted after your approval"]
+
+    from heynyc.channels.identity import user_key as _uk
+    from heynyc.core.session import Session
+
+    key = _uk("whatsapp_meta", "+1555", "s")
+    assert deps.store.has_pending_approval(key) is False
+    resumed = Session.load(
+        deps.agent,
+        key,
+        tmp_path / "sessions" / f"{key}.jsonl",
+    )
+    assert [turn["content"] for turn in resumed.turns] == [
+        "submit it",
+        review.sent[0],
+        "YES",
+        "Submitted after your approval",
+    ]
+
+
+async def test_native_retry_safe_approval_recovers_after_partial_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from pydantic_ai import UnexpectedModelBehavior
+    from pydantic_ai.messages import (
+        ModelMessage,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from heynyc.channels.identity import user_key as _uk
+    from heynyc.core import pii_crypto
+    from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
+    from heynyc.core.tools.base import ToolContext
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    attempts = 0
+    fail_once = True
+
+    async def prepare(args: dict, ctx: ToolContext) -> str:
+        nonlocal attempts
+        attempts += 1
+        return "Prepared"
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal fail_once
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse(
+                [ToolCallPart("prepare_application", {}, "approval-call")]
+            )
+        if fail_once:
+            fail_once = False
+            raise UnexpectedModelBehavior("invalid response after action")
+        return ModelResponse([TextPart("Prepared after retry")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "prepare_application": Tool(
+                name="prepare_application",
+                description="Prepare an approved draft",
+                parameters={"type": "object", "properties": {}},
+                handler=prepare,
+                read_only=False,
+                requires_approval=True,
+                idempotent=True,
+            )
+        },
+        guard_grounding=False,
+    )
+    deps = _deps(tmp_path)
+    deps.agent = runtime
+    _burn_welcome(deps)
+    key = _uk("whatsapp_meta", "+1555", "s")
+
+    review = FakeReplier()
+    await handle(_msg(text="prepare it", mid="approval-failure-1"), review, deps)
+    failed = FakeReplier()
+    await handle(_msg(text="YES", mid="approval-failure-2"), failed, deps)
+
+    assert "temporary problem" in failed.sent[0]
+    assert deps.store.has_pending_approval(key) is True
+
+    retried = FakeReplier()
+    await handle(_msg(text="YES", mid="approval-failure-3"), retried, deps)
+
+    assert retried.sent == ["Prepared after retry"]
+    assert deps.store.has_pending_approval(key) is False
+    assert attempts == 2
+
+
+async def test_legacy_runtime_ignores_stale_native_approval_state(tmp_path, monkeypatch):
+    from heynyc.channels.identity import user_key as _uk
+    from heynyc.core import pii_crypto
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    deps = _deps(tmp_path)
+    key = _uk("whatsapp_meta", "+1555", "s")
+    deps.store.set_pending_approval(key, b'{"pending":true}', ttl_s=60)
+    _burn_welcome(deps)
+
+    replier = FakeReplier()
+    await handle(_msg(text="ordinary question", mid="legacy-stale"), replier, deps)
+
+    assert replier.sent == ["Here you go."]
+    assert deps.store.has_pending_approval(key) is True
 
 
 async def test_per_user_lock_serializes_same_user(tmp_path):

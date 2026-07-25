@@ -21,6 +21,7 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelRetry,
     RunContext,
+    UnexpectedModelBehavior,
     UsageLimits,
 )
 from pydantic_ai.capabilities import ProcessHistory, Thinking
@@ -41,11 +42,12 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
+from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
 from heynyc.channels.format import render
 from heynyc.channels.store import ChannelStore
-from heynyc.core import pii_crypto
+from heynyc.core import events, pii_crypto
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.grounding import check_grounding
 from heynyc.core.manifest import ServiceModule
@@ -54,15 +56,7 @@ from heynyc.core.memory import (
     ContinuityRecord,
     continuity_reminder,
 )
-from heynyc.core.registry import Registry
-from heynyc.core.telemetry import priced_cost_usd
-from heynyc.core.tools import build_toolbox
-from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
-from heynyc.core.tools.geo import resident_supplied_location
-from heynyc.eval.cases import EvalCase
-from heynyc.eval.runner import run_case
-from heynyc.eval.trace import build_trace
-from scripts.pydantic_ai_parity import (
+from heynyc.core.pydantic_runtime import (
     PydanticApprovalFlow,
     PydanticRunFailure,
     PydanticRuntimeAdapter,
@@ -80,6 +74,14 @@ from scripts.pydantic_ai_parity import (
     build_runtime,
     resident_fact_confirmation_tool,
 )
+from heynyc.core.registry import Registry
+from heynyc.core.telemetry import priced_cost_usd
+from heynyc.core.tools import build_toolbox
+from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
+from heynyc.core.tools.geo import resident_supplied_location
+from heynyc.eval.cases import EvalCase
+from heynyc.eval.runner import run_case
+from heynyc.eval.trace import build_trace
 from scripts.pydantic_ai_repl import _resolve_pending
 
 
@@ -786,7 +788,7 @@ async def test_loaded_module_capability_survives_redundant_follow_up_load(
     calls: list[str] = []
     measured: list[list[dict]] = []
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 10_000,
     )
 
@@ -795,7 +797,7 @@ async def test_loaded_module_capability_survives_redundant_follow_up_load(
         return len(messages)
 
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.request_tokens",
+        "heynyc.core.pydantic_runtime.request_tokens",
         count,
     )
 
@@ -1312,6 +1314,77 @@ async def test_approval_retry_preserves_only_idempotent_pending_state(
 
     assert store.has_pending_approval("resident-a") is remains_pending
     if not remains_pending:
+        assert attempts == 1
+        return
+    restarted = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+    result = await restarted.resume(True)
+
+    assert result.text == "Prepared"
+    assert store.has_pending_approval("resident-a") is False
+    assert attempts == 2
+
+
+@pytest.mark.parametrize(
+    ("idempotent", "remains_pending"),
+    [(True, True), (False, False)],
+)
+async def test_approval_partial_failure_preserves_only_idempotent_pending_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    idempotent: bool,
+    remains_pending: bool,
+) -> None:
+    attempts = 0
+    fail_once = True
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        nonlocal attempts
+        attempts += 1
+        return "Prepared"
+
+    source = Tool(
+        name="prepare_application",
+        description="Prepare an approved draft",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        read_only=False,
+        requires_approval=True,
+        idempotent=idempotent,
+    )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal fail_once
+        if not _parts(messages, ToolReturnPart):
+            return ModelResponse(
+                [ToolCallPart("prepare_application", {}, "approval-call")]
+            )
+        if fail_once:
+            fail_once = False
+            raise UnexpectedModelBehavior("invalid response after action")
+        return ModelResponse([TextPart("Prepared")])
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"prepare_application": source},
+        guard_grounding=False,
+    )
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    flow = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
+    await flow.send("Prepare it")
+
+    failed = await flow.resume(True)
+
+    assert failed.status == "error"
+    assert store.has_pending_approval("resident-a") is remains_pending
+    if not remains_pending:
+        assert flow.conversation.pending_approvals == {}
         assert attempts == 1
         return
     restarted = PydanticApprovalFlow(runtime, store, "resident-a", ttl_s=60)
@@ -2676,7 +2749,7 @@ def test_build_runtime_enables_default_memory_only_for_explicit_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 123,
     )
     model = FunctionModel(lambda messages, info: ModelResponse([TextPart("Done")]))
@@ -2701,7 +2774,7 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
     measured: list[list[str]] = []
 
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 10_000,
     )
 
@@ -2709,7 +2782,7 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
         measured.append([schema["function"]["name"] for schema in schemas])
         return 1
 
-    monkeypatch.setattr("scripts.pydantic_ai_parity.request_tokens", count)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.request_tokens", count)
     registry = Registry(
         [
             ServiceModule(
@@ -2761,11 +2834,11 @@ async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
     compacted: list[list[dict]] = []
 
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 3,
     )
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.request_tokens",
+        "heynyc.core.pydantic_runtime.request_tokens",
         lambda model, messages, schemas, counter=None: sum(
             message["role"] in {"user", "assistant"} for message in messages
         ),
@@ -2781,7 +2854,7 @@ async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
             "memory_time_ms": 2.0,
         }
 
-    monkeypatch.setattr("scripts.pydantic_ai_parity.compact_memory", compact)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.compact_memory", compact)
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(
@@ -2828,11 +2901,11 @@ async def test_default_compactor_failure_fails_before_answer_model(
     calls = 0
 
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 3,
     )
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.request_tokens",
+        "heynyc.core.pydantic_runtime.request_tokens",
         lambda model, messages, schemas, counter=None: sum(
             message["role"] in {"user", "assistant"} for message in messages
         ),
@@ -2841,7 +2914,7 @@ async def test_default_compactor_failure_fails_before_answer_model(
     async def compact(history, continuity, spend):
         raise RuntimeError("compactor unavailable")
 
-    monkeypatch.setattr("scripts.pydantic_ai_parity.compact_memory", compact)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.compact_memory", compact)
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal calls
@@ -2868,11 +2941,11 @@ async def test_default_memory_rejects_unfit_current_tool_schema_before_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 1,
     )
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.request_tokens",
+        "heynyc.core.pydantic_runtime.request_tokens",
         lambda model, messages, schemas, counter=None: 2 if schemas else 1,
     )
 
@@ -3025,7 +3098,7 @@ async def test_default_context_measurement_counts_structured_continuity_once(
     measured: list[list[dict]] = []
 
     monkeypatch.setattr(
-        "scripts.pydantic_ai_parity.context_capacity",
+        "heynyc.core.pydantic_runtime.context_capacity",
         lambda model, limit, uses_litellm: 1_000,
     )
 
@@ -3033,7 +3106,7 @@ async def test_default_context_measurement_counts_structured_continuity_once(
         measured.append(messages)
         return 1
 
-    monkeypatch.setattr("scripts.pydantic_ai_parity.request_tokens", count)
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.request_tokens", count)
     runtime = build_runtime(
         Registry([]),
         tools={},
@@ -3149,6 +3222,126 @@ async def test_repl_uses_one_shared_review_and_whole_batch_decision() -> None:
     assert console.printed == ["Shared approval review"]
     assert len(console.prompts) == 1
     assert flow.decisions == [True]
+
+
+async def test_repl_requires_exact_yes_or_no() -> None:
+    class Console:
+        def __init__(self) -> None:
+            self.answers = iter(("y", "maybe", "NO"))
+            self.printed: list[str] = []
+
+        def print(self, text: str) -> None:
+            self.printed.append(text)
+
+        def input(self, prompt: str) -> str:
+            return next(self.answers)
+
+    class Flow:
+        def review_text(self) -> str:
+            return "Review"
+
+        async def resume(self, decision: bool) -> bool:
+            return decision
+
+    console = Console()
+
+    assert await _resolve_pending(console, Flow()) is False
+    assert console.printed == [
+        "Review",
+        "Please reply YES or NO.",
+        "Please reply YES or NO.",
+    ]
+
+
+async def test_pydantic_event_sink_observes_tool_and_text_stream() -> None:
+    seen_events: list[events.Event] = []
+
+    async def lookup(args: dict, ctx: ToolContext) -> str:
+        return "Cooling center result"
+
+    tools = {
+        "lookup": Tool(
+            name="lookup",
+            description="Find a cooling center",
+            parameters={"type": "object", "properties": {}},
+            handler=lookup,
+        ),
+    }
+
+    runtime = PydanticRuntimeAdapter(
+        TestModel(
+            call_tools=["lookup"],
+            custom_output_text="Here is the nearest cooling center",
+        ),
+        registry=Registry([]),
+        tools=tools,
+        guard_grounding=False,
+    )
+
+    result = await runtime.conversation().send(
+        "Where can I cool off?",
+        event_sink=seen_events.append,
+    )
+
+    assert result.text == "Here is the nearest cooling center"
+    assert any(isinstance(event, events.ToolStart) for event in seen_events)
+    assert any(isinstance(event, events.ToolCompleted) for event in seen_events)
+    assert any(isinstance(event, events.TextDelta) for event in seen_events)
+    assert isinstance(seen_events[-1], events.Done)
+
+
+async def test_pydantic_event_sink_finishes_failed_runs(monkeypatch) -> None:
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda messages, info: ModelResponse([TextPart("unused")])),
+        registry=Registry([]),
+        tools={},
+        guard_grounding=False,
+    )
+    seen_events: list[events.Event] = []
+
+    async def fail(*args, **kwargs):
+        raise UnexpectedModelBehavior("broken output")
+
+    monkeypatch.setattr(runtime._agent, "run", fail)
+
+    with pytest.raises(PydanticRunFailure):
+        await runtime.run("Help", event_sink=seen_events.append)
+
+    assert isinstance(seen_events[-1], events.Done)
+    assert seen_events[-1].status == "error"
+    assert "temporary problem" in seen_events[-1].result.text
+
+
+async def test_pydantic_approval_resume_emits_events() -> None:
+    async def complete_action(args: dict[str, object], ctx: ToolContext) -> str:
+        return "done"
+
+    action = Tool(
+        name="act",
+        description="Complete an approved action",
+        parameters={"type": "object", "properties": {}},
+        handler=complete_action,
+        requires_approval=True,
+    )
+    runtime = PydanticRuntimeAdapter(
+        TestModel(call_tools=["act"], custom_output_text="Finished"),
+        registry=Registry([]),
+        tools={"act": action},
+        guard_grounding=False,
+    )
+    conversation = runtime.conversation()
+    pending = await conversation.send("Do it")
+    seen_events: list[events.Event] = []
+
+    assert pending.status == "approval_required"
+    result = await conversation.resume_approvals(
+        {call_id: True for call_id in conversation.pending_approvals},
+        event_sink=seen_events.append,
+    )
+
+    assert result.text == "Finished"
+    assert any(isinstance(event, events.ToolCompleted) for event in seen_events)
+    assert isinstance(seen_events[-1], events.Done)
 
 
 async def test_build_runtime_keeps_stable_prompt_out_of_dynamic_instructions() -> None:

@@ -11,16 +11,16 @@ from pydantic_ai.models.test import TestModel
 from pytest import MonkeyPatch
 
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
+from heynyc.core.pydantic_runtime import (
+    PydanticRuntimeAdapter,
+    _semantic_citation_evidence,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
 from scripts import pydantic_ai_ab
 from scripts.pydantic_ai_ab import _parser, build_factories
-from scripts.pydantic_ai_parity import (
-    PydanticRuntimeAdapter,
-    _semantic_citation_evidence,
-)
 
 
 class _Verifier:

@@ -17,6 +17,9 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 # silently run at ~3.3x the production price. Production sets HEYNYC_MODEL in .env (the pilot pins
 # gpt-5.6-luna at medium effort); this default only governs an unset environment.
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "openai/gpt-5.4-mini")
+# Runtime cutover is explicit and reversible. The current hand-rolled loop remains the default
+# until the Pydantic path clears the focused live promotion gate.
+HEYNYC_AGENT_RUNTIME = os.getenv("HEYNYC_AGENT_RUNTIME", "legacy").strip().lower()
 # Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
 # the resident-answer model; deployments can override it independently.
 # RULED 2026-07-20 (the F058 tier decision): mini, not nano. Nano's ceiling was measured, not
@@ -183,6 +186,7 @@ CHANNEL_RATE_LIMIT = int(os.getenv("HEYNYC_CHANNEL_RATE_LIMIT", "20"))          
 CHANNEL_RATE_WINDOW_S = int(os.getenv("HEYNYC_CHANNEL_RATE_WINDOW_S", "60"))
 CHANNEL_MAX_CONCURRENCY = int(os.getenv("HEYNYC_CHANNEL_MAX_CONCURRENCY", "8"))
 CHANNEL_DEDUP_TTL_S = int(os.getenv("HEYNYC_CHANNEL_DEDUP_TTL_S", str(7 * 24 * 3600)))
+CHANNEL_APPROVAL_TTL_S = int(os.getenv("HEYNYC_CHANNEL_APPROVAL_TTL_S", "900"))
 
 # --- NYC Benefits Screening API (Module B) ---
 SCREENING_ENV = os.getenv("SCREENING_ENV", "sandbox")  # sandbox | prod

@@ -32,10 +32,10 @@ jobs:
           python-version: "3.11"
           enable-cache: true
 
-      # Only the dev + whatsapp extras. The `nli` extra pulls torch and a git dependency
+      # The dev, channel, and candidate-runtime extras. The `nli` extra pulls torch and a git dependency
       # (minicheck), which the offline suite never needs, so it stays out of CI.
-      - name: Install dependencies (dev + whatsapp extras)
-        run: uv sync --frozen --extra dev --extra whatsapp
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev --extra whatsapp --extra pydantic-ai
 
       # Real-bug rules only (pyflakes + import order), per [tool.ruff] in pyproject.toml.
       - name: Lint (ruff)
@@ -48,7 +48,7 @@ jobs:
       # --no-emit-project drops the unpublished heynyc package; --no-hashes keeps it a plain
       # version list for the advisory lookup.
       - name: Export locked dependencies for the audit
-        run: uv export --frozen --no-emit-project --no-hashes --extra dev --extra whatsapp --output-file requirements.txt
+        run: uv export --frozen --no-emit-project --no-hashes --extra dev --extra whatsapp --extra pydantic-ai --output-file requirements.txt
 
       - name: Dependency vulnerability scan (pip-audit)
         uses: pypa/gh-action-pip-audit@v1.1.0

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from heynyc.core import pii_crypto
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 
 class InboxPayloadError(RuntimeError):
@@ -88,8 +88,16 @@ class ChannelStore:
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS approval_pending "
             "(user_key TEXT PRIMARY KEY, state BLOB NOT NULL, ts REAL NOT NULL, "
-            "expires_at REAL NOT NULL)"
+            "expires_at REAL NOT NULL, aad_bound INTEGER NOT NULL DEFAULT 0)"
         )
+        approval_columns = {
+            row[1] for row in self._db.execute("PRAGMA table_info(approval_pending)")
+        }
+        if "aad_bound" not in approval_columns:
+            self._db.execute(
+                "ALTER TABLE approval_pending "
+                "ADD COLUMN aad_bound INTEGER NOT NULL DEFAULT 0"
+            )
         # First-contact marker: a durable once-EVER flag so a never-seen user gets the welcome
         # footer exactly once (the `seen` table is TTL-pruned, so it can't answer "ever").
         self._db.execute(
@@ -299,10 +307,20 @@ class ChannelStore:
             raise ValueError("approval ttl must be positive")
         now = time.time()
         self._db.execute(
-            "INSERT INTO approval_pending (user_key, state, ts, expires_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(user_key) DO UPDATE SET "
-            "state = excluded.state, ts = excluded.ts, expires_at = excluded.expires_at",
-            (user_key, pii_crypto.encrypt(state.decode("utf-8")), now, now + ttl_s),
+            "INSERT INTO approval_pending "
+            "(user_key, state, ts, expires_at, aad_bound) "
+            "VALUES (?, ?, ?, ?, 1) ON CONFLICT(user_key) DO UPDATE SET "
+            "state = excluded.state, ts = excluded.ts, "
+            "expires_at = excluded.expires_at, aad_bound = 1",
+            (
+                user_key,
+                pii_crypto.encrypt(
+                    state.decode("utf-8"),
+                    associated_data=user_key.encode("utf-8"),
+                ),
+                now,
+                now + ttl_s,
+            ),
         )
         self._db.commit()
 
@@ -324,9 +342,28 @@ class ChannelStore:
         if not self.has_pending_approval(user_key):
             return None
         row = self._db.execute(
-            "SELECT state FROM approval_pending WHERE user_key = ?", (user_key,)
+            "SELECT state, aad_bound FROM approval_pending WHERE user_key = ?",
+            (user_key,),
         ).fetchone()
-        return pii_crypto.decrypt(row[0]).encode("utf-8")
+        if int(row[1]):
+            return pii_crypto.decrypt(
+                row[0],
+                associated_data=user_key.encode("utf-8"),
+            ).encode("utf-8")
+        plaintext = pii_crypto.decrypt(row[0])
+        self._db.execute(
+            "UPDATE approval_pending SET state = ?, aad_bound = 1 "
+            "WHERE user_key = ? AND aad_bound = 0",
+            (
+                pii_crypto.encrypt(
+                    plaintext,
+                    associated_data=user_key.encode("utf-8"),
+                ),
+                user_key,
+            ),
+        )
+        self._db.commit()
+        return plaintext.encode("utf-8")
 
     def pop_pending_approval(self, user_key: str) -> bytes | None:
         """Consume one unexpired resident-bound deferred run. Expired state fails closed."""
@@ -334,7 +371,8 @@ class ChannelStore:
         try:
             self._db.execute("BEGIN IMMEDIATE")
             row = self._db.execute(
-                "SELECT state, expires_at FROM approval_pending WHERE user_key = ?",
+                "SELECT state, expires_at, aad_bound "
+                "FROM approval_pending WHERE user_key = ?",
                 (user_key,),
             ).fetchone()
             if row is None or float(row[1]) <= now:
@@ -350,7 +388,10 @@ class ChannelStore:
         except Exception:
             self._db.rollback()
             raise
-        return pii_crypto.decrypt(row[0]).encode("utf-8")
+        return pii_crypto.decrypt(
+            row[0],
+            associated_data=(user_key.encode("utf-8") if int(row[2]) else None),
+        ).encode("utf-8")
 
     def delete_user(self, user_key: str) -> None:
         """Erase this resident's inbox and control-plane rows on DELETE MY DATA. The daily

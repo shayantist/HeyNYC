@@ -135,6 +135,29 @@ def test_console_model_flag_reaches_the_console_agent(tmp_path):
     assert deps.agent.model == "openai/some-other-model"
 
 
+def test_console_uses_the_configured_pydantic_runtime(tmp_path, monkeypatch):
+    from heynyc.core import config
+
+    sentinel = object()
+    seen = {}
+
+    def build(registry, **kwargs):
+        seen.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_configured_runtime",
+        build,
+    )
+
+    deps = _console_deps(tmp_path, model="openai/test-model")
+
+    assert deps.agent is sentinel
+    assert seen["model"] == "openai/test-model"
+    assert seen["current_awareness"] is not None
+
+
 async def test_console_greeting_gets_the_help_menu(tmp_path):
     deps = _console_deps(tmp_path)
     console = deps.event_sink._console

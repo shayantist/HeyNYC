@@ -47,7 +47,7 @@ def test_old_seen_schema_migrates_into_the_single_inbox_dedup_table(tmp_path, mo
     assert "inbox" in tables
     assert "seen" not in tables
     assert "approval_pending" in tables
-    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_store_refuses_to_downgrade_a_newer_schema(tmp_path):
@@ -205,6 +205,59 @@ def test_pending_approval_is_encrypted_resident_bound_and_consumed_once(
     assert s.pop_pending_approval("u2") is None
     assert s.pop_pending_approval("u1") == state
     assert s.pop_pending_approval("u1") is None
+
+
+def test_pending_approval_ciphertext_cannot_move_between_residents(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    s = _store(tmp_path)
+    s.set_pending_approval("u1", b'{"private":"resident one"}', ttl_s=60)
+    encrypted = s._db.execute(
+        "SELECT state FROM approval_pending WHERE user_key = ?",
+        ("u1",),
+    ).fetchone()[0]
+    now = time.time()
+    s._db.execute(
+        "INSERT INTO approval_pending (user_key, state, ts, expires_at) VALUES (?, ?, ?, ?)",
+        ("u2", encrypted, now, now + 60),
+    )
+    s._db.commit()
+
+    with pytest.raises(pii_crypto.PiiCryptoError):
+        s.pop_pending_approval("u2")
+
+
+def test_pending_approval_rebinds_legacy_ciphertext_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    s = _store(tmp_path)
+    now = time.time()
+    s._db.execute(
+        "INSERT INTO approval_pending "
+        "(user_key, state, ts, expires_at, aad_bound) VALUES (?, ?, ?, ?, 0)",
+        (
+            "u1",
+            pii_crypto.encrypt('{"legacy":"state"}'),
+            now,
+            now + 60,
+        ),
+    )
+    s._db.commit()
+
+    assert s.get_pending_approval("u1") == b'{"legacy":"state"}'
+    state, aad_bound = s._db.execute(
+        "SELECT state, aad_bound FROM approval_pending WHERE user_key = ?",
+        ("u1",),
+    ).fetchone()
+    assert aad_bound == 1
+    assert (
+        pii_crypto.decrypt(
+            state,
+            associated_data=b"u1",
+        )
+        == '{"legacy":"state"}'
+    )
 
 
 def test_pending_approval_expires_closed(tmp_path, monkeypatch):

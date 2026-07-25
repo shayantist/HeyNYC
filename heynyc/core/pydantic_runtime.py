@@ -2,19 +2,27 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Awaitable, Sequence
+from collections.abc import AsyncIterable, Awaitable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator
+from litellm.main import responses_api_bridge_check
 from pydantic import BaseModel, Field, TypeAdapter
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
+    AgentStreamEvent,
     DeferredToolRequests,
+    DeferredToolRequestsEvent,
     DeferredToolResults,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ModelRetry,
+    PartDeltaEvent,
+    PartStartEvent,
     RunContext,
+    TextPartDelta,
     ToolOutput,
     UnexpectedModelBehavior,
     UsageLimitExceeded,
@@ -46,14 +54,14 @@ from pydantic_ai.messages import (
     ToolSearchReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models import ModelRequestContext
+from pydantic_ai.models import ModelRequestContext, infer_model
 from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.tools import Tool as PydanticTool
 from pydantic_ai.usage import RunUsage
 
-from heynyc.core import config
+from heynyc.core import config, events
 from heynyc.core.agent import (
-    EMPTY_ANSWER_FALLBACK,
     AgentResult,
     _emergency_backstop,
     _internal_config_backstop,
@@ -92,6 +100,109 @@ _STRUCTURED_GROUNDING_SYSTEM_PROMPT = (
     "Put retrieved source IDs only in citation_ids. The runtime renders citation "
     "markers after validation."
 )
+TEMPORARY_FAILURE_FALLBACK = (
+    "I hit a temporary problem before I could verify an answer. "
+    "Please try again in a moment."
+)
+
+
+def _emit(
+    sink: Callable[[events.Event], None] | None,
+    event: events.Event,
+) -> None:
+    if sink is None:
+        return
+    try:
+        sink(event)
+    except Exception:
+        pass
+
+
+def _finish_events(
+    sink: Callable[[events.Event], None] | None,
+    message_id: str,
+    result: AgentResult,
+) -> None:
+    if result.status == "error":
+        _emit(
+            sink,
+            events.ErrorEvent(
+                scope="model",
+                message="The model run ended before a verified answer was ready.",
+                retryable=True,
+            ),
+        )
+    _emit(
+        sink,
+        events.MessageCompleted(
+            message_id=message_id,
+            text=result.text,
+            citations=result.citations,
+        ),
+    )
+    _emit(
+        sink,
+        events.Done(
+            status=result.status,
+            num_turns=result.iterations,
+            citations=result.citations,
+            result=result,
+        ),
+    )
+
+
+async def _forward_events(
+    sink: Callable[[events.Event], None],
+    message_id: str,
+    stream: AsyncIterable[AgentStreamEvent],
+) -> None:
+    async for event in stream:
+        if isinstance(event, FunctionToolCallEvent):
+            _emit(
+                sink,
+                events.ToolStart(
+                    tool_call_id=event.part.tool_call_id,
+                    name=event.part.tool_name,
+                ),
+            )
+        elif isinstance(event, FunctionToolResultEvent):
+            part = event.part
+            _emit(
+                sink,
+                events.ToolCompleted(
+                    tool_call_id=part.tool_call_id,
+                    name=part.tool_name,
+                    status="ok" if isinstance(part, ToolReturnPart) else "error",
+                    result_summary=str(event.content or "")[:160],
+                ),
+            )
+        elif isinstance(event, DeferredToolRequestsEvent):
+            for call in event.requests.approvals:
+                _emit(
+                    sink,
+                    events.ToolApprovalRequired(
+                        tool_call_id=call.tool_call_id,
+                        name=call.tool_name,
+                        args=call.args_as_dict(),
+                    ),
+                )
+        elif isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+            if event.part.content:
+                _emit(
+                    sink,
+                    events.TextDelta(message_id=message_id, text=event.part.content),
+                )
+        elif isinstance(event, PartDeltaEvent) and isinstance(
+            event.delta, TextPartDelta
+        ):
+            if event.delta.content_delta:
+                _emit(
+                    sink,
+                    events.TextDelta(
+                        message_id=message_id,
+                        text=event.delta.content_delta,
+                    ),
+                )
 
 
 class GroundedBlock(BaseModel):
@@ -1019,7 +1130,7 @@ class PydanticRuntimeAdapter:
         result = self._project_result(
             messages,
             _captured_usage(messages),
-            EMPTY_ANSWER_FALLBACK,
+            TEMPORARY_FAILURE_FALLBACK,
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
@@ -1033,6 +1144,19 @@ class PydanticRuntimeAdapter:
     def conversation_from_state(self, state: bytes) -> "_PydanticConversation":
         return _PydanticConversation.from_state(self, state)
 
+    def conversation_from_transcript(
+        self,
+        transcript: Sequence[dict],
+    ) -> "_PydanticConversation":
+        conversation = self.conversation()
+        conversation._history = _native_history(transcript)
+        conversation._user_turns = tuple(
+            str(turn.get("content") or "")
+            for turn in transcript
+            if turn.get("role") == "user"
+        )
+        return conversation
+
     async def run(
         self,
         user_message: str,
@@ -1041,6 +1165,7 @@ class PydanticRuntimeAdapter:
         output_dir: Path | None = None,
         drafts: Any = None,
         resident_facts: dict[str, ResidentFact] | None = None,
+        event_sink: Callable[[events.Event], None] | None = None,
         **_: Any,
     ) -> AgentResult:
         return await self.conversation().send(
@@ -1049,6 +1174,7 @@ class PydanticRuntimeAdapter:
             output_dir=output_dir,
             drafts=drafts,
             resident_facts=resident_facts,
+            event_sink=event_sink,
         )
 
     async def _run(
@@ -1062,6 +1188,7 @@ class PydanticRuntimeAdapter:
         drafts: Any,
         resident_facts: dict[str, ResidentFact] | None,
         timing_capability: _ModelTimingCapability,
+        event_sink: Callable[[events.Event], None] | None = None,
         citations: CitationRegistry | None = None,
         memory_capability: _BoundedMemoryCapability | None = None,
     ) -> tuple[
@@ -1072,6 +1199,12 @@ class PydanticRuntimeAdapter:
         citations = citations if citations is not None else CitationRegistry()
         user_turns = (*prior_user_turns, user_message)
         started = time.perf_counter()
+        message_id = f"pydantic-{time.monotonic_ns()}"
+        _emit(
+            event_sink,
+            events.SessionInit(session_id=message_id, model=self.model),
+        )
+        _emit(event_sink, events.MessageStart(message_id=message_id))
         backstop = (
             _emergency_backstop(user_message)
             or _sensitive_identifier_backstop(user_message)
@@ -1082,8 +1215,7 @@ class PydanticRuntimeAdapter:
                 ModelRequest(parts=[UserPromptPart(user_message)]),
                 ModelResponse(parts=[TextPart(backstop)]),
             ]
-            return (
-                AgentResult(
+            result = AgentResult(
                     text=backstop,
                     citations=citations.mapping(),
                     tool_calls_made=[],
@@ -1111,10 +1243,13 @@ class PydanticRuntimeAdapter:
                             (time.perf_counter() - started) * 1000
                         ),
                     },
-                ),
-                new_messages,
-                None,
             )
+            _emit(
+                event_sink,
+                events.TextDelta(message_id=message_id, text=backstop),
+            )
+            _finish_events(event_sink, message_id, result)
+            return result, new_messages, None
         deps = ToolContext(
             citations=citations,
             registry=self.registry,
@@ -1139,6 +1274,17 @@ class PydanticRuntimeAdapter:
                     instructions=_dynamic_instructions(instructions),
                     deps=deps,
                     usage_limits=self._usage_limits,
+                    event_stream_handler=(
+                        (
+                            lambda ctx, stream: _forward_events(
+                                event_sink,
+                                message_id,
+                                stream,
+                            )
+                        )
+                        if event_sink is not None
+                        else None
+                    ),
                     capabilities=(
                         [
                             timing_capability,
@@ -1178,12 +1324,14 @@ class PydanticRuntimeAdapter:
                 ),
             )
             if isinstance(exc, UnexpectedModelBehavior):
+                _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(
                     exc.message,
                     result,
                     {"semantic_verifier_runs": deps.semantic_verifier_runs},
                 ) from exc
             result.hit_max_iters = True
+            _finish_events(event_sink, message_id, result)
             return result, new_messages, None
         result = self._result(
             native,
@@ -1193,6 +1341,7 @@ class PydanticRuntimeAdapter:
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
         self._merge_semantic_usage(result, deps.semantic_verifier_runs)
+        _finish_events(event_sink, message_id, result)
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
@@ -1569,6 +1718,7 @@ class _PydanticConversation:
         output_dir: Path | None = None,
         drafts: Any = None,
         resident_facts: dict[str, ResidentFact] | None = None,
+        event_sink: Callable[[events.Event], None] | None = None,
         **_: Any,
     ) -> AgentResult:
         if self._pending is not None:
@@ -1600,6 +1750,7 @@ class _PydanticConversation:
                 citations=self._citations,
                 memory_capability=memory_capability,
                 timing_capability=timing_capability,
+                event_sink=event_sink,
             )
             merge_memory_usage(
                 result.usage,
@@ -1618,6 +1769,7 @@ class _PydanticConversation:
         *,
         output_dir: Path | None = None,
         drafts: Any = None,
+        event_sink: Callable[[events.Event], None] | None = None,
     ) -> AgentResult:
         if self._pending is None:
             raise ValueError("No deferred approval is pending")
@@ -1641,6 +1793,12 @@ class _PydanticConversation:
             resident_facts=self._resident_facts,
         )
         started = time.perf_counter()
+        message_id = f"pydantic-{time.monotonic_ns()}"
+        _emit(
+            event_sink,
+            events.SessionInit(session_id=message_id, model=self.runtime.model),
+        )
+        _emit(event_sink, events.MessageStart(message_id=message_id))
         timing_capability = _ModelTimingCapability()
         try:
             with capture_run_messages() as captured:
@@ -1650,9 +1808,22 @@ class _PydanticConversation:
                     deps=deps,
                     capabilities=[timing_capability],
                     usage_limits=self.runtime._usage_limits,
+                    event_stream_handler=(
+                        (
+                            lambda ctx, stream: _forward_events(
+                                event_sink,
+                                message_id,
+                                stream,
+                            )
+                        )
+                        if event_sink is not None
+                        else None
+                    ),
                 )
         except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
             new_messages = captured[len(self._history):]
+            self._history.extend(new_messages)
+            self._pending = None
             result = self.runtime._failed_result(
                 new_messages,
                 citations=citations,
@@ -1666,12 +1837,14 @@ class _PydanticConversation:
                 ),
             )
             if isinstance(exc, UnexpectedModelBehavior):
+                _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(
                     exc.message,
                     result,
                     {"semantic_verifier_runs": deps.semantic_verifier_runs},
                 ) from exc
             result.hit_max_iters = True
+            _finish_events(event_sink, message_id, result)
             return result
         result = self.runtime._result(
             native,
@@ -1681,6 +1854,7 @@ class _PydanticConversation:
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
         self.runtime._merge_semantic_usage(result, deps.semantic_verifier_runs)
+        _finish_events(event_sink, message_id, result)
         self._history.extend(native.new_messages())
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
@@ -1758,9 +1932,18 @@ class PydanticApprovalFlow:
         if state is None:
             raise ValueError("Pending approval expired or already consumed")
         self.conversation = self.runtime.conversation_from_state(state)
-        result = await self.conversation.resume_approvals(decisions, **kwargs)
+        incomplete = False
+        try:
+            result = await self.conversation.resume_approvals(decisions, **kwargs)
+        except PydanticRunFailure as exc:
+            result = exc.partial_result
+            incomplete = True
+        incomplete = incomplete or result.status in {"error", "max_turns"}
         if retry_safe:
-            self.store.pop_pending_approval(self.user_key)
+            if incomplete:
+                self.conversation = self.runtime.conversation_from_state(state)
+            else:
+                self.store.pop_pending_approval(self.user_key)
         self._persist_if_pending(result)
         return result
 
@@ -1778,31 +1961,35 @@ class PydanticApprovalFlow:
             result.text = self.review_text()
 
     def review_text(self) -> str:
-        requests = tuple(self.conversation.pending_approvals.values())
-        copies = tuple(_approval_copy(request["tool_name"]) for request in requests)
-        mixed = len(set(copies)) > 1
-        heading, question = (
-            (
-                "Review each item below:",
-                "Reply YES to confirm all facts and approve all actions, "
-                "or NO to correct or deny them.",
-            )
-            if mixed
-            else copies[0]
+        return approval_review_text(self.conversation.pending_approvals)
+
+
+def approval_review_text(pending_approvals: dict[str, dict]) -> str:
+    requests = tuple(pending_approvals.values())
+    copies = tuple(_approval_copy(request["tool_name"]) for request in requests)
+    mixed = len(set(copies)) > 1
+    heading, question = (
+        (
+            "Review each item below:",
+            "Reply YES to confirm all facts and approve all actions, "
+            "or NO to correct or deny them.",
         )
-        lines = [heading]
-        for request, (item_heading, _) in zip(requests, copies, strict=True):
-            arguments = json.dumps(
-                request["args"],
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            if mixed:
-                lines.extend(("", item_heading))
-            lines.extend(("", request["tool_name"], arguments))
-        lines.extend(("", question))
-        return "\n".join(lines)
+        if mixed
+        else copies[0]
+    )
+    lines = [heading]
+    for request, (item_heading, _) in zip(requests, copies, strict=True):
+        arguments = json.dumps(
+            request["args"],
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        if mixed:
+            lines.extend(("", item_heading))
+        lines.extend(("", request["tool_name"], arguments))
+    lines.extend(("", question))
+    return "\n".join(lines)
 
 
 def _approval_copy(tool_name: str) -> tuple[str, str]:
@@ -1853,4 +2040,48 @@ def build_runtime(
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
         semantic_verifier=semantic_verifier,
+    )
+
+
+def _uses_openai_responses(model: str, *, has_tools: bool = True) -> bool:
+    if not model.startswith("openai/"):
+        return False
+    model_info, _ = responses_api_bridge_check(
+        model.removeprefix("openai/"),
+        "openai",
+        tools=[{}] if has_tools else [],
+        reasoning_effort=config.HEYNYC_REASONING_EFFORT,
+    )
+    return model_info.get("mode") == "responses"
+
+
+def configured_model(model: str) -> Any:
+    if model.startswith("openai/"):
+        settings = {
+            key: value
+            for key, value in {
+                "openai_reasoning_effort": config.HEYNYC_REASONING_EFFORT,
+                "openai_service_tier": config.HEYNYC_SERVICE_TIER,
+            }.items()
+            if value is not None
+        }
+        model_type = OpenAIResponsesModel if _uses_openai_responses(model) else OpenAIChatModel
+        return model_type(model.removeprefix("openai/"), settings=settings)
+    return infer_model(model.replace("/", ":", 1))
+
+
+def build_configured_runtime(
+    registry: Registry,
+    *,
+    model: str,
+    index: Any = None,
+    current_awareness: Callable[[], Awaitable[str]] | None = None,
+) -> PydanticRuntimeAdapter:
+    return build_runtime(
+        registry,
+        model=configured_model(model),
+        tools=build_toolbox(registry, index=index),
+        use_module_capabilities=True,
+        current_awareness=current_awareness,
+        answer_model_route=model,
     )

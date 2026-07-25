@@ -39,6 +39,7 @@ def test_ci_runs_the_offline_suite_and_both_security_gates():
     assert "pip-audit" in text                              # dependency CVE scan
     assert "trufflehog" in text.lower()                     # secret scan
     assert "uv sync" in text and "--extra dev" in text      # installs the dev extra
+    assert "--extra pydantic-ai" in text                    # exercises the candidate runtime
     # Never install the heavy nli extra in CI (torch + a git dep the offline suite never needs).
     assert "--extra nli" not in text and "--all-extras" not in text
 

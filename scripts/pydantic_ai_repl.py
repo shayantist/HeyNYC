@@ -5,8 +5,6 @@ import asyncio
 import re
 
 from dotenv import load_dotenv
-from pydantic_ai.models import infer_model
-from pydantic_ai.models.openai import OpenAIResponsesModel
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -16,36 +14,26 @@ from heynyc.__main__ import _default_reminders, _load_retriever
 from heynyc.channels.store import ChannelStore
 from heynyc.core import config
 from heynyc.core.citations import text_fragment_url, used_citations
-from heynyc.core.registry import Registry
-from heynyc.core.tools import build_toolbox
-from heynyc.modules.advisories.tools import current_awareness
-from scripts.pydantic_ai_parity import (
+from heynyc.core.pydantic_runtime import (
     PydanticApprovalFlow,
     build_runtime,
 )
+from heynyc.core.pydantic_runtime import (
+    configured_model as _configured_model,
+)
+from heynyc.core.registry import Registry
+from heynyc.core.tools import build_toolbox
+from heynyc.modules.advisories.tools import current_awareness
 
 
 async def _resolve_pending(console: Console, flow: PydanticApprovalFlow):
     console.print(flow.review_text())
-    answer = console.input("[yellow]Reply YES or NO[/] [y/N] ")
-    return await flow.resume(answer.strip().lower() in {"y", "yes"})
-
-
-def _configured_model():
-    if config.HEYNYC_MODEL.startswith("openai/"):
-        settings = {
-            key: value
-            for key, value in {
-                "openai_reasoning_effort": config.HEYNYC_REASONING_EFFORT,
-                "openai_service_tier": config.HEYNYC_SERVICE_TIER,
-            }.items()
-            if value is not None
-        }
-        return OpenAIResponsesModel(
-            config.HEYNYC_MODEL.removeprefix("openai/"),
-            settings=settings,
-        )
-    return infer_model(config.HEYNYC_MODEL.replace("/", ":", 1))
+    while True:
+        answer = console.input("[yellow]Reply YES or NO[/] ")
+        normalized = answer.strip().lower()
+        if normalized in {"yes", "no"}:
+            return await flow.resume(normalized == "yes")
+        console.print("Please reply YES or NO.")
 
 
 async def main() -> None:
@@ -57,7 +45,7 @@ async def main() -> None:
     )
     runtime = build_runtime(
         registry,
-        model=_configured_model(),
+        model=_configured_model(config.HEYNYC_MODEL),
         answer_model_route=config.HEYNYC_MODEL,
         tools=build_toolbox(registry, index=_load_retriever(required=False)),
         use_module_capabilities=True,

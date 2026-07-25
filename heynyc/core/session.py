@@ -18,10 +18,10 @@ import base64
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from . import pii_crypto
-from .agent import Agent, AgentResult, Conversation, turn_timestamp
+from .agent import AgentResult, turn_timestamp
 from .citations import used_citations
 from .memory import (
     ContextCapacityError,
@@ -93,35 +93,56 @@ class PendingTurn:
     user_message: str
     result: AgentResult
     continuity: ContinuityRecord | None = None
+    runtime_state: bytes | None = None
 
 
 @dataclass
 class Session:
-    agent: Agent
+    agent: Any
     id: str
     path: Optional[Path] = None
-    convo: Conversation = field(init=False)
+    convo: Any = field(init=False)
+    transcript: list[dict] = field(init=False)
     continuity: ContinuityRecord | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.convo = self.agent.conversation()
+        self.transcript = getattr(self.convo, "turns", [])
 
     @classmethod
-    def load(cls, agent: Agent, session_id: str, path: Path) -> "Session":
+    def load(cls, agent: Any, session_id: str, path: Path) -> "Session":
         """Rebuild a session's history from its JSONL file (if present)."""
         session = cls(agent=agent, id=session_id, path=path)
+        native_state_loaded = False
         if path.exists():
             for line in path.read_text().splitlines():
                 line = line.strip()
                 if line:
                     message = _decode_line(line)
                     if message.get("_type") == "reset":
-                        session.convo.turns.clear()
+                        session.convo = agent.conversation()
+                        session.transcript = getattr(session.convo, "turns", [])
                         session.continuity = None
+                    elif message.get("_type") == "runtime_turn":
+                        session.convo = agent.conversation_from_state(
+                            base64.b64decode(message["state"])
+                        )
+                        native_state_loaded = True
+                        session.transcript.extend((message["user"], message["assistant"]))
+                    elif message.get("_type") == "approval_turn":
+                        session.transcript.extend((message["user"], message["assistant"]))
                     elif message.get("_type") == "continuity":
                         session.continuity = ContinuityRecord.model_validate(message.get("record"))
                     elif message.get("role") in {"user", "assistant"}:
-                        session.convo.turns.append(message)
+                        session.transcript.append(message)
+        if (
+            session.transcript
+            and not native_state_loaded
+            and hasattr(agent, "conversation_from_transcript")
+        ):
+            session.convo = agent.conversation_from_transcript(session.transcript)
+            if session.continuity is not None and hasattr(session.convo, "continuity"):
+                session.convo.continuity = session.continuity
         return session
 
     def _append(self, *messages: dict) -> None:
@@ -134,6 +155,27 @@ class Session:
 
     async def prepare(self, user_message: str, **kwargs) -> PendingTurn:
         """Generate a turn without making it visible to later model calls or durable history."""
+        if hasattr(self.convo, "dump_state") and hasattr(self.agent, "conversation_from_state"):
+            conversation = self.agent.conversation_from_state(self.convo.dump_state())
+            try:
+                result = await conversation.send(user_message, **kwargs)
+            except Exception as exc:
+                from .pydantic_runtime import PydanticRunFailure
+
+                if not isinstance(exc, PydanticRunFailure):
+                    raise
+                result = exc.partial_result
+            if result.status == "context_limit":
+                raise ContextCapacityError("current request exceeds context capacity")
+            if result.status == "approval_required":
+                from .pydantic_runtime import approval_review_text
+
+                result.text = approval_review_text(conversation.pending_approvals)
+            return PendingTurn(
+                user_message=user_message,
+                result=result,
+                runtime_state=conversation.dump_state(),
+            )
         reminders = list(kwargs.pop("reminders", None) or [])
         notify_awareness = await self.agent.get_notify_awareness()
         if notify_awareness:
@@ -158,25 +200,41 @@ class Session:
 
     def commit(self, pending: PendingTurn) -> None:
         """Remember a prepared turn only after the channel accepted every outbound part."""
+        user = {"role": "user", "content": pending.user_message, "timestamp": turn_timestamp()}
+        assistant = {
+            "role": "assistant",
+            "content": pending.result.text,
+            "citations": used_citations(
+                pending.result.text, pending.result.citations,
+            ),
+            "timestamp": turn_timestamp(),
+        }
+        if pending.runtime_state is not None:
+            if pending.result.status == "approval_required":
+                self.transcript.extend((user, assistant))
+                self._append({
+                    "_type": "approval_turn",
+                    "user": user,
+                    "assistant": assistant,
+                })
+                return
+            self.convo = self.agent.conversation_from_state(pending.runtime_state)
+            self.transcript.extend((user, assistant))
+            self._append({
+                "_type": "runtime_turn",
+                "state": base64.b64encode(pending.runtime_state).decode("ascii"),
+                "user": user,
+                "assistant": assistant,
+            })
+            return
         if pending.continuity is not None:
             self.continuity = pending.continuity
             self._append({
                 "_type": "continuity",
                 "record": pending.continuity.model_dump(),
             })
-        messages = [
-            {"role": "user", "content": pending.user_message, "timestamp": turn_timestamp()},
-            {
-                "role": "assistant",
-                "content": pending.result.text,
-                "citations": used_citations(
-                    pending.result.text, pending.result.citations,
-                ),
-                "timestamp": turn_timestamp(),
-            },
-        ]
-        self.convo.turns.extend(messages)
-        self._append(*messages)
+        self.transcript.extend((user, assistant))
+        self._append(user, assistant)
 
     async def send(self, user_message: str, **kwargs) -> AgentResult:
         pending = await self.prepare(user_message, **kwargs)
@@ -186,9 +244,10 @@ class Session:
     def reset(self) -> None:
         """Start a new model-visible conversation while retaining the encrypted audit file."""
         self._append({"_type": "reset"})
-        self.convo.turns.clear()
+        self.convo = self.agent.conversation()
+        self.transcript = getattr(self.convo, "turns", [])
         self.continuity = None
 
     @property
     def turns(self) -> list[dict]:
-        return self.convo.turns
+        return self.transcript
