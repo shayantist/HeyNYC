@@ -304,6 +304,9 @@ def test_clinics_module_loads_with_tool_and_eval():
     module = next((m for m in registry.modules if m.name == "clinics"), None)
     assert module is not None
     assert module.category == "health"
+    discovery_summary = " ".join(module.description.split())[:140].lower()
+    assert "public charge" in discovery_summary
+    assert "green card" in discovery_summary
     tool_names = {t.name for t in registry.load_module_tools()}
     assert "find_clinic" in tool_names
     assert "health_coverage_guidance" in tool_names

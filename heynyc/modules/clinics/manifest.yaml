@@ -1,10 +1,9 @@
 name: clinics
 category: health
 description: >-
-  Find a doctor or clinic in NYC when you have no insurance, can't afford care, or are
-  worried about immigration status, the nearest community health centers (FQHCs, sliding
-  fee scale) and NYC Health + Hospitals / NYC Care sites (low- or no-cost, no immigration
-  questions asked), with address, borough, phone, and distance, each grounded and cited.
+  Find NYC health care, coverage, and official public charge guidance, including whether
+  using a benefit could affect a green card or immigration case. Also find nearby community
+  health centers and NYC Care sites, Emergency Medicaid, and emergency-care rights.
 keywords:
   - doctor
   - clinic
@@ -26,12 +25,16 @@ keywords:
   - asylum hearing
   - immigration lawyer
   - immigration legal help
+  - public charge
+  - green card
+  - benefits immigration
   - see a doctor without insurance
 examples:
   - "Where can I see a doctor without insurance?"
   - "Free clinic near me"
   - "I'm undocumented and sick, where can I go?"
   - "I'm undocumented and pregnant with no insurance, what can I do?"
+  - "Will using SNAP or Medicaid count against my green card under public charge?"
 datasets:
   # FQHC spine, HRSA Primary Health Care service-delivery sites (live, tokenless ArcGIS MapServer
   # layer; behaves like a FeatureServer for /query). The bespoke find_clinic tool queries this
