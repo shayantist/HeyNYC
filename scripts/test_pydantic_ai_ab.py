@@ -227,7 +227,28 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
         },
     )
 
+    restored = []
+
+    class RestoredConversation:
+        pending_approvals = {
+            "facts-call": {
+                "tool_name": "confirm_screen_facts",
+                "args": {"profile": {"age": 35}},
+            }
+        }
+
+        async def resume_approvals(self, decisions):
+            assert decisions == {"facts-call": True}
+            restored.append(True)
+            return final
+
+    class Runtime:
+        def conversation_from_state(self, state):
+            assert state == b"serialized native state"
+            return RestoredConversation()
+
     class Conversation:
+        runtime = Runtime()
         pending_approvals = {
             "facts-call": {
                 "tool_name": "confirm_screen_facts",
@@ -238,9 +259,11 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
         async def send(self, message, **kwargs):
             return pending
 
+        def dump_state(self):
+            return b"serialized native state"
+
         async def resume_approvals(self, decisions):
-            assert decisions == {"facts-call": True}
-            return final
+            raise AssertionError("eval approval must resume from restored native state")
 
     result = await pydantic_ai_ab._PydanticEvalConversation(
         Conversation()
@@ -268,6 +291,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
     assert result.usage["cost_usd"] == pytest.approx(0.03)
     assert result.usage["capabilities_used"] == ["food", "benefits"]
     assert result.usage["model_request_ms"] == [1.0, 2.0, 3.0]
+    assert restored == [True]
 
 
 def test_merge_does_not_alias_unexecuted_fact_confirmation() -> None:

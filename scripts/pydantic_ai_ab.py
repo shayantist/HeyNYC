@@ -111,6 +111,9 @@ class _PydanticEvalConversation:
             )
         ):
             return pending
+        self.conversation = self.conversation.runtime.conversation_from_state(
+            self.conversation.dump_state()
+        )
         final = await self.conversation.resume_approvals(
             {call_id: True for call_id in approvals}
         )
