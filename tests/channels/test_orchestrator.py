@@ -134,6 +134,56 @@ async def test_delivery_failure_does_not_persist_generated_turn(tmp_path):
     assert not list((tmp_path / "sessions").glob("*.jsonl"))
 
 
+async def test_approval_is_not_active_when_review_delivery_fails(tmp_path, monkeypatch):
+    from heynyc.channels.identity import user_key
+    from heynyc.core import pii_crypto
+    from heynyc.core.session import PendingTurn, Session
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+
+    class NativeAgent:
+        model = "fake-native"
+        registry = Registry([])
+        tools = {}
+
+        def conversation(self):
+            return object()
+
+        def conversation_from_state(self, state):
+            raise AssertionError("no prior native state should load")
+
+    async def prepare(self, message, **kwargs):
+        return PendingTurn(
+            user_message=message,
+            result=AgentResult(
+                text="Review this action",
+                citations={},
+                tool_calls_made=[],
+                iterations=1,
+                status="approval_required",
+                messages=[],
+                usage={"cost_usd": 0.0},
+            ),
+            runtime_state=b'{"pending":true}',
+        )
+
+    class FailingReplier(FakeReplier):
+        async def send_text(self, text):
+            raise RuntimeError("provider rejected review")
+
+    monkeypatch.setattr(Session, "prepare", prepare)
+    deps = _deps(tmp_path)
+    deps.agent = NativeAgent()
+    _burn_welcome(deps)
+
+    with pytest.raises(RuntimeError, match="provider rejected review"):
+        await handle(_msg(text="submit it", mid="approval-delivery-failure"), FailingReplier(), deps)
+
+    key = user_key("whatsapp_meta", "+1555", "s")
+    assert deps.store.has_pending_approval(key) is False
+    assert not list((tmp_path / "sessions").glob("*.jsonl"))
+
+
 async def test_document_delivery_failure_does_not_commit_or_record(tmp_path, monkeypatch):
     class FailingReplier(FakeReplier):
         async def send_document(self, path, caption=""):
@@ -665,6 +715,93 @@ async def test_native_approval_is_reviewed_and_resumed_through_the_channel(
         "YES",
         "Submitted after your approval",
     ]
+
+
+async def test_second_approval_is_not_active_when_its_review_delivery_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from heynyc.channels.identity import user_key as _uk
+    from heynyc.core import pii_crypto
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+
+    class NativeConversation:
+        def __init__(self, phase="new"):
+            self.phase = phase
+
+        @property
+        def pending_approvals(self):
+            if self.phase == "first":
+                return {"call-1": {"tool_name": "first_action", "args": {}}}
+            if self.phase == "second":
+                return {"call-2": {"tool_name": "second_action", "args": {}}}
+            return {}
+
+        @property
+        def pending_calls(self):
+            return {}
+
+        async def send(self, message, **kwargs):
+            self.phase = "first"
+            return _result("approval_required")
+
+        async def resume_approvals(self, approvals, **kwargs):
+            self.phase = "second"
+            return _result("approval_required")
+
+        def dump_state(self):
+            return json.dumps({"phase": self.phase}).encode()
+
+    class NativeAgent:
+        model = "fake-native"
+        registry = Registry([])
+        tools = {
+            name: Tool(
+                name=name,
+                description=name,
+                parameters={"type": "object", "properties": {}},
+                handler=lambda args, ctx: None,
+                read_only=False,
+                requires_approval=True,
+                idempotent=True,
+            )
+            for name in ("first_action", "second_action")
+        }
+
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation(json.loads(state)["phase"])
+
+    def _result(status):
+        return AgentResult(
+            text="",
+            citations={},
+            tool_calls_made=[],
+            iterations=1,
+            status=status,
+            messages=[],
+            usage={"cost_usd": 0.0},
+        )
+
+    class FailingReplier(FakeReplier):
+        async def send_text(self, text):
+            raise RuntimeError("provider rejected second review")
+
+    deps = _deps(tmp_path)
+    deps.agent = NativeAgent()
+    _burn_welcome(deps)
+    key = _uk("whatsapp_meta", "+1555", "s")
+
+    await handle(_msg(text="start both", mid="approval-stage-1"), FakeReplier(), deps)
+    assert deps.store.has_pending_approval(key) is True
+
+    with pytest.raises(RuntimeError, match="provider rejected second review"):
+        await handle(_msg(text="YES", mid="approval-stage-2"), FailingReplier(), deps)
+
+    assert deps.store.has_pending_approval(key) is False
 
 
 async def test_native_retry_safe_approval_recovers_after_partial_failure(

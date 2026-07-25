@@ -394,6 +394,157 @@ async def test_twilio_worker_resumes_only_unsent_reply_parts(monkeypatch, tmp_pa
     ]
 
 
+async def test_twilio_activates_approval_only_after_every_review_part_is_delivered(
+    monkeypatch,
+    tmp_path,
+):
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-approval", "u1", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "submit it",
+        "message_id": "SM-approval",
+        "profile_name": "",
+        "media": [],
+    }))
+
+    async def approval_handle(message, replier, deps, *, deduplicate=True):
+        await replier.send_text("review part one")
+        await replier.send_text("review part two")
+        await replier.finalize()
+        replier.stage_pending_approval("u1", b'{"pending":true}', ttl_s=60)
+
+    class FlakyMessages(FakeMessages):
+        def __init__(self):
+            super().__init__()
+            self.failed_once = False
+
+        def create(self, from_, to, body, media_url=None):
+            if body == "review part two" and not self.failed_once:
+                self.failed_once = True
+                raise RuntimeError("temporary provider failure")
+            return super().create(from_, to, body, media_url)
+
+    client = FakeClient()
+    client.messages = FlakyMessages()
+    monkeypatch.setattr(twilio, "handle", approval_handle)
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=client, retry_after_s=0,
+    )
+
+    assert await worker.process_one() is True
+    assert store.has_pending_approval("u1") is False
+
+    assert await worker.process_one() is True
+    assert store.get_pending_approval("u1") == b'{"pending":true}'
+
+
+async def test_twilio_rejects_an_approval_outbox_bound_to_another_resident(
+    monkeypatch,
+    tmp_path,
+):
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-wrong-resident", "resident-b", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "submit it",
+        "message_id": "SM-wrong-resident",
+        "profile_name": "",
+        "media": [],
+    }))
+
+    async def mismatched_handle(message, replier, deps, *, deduplicate=True):
+        await replier.send_text("review")
+        await replier.finalize()
+        replier.stage_pending_approval("resident-a", b'{"pending":true}', ttl_s=60)
+
+    client = FakeClient()
+    monkeypatch.setattr(twilio, "handle", mismatched_handle)
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=client, retry_after_s=0,
+    )
+
+    assert await worker.process_one() is True
+    assert client.messages.created == []
+    assert store.has_pending_approval("resident-a") is False
+    assert store.has_pending_approval("resident-b") is False
+
+
+async def test_legacy_restart_scrubs_approval_from_an_unfinished_twilio_outbox(
+    monkeypatch,
+    tmp_path,
+):
+    import base64
+
+    from heynyc.channels import twilio
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    path = tmp_path / "channels.sqlite3"
+    store = ChannelStore(
+        path, rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    store.enqueue("SM-rollback", "resident", json.dumps({
+        "channel": "sms_twilio",
+        "sender": "+15551234567",
+        "recipient": "+18882120042",
+        "text": "submit it",
+        "message_id": "SM-rollback",
+        "profile_name": "",
+        "media": [],
+    }))
+    store.stage_outbox("SM-rollback", [
+        {"body": "Already delivered"},
+        {
+            "body": "Review the proposed action",
+            twilio.PENDING_APPROVAL_OUTBOX_KEY: {
+                "user_key": "resident",
+                "state": base64.b64encode(b'{"pending":true}').decode("ascii"),
+                "ttl_s": 60,
+            },
+        },
+    ])
+    store.record_outbound("SM-rollback", "SM-out-already-delivered")
+
+    store.clear_pending_approvals()
+    outbox, delivered_parts, outbound_ids = store._db.execute(
+        "SELECT outbox, delivered_parts, outbound_ids FROM inbox WHERE message_id = ?",
+        ("SM-rollback",),
+    ).fetchone()
+    scrubbed = json.loads(pii_crypto.decrypt(outbox))
+    assert [part["body"] for part in scrubbed] == [
+        "Already delivered",
+        "Review the proposed action",
+    ]
+    assert twilio.PENDING_APPROVAL_OUTBOX_KEY not in scrubbed[-1]
+    assert delivered_parts == 1
+    assert json.loads(outbound_ids) == ["SM-out-already-delivered"]
+    client = FakeClient()
+    worker = twilio.TwilioInboxWorker(
+        SimpleNamespace(store=store), client=client, retry_after_s=0,
+    )
+    assert await worker.process_one() is True
+    assert [message[2] for message in client.messages.created] == [
+        "Review the proposed action",
+    ]
+
+    later_pydantic_store = ChannelStore(
+        path, rate_limit=20, window_s=60, dedup_ttl_s=3600,
+    )
+    assert later_pydantic_store.has_pending_approval("resident") is False
+
+
 async def test_twilio_worker_recovers_queued_work_on_startup(monkeypatch, tmp_path):
     import asyncio
 

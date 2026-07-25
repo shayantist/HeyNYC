@@ -114,6 +114,7 @@ class Session:
         """Rebuild a session's history from its JSONL file (if present)."""
         session = cls(agent=agent, id=session_id, path=path)
         native_state_loaded = False
+        native_state_transcript_len = 0
         if path.exists():
             for line in path.read_text().splitlines():
                 line = line.strip()
@@ -123,12 +124,15 @@ class Session:
                         session.convo = agent.conversation()
                         session.transcript = getattr(session.convo, "turns", [])
                         session.continuity = None
+                        native_state_loaded = False
                     elif message.get("_type") == "runtime_turn":
-                        session.convo = agent.conversation_from_state(
-                            base64.b64decode(message["state"])
-                        )
-                        native_state_loaded = True
+                        if hasattr(agent, "conversation_from_state"):
+                            session.convo = agent.conversation_from_state(
+                                base64.b64decode(message["state"])
+                            )
+                            native_state_loaded = True
                         session.transcript.extend((message["user"], message["assistant"]))
+                        native_state_transcript_len = len(session.transcript)
                     elif message.get("_type") == "approval_turn":
                         session.transcript.extend((message["user"], message["assistant"]))
                     elif message.get("_type") == "continuity":
@@ -137,7 +141,10 @@ class Session:
                         session.transcript.append(message)
         if (
             session.transcript
-            and not native_state_loaded
+            and (
+                not native_state_loaded
+                or len(session.transcript) > native_state_transcript_len
+            )
             and hasattr(agent, "conversation_from_transcript")
         ):
             session.convo = agent.conversation_from_transcript(session.transcript)

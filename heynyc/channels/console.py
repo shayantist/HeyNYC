@@ -227,6 +227,8 @@ def build_console_deps(*, console, model: Optional[str] = None, data_dir: Option
         data / "channels.sqlite3", rate_limit=config.CHANNEL_RATE_LIMIT,
         window_s=config.CHANNEL_RATE_WINDOW_S, dedup_ttl_s=config.CHANNEL_DEDUP_TTL_S,
     )
+    if not hasattr(agent, "conversation_from_state"):
+        store.clear_pending_approvals()
     from heynyc.core import telemetry
 
     return Deps(

@@ -1,6 +1,6 @@
 # HeyNYC channels, the messaging on-ramp
 
-This package puts the grounded agent in front of people on the platforms they already use. A New Yorker texts our number; the existing `Agent` answers, cited, multilingual, abstaining when it should, and the reply comes back as platform-native messages.
+This package puts the grounded agent in front of people on the platforms they already use. A New Yorker texts our number; the selected runtime answers, cited, multilingual, abstaining when it should, and the reply comes back as platform-native messages.
 
 ## How it's shaped
 
@@ -15,7 +15,7 @@ orchestrator.py  handle(msg, replier, deps), dedup → rate → lock → run age
 analytics.py     pseudonymous interaction log + user-flag feedback log
 meta.py          Meta WhatsApp Cloud API adapter (pywa)
 twilio.py        Twilio adapter + restart-safe inbox worker (WhatsApp + SMS)
-app.py           FastAPI factory: build the Agent once, mount providers, start/stop workers
+app.py           FastAPI factory: build the selected runtime once, mount providers, start/stop workers
 ```
 
 The orchestrator is universal; only the adapters know a provider. Adding Instagram DMs or a web channel is another adapter, the core doesn't change. The Twilio webhook verifies, encrypts and persists the inbound envelope by `MessageSid`, then returns 200. A bounded worker resumes unfinished work after restart. Meta still uses the in-memory dispatch seam. Per-user ordering keeps one person's messages sequential while the global concurrency limit lets different residents proceed together and bounds LLM spend.
@@ -53,6 +53,27 @@ Senders are reduced to a salted-HMAC `user_key` at the door. Raw phone numbers a
 For the configured HeyNYC production WhatsApp sender and assigned ngrok development domain, run the local demo stack with one command: `./scripts/serve_demo.sh`. It starts the Twilio provider and the tunnel together on dedicated local port 8791 and stops both on Ctrl-C. This remains a laptop demo, not durable hosting.
 
 Install the deps with `uv sync --extra whatsapp` (the messaging deps live in their own extra; the base `--extra dev` install does not pull them).
+
+## Agent runtime selection
+
+[`HEYNYC_AGENT_RUNTIME`](../core/config.py) selects one runtime for the entire process. `legacy` is
+the default. `pydantic` selects the opt-in PydanticAI candidate, which requires
+`uv sync --extra pydantic-ai`. Both use the same channel orchestrator, encrypted transcript and
+channel store, tools, grounding policy, and SMS and WhatsApp renderers. Exact native snapshots are
+runtime-specific; the shared transcript preserves model-visible turns across a rollback. This is
+an operator switch, not per-resident traffic splitting.
+
+Do not change the runtime during an ordinary unattended restart. A production switch needs a
+supervised health check, real SMS and WhatsApp smoke, continuity and approval-resume checks, and
+an immediate rollback path to `legacy`. Starting the [`legacy` runtime](app.py) cancels
+[pending Pydantic tool proposals](store.py) so an old approval cannot reappear after intervening
+conversation. The resident must request and review that action again. The internal WSL runbook
+owns the full procedure.
+
+An approval becomes actionable only after the complete review is accepted for delivery and its
+proposal turn is committed. Twilio keeps the encrypted native approval state inert with the
+durable outbox until every review part is provider-accepted; a partial or failed review cannot be
+approved.
 
 ## Single-host deployment and recovery
 

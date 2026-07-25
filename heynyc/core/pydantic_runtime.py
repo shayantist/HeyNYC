@@ -1894,6 +1894,8 @@ class PydanticApprovalFlow:
     async def resume(
         self,
         decision: bool | dict[str, bool],
+        *,
+        persist_pending: bool = True,
         **kwargs: Any,
     ) -> AgentResult:
         expected = set(self.conversation.pending_approvals)
@@ -1944,20 +1946,26 @@ class PydanticApprovalFlow:
                 self.conversation = self.runtime.conversation_from_state(state)
             else:
                 self.store.pop_pending_approval(self.user_key)
-        self._persist_if_pending(result)
+        self._persist_if_pending(result, persist=persist_pending)
         return result
 
-    def _persist_if_pending(self, result: AgentResult) -> None:
+    def _persist_if_pending(
+        self,
+        result: AgentResult,
+        *,
+        persist: bool = True,
+    ) -> None:
         if result.status == "approval_required":
             if self.conversation.pending_calls:
                 raise ValueError(
                     "External deferred calls are not supported by this approval flow"
                 )
-            self.store.set_pending_approval(
-                self.user_key,
-                self.conversation.dump_state(),
-                ttl_s=self.ttl_s,
-            )
+            if persist:
+                self.store.set_pending_approval(
+                    self.user_key,
+                    self.conversation.dump_state(),
+                    ttl_s=self.ttl_s,
+                )
             result.text = self.review_text()
 
     def review_text(self) -> str:

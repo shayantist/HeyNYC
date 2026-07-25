@@ -158,6 +158,25 @@ def test_console_uses_the_configured_pydantic_runtime(tmp_path, monkeypatch):
     assert seen["current_awareness"] is not None
 
 
+def test_legacy_console_startup_invalidates_pydantic_approvals(tmp_path, monkeypatch):
+    from heynyc.channels.store import ChannelStore
+    from heynyc.core import config, pii_crypto
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    store.set_pending_approval("resident", b'{"pending":true}', ttl_s=60)
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
+
+    deps = _console_deps(tmp_path)
+
+    assert deps.store.has_pending_approval("resident") is False
+
+
 async def test_console_greeting_gets_the_help_menu(tmp_path):
     deps = _console_deps(tmp_path)
     console = deps.event_sink._console

@@ -276,6 +276,23 @@ def test_pending_approval_expires_closed(tmp_path, monkeypatch):
     ).fetchone() is None
 
 
+def test_legacy_approval_clear_fails_closed_on_unreadable_outbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = _store(tmp_path)
+    store.enqueue("SM-corrupt", "u1", '{"text":"private"}')
+    store.set_pending_approval("u1", b"pending state", ttl_s=60)
+    store._db.execute(
+        "UPDATE inbox SET outbox = ? WHERE message_id = ?",
+        (b"not encrypted", "SM-corrupt"),
+    )
+    store._db.commit()
+
+    with pytest.raises(pii_crypto.PiiCryptoError):
+        store.clear_pending_approvals()
+
+    assert store.has_pending_approval("u1") is True
+
+
 def test_delete_user_removes_flags_and_inbox_but_keeps_spend(tmp_path, monkeypatch):
     """DELETE MY DATA wipes the resident's own flag rows (pending + confirmed) but leaves the
     anonymized daily spend record standing for abuse control (the survivor promised in the copy)."""

@@ -57,8 +57,9 @@ The table below is the full, generated list of current service modules, each wit
 HeyNYC is an alpha release. The public pilot number above runs from an operator-managed server; a durable hosted deployment is still ahead.
 
 - **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
+- **Agent runtime:** the hand-rolled loop remains the default. Operators can opt into the PydanticAI candidate for supervised testing with [`HEYNYC_AGENT_RUNTIME=pydantic`](heynyc/core/config.py); both runtimes use the same civic tools, grounding policy, encrypted resident transcript and channel store, and channel adapters.
 - **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
-- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Twilio requests enter an encrypted SQLite inbox before acknowledgement and resume after a restart. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, `NEW` starts fresh model context, and undelivered replies are not committed. Texting `DELETE MY DATA` and confirming erases the resident's transcript, queued messages, draft, and pending report flags; see the [privacy notice](docs/legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
+- **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Twilio requests enter an encrypted SQLite inbox before acknowledgement; generated replies are durably staged before their turns commit, and delivery resumes from the last provider-accepted part after a restart. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, and `NEW` starts fresh model context. Texting `DELETE MY DATA` and confirming erases the resident's transcript, queued messages, draft, and pending report flags; see the [privacy notice](docs/legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
 - **Not yet shipped:** a resident web UI, durable Meta webhook intake, automated restore-tested host migration, self-service resident data export, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
 - **Known limitations:** intersection geocoding can be wrong, so HeyNYC echoes the resolved address and asks for confirmation. Some city datasets are thin (the SNAP-center list has weekday hours but no phone numbers), and HeyNYC says so rather than filling the gap.
 
@@ -179,4 +180,4 @@ Offline tests prove contracts; live evals prove behavior.
 
 **What would this cost a city?** The grounding guarantee lives in the deterministic guard rather than in an expensive model, which is what makes cheap or self-hosted models safe to run; measured by the built-in telemetry, the median resident turn costs under two cents on the pilot's current stack. The economics of the design are part of [SAFETY.md](SAFETY.md).
 
-_Last updated: 2026-07-22_
+_Last updated: 2026-07-25_

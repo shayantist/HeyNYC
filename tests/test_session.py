@@ -427,6 +427,125 @@ async def test_native_runtime_hydrates_existing_legacy_transcript(tmp_path):
     ]
 
 
+async def test_legacy_runtime_hydrates_native_transcript_on_rollback(tmp_path):
+    class NativeConversation:
+        async def send(self, message, **kwargs):
+            return SimpleNamespace(
+                text="native answer",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+    path = tmp_path / "native-to-legacy.jsonl"
+    await Session(agent=NativeAgent(), id="native", path=path).send("native question")
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+
+    resumed = Session.load(legacy, "native", path)
+
+    assert [turn["content"] for turn in resumed.turns] == [
+        "native question",
+        "native answer",
+    ]
+
+
+async def test_native_runtime_hydrates_legacy_tail_after_rollback(tmp_path):
+    class NativeConversation:
+        def __init__(self, history=()):
+            self.history = list(history)
+
+        async def send(self, message, **kwargs):
+            self.history.extend((message, "native answer"))
+            return SimpleNamespace(
+                text="native answer",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation(("native question", "native answer"))
+
+        def conversation_from_transcript(self, transcript):
+            return NativeConversation(turn["content"] for turn in transcript)
+
+    path = tmp_path / "runtime-round-trip.jsonl"
+    native = NativeAgent()
+    await Session(agent=native, id="runtime-round-trip", path=path).send("native question")
+
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+    await Session.load(legacy, "runtime-round-trip", path).send("legacy question")
+
+    resumed = Session.load(native, "runtime-round-trip", path)
+
+    assert resumed.convo.history == [
+        "native question",
+        "native answer",
+        "legacy question",
+        "legacy answer",
+    ]
+
+
+async def test_native_runtime_hydrates_legacy_transcript_after_reset(tmp_path):
+    class NativeConversation:
+        def __init__(self, history=()):
+            self.history = list(history)
+
+        async def send(self, message, **kwargs):
+            return SimpleNamespace(
+                text="native answer",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+        def conversation_from_transcript(self, transcript):
+            return NativeConversation(transcript)
+
+    path = tmp_path / "runtime-reset.jsonl"
+    native = NativeAgent()
+    first = Session(agent=native, id="runtime-reset", path=path)
+    await first.send("old native question")
+    first.reset()
+
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+    await Session.load(legacy, "runtime-reset", path).send("current legacy question")
+
+    resumed = Session.load(native, "runtime-reset", path)
+
+    assert [turn["content"] for turn in resumed.convo.history] == [
+        "current legacy question",
+        "legacy answer",
+    ]
+
+
 async def test_native_runtime_failure_becomes_a_deliverable_pending_turn():
     from heynyc.core.pydantic_runtime import PydanticRunFailure
 

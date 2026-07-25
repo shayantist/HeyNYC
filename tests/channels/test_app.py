@@ -8,6 +8,22 @@ from fastapi.testclient import TestClient
 from heynyc.core import pii_crypto
 
 
+def _store_with_pending_approval(tmp_path, monkeypatch):
+    from heynyc.channels import app as appmod
+    from heynyc.channels.store import ChannelStore
+
+    monkeypatch.setattr(appmod.config, "HEYNYC_DATA_DIR", tmp_path)
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    store.set_pending_approval("resident", b'{"pending":true}', ttl_s=60)
+    return appmod, store
+
+
 def test_build_agent_can_select_pydantic_runtime(monkeypatch):
     from heynyc.channels import app as appmod
 
@@ -20,6 +36,23 @@ def test_build_agent_can_select_pydantic_runtime(monkeypatch):
     )
 
     assert appmod.build_agent() is built
+
+
+def test_legacy_startup_invalidates_pending_native_approvals(monkeypatch, tmp_path):
+    appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
+
+    appmod.build_deps(SimpleNamespace())
+
+    assert store.has_pending_approval("resident") is False
+
+
+def test_native_startup_preserves_pending_native_approvals(monkeypatch, tmp_path):
+    appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
+    native = SimpleNamespace(conversation_from_state=lambda state: None)
+
+    appmod.build_deps(native)
+
+    assert store.has_pending_approval("resident") is True
 
 
 def test_health_and_twilio_route_mounted(monkeypatch, tmp_path):

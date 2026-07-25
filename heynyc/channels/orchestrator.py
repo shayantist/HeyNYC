@@ -317,6 +317,7 @@ async def handle(
                         )
                         result = await flow.resume(
                             approval_decision,
+                            persist_pending=False,
                             output_dir=art_dir,
                             drafts=user_drafts,
                             event_sink=deps.event_sink,
@@ -343,12 +344,11 @@ async def handle(
                     )
                     return
                 result = pending.result
-                if result.status == "approval_required" and pending.runtime_state is not None:
-                    deps.store.set_pending_approval(
-                        key,
-                        pending.runtime_state,
-                        ttl_s=config.CHANNEL_APPROVAL_TTL_S,
-                    )
+                approval_state = (
+                    pending.runtime_state
+                    if result.status == "approval_required"
+                    else None
+                )
                 # First-contact welcome LEADS on every channel (owner, 2026-07-21: greet first,
                 # then answer, the way a person would; trailing it after sources read as an
                 # afterthought). Once ever, marked only on the answer path so a first message
@@ -365,6 +365,20 @@ async def handle(
                 if finalize is not None:
                     await finalize()
                 session.commit(pending)
+                if approval_state is not None:
+                    defer_approval = getattr(replier, "stage_pending_approval", None)
+                    if defer_approval is not None:
+                        defer_approval(
+                            key,
+                            approval_state,
+                            ttl_s=config.CHANNEL_APPROVAL_TTL_S,
+                        )
+                    else:
+                        deps.store.set_pending_approval(
+                            key,
+                            approval_state,
+                            ttl_s=config.CHANNEL_APPROVAL_TTL_S,
+                        )
                 turn_cost = result.usage.get("cost_usd")
                 deps.store.add_spend(key, _nyc_day(), float(turn_cost) if turn_cost else 0.0)
                 analytics.record_interaction(

@@ -87,6 +87,8 @@ def build_deps(agent: Agent) -> Deps:
         data / "channels.sqlite3", rate_limit=config.CHANNEL_RATE_LIMIT,
         window_s=config.CHANNEL_RATE_WINDOW_S, dedup_ttl_s=config.CHANNEL_DEDUP_TTL_S,
     )
+    if not hasattr(agent, "conversation_from_state"):
+        store.clear_pending_approvals()
     return Deps(
         agent=agent, store=store, sessions_dir=data / "sessions", salt=config.HEYNYC_PII_SALT,
         user_daily_spend_cap=config.HEYNYC_USER_DAILY_SPEND_CAP,

@@ -9,6 +9,7 @@ from pathlib import Path
 from heynyc.core import pii_crypto
 
 _SCHEMA_VERSION = 4
+PENDING_APPROVAL_OUTBOX_KEY = "_heynyc_pending_approval"
 
 
 class InboxPayloadError(RuntimeError):
@@ -392,6 +393,34 @@ class ChannelStore:
             row[0],
             associated_data=(user_key.encode("utf-8") if int(row[2]) else None),
         ).encode("utf-8")
+
+    def clear_pending_approvals(self) -> None:
+        """Invalidate runtime-native proposals when the process starts on legacy."""
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            rows = self._db.execute(
+                "SELECT message_id, outbox FROM inbox WHERE outbox IS NOT NULL"
+            ).fetchall()
+            for message_id, encrypted_outbox in rows:
+                parts = json.loads(pii_crypto.decrypt(encrypted_outbox))
+                changed = False
+                for part in parts:
+                    if isinstance(part, dict):
+                        changed = part.pop(PENDING_APPROVAL_OUTBOX_KEY, None) is not None or changed
+                if changed:
+                    self._db.execute(
+                        "UPDATE inbox SET outbox = ?, updated_at = ? WHERE message_id = ?",
+                        (
+                            pii_crypto.encrypt(json.dumps(parts)),
+                            time.time(),
+                            message_id,
+                        ),
+                    )
+            self._db.execute("DELETE FROM approval_pending")
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
 
     def delete_user(self, user_key: str) -> None:
         """Erase this resident's inbox and control-plane rows on DELETE MY DATA. The daily
