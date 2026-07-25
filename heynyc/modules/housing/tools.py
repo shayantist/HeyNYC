@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass
+from datetime import date, datetime
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -38,6 +40,7 @@ OFFICIAL = "NYC311 (call 311 or nyc.gov/311)"
 HEAT_CATEGORIES = ("HEAT/HOT WATER", "HEATING")
 HEAT_CASETYPE = "Heat and Hot Water"   # the 59kj-x8nc casetype for a housing-court heat case
 HARASSMENT_FINDINGS = ("AFTER INQUEST", "AFTER TRIAL")  # findingofharassment values = a positive finding
+NYC_TZ = ZoneInfo("America/New_York")
 
 
 def _filtered_url(dataset_id: str, where: str) -> str:
@@ -61,6 +64,15 @@ def _most_recent(records: list[dict], field: str) -> str:
 
 def _counts(records: list[dict], field: str) -> collections.Counter:
     return collections.Counter(str(r.get(field) or "?").strip().upper() for r in records)
+
+
+def _distinct_count(records: list[dict], field: str) -> tuple[int, int]:
+    values = [str(record.get(field) or "").strip() for record in records]
+    return len({value for value in values if value}), values.count("")
+
+
+def _reported_count(count: int, truncated: bool) -> str:
+    return f"at least {count:,}" if truncated else f"{count}"
 
 
 def _summary_line(counts: collections.Counter) -> str:
@@ -113,11 +125,19 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 f"has complaints or violations. Point the user to {OFFICIAL} and hpdonline.nyc.gov.")
 
     cat_counts = _counts(complaints, "major_category")
-    heat_complaints = sum(cat_counts.get(c, 0) for c in HEAT_CATEGORIES)
+    heat_records = [
+        record for record in complaints
+        if str(record.get("major_category") or "").strip().upper() in HEAT_CATEGORIES
+    ]
+    heat_complaints, missing_heat_ids = _distinct_count(heat_records, "complaint_id")
+    complaint_total, missing_complaint_ids = _distinct_count(complaints, "complaint_id")
+    complaints_truncated = len(complaints) == 1000
+    complaints_incomplete = complaints_truncated or bool(missing_complaint_ids)
     complaints_recent = _most_recent(complaints, "received_date")
 
     class_counts = _counts(violations, "class")
     class_c = class_counts.get("C", 0)
+    violations_truncated = len(violations) == 1000
     violations_recent = _most_recent(violations, "novissueddate")
 
     if not complaints and not violations:
@@ -141,37 +161,60 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     cite_c = _register(
         ctx, COMPLAINTS_ID, complaints_where,
         title="HPD Housing Maintenance Code Complaints (open)",
-        snippet=f"BBL {bbl}: {len(complaints)} open HPD complaints ({heat_complaints} heat/hot-water)",
-        snapshot={"bbl": bbl, "open_complaints": len(complaints), "heat_hot_water": heat_complaints,
+        snippet=f"BBL {bbl}: {_reported_count(complaint_total, complaints_incomplete)} open HPD complaints "
+                f"({_reported_count(heat_complaints, bool(missing_heat_ids))} heat/hot-water)"
+                + (f"; {missing_complaint_ids} problem rows lack a complaint ID"
+                   if missing_complaint_ids else "")
+                + ("; result limited to 1,000 rows" if complaints_truncated else ""),
+        snapshot={"bbl": bbl, "open_complaints": complaint_total,
+                  "complaint_problem_rows": len(complaints), "complaints_truncated": complaints_truncated,
+                  "complaint_rows_missing_id": missing_complaint_ids,
+                  **({"open_complaints_lower_bound": complaint_total} if complaints_incomplete else {}),
+                  "heat_hot_water": heat_complaints,
+                  "heat_hot_water_problem_rows": len(heat_records),
                   "by_major_category": dict(cat_counts)},
         valid_as_of=complaints_recent,
     )
     cite_v = _register(
         ctx, VIOLATIONS_ID, violations_where,
         title="HPD Housing Maintenance Code Violations (open)",
-        snippet=f"BBL {bbl}: {len(violations)} open HPD violations ({class_c} class C)",
-        snapshot={"bbl": bbl, "open_violations": len(violations), "class_c": class_c,
+        snippet=f"BBL {bbl}: {_reported_count(len(violations), violations_truncated)} open HPD violations "
+                f"({class_c} class C)"
+                + ("; result limited to 1,000 rows" if violations_truncated else ""),
+        snapshot={"bbl": bbl, "open_violations": len(violations),
+                  "violations_truncated": violations_truncated,
+                  **({"open_violations_lower_bound": 1000} if violations_truncated else {}),
+                  "class_c": class_c,
                   "by_class": dict(class_counts)},
         valid_as_of=violations_recent,
     )
 
     lines = [f"Building: {origin.label} (BBL {bbl})", "Grounded in NYC HPD open data, report only these:"]
 
-    lines.append(f"- Open HPD complaints: {len(complaints)} total"
-                 + (f", including {heat_complaints} heat/hot-water" if heat_complaints else "")
+    lines.append(f"- Open HPD complaints: {_reported_count(complaint_total, complaints_incomplete)} total"
+                 + (f", including {_reported_count(heat_complaints, bool(missing_heat_ids))} "
+                    "heat/hot-water" if heat_records else "")
                  + f" {{cite:{cite_c}}}")
     if complaints:
-        lines.append(f"  By category: {_summary_line(cat_counts)}")
+        lines.append(f"  By category (problem rows): {_summary_line(cat_counts)}")
+    if complaints_truncated:
+        lines.append("  The complaints result was limited to 1,000 rows, so the total is a lower bound.")
+    if missing_complaint_ids:
+        rows = "row" if missing_complaint_ids == 1 else "rows"
+        lines.append(f"  {missing_complaint_ids} problem {rows} lacked a complaint ID and could not "
+                     "be included in the distinct complaint count.")
     if complaints_recent:
         lines.append(f"  Most recent complaint received: {complaints_recent}")
 
-    lines.append(f"- Open HPD violations: {len(violations)} total"
+    lines.append(f"- Open HPD violations: {_reported_count(len(violations), violations_truncated)} total"
                  + (f", including {class_c} class C (immediately hazardous, includes no-heat in season)"
                     if class_c else "")
                  + f" {{cite:{cite_v}}}")
     if violations:
         lines.append(f"  By class: {_summary_line(class_counts)}"
                      " (A = non-hazardous, B = hazardous, C = immediately hazardous)")
+    if violations_truncated:
+        lines.append("  The violations result was limited to 1,000 rows, so the total is a lower bound.")
     if violations_recent:
         lines.append(f"  Most recent violation issued: {violations_recent}")
 
@@ -280,7 +323,7 @@ async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
 # Every URL + fact below was verified LIVE against the page (HTTP 200, page supports the fact) on
 # VERIFIED_ON. `snippet` is deliberately a subset of `body`'s wording so the eval's faithfulness
 # check (snippet ⊆ fetched tool output) holds. Re-verify the live pages before editing any fact.
-VERIFIED_ON = "2026-07-02"
+VERIFIED_ON = "2026-07-25"
 
 
 @dataclass(frozen=True)
@@ -454,11 +497,44 @@ _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # heat words only. no_water is intentionally NOT keyworded, the model passes its canonical key.
     ("no_heat", ("heat", "hot water", "boiler", "radiator", "temperature", "freezing")),
     ("shelter", ("shelter", "homeless", "nowhere", "no place", "sleep tonight", "intake", "path",
-                 "afic", "kicked out", "nowhere to stay")),
+                 "afic", "adult family", "kicked out", "nowhere to stay")),
     ("source_of_income", ("voucher", "section 8", "cityfheps", "source of income",
                           "won't take my voucher", "refused my voucher", "no programs",
                           "no vouchers")),
 )
+
+
+def _single_adult_men_intake(as_of: date | None = None) -> str:
+    as_of = as_of or datetime.now(NYC_TZ).date()
+    if as_of < date(2026, 8, 1):
+        return "30th Street Intake Center, 400-430 East 30th Street, Manhattan, through July 31, 2026"
+    return "8 East 3rd Street, Manhattan, beginning August 1, 2026"
+
+
+def _shelter_facts(as_of: date | None = None) -> tuple[_Fact, ...]:
+    men = _single_adult_men_intake(as_of)
+    adult_family = ("Adult families, family units without minor children, apply at the Adult Family "
+                    "Intake Center, 400-430 East 30th Street, Manhattan, through July 31, 2026; "
+                    "beginning August 1, 2026, intake moves to 333 Bowery, Manhattan.")
+    return (
+        _GUIDANCE["shelter"][1][0],
+        _Fact(
+            url="https://www.nyc.gov/site/dhs/shelter/families/adult-families-applying.page",
+            title="Adult Families: Applying for Temporary Housing Assistance, NYC DHS",
+            snippet=adult_family,
+            body=adult_family,
+        ),
+        _Fact(
+            url="https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-applying.page",
+            title="Single Adults: Applying for Temporary Housing Assistance, NYC DHS",
+            snippet=(f"Single adult men apply at {men}; women can apply at the Franklin Shelter, "
+                     "1122 Franklin Avenue, the Bronx, or Help Women's Center, 114 Snediker Avenue, "
+                     "Brooklyn; you can also call 311"),
+            body=(f"Single adult men apply at {men}; single adult women apply at the Franklin Shelter, "
+                  "1122 Franklin Avenue, the Bronx, or Help Women's Center, 114 Snediker Avenue, "
+                  "Brooklyn. You can also call 311 for the current intake site."),
+        ),
+    )
 
 
 def _resolve_topic(raw: str) -> str | None:
@@ -483,6 +559,8 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
                 "CityFHEPS). For a building's HPD record use hpd_building_lookup; for anything else, "
                 "point the user to 311.")
     intro, facts = _GUIDANCE[topic]
+    if topic == "shelter":
+        facts = _shelter_facts()
     lines = [intro]
     for fact in facts:
         cite = ctx.citations.register(
