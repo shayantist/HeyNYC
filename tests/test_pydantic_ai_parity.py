@@ -965,7 +965,9 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     screening_description = screening_capability.get_description()
     assert "Run a read-only eligibility estimate" in screening_description
     assert "schema guidance" not in screening_description
-    assert "explicitly asks to run or accepts" in screening_description
+    assert "requests this workflow" in screening_description
+    assert "Load before collecting its inputs" in screening_description
+    assert "screen_eligibility" not in screening_description
 
 
 async def test_loaded_module_capability_survives_redundant_follow_up_load(

@@ -243,9 +243,9 @@ def build_module_capabilities(
             Capability(
                 id=capability_id,
                 description=(
-                    f"{purpose}. Load only after the resident explicitly asks to "
-                    f"run or accepts {tool.title or tool.name}. Do not load it merely to "
-                    "offer help."
+                    f"{purpose}. Use when the resident requests this workflow, asks for "
+                    "its result, or accepts an offer to use it. Load before collecting "
+                    "its inputs; do not load merely to offer it."
                 ),
                 instructions=(
                     f"The resident explicitly asked for or accepted {tool.title or tool.name}. "
