@@ -1,10 +1,11 @@
 """The adversarial red-team, after consolidation into the shared eval machinery.
 
 The red-team is no longer a parallel harness: it is the golden-case pipeline (runner + bench + gate)
-run over `load_redteam_cases()`, graded by the shared `make_api_judge` in its strict adversarial
-mode, reported by `render_by_category`. So these tests exercise the real seams that carry the safety
-guarantee — the family separation, the strict SAFE/FAIL grading, the loader, the per-category view,
-and the thin `run_redteam` wrapper — not a bespoke grader/report that duplicates them.
+run over `load_redteam_cases()`, reviewed by a fresh subscription agent by default or by the opt-in
+shared `make_api_judge` in its strict adversarial mode, and reported by `render_by_category`. These
+tests exercise the real seams that carry the safety guarantee: pending-review labeling, optional
+family separation, strict SAFE/FAIL grading, loading, category reporting, and the thin
+`run_redteam` wrapper.
 
 Everything here runs with mocked grader completions and duck-typed reports: no model, no network,
 no spend.
@@ -269,7 +270,7 @@ async def test_ordinary_judge_checks_every_material_proposition_against_its_own_
 
 def test_load_redteam_cases_parses_and_covers_all_eight_categories():
     cases = load_redteam_cases()
-    assert len(cases) >= 137  # at least the v1 set, expanded
+    assert len(cases) == 205  # the frozen v2 suite
     cats = {c.redteam_category for c in cases}
     assert cats == {"MC", "PI", "OS", "FP", "HS", "PII", "CIT", "ES"}, f"missing categories: {cats}"
     ids = [c.id for c in cases]
@@ -280,6 +281,7 @@ def test_load_redteam_cases_parses_and_covers_all_eight_categories():
         assert c.query.strip(), f"{c.id} has an empty query"
         assert c.adversarial_intent.strip(), f"{c.id} has no adversarial_intent"
         assert c.safety_criterion.strip(), f"{c.id} has no safety_criterion"
+        assert c.utility_criterion.strip(), f"{c.id} has no qualitative-review marker"
         assert c.safety_critical is True
         assert c.module == "redteam"
     assert next(c for c in cases if c.id == "OS01").grounded_fact.startswith("https://")
@@ -345,8 +347,19 @@ def _cat_cases(pairs):
     return [SimpleNamespace(id=cid, redteam_category=cat, harm_category="none") for cid, cat in pairs]
 
 
-def _report(pairs):
-    return SimpleNamespace(reports=[SimpleNamespace(case_id=cid, passed=p) for cid, p in pairs])
+def _report(pairs, *, pending=()):
+    pending_ids = set(pending)
+    return SimpleNamespace(
+        reports=[
+            SimpleNamespace(
+                case_id=cid,
+                passed=passed,
+                qualitative_review_required=cid in pending_ids,
+                qualitative_reviewed=False,
+            )
+            for cid, passed in pairs
+        ]
+    )
 
 
 def test_render_by_category_aggregates_and_flags_any_failure():
@@ -354,7 +367,7 @@ def test_render_by_category_aggregates_and_flags_any_failure():
     report = _report([("MC01", True), ("MC02", False), ("PI01", True), ("ES01", True)])
     out = render_by_category([BenchRow("openai/gpt-5-mini", report, cost_usd=0.0123)], cases)
     assert "openai/gpt-5-mini" in out
-    assert "SAFE 3/4" in out          # overall
+    assert "FAIL 3/4" in out          # one unsafe result makes the overall verdict fail
     assert "MC" in out and "FAIL" in out  # the category with a failure is flagged
     assert "PI" in out and "ES" in out
     assert "$0.0123" in out           # candidate cost is surfaced
@@ -365,18 +378,115 @@ def test_render_by_category_flags_an_errored_model():
     assert "ERROR" in out and "boom" in out
 
 
+def test_render_by_category_never_labels_pending_subscription_review_as_safe():
+    cases = _cat_cases([("MC01", "MC"), ("PI01", "PI")])
+    report = _report([("MC01", True), ("PI01", True)], pending={"MC01", "PI01"})
+
+    out = render_by_category([BenchRow("openai/gpt-5-mini", report)], cases)
+
+    assert "SAFE 2/2" not in out
+    assert "MECHANICAL 2/2" in out
+    assert "REVIEW PENDING 2" in out
+
+
+def test_render_by_category_labels_a_completed_failed_review_as_fail():
+    cases = _cat_cases([("MC01", "MC")])
+    report = _report([("MC01", False)])
+
+    out = render_by_category([BenchRow("openai/gpt-5-mini", report)], cases)
+
+    assert "SAFE 0/1" not in out
+    assert "FAIL 0/1" in out
+
+
+def test_render_by_category_labels_mixed_failed_and_pending_reviews_as_fail():
+    cases = _cat_cases([("MC01", "MC"), ("PI01", "PI")])
+    report = _report([("MC01", False), ("PI01", True)], pending={"PI01"})
+
+    out = render_by_category([BenchRow("openai/gpt-5-mini", report)], cases)
+
+    assert "FAIL 1/2" in out
+    assert "MECHANICAL 1/2" not in out
+
+
+def test_render_by_category_never_hides_a_nonblocking_failed_review():
+    from heynyc.eval.checks import CheckResult
+    from heynyc.eval.report import CaseReport, GateReport
+
+    review = CheckResult("redteam_safe", passed=False, detail="unsafe", blocking=False)
+    report = GateReport(
+        [
+            CaseReport(
+                "MC01",
+                "redteam",
+                [CheckResult("mechanical", passed=True)],
+                qualitative_review_required=True,
+                qualitative_review=review,
+            )
+        ]
+    )
+
+    out = render_by_category(
+        [BenchRow("openai/gpt-5-mini", report)],
+        _cat_cases([("MC01", "MC")]),
+    )
+
+    assert "SAFE 1/1" not in out
+    assert "FAIL 0/1" in out
+
+
 # --- run_redteam: the thin wrapper enforces independence and delegates -------
 
-async def test_run_redteam_refuses_a_grader_in_the_candidate_family():
-    # Building the enforced judge raises BEFORE any model runs when grader shares candidate family.
+async def test_run_redteam_rejects_an_empty_case_set():
     from heynyc.eval import redteam as rt
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no cases"):
+        await rt.run_redteam(candidate_model="openai/gpt-5-mini", cases=[])
+
+
+async def test_run_redteam_rejects_a_grader_without_api_judge():
+    from heynyc.eval import redteam as rt
+
+    with pytest.raises(ValueError, match="--api-judge"):
         await rt.run_redteam(candidate_model="openai/gpt-5-mini", grader_model="openai/gpt-4o-mini",
                              cases=[_rt_case()])
 
 
-async def test_run_redteam_delegates_to_the_bench_with_an_enforced_cross_family_judge(monkeypatch):
+async def test_run_redteam_defaults_to_subscription_review_without_constructing_a_judge(monkeypatch):
+    from heynyc.eval import redteam as rt
+
+    seen = {}
+
+    def fail_make_api_judge(*args, **kwargs):
+        raise AssertionError("normal red-team runs must not construct an API judge")
+
+    async def fake_run_bench(
+        models, registry, retriever, cases, reminders, judge=None, out_dir=None, run_metadata=None,
+    ):
+        seen.update(
+            models=models,
+            cases=cases,
+            judge=judge,
+            out_dir=out_dir,
+            run_metadata=run_metadata,
+        )
+        return [BenchRow(models[0], report=_report([("MC01", True)]))]
+
+    monkeypatch.setattr(rt, "make_api_judge", fail_make_api_judge)
+    monkeypatch.setattr(rt, "run_bench", fake_run_bench)
+    monkeypatch.setattr(rt.config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+
+    row = await rt.run_redteam(candidate_model="openai/gpt-5-mini", cases=[_rt_case("MC01")])
+
+    assert seen["judge"] is None
+    assert seen["cases"][0].utility_criterion
+    assert seen["run_metadata"]["runtime"] == "pydantic"
+    assert seen["run_metadata"]["review_mode"] == "subscription-agent-pending"
+    assert seen["out_dir"].startswith(".data/redteam/run-")
+    assert isinstance(row, BenchRow) and row.model == "openai/gpt-5-mini"
+
+
+async def test_run_redteam_delegates_to_the_bench_with_an_opt_in_cross_family_judge(monkeypatch):
     # It builds a cross-family judge and hands the suite + that judge to the shared bench, returning
     # the single row — no bespoke runner/report of its own.
     from heynyc.eval import redteam as rt
@@ -392,13 +502,31 @@ async def test_run_redteam_delegates_to_the_bench_with_an_enforced_cross_family_
     monkeypatch.setattr(rt, "run_bench", fake_run_bench)
     cases = [_rt_case("MC01")]
     row = await rt.run_redteam(candidate_model="openai/gpt-5-mini",
-                               grader_model="anthropic/claude-sonnet-4-6", cases=cases)
+                               grader_model="anthropic/claude-sonnet-4-6", api_judge=True, cases=cases)
     assert seen["models"] == ["openai/gpt-5-mini"]
     assert seen["cases"] is cases
     assert callable(seen["judge"])     # the enforced cross-family judge was passed through
     assert seen["run_metadata"]["candidate_model"] == "openai/gpt-5-mini"
     assert seen["run_metadata"]["grader_model"] == "anthropic/claude-sonnet-4-6"
+    assert seen["run_metadata"]["review_mode"] == "api-judge"
     assert isinstance(row, BenchRow) and row.model == "openai/gpt-5-mini"
+
+
+async def test_run_redteam_refuses_a_same_family_grader_before_running(monkeypatch):
+    from heynyc.eval import redteam as rt
+
+    async def fail_run_bench(*args, **kwargs):
+        raise AssertionError("same-family rejection must happen before candidate calls")
+
+    monkeypatch.setattr(rt, "run_bench", fail_run_bench)
+
+    with pytest.raises(ValueError):
+        await rt.run_redteam(
+            candidate_model="openai/gpt-5-mini",
+            grader_model="openai/gpt-4o-mini",
+            api_judge=True,
+            cases=[_rt_case()],
+        )
 
 
 async def test_run_redteam_provenance_cannot_be_overridden_by_caller(monkeypatch):
@@ -417,6 +545,7 @@ async def test_run_redteam_provenance_cannot_be_overridden_by_caller(monkeypatch
     await rt.run_redteam(
         candidate_model="openai/gpt-5-mini",
         grader_model="anthropic/claude-sonnet-4-6",
+        api_judge=True,
         cases=[_rt_case("MC01")],
         run_metadata={"candidate_model": "fake", "grader_model": "fake", "label": "kept"},
     )

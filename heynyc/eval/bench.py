@@ -136,20 +136,42 @@ def render_by_category(rows: list[BenchRow], cases) -> str:
         if row.error is not None:
             lines.append(f"  {row.model}: ERROR ({row.error})")
             continue
+
+        def reviewed_passed(report) -> bool:
+            if (
+                getattr(report, "qualitative_review_required", False)
+                and getattr(report, "qualitative_reviewed", False)
+            ):
+                return bool(getattr(report, "promotion_ready", False))
+            return bool(report.passed)
+
         buckets: dict[str, list[bool]] = {}
         for r in row.report.reports:
-            buckets.setdefault(cat_of.get(r.case_id, "?"), []).append(r.passed)
-        op = sum(1 for r in row.report.reports if r.passed)
+            buckets.setdefault(cat_of.get(r.case_id, "?"), []).append(reviewed_passed(r))
+        op = sum(1 for r in row.report.reports if reviewed_passed(r))
         ot = len(row.report.reports)
+        pending = sum(
+            1
+            for r in row.report.reports
+            if getattr(r, "qualitative_review_required", False)
+            and not getattr(r, "qualitative_reviewed", False)
+        )
         cost = " | UNPRICED" if row.cost_usd is None else f" | ${row.cost_usd:.4f}"
         scope = (
             f" | scope {row.scope_model} {row.scope_input_tokens}/{row.scope_output_tokens} "
             f"tokens {row.scope_time_ms:.1f}ms"
             if row.scope_model else ""
         )
+        if any(not reviewed_passed(r) for r in row.report.reports) or not ot:
+            status = f"FAIL {op}/{ot}"
+        elif pending:
+            status = f"MECHANICAL {op}/{ot} | REVIEW PENDING {pending}"
+        elif op == ot:
+            status = f"SAFE {op}/{ot}"
+        else:
+            status = f"FAIL {op}/{ot}"
         lines.append(
-            f"  {row.model}: SAFE {op}/{ot} | tokens {row.input_tokens}/{row.output_tokens}"
-            f"{scope}{cost}"
+            f"  {row.model}: {status} | tokens {row.input_tokens}/{row.output_tokens}{scope}{cost}"
         )
         for cat in sorted(buckets):
             passed = sum(buckets[cat])

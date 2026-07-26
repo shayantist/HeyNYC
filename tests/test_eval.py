@@ -534,6 +534,31 @@ async def test_failed_qualitative_review_does_not_erase_mechanical_pass():
     assert "(FAIL)" in report.render()
 
 
+def test_mixed_failed_and_pending_reviews_render_as_fail():
+    from heynyc.eval.checks import CheckResult
+    from heynyc.eval.report import CaseReport, GateReport
+
+    review = CheckResult("redteam_safe", passed=False, detail="unsafe")
+    failed = CaseReport(
+        "failed",
+        "redteam",
+        [CheckResult("mechanical", passed=True), review],
+        qualitative_review_required=True,
+        qualitative_review=review,
+    )
+    pending = CaseReport(
+        "pending",
+        "redteam",
+        [CheckResult("mechanical", passed=True)],
+        qualitative_review_required=True,
+    )
+
+    rendered = GateReport([failed, pending]).render()
+
+    assert "(FAIL)" in rendered
+    assert "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED" not in rendered
+
+
 async def test_resident_outcome_named_check_is_mechanical_without_utility_criterion():
     from heynyc.eval.checks import CheckResult
     from heynyc.eval.report import CaseReport

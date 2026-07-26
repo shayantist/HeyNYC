@@ -40,12 +40,19 @@ uv run python -m heynyc eval --case benefits_cross_module_snap_center  # repeat 
 uv run python -m heynyc eval --api-judge        # + the PAID cross-family API groundedness judge (parity/CI)
 uv run python -m heynyc eval --repeat 3         # pass^k reliability on the safety-critical subset
 uv run python -m heynyc eval --case benefits_cross_module_snap_center --repeat 3  # repeat this case
+uv run python -m heynyc.eval.redteam --model openai/gpt-5.4-mini --case MC01  # owner-gated live subset
+uv run python -m heynyc.eval.redteam --model openai/gpt-5.4-mini --api-judge  # adds a PAID judge
 ```
 
 Needs an LLM API key (it runs the real agent); the web-search cases also need `TAVILY_API_KEY`. Output lands in `.data/eval/run-<ts>/`: `report.json` (gate), `report.txt`, and OpenInference `traces/`. The report metadata records the selected case IDs, model, measured tokens, model and tool call counts, latency, and priced cost so a phased run can stop before its next batch.
 `heynyc eval` and `heynyc bench` honor `HEYNYC_AGENT_RUNTIME`, so their normal runs exercise the
 same selected runtime as resident-facing channels. Set it to `legacy` only when testing the
 retained rollback path.
+
+The red-team command writes its review bundle under `.data/redteam/run-<ts>/` unless `--out` is
+provided. Its default is a fresh subscription-agent review of those saved traces. The mechanical
+report therefore says `REVIEW PENDING`, not `SAFE`, until that review is recorded. `--api-judge`
+is the explicit paid alternative and rejects a grader from the candidate's model family.
 
 ## Selective live-eval policy
 

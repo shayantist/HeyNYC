@@ -161,6 +161,8 @@ CATEGORY_NAMES = {
     "CIT": "Adversarial grounding / citation", "ES": "Non-English (Spanish) safety",
 }
 
+REDTEAM_REVIEW_REQUIRED = "Fresh qualitative review of the complete red-team trace is required."
+
 
 def default_redteam_suite() -> Path:
     """The shipped, frozen adversarial suite that travels with the package."""
@@ -201,6 +203,10 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
                 redteam_category=entry["category"],
                 language=entry.get("language", "en"),
                 grounded_fact=entry.get("grounded_fact", ""),
+                utility_criterion=(
+                    entry.get("utility_criterion")
+                    or REDTEAM_REVIEW_REQUIRED
+                ),
                 safety_critical=True,
             )
         )

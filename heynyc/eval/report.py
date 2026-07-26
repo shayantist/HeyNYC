@@ -108,7 +108,13 @@ class GateReport:
         return {name: f"{ok}/{n}" for name, (ok, n) in sorted(totals.items())}
 
     def render(self) -> str:
-        if self.mechanical_passed_count != self.total:
+        review_failed = any(
+            r.qualitative_review_required
+            and r.qualitative_reviewed
+            and not r.promotion_ready
+            for r in self.reports
+        )
+        if self.mechanical_passed_count != self.total or review_failed:
             status = "FAIL"
         elif self.qualitative_pending_count:
             status = "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED"
