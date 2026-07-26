@@ -118,6 +118,44 @@ def test_faithfulness_flags_citation_not_in_any_output():
     assert not inv_faithfulness(fabricated, case).passed
 
 
+def test_faithfulness_uses_validated_data_snapshot_when_tool_reformats_values():
+    case = _case(invariants={"must_not_fabricate": True})
+    trace = Trace(
+        case_id="c",
+        query="q",
+        spans=[
+            Span(
+                kind="tool",
+                name="public_restroom_lookup",
+                output="53rd Street Library. Saturday: 11a-6p {cite:S1}",
+            )
+        ],
+        final_text="53rd Street Library has Saturday hours of 11 AM to 6 PM {cite:S1}.",
+        citations={
+            "S1": {
+                "kind": "DATA",
+                "url": "u",
+                "snippet": (
+                    "53rd Street Library, NYPL, status: Operational, Year Round, "
+                    "Saturday: 11:00 am - 6:00 pm, Fully Accessible"
+                ),
+                "provenance": {
+                    "snapshot": {
+                        "facility_name": "53rd Street Library, NYPL",
+                        "status": "Operational",
+                        "open": "Year Round",
+                        "hours_of_operation": "Saturday: 11:00 am - 6:00 pm",
+                        "accessibility": "Fully Accessible",
+                    }
+                },
+            }
+        },
+        outcome="answered",
+    )
+
+    assert inv_faithfulness(trace, case).passed
+
+
 def test_abstain_or_redirect_invariant():
     case = _case(invariants={"must_abstain_or_redirect": True})
     good = Trace(case_id="c", query="q", spans=[], final_text="I couldn't find that; try 311.",

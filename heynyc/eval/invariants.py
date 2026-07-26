@@ -154,7 +154,7 @@ def _routes_to_channel(text: str) -> bool:
 
 
 def _unbacked_citations(trace: Trace, citation_ids: Optional[set[str]] = None) -> list[str]:
-    haystack = set(_TOKEN_RE.findall(_norm(" ".join(
+    fetched_tokens = set(_TOKEN_RE.findall(_norm(" ".join(
         str(span.output or "") for span in _grounding_spans(trace)
     ))))
     ids = citation_ids if citation_ids is not None else set(trace.citations)
@@ -170,6 +170,12 @@ def _unbacked_citations(trace: Trace, citation_ids: Optional[set[str]] = None) -
         ]
         if not tokens:
             continue
+        snapshot = (citation.get("provenance") or {}).get("snapshot")
+        haystack = fetched_tokens | (
+            set(_TOKEN_RE.findall(_norm(str(snapshot))))
+            if citation.get("kind") == "DATA" and snapshot
+            else set()
+        )
         overlap = sum(1 for token in tokens if token in haystack) / len(tokens)
         if overlap < _FAITHFULNESS_MIN_OVERLAP:
             unbacked.append(f"{cid}({overlap:.0%})")
@@ -223,10 +229,9 @@ def inv_faithfulness(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
     field-composed label (e.g. "Rodney Park North, Brooklyn (status: Activated)")
     that renders the same record fields the tool returned but with different
     formatting, so it is not a literal substring. We require that ≥60% of the
-    snippet's content tokens appear in the union of fetched outputs, honest
-    citations pass, while fabricated specifics (e.g. "open until 9pm" with no tool
-    returning hours) still fail. The exact-span audit is the deferred citation
-    redesign (spec §6); the agent-as-judge (Tier 2) catches subtler cases."""
+    snippet's content tokens appear in the union of fetched outputs or, for a DATA
+    citation, its validated source snapshot. Honest citations pass, while
+    fabricated specifics still fail. The agent-as-judge catches subtler cases."""
     if not case.invariants.get("must_not_fabricate"):
         return None
     unbacked = _unbacked_citations(trace)

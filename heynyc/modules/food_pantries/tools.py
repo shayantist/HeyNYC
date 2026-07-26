@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -114,6 +114,7 @@ def _resident_supplied_origin(near: str, query: str, user_turns: tuple[str, ...]
 # --- hours / open-now ------------------------------------------------------
 
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*$")
+_MONTHLY_OCCURRENCE_RE = re.compile(r"\b([1-5])(?:st|nd|rd|th)?\b", re.IGNORECASE)
 
 
 def _parse_time(value) -> int | None:
@@ -148,11 +149,16 @@ def _parse_time(value) -> int | None:
 
 def _prefix(record: dict) -> str:
     """Soup kitchens carry sk_<day>_* hours; food pantries carry fp_<day>_*."""
-    return "sk" if _clean(record.get("program_type")).upper() == "SK" else "fp"
+    return {"FP": "fp", "SK": "sk"}.get(
+        _clean(record.get("program_type")).upper(),
+        "",
+    )
 
 
 def _day_slots(record: dict, prefix: str, day: str) -> list[tuple[int, int]]:
     """The (open, close) minute-ranges for one weekday (up to three windows)."""
+    if not prefix:
+        return []
     slots: list[tuple[int, int]] = []
     for n in ("1", "2", "3"):
         opened = _parse_time(record.get(f"{prefix}_{day}_open{n}"))
@@ -184,6 +190,31 @@ def _open_now(record: dict, now: datetime) -> bool | None:
     if any(_day_slots(record, prefix, day) for day in _DAYS):
         return False
     return None
+
+
+def _scheduled_on(record: dict, requested: date) -> bool | None:
+    if _schedule_conflict(record, requested):
+        return None
+    prefix = _prefix(record)
+    if _day_slots(record, prefix, _DAYS[requested.weekday()]):
+        return True
+    if any(_day_slots(record, prefix, day) for day in _DAYS):
+        return False
+    return None
+
+
+def _schedule_conflict(record: dict, requested: date) -> bool:
+    prefix = _prefix(record)
+    source_days = _clean(record.get(f"{prefix}_days_orig"))
+    notes = _clean(record.get(f"{prefix}_notes"))
+    if (
+        _DAYS[requested.weekday()].upper() not in source_days.upper()
+        or requested.strftime("%A").lower() not in notes.lower()
+    ):
+        return False
+    source_occurrences = set(_MONTHLY_OCCURRENCE_RE.findall(source_days))
+    note_occurrences = set(_MONTHLY_OCCURRENCE_RE.findall(notes))
+    return bool(source_occurrences and note_occurrences and source_occurrences != note_occurrences)
 
 
 def _status_label(open_now: bool | None) -> str:
@@ -356,15 +387,45 @@ def _availability_citation(
     )
 
 
-def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) -> str:
+def _pantry_block(
+    pantry: FoodPantry,
+    cite: str,
+    dist_mi: float,
+    now: datetime,
+    requested: date | None = None,
+) -> str:
     flags = _flags(pantry)
     flag_str = f" [{', '.join(flags)}]" if flags else ""
-    status = _status_label(_open_now(pantry.raw, now))
+    if requested and requested != now.date():
+        day = requested.strftime("%A, %Y-%m-%d")
+        if _schedule_conflict(pantry.raw, requested):
+            status = (
+                f"source fields conflict about the {requested.strftime('%A')} schedule "
+                f"for {day}, call to verify"
+            )
+        else:
+            scheduled = _scheduled_on(pantry.raw, requested)
+            status = (
+                f"weekly schedule lists hours on {day}"
+                if scheduled is True
+                else f"weekly schedule lists no hours on {day}"
+                if scheduled is False
+                else f"hours not listed for {day}, call ahead"
+            )
+        weekday = requested.weekday()
+    else:
+        status = _status_label(_open_now(pantry.raw, now))
+        weekday = now.weekday()
     parts = [f"- {pantry.name}{flag_str} ({pantry.address or 'NYC'}), "
              f"{dist_mi:.2f} mi straight-line, {status} {{cite:{cite}}}"]
-    hours = _listed_hours(pantry.raw, now.weekday())
+    hours = _listed_hours(pantry.raw, weekday)
     if hours:
-        parts.append(f"  Today's listed weekly hours: {hours}")
+        label = (
+            f"{requested.strftime('%A')}'s"
+            if requested and requested != now.date()
+            else "Today's"
+        )
+        parts.append(f"  {label} listed weekly hours: {hours}")
     if pantry.phone:
         parts.append(f"  Phone: {pantry.phone}")
     if pantry.notes:
@@ -378,6 +439,26 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     if not near:
         return NO_LOCATION
+    service_type = str(args.get("service_type") or "any")
+    if service_type not in {"pantry", "soup_kitchen", "any"}:
+        return "The requested service type is invalid. Use pantry, soup_kitchen, or any."
+    service_name = {
+        "pantry": "food pantry",
+        "soup_kitchen": "soup kitchen",
+        "any": "food-help site",
+    }[service_type]
+    now = datetime.now(_NYC_TZ)
+    on = str(args.get("on") or "").strip()
+    try:
+        requested = date.fromisoformat(on) if on else None
+    except ValueError:
+        return "The requested date is invalid. Ask for a date in YYYY-MM-DD format."
+    if requested and requested < now.date():
+        return (
+            "NYC FoodHelp provides current weekly schedules, so I cannot verify a past "
+            "service date. Ask for today or a future date."
+        )
+    future_schedule = requested is not None and requested > now.date()
     resident_origin = _resident_supplied_origin(near, ctx.query, ctx.user_turns)
     if not resident_origin:
         return NO_LOCATION
@@ -385,30 +466,42 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     origin = await geocode(near, client=ctx.http)
     if origin is None:
-        return (f"I couldn't locate '{near}' in NYC, so I can't find a nearby food pantry. Ask the "
-                f"user for a specific NYC address or neighborhood, don't guess a pantry.")
+        return (
+            f"I couldn't locate '{near}' in NYC, so I can't find a nearby {service_name}. Ask the "
+            f"user for a specific NYC address or neighborhood, don't guess a {service_name}."
+        )
     if origin.low_confidence:
         return _clarify_message(near)
 
     try:
         records = await query_feature_service(FOODHELP_URL, where=WHERE_OPEN, client=ctx.http)
     except httpx.HTTPError:
-        return (f"I couldn't reach the city's FoodHelp data right now, don't guess a pantry. "
-                f"Point the user to {OFFICIAL}.")
+        return (
+            f"I couldn't reach the city's FoodHelp data right now, don't guess a {service_name}. "
+            f"Point the user to {OFFICIAL}."
+        )
 
     pantries = [p for p in (_to_pantry(r) for r in records) if p is not None]
+    if service_type != "any":
+        expected_prefix = "fp" if service_type == "pantry" else "sk"
+        pantries = [pantry for pantry in pantries if _prefix(pantry.raw) == expected_prefix]
     if not pantries:
+        result_label = {
+            "pantry": "food pantries",
+            "soup_kitchen": "soup kitchens",
+            "any": "food-help sites",
+        }[service_type]
         cite = _availability_citation(
             ctx,
             pantries=[],
             nearby=[],
-            now=datetime.now(_NYC_TZ),
+            now=now,
         )
-        return (f"No open food pantries came back from the city's FoodHelp data. Don't invent one, "
-                f"point the user to {OFFICIAL}. {{cite:{cite}}}")
-
+        return (
+            f"No open {result_label} came back from the city's FoodHelp data. Don't invent one, "
+            f"point the user to {OFFICIAL}. {{cite:{cite}}}"
+        )
     k = int(args.get("k") or 5)
-    now = datetime.now(_NYC_TZ)
     ordered = sorted(pantries, key=lambda p: haversine_m(origin.lat, origin.lon, p.lat, p.lon))
     # Collapse duplicate rows for the same physical site (same name + coordinate).
     unique: list[FoodPantry] = []
@@ -419,8 +512,17 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             continue
         seen.add(key)
         unique.append(pantry)
+    if future_schedule:
+        def requested_day_rank(pantry: FoodPantry) -> tuple[float, float]:
+            scheduled = _scheduled_on(pantry.raw, requested)
+            return (
+                0 if scheduled is True else 2 if scheduled is False else 1,
+                haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon),
+            )
+
+        unique.sort(key=requested_day_rank)
     ranked = unique[:k]
-    urgent = args.get("urgent") is True
+    urgent = args.get("urgent") is True and not future_schedule
     scheduled_open = [pantry for pantry in ranked if _open_now(pantry.raw, now) is True]
     unknown_hours = [pantry for pantry in ranked if _open_now(pantry.raw, now) is None]
     citywide_open = [pantry for pantry in unique if _open_now(pantry.raw, now) is True]
@@ -442,12 +544,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
         _resolution_note(near, origin),
         (
-            "City-listed food pantry evidence from NYC FoodHelp (finder.nyc.gov/foodhelp):"
+            f"City-listed {service_name} evidence from NYC FoodHelp "
+            "(finder.nyc.gov/foodhelp):"
             if urgent
-            else "Nearest City-listed food pantry candidates from NYC FoodHelp "
+            else f"Nearest City-listed {service_name} candidates from NYC FoodHelp "
                  "(finder.nyc.gov/foodhelp), report only these, cite each:"
         ),
     ]
+    if future_schedule:
+        lines.append(
+            f"Results are ranked for the weekly schedule on "
+            f"{requested.strftime('%A, %Y-%m-%d')}; this does not confirm service that day."
+        )
     if urgent and scheduled_open:
         lines.append(
             "Immediate food need: a weekly schedule does not confirm food availability now or "
@@ -478,10 +586,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"offer to search farther in the same feed.{availability_marker}"
         )
 
-    if scheduled_open_count:
+    if not future_schedule and scheduled_open_count:
         verb = "is" if scheduled_open_count == 1 else "are"
         lines.append(f"{scheduled_open_count} of these candidates {verb} scheduled open now.")
-    elif not urgent:
+    elif not future_schedule and not urgent:
         lines.append(
             "None of these nearest candidates is scheduled open now. Do not present them as food "
             "available now; offer to search farther or call 311 for immediate food help."
@@ -509,7 +617,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon))
         cite = _pantry_citation(ctx, pantry, origin_lat=origin.lat, origin_lon=origin.lon,
                                 dist_mi=dist_mi)
-        lines.append(_pantry_block(pantry, cite, dist_mi, now))
+        lines.append(_pantry_block(pantry, cite, dist_mi, now, requested))
     lines.append("The listed weekly schedule has no holiday or temporary exception fields, so "
                  "tell the user to call before leaving. Eligibility isn't always listed; if a "
                  "field isn't shown, say you don't have it. The data has no language info.")
@@ -523,8 +631,12 @@ def get_tools() -> list[Tool]:
             description=(
                 "Find the nearest City-listed NYC food pantries / soup kitchens to an address, grounded in "
                 "the city's official FoodHelp data (finder.nyc.gov/foodhelp). Pass `near` = the "
-                "user's NYC address or neighborhood; optional `k` (default 5). Returns each site's "
-                "name, full address, scheduled-open-now status, phone, dietary/access type "
+                "user's NYC address or neighborhood. Pass `service_type=pantry` for a pantry "
+                "request, `soup_kitchen` for a soup-kitchen request, or `any` for general food "
+                "help. Pass `on=YYYY-MM-DD` for a future date and label its results as scheduled "
+                "weekly hours, not guaranteed availability; optional `k` defaults to 5. Returns "
+                "each site's name, full address, requested-date weekly hours or current-day "
+                "scheduled-open status, phone, dietary/access type "
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
                 "Set `urgent=true` when the resident needs food now, today, or tonight so the "
                 "result leads with the immediate fallback and does not overstate weekly hours. "
@@ -537,13 +649,28 @@ def get_tools() -> list[Tool]:
                     "near": {"type": "string",
                              "description": "The NYC address or neighborhood to search near."},
                     "k": {"type": "integer",
-                          "description": "How many pantries to return (default 5).", "default": 5},
+                          "description": "How many food-help sites to return (default 5).",
+                          "default": 5},
                     "urgent": {
                         "type": "boolean",
                         "default": False,
                         "description": (
                             "True when the resident needs food immediately, today, or tonight"
                         ),
+                    },
+                    "on": {
+                        "type": "string",
+                        "format": "date",
+                        "description": (
+                            "Requested service date in YYYY-MM-DD. Pass when the resident names "
+                            "a specific future date or day."
+                        ),
+                    },
+                    "service_type": {
+                        "type": "string",
+                        "enum": ["pantry", "soup_kitchen", "any"],
+                        "default": "any",
+                        "description": "The source service type requested by the resident.",
                     },
                 },
                 "required": ["near"],

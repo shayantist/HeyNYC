@@ -333,7 +333,7 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert "Halal" in site_lines[0]                    # dietary/access flag surfaced
     assert "open now" in site_lines[0].lower()         # open-now computed from structured hours
     assert "Immediate food need" not in out             # ordinary lookup keeps the normal ordering
-    assert "Nearest City-listed food pantry candidates" in out
+    assert "Nearest City-listed food-help site candidates" in out
     assert "212-555-0002" in out                       # phone surfaced
     assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
     assert "{cite:S1}" in out                          # grounded, cited
@@ -405,6 +405,7 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
 
     schema = get_tools()[0].parameters
     assert schema["properties"]["urgent"]["type"] == "boolean"
+    assert schema["properties"]["on"]["format"] == "date"
     assert "urgent" not in schema["required"]
 
 
@@ -505,6 +506,233 @@ async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fal
     assert len(ctx.citations.mapping()) == 2
 
 
+async def test_nearest_food_pantry_uses_the_residents_requested_date(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    friday = _DAYS[_Noon.now().weekday()]
+    saturday = _DAYS[(_Noon.now().weekday() + 1) % 7]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Friday Only Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="friday-only",
+            **{
+                f"fp_{friday}_open1": "9:00 AM",
+                f"fp_{friday}_close1": "5:00 PM",
+            },
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Saturday Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="saturday",
+            **{
+                f"fp_{saturday}_open1": "10:00 AM",
+                f"fp_{saturday}_close1": "2:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "k": 1, "on": "2026-07-18"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Saturday Pantry" in out
+    assert "Friday Only Pantry" not in out
+    assert "Saturday, 2026-07-18" in out
+    assert "scheduled open now" not in out
+    assert "10:00 AM-2:00 PM" in out
+
+
+async def test_nearest_food_pantry_filters_source_service_type():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Soup Kitchen",
+            type_sk="SK",
+            program_type="SK",
+            GlobalID="soup-kitchen",
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Food Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="food-pantry",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "pantry"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Food Pantry" in out
+    assert "Nearby Soup Kitchen" not in out
+    assert get_tools()[0].parameters["properties"]["service_type"]["enum"] == [
+        "pantry",
+        "soup_kitchen",
+        "any",
+    ]
+
+
+async def test_nearest_food_pantry_labels_soup_kitchen_results_as_soup_kitchens():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Soup Kitchen",
+            type_sk="SK",
+            program_type="SK",
+            GlobalID="soup-kitchen",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "soup_kitchen"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Nearest City-listed soup kitchen candidates" in out
+    assert "food pantry candidates" not in out
+
+
+async def test_future_same_weekday_is_not_labeled_today(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    friday = _DAYS[_Noon.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Friday Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="friday-pantry",
+            **{
+                f"fp_{friday}_open1": "9:00 AM",
+                f"fp_{friday}_close1": "5:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "pantry", "on": "2026-07-24"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Friday's listed weekly hours" in out
+    assert "Today's listed weekly hours" not in out
+
+
+async def test_nearest_food_pantry_excludes_unknown_source_types_from_typed_request():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Unknown Program",
+            type_fp="FP",
+            program_type="",
+            GlobalID="unknown",
+        ),
+        _pantry_feature(
+            -73.9900,
+            40.7520,
+            program="Malformed Program",
+            type_fp="FP",
+            program_type="OTHER",
+            GlobalID="malformed",
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Verified Food Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="food-pantry",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "pantry"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Verified Food Pantry" in out
+    assert "Unknown Program" not in out
+    assert "Malformed Program" not in out
+
+
+async def test_nearest_food_pantry_rejects_past_service_date_before_lookup(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("past date reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "on": "2026-07-16"},
+        ctx,
+    )
+
+    assert "cannot verify a past service date" in out
+
+
+async def test_nearest_food_pantry_flags_conflicting_schedule_fields(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    saturday = _DAYS[(_Noon.now().weekday() + 1) % 7]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Conflicting Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="conflicting",
+            fp_days_orig="SAT(2ND,4TH)",
+            fp_notes="ONLY OPEN 1ST & 3RD SATURDAY",
+            **{
+                f"fp_{saturday}_open1": "10:00 AM",
+                f"fp_{saturday}_close1": "2:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "k": 1, "on": "2026-07-18"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "source fields conflict about the Saturday schedule" in out
+    assert "does not confirm service that day" in out
+
+
 async def test_nearest_food_pantry_cites_an_empty_official_feed():
     client = _routed_client([])
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
@@ -515,7 +743,7 @@ async def test_nearest_food_pantry_cites_an_empty_official_feed():
     )
     await client.aclose()
 
-    assert "No open food pantries came back" in out
+    assert "No open food-help sites came back" in out
     assert "{cite:S1}" in out
     citation = ctx.citations.mapping()["S1"]
     assert citation["valid_as_of"] == ""

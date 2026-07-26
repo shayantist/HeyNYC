@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import data_provenance
@@ -60,6 +60,21 @@ def _open_now(record: dict, now: datetime) -> bool | None:
         known = True
         if current < closed:
             return True
+    return False if known else None
+
+
+def _scheduled_on(record: dict, requested: date) -> bool | None:
+    day = _DAYS[requested.weekday()]
+    known = False
+    for weekday in _DAYS:
+        for interval in (1, 2):
+            opened = _minutes(record.get(f"cc_{weekday}_open{interval}"))
+            closed = _minutes(record.get(f"cc_{weekday}_close{interval}"))
+            if opened is None or closed is None:
+                continue
+            known = True
+            if weekday == day:
+                return True
     return False if known else None
 
 
@@ -136,6 +151,19 @@ def _cool_citation(ctx: ToolContext, record: dict) -> str:
 
 async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     near = str(args.get("near", "")).strip()
+    now = _nyc_now()
+    on = str(args.get("on") or "").strip()
+    try:
+        requested = date.fromisoformat(on) if on else None
+    except ValueError:
+        return "The requested date is invalid. Ask for a date in YYYY-MM-DD format."
+    if requested and requested < now.date():
+        return (
+            "The City sources provide current schedules, so I cannot verify a past service "
+            "date. Ask for today or a future date."
+        )
+    future_schedule = requested is not None and requested > now.date()
+
     origin = await geocode(near, client=ctx.http)
     if origin is None:
         return f"Could not locate '{near}'. Ask for a specific NYC address or landmark."
@@ -145,12 +173,11 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     binding = ctx.registry.dataset_bindings().get("public_restroom")
     if binding is None:
         return "The NYC public-restroom dataset is not configured."
-
     city_result, cool_result = await asyncio.gather(
         query_dataset(binding.id, where=binding.where, limit=2000, client=ctx.http),
         query_feature_service(
             COOL_OPTIONS_URL,
-            where="Finder_status='OPEN'",
+            where="1=1" if future_schedule else "Finder_status='OPEN'",
             result_record_count=2000,
             client=ctx.http,
         ),
@@ -165,7 +192,6 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     if not places:
         return "No public restrooms were found in the NYC dataset."
 
-    now = _nyc_now()
     candidates = []
     seen: set[str] = set()
     fully_accessible = args.get("fully_accessible") is True
@@ -188,7 +214,13 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         seen.add(key)
         distance_m = haversine_m(origin.lat, origin.lon, place.lat, place.lon)
         corroboration = _matching_cool_option(place, cool_records)
-        open_now = _open_now(corroboration, now) if corroboration else None
+        open_now = (
+            _scheduled_on(corroboration, requested)
+            if corroboration and future_schedule
+            else _open_now(corroboration, now)
+            if corroboration
+            else None
+        )
         evidence_rank = 0 if open_now is True else 2 if open_now is False else 1
         candidates.append((evidence_rank, distance_m, place, corroboration, open_now))
 
@@ -206,7 +238,17 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     limit = min(max(limit, 1), 10)
     selected = sorted(candidates, key=lambda item: (item[0], item[1]))[:limit]
 
-    lines = [f"Public restrooms near {origin.label}:"]
+    date_suffix = (
+        f" for {requested.strftime('%A, %Y-%m-%d')}"
+        if future_schedule
+        else ""
+    )
+    lines = [f"Public restrooms near {origin.label}{date_suffix}:"]
+    if future_schedule:
+        lines.append(
+            "Ranked by requested-day schedule evidence, then distance, not by longest hours "
+            "or restroom quality."
+        )
     city_cites = []
     for index, (_, distance_m, place, corroboration, open_now) in enumerate(selected, 1):
         distance_mi = miles(distance_m)
@@ -215,9 +257,17 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         lines.append(f"{index}. {place.name}, {distance_mi:.2f} miles {{cite:{city_cite}}}")
         if corroboration:
             cool_cite = _cool_citation(ctx, corroboration)
-            day_name = _DAY_NAMES[now.weekday()]
+            day_name = _DAY_NAMES[requested.weekday() if future_schedule else now.weekday()]
             hours = str(corroboration.get(day_name, "")).strip()
-            if open_now is True:
+            if future_schedule and open_now is True:
+                status = (
+                    f"site building is scheduled on {day_name}, {requested.isoformat()}"
+                )
+            elif future_schedule and open_now is False:
+                status = f"no hours listed on {day_name}, {requested.isoformat()}"
+            elif future_schedule:
+                status = f"schedule unclear for {day_name}, {requested.isoformat()}"
+            elif open_now is True:
                 status = "scheduled open now"
             elif open_now is False:
                 status = "scheduled closed now"
@@ -239,7 +289,12 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
                 )
         else:
             hours = str(place.raw.get("hours_of_operation", "")).strip()
-            detail = "   NYC lists this restroom, but it is not independently confirmed open now"
+            detail = (
+                "   NYC lists this restroom, but its future building schedule is not "
+                "independently corroborated"
+                if future_schedule
+                else "   NYC lists this restroom, but it is not independently confirmed open now"
+            )
             if hours:
                 detail += f". Listed hours: {hours}"
             lines.append(f"{detail} {{cite:{city_cite}}}")
@@ -275,7 +330,7 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         )
     lines.append(
         "NYC restroom records are not real-time. For a locked, closed, or unusable restroom, "
-        "try the next result or report the problem to 311."
+        f"try the next result or report the problem to 311. {record_cites}"
     )
     if cool_failed:
         lines.append("The NYC Cool Options cross-check was unavailable for this lookup.")
@@ -313,6 +368,14 @@ def get_tools() -> list[Tool]:
                         "default": False,
                         "description": (
                             "Set true only when the resident requests a changing station"
+                        ),
+                    },
+                    "on": {
+                        "type": "string",
+                        "format": "date",
+                        "description": (
+                            "Requested date in YYYY-MM-DD. Pass when the resident asks about a "
+                            "specific future date or day."
                         ),
                     },
                 },

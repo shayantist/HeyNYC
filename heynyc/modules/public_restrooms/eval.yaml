@@ -32,6 +32,18 @@
     concrete operator or 311 fallback when current condition cannot be confirmed.
   notes: Return useful nearby options and scheduled access when corroborated, but never guarantee current restroom condition.
 
+- id: restroom_requested_day
+  tags: [must-win]
+  query: "Which public restroom near Rockefeller Center is likely available next Saturday?"
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Pass the requested date to public_restroom_lookup and rank grounded sites with Saturday
+    building hours. Label the result for that Saturday rather than open now, include a usable
+    map link, and distinguish scheduled building access from live restroom availability.
+  notes: A future-day request must query the schedule layer rather than only sites open now.
+
 - id: restroom_accessibility
   tags: [must-win]
   query: "Is the closest bathroom to Times Square wheelchair accessible?"
