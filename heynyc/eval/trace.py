@@ -116,6 +116,7 @@ class Trace:
     final_text: str = ""
     citations: dict = field(default_factory=dict)
     outcome: str = "answered"
+    turns: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -126,6 +127,7 @@ class Trace:
             "final_text": self.final_text,
             "citations": self.citations,
             "outcome": self.outcome,
+            "turns": self.turns,
         }
 
     def write(self, directory: Path) -> Path:
@@ -168,6 +170,25 @@ def build_trace(case_result: CaseResult) -> Trace:
                 input=_parse_args(fn.get("arguments")),
                 output=tool_outputs.get(call_id, ""),
             ))
+    prompts = case_result.case.turns
+    turns = [
+        {
+            "turn": index + 1,
+            "started_at": (
+                case_result.turn_started_at[index]
+                if index < len(case_result.turn_started_at)
+                else None
+            ),
+            "resident_message": prompts[index] if index < len(prompts) else None,
+            "text": getattr(turn, "text", ""),
+            "status": getattr(turn, "status", "success"),
+            "tool_calls": getattr(turn, "tool_calls_made", []),
+            "citations": getattr(turn, "citations", {}),
+            "messages": getattr(turn, "messages", []),
+            "usage": getattr(turn, "usage", {}),
+        }
+        for index, turn in enumerate(case_result.turn_results)
+    ]
     return Trace(
         case_id=case_result.case.id,
         query=case_result.case.query,
@@ -180,4 +201,5 @@ def build_trace(case_result: CaseResult) -> Trace:
             "error" if case_result.error else "success",
             grounded=bool({c.get("kind") for c in case_result.citations.values()} & {"DATA", "DOC"}),
         ),
+        turns=turns,
     )

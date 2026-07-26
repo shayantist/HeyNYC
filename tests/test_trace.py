@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from heynyc.core.agent import AgentResult
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import CaseResult
 from heynyc.eval.trace import build_trace, classify_outcome
@@ -109,3 +110,36 @@ def test_trace_preserves_expected_response_language():
 
     assert trace.language == "es"
     assert trace.to_dict()["language"] == "es"
+
+
+def test_trace_persists_every_conversation_turn_for_qualitative_review():
+    cr = _cr(
+        case=EvalCase(
+            id="multi",
+            module="m",
+            query="repeat that in Spanish",
+            turns=["first question", "repeat that in Spanish"],
+        ),
+        text="Segunda respuesta {cite:S1}",
+        turn_results=[
+            AgentResult(
+                text="First answer {cite:S1}",
+                citations={"S1": {"url": "https://nyc.gov/one"}},
+                tool_calls_made=["lookup"],
+            ),
+            AgentResult(
+                text="Segunda respuesta {cite:S1}",
+                citations={"S1": {"url": "https://nyc.gov/one"}},
+            ),
+        ],
+    )
+
+    turns = build_trace(cr).to_dict()["turns"]
+
+    assert [turn["resident_message"] for turn in turns] == [
+        "first question",
+        "repeat that in Spanish",
+    ]
+    assert turns[0]["text"] == "First answer {cite:S1}"
+    assert turns[0]["tool_calls"] == ["lookup"]
+    assert turns[1]["citations"] == {"S1": {"url": "https://nyc.gov/one"}}
