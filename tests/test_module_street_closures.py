@@ -84,13 +84,30 @@ def test_representative_point_reads_the_line_geometry():
     assert closures._representative_point({"the_geom": None}) is None
 
 
-def test_parse_on_date_defaults_to_today_and_rejects_injection():
+def test_parse_on_date_defaults_only_when_omitted():
     today = date(2026, 7, 18)
     assert closures._parse_on_date("", today) == "2026-07-18"
     assert closures._parse_on_date("2026-08-15", today) == "2026-08-15"
-    # a hostile value can never reach SoQL: it falls back to today, sanitized
-    assert closures._parse_on_date("2026'; DROP TABLE--", today) == "2026-07-18"
-    assert closures._parse_on_date("not-a-date", today) == "2026-07-18"
+    assert closures._parse_on_date("2026'; DROP TABLE--", today) is None
+    assert closures._parse_on_date("not-a-date", today) is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_explicit_date_requests_correction_before_lookup(monkeypatch):
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("invalid date reached a location or dataset lookup")
+
+    monkeypatch.setattr(closures, "geocode", should_not_run)
+    monkeypatch.setattr(closures, "query_dataset", should_not_run)
+
+    out = await closures.get_tools()[0].handler(
+        {"near": "Union Square", "on": "2026-02-30"},
+        _ctx(),
+    )
+
+    assert "date" in out.lower()
+    assert "YYYY-MM-DD" in out
+    assert "today" not in out.lower()
 
 
 @pytest.mark.asyncio
