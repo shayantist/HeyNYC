@@ -88,9 +88,21 @@ def _matching_cool_option(place, records: list[dict]) -> dict | None:
 
 def _city_citation(ctx: ToolContext, binding, place, origin, distance_mi: float) -> str:
     url = row_url(binding.id, place.record_id) if place.record_id else place.source_url
+    details = [
+        str(place.raw.get(field, "")).strip()
+        for field in (
+            "open",
+            "hours_of_operation",
+            "accessibility",
+            "restroom_type",
+            "changing_stations",
+            "additional_notes",
+        )
+        if str(place.raw.get(field, "")).strip()
+    ]
     return ctx.citations.register(
         url,
-        snippet=f"{place.name}, status: {place.status}",
+        snippet=", ".join([f"{place.name}, status: {place.status}", *details]),
         title=f"NYC Open Data ({binding.id})",
         kind="DATA",
         valid_as_of=place.updated_at,
@@ -156,10 +168,20 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     now = _nyc_now()
     candidates = []
     seen: set[str] = set()
+    fully_accessible = args.get("fully_accessible") is True
+    changing_station = args.get("changing_station") is True
     for place in sorted(
         places,
         key=lambda item: haversine_m(origin.lat, origin.lon, item.lat, item.lon),
     ):
+        if fully_accessible and str(
+            place.raw.get("accessibility", "")
+        ).strip().casefold() != "fully accessible":
+            continue
+        if changing_station and not str(
+            place.raw.get("changing_stations", "")
+        ).strip().strip('"').casefold().startswith("yes"):
+            continue
         key = place.name.strip().lower()
         if key in seen:
             continue
@@ -169,6 +191,13 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         open_now = _open_now(corroboration, now) if corroboration else None
         evidence_rank = 0 if open_now is True else 2 if open_now is False else 1
         candidates.append((evidence_rank, distance_m, place, corroboration, open_now))
+
+    if not candidates:
+        return (
+            "No NYC-listed public restroom matched the requested access features near "
+            f"{origin.label}. Ask whether the resident wants the nearest result without those "
+            "filters, or route them to 311."
+        )
 
     try:
         limit = int(args.get("limit", 3))
@@ -212,6 +241,23 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
             if hours:
                 detail += f". Listed hours: {hours}"
             lines.append(detail)
+        season = str(place.raw.get("open", "")).strip()
+        accessibility = str(place.raw.get("accessibility", "")).strip()
+        restroom_type = str(place.raw.get("restroom_type", "")).strip()
+        changing_station = str(place.raw.get("changing_stations", "")).strip()
+        access_note = str(place.raw.get("additional_notes", "")).strip()
+        if season:
+            lines.append(f"   Seasonal availability: {season}")
+        if accessibility:
+            lines.append(f"   NYC listing accessibility: {accessibility}")
+        if restroom_type:
+            lines.append(f"   Restroom type: {restroom_type}")
+        if changing_station:
+            lines.append(f"   Changing station: {changing_station}")
+        if access_note:
+            lines.append(f"   Access note: {access_note}")
+        if place.website:
+            lines.append(f"   Official facility page: {place.website}")
         lines.append(f"   Map: {maps_link(place.lat, place.lon)}")
 
     record_dates = sorted({item[2].updated_at[:10] for item in selected if item[2].updated_at})
@@ -246,6 +292,20 @@ def get_tools() -> list[Tool]:
                         "maximum": 10,
                         "default": 3,
                         "description": "Maximum results to return; use the user's requested count",
+                    },
+                    "fully_accessible": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Set true only when the resident requests a fully accessible restroom"
+                        ),
+                    },
+                    "changing_station": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Set true only when the resident requests a changing station"
+                        ),
                     },
                 },
                 "required": ["near"],

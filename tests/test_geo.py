@@ -361,6 +361,83 @@ async def test_forgiving_fallback_when_geosearch_empty():
     assert "Apollo" in point.label
 
 
+async def test_geosearch_fallback_name_mismatch_uses_forgiving_landmark_match():
+    correct = GeoPoint(
+        40.7507, -73.8627, "Civic Plaza, Queens, NY", confidence=0.8, match_type="nominatim"
+    )
+
+    def wrong_fuzzy_match(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "features": [{
+                    "geometry": {"coordinates": [-73.8459, 40.7530]},
+                    "properties": {
+                        "name": "CIVIC YARD",
+                        "label": "CIVIC YARD, Queens, NY",
+                        "confidence": 0.8,
+                        "match_type": "fallback",
+                    },
+                }]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(wrong_fuzzy_match))
+    point = await geocode("Civic Plaza", client=client, forgiving=_fake_forgiving(correct))
+    await client.aclose()
+
+    assert point == correct
+
+
+async def test_geosearch_fallback_rejects_a_different_numbered_address():
+    def wrong_address(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "features": [{
+                    "geometry": {"coordinates": [-73.99, 40.75]},
+                    "properties": {
+                        "label": "999 Main Street, Manhattan",
+                        "housenumber": "999",
+                        "confidence": 0.8,
+                        "match_type": "fallback",
+                    },
+                }]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(wrong_address))
+    point = await _geosearch_geocode("123 Main Street", client)
+    await client.aclose()
+
+    assert point is None
+
+
+async def test_geosearch_fallback_accepts_the_matching_numbered_address():
+    def matching_address(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "features": [{
+                    "geometry": {"coordinates": [-73.99, 40.75]},
+                    "properties": {
+                        "label": "123 Main St, Manhattan",
+                        "housenumber": "123",
+                        "confidence": 0.8,
+                        "match_type": "fallback",
+                    },
+                }]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(matching_address))
+    point = await _geosearch_geocode("123 Main Street", client)
+    await client.aclose()
+
+    assert point is not None
+    assert point.label == "123 Main St, Manhattan"
+
+
 async def test_gazetteer_beats_both_providers_for_known_neighborhoods():
     """F079 supersedes the F064 forgiving-first route for neighborhoods the NTA gazetteer
     knows: "Jackson Heights, Queens" resolves from city data, and neither GeoSearch (which

@@ -129,6 +129,94 @@ async def test_lookup_keeps_unverified_nearby_options_and_caps_requested_limit(m
 
 
 @pytest.mark.asyncio
+async def test_lookup_surfaces_city_access_and_family_details_without_corroboration(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.0, -73.0, text)
+
+    async def fake_city(*args, **kwargs):
+        return [{
+            ":id": "1",
+            "facility_name": "City Restroom",
+            "latitude": "40.001",
+            "longitude": "-73.0",
+            "status": "Operational",
+            "open": "Seasonal",
+            "hours_of_operation": "8am-4pm, open later seasonally",
+            "accessibility": "Fully Accessible",
+            "restroom_type": "Single-Stall All Gender Restroom(s)",
+            "changing_stations": "Yes",
+            "additional_notes": "A key is needed to enter",
+            "website": {"url": "https://example.nyc/restroom"},
+        }]
+
+    async def fake_cool_options(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr(restrooms, "query_dataset", fake_city)
+    monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await restrooms.get_tools()[0].handler({"near": "here"}, ctx)
+
+    assert "Seasonal" in output
+    assert "NYC listing accessibility: Fully Accessible" in output
+    assert "Restroom type: Single-Stall All Gender Restroom(s)" in output
+    assert "Changing station: Yes" in output
+    assert "Access note: A key is needed to enter" in output
+    assert "Official facility page: https://example.nyc/restroom" in output
+
+
+@pytest.mark.asyncio
+async def test_lookup_honors_requested_access_and_changing_station_filters(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.0, -73.0, text)
+
+    async def fake_city(*args, **kwargs):
+        return [
+            {
+                ":id": "near",
+                "facility_name": "Nearest Restroom",
+                "latitude": "40.0001",
+                "longitude": "-73.0",
+                "status": "Operational",
+                "accessibility": "Not Accessible",
+                "changing_stations": "No",
+            },
+            {
+                ":id": "usable",
+                "facility_name": "Usable Restroom",
+                "latitude": "40.001",
+                "longitude": "-73.0",
+                "status": "Operational",
+                "accessibility": "Fully Accessible",
+                "changing_stations": "Yes, in single-stall all gender restroom only",
+            },
+        ]
+
+    async def fake_cool_options(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr(restrooms, "query_dataset", fake_city)
+    monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    filtered = await restrooms.get_tools()[0].handler(
+        {"near": "here", "fully_accessible": True, "changing_station": True}, ctx
+    )
+    unfiltered = await restrooms.get_tools()[0].handler({"near": "here", "limit": 1}, ctx)
+
+    assert "Usable Restroom" in filtered
+    assert "Nearest Restroom" not in filtered
+    assert "1. Nearest Restroom" in unfiltered
+
+
+@pytest.mark.asyncio
 async def test_lookup_asks_for_a_better_location_when_geocoding_fails(monkeypatch):
     async def fake_geocode(text, **kwargs):
         return None

@@ -474,6 +474,23 @@ def _geosearch_params(text: str, rect: Optional[tuple[float, float, float, float
     }
 
 
+def _fallback_landmark_identity_matches(text: str, label: str) -> bool:
+    """Reject a fuzzy named-place substitution such as "Civic Plaza" → "Civic Yard"."""
+    if _looks_like_intersection(text):
+        return True
+    ignored = {"a", "an", "the"}
+    query_tokens = {
+        _LOCATION_TOKEN_ALIASES.get(token, token)
+        for token in _LOCATION_TOKEN_RE.findall(text.casefold())
+        if token not in ignored
+    }
+    label_tokens = {
+        _LOCATION_TOKEN_ALIASES.get(token, token)
+        for token in _LOCATION_TOKEN_RE.findall(label.casefold())
+    }
+    return not query_tokens or query_tokens.issubset(label_tokens)
+
+
 async def _geosearch_geocode(
     text: str, client: httpx.AsyncClient, *, rect: Optional[tuple[float, float, float, float]] = None
 ) -> Optional[GeoPoint]:
@@ -486,6 +503,11 @@ async def _geosearch_geocode(
     feature = features[0]
     lon, lat = feature["geometry"]["coordinates"]
     props = feature.get("properties", {})
+    if (
+        props.get("match_type") == "fallback"
+        and not _fallback_landmark_identity_matches(text, props.get("label", ""))
+    ):
+        return None
     # Belt-and-suspenders: if GeoSearch parsed a 5-digit ZIP that appears in the
     # input as its "house number" (the BUG-1 misparse), reject rather than return
     # a confidently-wrong street. Narrow enough to never reject a real address.
