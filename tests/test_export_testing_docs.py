@@ -37,6 +37,9 @@ xp = _load()
 def test_redact_internal_paths_positive():
     assert ".data/" not in xp.redact_internal_paths("saved under .data/eval/acceptance-20260717-a1/report.json")
     assert ".data/" not in xp.redact_internal_paths("bench in .data/bench/2026-07-18/traces")
+    assert ".agents" not in xp.redact_internal_paths(
+        "reviewed in .agents/tmp/f120-f123-final-review.final.md"
+    )
     assert "/tmp/" not in xp.redact_internal_paths("see /tmp/claude-501/fresh_eye_1.json")
 
 

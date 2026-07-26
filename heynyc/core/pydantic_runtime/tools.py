@@ -172,12 +172,31 @@ def build_module_capabilities(
             module = modules[module.parent]
         return module.name
 
+    governed = {
+        tool.name: tool
+        for tool in tools.values()
+        if tool.resident_fact_scope
+    }
+    confirmation_for = {
+        f"confirm_{name}_facts": name
+        for name in governed
+    }
     module_tools: dict[str, list[PydanticTool]] = {}
+    governed_tools: dict[tuple[str, str], list[PydanticTool]] = {}
     shared_tools: list[PydanticTool] = []
     for tool in tools.values():
         adapted = adapt_tool(tool)
         if tool.module in modules:
-            module_tools.setdefault(root_name(tool.module), []).append(adapted)
+            root = root_name(tool.module)
+            workflow = (
+                tool.name
+                if tool.name in governed
+                else confirmation_for.get(tool.name)
+            )
+            if workflow:
+                governed_tools.setdefault((root, workflow), []).append(adapted)
+            else:
+                module_tools.setdefault(root, []).append(adapted)
         else:
             shared_tools.append(adapted)
 
@@ -214,6 +233,26 @@ def build_module_capabilities(
                 id=module.name,
                 description=module.description or f"NYC {module.category} help",
                 instructions=instructions,
+                tools=available_tools,
+                defer_loading=True,
+            )
+        )
+    for (module_name, tool_name), available_tools in governed_tools.items():
+        tool = governed[tool_name]
+        capability_id = f"{module_name}-{tool_name.replace('_', '-')}"
+        capabilities.append(
+            Capability(
+                id=capability_id,
+                description=(
+                    f"Load only after the resident explicitly asks to run or accepts "
+                    f"{tool.title or tool.name}. Do not load it merely to offer help."
+                ),
+                instructions=(
+                    f"The resident explicitly asked for or accepted {tool.title or tool.name}. "
+                    "Gather only the schema's required resident facts, a few at a time. "
+                    "Omit unknown optional facts and use the confirmation tool before the "
+                    "governed read-only check."
+                ),
                 tools=available_tools,
                 defer_loading=True,
             )

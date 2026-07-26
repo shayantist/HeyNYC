@@ -85,7 +85,7 @@ _REVIEW = "REVIEW-REQUIRED"
 # --------------------------------------------------------------------------- #
 # Redaction rules (each independently unit-tested, positive + negative)
 # --------------------------------------------------------------------------- #
-_PATH_RE = re.compile(r"(?:\.data|/private/tmp|/tmp)/[A-Za-z0-9._/\-]+")
+_PATH_RE = re.compile(r"(?:\.data|\.agents/tmp|/private/tmp|/tmp)/[A-Za-z0-9._/\-]+")
 
 
 def redact_internal_paths(text: str) -> str:

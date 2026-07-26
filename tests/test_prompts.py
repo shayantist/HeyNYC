@@ -349,6 +349,8 @@ def test_conversation_rules_preserve_transform_only_followups_without_retrieval(
     assert "translate, repeat, shorten, or reformat" in low
     assert "do not call a discovery or retrieval tool" in low
     assert "preserve the same items" in low
+    assert "inclusive or exclusive boundary" in low
+    assert "negation, quantity, date, and eligibility condition" in low
     assert "retrieve again only when the resident asks for updated or new facts" in low
     assert "earlier answer lacks the evidence" in low
     assert "when a new or current factual answer is needed" in low

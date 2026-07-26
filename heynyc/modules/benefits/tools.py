@@ -209,6 +209,7 @@ def _citation_snippet(record: dict) -> str:
     """Put the facts most likely to be cited where the evaluator and footer can see them."""
     fields = (
         "program_name",
+        "government_agency",
         "plain_language_program_name",
         "plain_language_eligibility",
         "heads_up",
@@ -222,6 +223,9 @@ def _citation_snippet(record: dict) -> str:
 def _block(record: dict, cite: str, as_of: str, today: str) -> str:
     name = _clean(record.get("program_name"))
     parts = [f"- {name} ({_clean(record.get('program_category'))}) {{cite:{cite}}}"]
+    agency = _clean(record.get("government_agency"))
+    if agency:
+        parts.append(f"  Responsible agency: {agency}")
     plain = _clean(record.get("plain_language_program_name"))
     if plain:
         parts.append(f"  What it is: {plain}")
@@ -287,8 +291,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     today = date.today().isoformat()
     blocks = []
+    source_dates = []
     for record in records:
         as_of = _as_of(record)
+        if as_of:
+            source_dates.append(as_of)
         name = _clean(record.get("program_name"))
         record_id = _clean(record.get(":id")) or _clean(record.get("program_code")) or _program_key(record)
         cite = ctx.citations.register(
@@ -305,17 +312,28 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "NYC benefit programs from the city's Benefits & Programs dataset. Eligibility text is "
         "general guidance with an 'as of' date, NOT a personalized determination. An 'as of' "
         "date records the dataset update; it does not prove a rule or limit is current today. "
-        "Confirm exact current amounts and rules on the official program page. Describe each "
-        "record as an official program listing, not as City information when its cited source is "
-        "a state agency. "
+        "Keep each date with its program. Do not compress different source dates into a range, "
+        "which can hide the oldest record. If summarizing freshness across records, state the "
+        "oldest exact date. Confirm exact current amounts and rules on the official program page. "
+        "Describe each record as an official program listing, not as City information when its "
+        "cited source is a state agency. Do not call another tool only to refresh this broad "
+        "discovery list; use a current-source lookup when the resident asks about a specific "
+        "current rule, amount, or deadline. "
     )
     next_step = (
         "After presenting the results, offer to check likely eligibility together. Do not add "
-        "access.nyc.gov, 311, or intake fields unless the resident accepts that offer."
+        "access.nyc.gov, 311, or intake fields unless the resident accepts that offer. Do not "
+        "list screening questions or fields yet. Never claim a short starter list is everything "
+        "the screener needs."
         if "screen_eligibility" in (ctx.toolbox or {})
         else f"Route personalized eligibility questions to {OFFICIAL}."
     )
-    return f"{header}{next_step}\n" + "\n".join(blocks)
+    oldest = (
+        f"Oldest returned source date: {min(source_dates)}. "
+        if source_dates
+        else "Oldest returned source date: unknown. "
+    )
+    return f"{header}\n" + "\n".join(blocks) + f"\n{oldest}{next_step}"
 
 
 _ESTIMATE = ("an estimate from NYC's official screener (ACCESS NYC), not a determination; "

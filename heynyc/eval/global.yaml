@@ -92,12 +92,21 @@
   capability: conversation
   language: es
   invariants: {allow_historical_evidence: true}
-  tags: [F007, F056, F116, conversation, multilingual, general-chat, must-win]
+  tags: [F007, F056, F116, F120, F121, F122, F123, F124, conversation, multilingual, general-chat, must-win]
   utility_criterion: >-
     Restate the substance of the prior answer in Spanish, keeping official program names,
     links, and any cited facts intact. Reuse carried citation evidence without another tool
     call; re-ground rather than invent only if the prior evidence is unavailable. The reply
     must be in Spanish and must not tell the resident to repeat their original question.
+    If either turn summarizes source freshness across programs, it must not use a date range
+    that excludes an older cited source; keep dates per program or name the oldest exact cited
+    date. Because the resident has not accepted an eligibility check, offer it without listing
+    intake questions or claiming that a short starter profile is everything the screener needs.
+    Preserve inclusive and exclusive thresholds, negations, quantities, dates, and eligibility
+    conditions exactly during translation. Keep official program names recognizable rather than
+    replacing them with generic translated labels. Broad program discovery must not trigger
+    speculative current-news retrieval when no specific current rule, amount, or deadline was
+    requested.
   notes: Exercises the restored assistant history plus the reply-language rule together; the
     resident asked to reuse what was said, which is exactly what F052 made possible again.
 

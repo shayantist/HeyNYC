@@ -18,6 +18,7 @@ _EMBEDDER = HashEmbedder()
 _FAKE_ROW = {
     "program_code": "S2R007",
     "program_name": "Supplemental Nutrition Assistance Program",
+    "government_agency": "NYC Human Resources Administration (HRA)",
     "plain_language_program_name": "Help buying food (SNAP / food stamps)",
     "program_category": "Food",
     "plain_language_eligibility": "You may qualify based on household size and income.",
@@ -62,6 +63,7 @@ async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
     assert "Supplemental Nutrition Assistance Program" in out  # 'food'/'stamps' matched the row
     assert "{cite:S1}" in out
     assert "2026-03-21" in out  # valid_as_of surfaced in the tool output
+    assert "Responsible agency: NYC Human Resources Administration (HRA)" in out
     cite = ctx.citations.mapping()["S1"]
     assert cite["kind"] == "DATA"
     assert cite["valid_as_of"] == "2026-03-21"
@@ -83,6 +85,8 @@ async def test_benefits_search_offers_conversational_screening_without_uncited_i
 
     assert "offer to check likely eligibility together" in out
     assert "Do not add access.nyc.gov, 311, or intake fields" in out
+    assert "Do not list screening questions or fields yet" in out
+    assert "Never claim a short starter list is everything the screener needs" in out
 
 
 async def test_benefits_search_citation_preserves_row_evidence():
@@ -148,6 +152,39 @@ async def test_benefits_search_does_not_treat_dataset_date_as_current_verificati
     assert "does not prove" in out.lower()
     assert "current today" in out.lower()
     assert "official program page" in out.lower()
+    assert "do not compress different source dates into a range" in out.lower()
+    assert "oldest exact date" in out.lower()
+    assert "do not call another tool only to refresh this broad discovery list" in out.lower()
+
+
+async def test_benefits_search_states_oldest_returned_date_and_ends_with_next_step():
+    newer = dict(
+        _FAKE_ROW,
+        program_code="newer",
+        program_name="Newer Program",
+        updated_at="2026-06-02T11:01:01.000",
+    )
+    older = dict(
+        _FAKE_ROW,
+        program_code="older",
+        program_name="Older Program",
+        updated_at="2024-09-25T11:01:01.000",
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([newer, older])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+        toolbox={"screen_eligibility": btools.screen_eligibility_tool()},
+    )
+
+    out = await tool.handler({"query": "program"}, ctx)
+    await client.aclose()
+
+    assert "Oldest returned source date: 2024-09-25" in out
+    assert out.index("Older Program") < out.index("After presenting the results")
 
 
 async def test_benefits_search_surfaces_requested_language_variant():
@@ -310,6 +347,8 @@ def test_benefits_prompt_does_not_turn_program_discovery_into_an_uncited_intake_
     assert "only after the resident accepts" in prompt
     assert "do not append an uncited external screener or 311 route" in prompt
     assert "broad program-discovery question is not acceptance" in prompt
+    assert "use the exact tool schema" in prompt
+    assert "household size, each person's age, rough monthly income" not in prompt
     assert "official program listing" in prompt
     assert "state source as city information" in prompt
 

@@ -818,6 +818,132 @@ async def test_runtime_adapter_can_use_deferred_module_capabilities() -> None:
     assert result.usage["capabilities_used"] == ["events"]
 
 
+async def test_governed_workflow_schema_stays_out_of_discovery_capability() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "done"
+
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            description="Find benefits",
+            prompt="Offer screening only after the resident accepts.",
+        )
+    ])
+    discovery = Tool(
+        name="benefits_search",
+        description="Find benefit programs",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        module="benefits",
+    )
+    screening = Tool(
+        name="screen_eligibility",
+        description="Run a read-only eligibility estimate",
+        parameters={
+            "type": "object",
+            "properties": {
+                "household": {"type": "object"},
+                "persons": {"type": "array"},
+            },
+            "required": ["household", "persons"],
+        },
+        handler=handler,
+        module="benefits",
+        resident_fact_scope=("/household", "/persons"),
+    )
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        definitions = {tool.name: tool for tool in info.function_tools}
+        if model_calls == 1:
+            return ModelResponse(
+                [ToolCallPart("load_capability", {"id": "benefits"}, "load-benefits")]
+            )
+        if model_calls == 2:
+            assert definitions["benefits_search"].defer_loading is False
+            assert "screen_eligibility" not in definitions
+            assert definitions["confirm_screen_eligibility_facts"].defer_loading is True
+            return ModelResponse([TextPart("I can screen you if you want.")])
+        raise AssertionError("Broad discovery must not load the governed workflow")
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=registry,
+        tools={
+            "benefits_search": discovery,
+            "screen_eligibility": screening,
+        },
+        use_module_capabilities=True,
+        guard_grounding=False,
+    )
+
+    result = await runtime.run("Find benefits")
+
+    assert result.text == "I can screen you if you want."
+    assert result.usage["capabilities_used"] == ["benefits"]
+
+
+async def test_governed_workflow_capability_loads_for_explicit_request() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "done"
+
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            description="Find benefits",
+            prompt="Offer screening only after the resident accepts.",
+        )
+    ])
+    screening = Tool(
+        name="screen_eligibility",
+        description="Run a read-only eligibility estimate",
+        parameters={
+            "type": "object",
+            "properties": {
+                "household": {"type": "object"},
+                "persons": {"type": "array"},
+            },
+            "required": ["household", "persons"],
+        },
+        handler=handler,
+        module="benefits",
+        resident_fact_scope=("/household", "/persons"),
+    )
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        definitions = {tool.name: tool for tool in info.function_tools}
+        if model_calls == 1:
+            assert definitions["confirm_screen_eligibility_facts"].defer_loading is True
+            return ModelResponse([
+                ToolCallPart(
+                    "load_capability",
+                    {"id": "benefits-screen-eligibility"},
+                    "load-screening",
+                )
+            ])
+        assert "screen_eligibility" not in definitions
+        assert definitions["confirm_screen_eligibility_facts"].defer_loading is False
+        return ModelResponse([TextPart("Let's check.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=registry,
+        tools={"screen_eligibility": screening},
+        use_module_capabilities=True,
+        guard_grounding=False,
+    )
+
+    result = await runtime.run("Yes, screen me.")
+
+    assert result.text == "Let's check."
+    assert result.usage["capabilities_used"] == ["benefits-screen-eligibility"]
+
+
 async def test_loaded_module_capability_survives_redundant_follow_up_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
