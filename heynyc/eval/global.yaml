@@ -243,8 +243,9 @@
     phone or directions, source date, and schedule limitation. If the nearest records are not
     scheduled open or cannot establish availability, do not present them as tonight options:
     `nearest_food_pantry` must carry `urgent: true`; lead with the current 311 or FoodHelp
-    fallback, tell the resident to call the listed site now, and offer to search farther. Never
-    equate scheduled-open-at-lookup with confirmed food availability later tonight. Offer
+    fallback, then give at most one nearest farther site whose weekly schedule says open and tell
+    the resident to call before traveling. Never equate scheduled-open-at-lookup with confirmed
+    food availability later tonight. Offer
     consented application preparation without claiming to submit anything.
   notes: >-
     Exact owner probe from the 2026-07-23 PydanticAI parity gate. The Pydantic eval arm

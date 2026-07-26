@@ -366,27 +366,62 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         seen.add(key)
         unique.append(pantry)
     ranked = unique[:k]
+    urgent = args.get("urgent") is True
+    scheduled_open = [pantry for pantry in ranked if _open_now(pantry.raw, now) is True]
+    unknown_hours = [pantry for pantry in ranked if _open_now(pantry.raw, now) is None]
+    citywide_open = [pantry for pantry in unique if _open_now(pantry.raw, now) is True]
+    scheduled_open_count = len(scheduled_open)
+    citywide_scheduled_open = len(citywide_open)
+    citywide_unknown_hours = sum(_open_now(pantry.raw, now) is None for pantry in unique)
+    displayed = (
+        scheduled_open or citywide_open[:1] or unknown_hours
+        if urgent
+        else ranked
+    )
 
     lines = [
         f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
         _resolution_note(near, origin),
-        "Nearest City-listed food pantry candidates from NYC FoodHelp "
-        "(finder.nyc.gov/foodhelp), report only these, cite each:",
+        (
+            "City-listed food pantry evidence from NYC FoodHelp (finder.nyc.gov/foodhelp):"
+            if urgent
+            else "Nearest City-listed food pantry candidates from NYC FoodHelp "
+                 "(finder.nyc.gov/foodhelp), report only these, cite each:"
+        ),
     ]
-    if args.get("urgent") is True:
+    if urgent and scheduled_open:
         lines.append(
             "Immediate food need: a weekly schedule does not confirm food availability now or "
             "later today. Lead with asking the resident to call the listed site now. If the site "
             "cannot confirm service, tell them to call 311 or use "
             "https://finder.nyc.gov/foodhelp, then offer to search farther."
         )
-    scheduled_open_count = sum(_open_now(pantry.raw, now) is True for pantry in ranked)
-    citywide_scheduled_open = sum(_open_now(pantry.raw, now) is True for pantry in unique)
-    citywide_unknown_hours = sum(_open_now(pantry.raw, now) is None for pantry in unique)
+    elif urgent and citywide_scheduled_open:
+        lines.append(
+            "Immediate food need: none of the nearest candidates is scheduled open now, so do not "
+            "show their closed-site cards. Lead with call 311 or "
+            "https://finder.nyc.gov/foodhelp, then give the single nearest farther site whose "
+            "weekly schedule says open. Label it a farther scheduled-open lead and tell the "
+            "resident to call before traveling because the feed does not confirm food availability."
+        )
+    elif urgent and unknown_hours:
+        lines.append(
+            "Immediate food need: the nearest candidates' hours are unavailable, so they may "
+            "still be open. Lead with call 311 or https://finder.nyc.gov/foodhelp. The listed "
+            "candidates are call-only leads: tell the resident to call now and not travel unless "
+            "a site confirms service."
+        )
+    elif urgent:
+        lines.append(
+            "Immediate food need: no City-listed site in this feed is scheduled open now. Lead "
+            "with call 311 or https://finder.nyc.gov/foodhelp. Do not show closed-site cards or "
+            "offer to search farther in the same feed."
+        )
+
     if scheduled_open_count:
         verb = "is" if scheduled_open_count == 1 else "are"
         lines.append(f"{scheduled_open_count} of these candidates {verb} scheduled open now.")
-    else:
+    elif not urgent:
         lines.append(
             "None of these nearest candidates is scheduled open now. Do not present them as food "
             "available now; offer to search farther or call 311 for immediate food help."
@@ -408,7 +443,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 "then offer to search farther if the resident wants. Do not include a farther "
                 "site until they ask to widen the search."
             )
-    for pantry in ranked:
+    if urgent and not scheduled_open and citywide_scheduled_open:
+        lines.append("Farther scheduled-open lead, call before traveling:")
+    for pantry in displayed:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon))
         cite = _pantry_citation(ctx, pantry, origin_lat=origin.lat, origin_lon=origin.lon,
                                 dist_mi=dist_mi)

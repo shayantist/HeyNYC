@@ -333,6 +333,7 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert "Halal" in site_lines[0]                    # dietary/access flag surfaced
     assert "open now" in site_lines[0].lower()         # open-now computed from structured hours
     assert "Immediate food need" not in out             # ordinary lookup keeps the normal ordering
+    assert "Nearest City-listed food pantry candidates" in out
     assert "212-555-0002" in out                       # phone surfaced
     assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
     assert "{cite:S1}" in out                          # grounded, cited
@@ -366,12 +367,24 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
                 f"fp_{now_day}_close1": "5:00 PM",
             },
         ),
+        _pantry_feature(
+            -73.9400,
+            40.8000,
+            program="Farther Open Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="urgent-far",
+            **{
+                f"fp_{now_day}_open1": "9:00 AM",
+                f"fp_{now_day}_close1": "5:00 PM",
+            },
+        ),
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
     out = await get_tools()[0].handler(
-        {"near": "Union Square", "urgent": True},
+        {"near": "Union Square", "k": 1, "urgent": True},
         ctx,
     )
     await client.aclose()
@@ -382,6 +395,7 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     assert "call 311" in out
     assert "https://finder.nyc.gov/foodhelp" in out
     assert "offer to search farther" in out
+    assert "Farther Open Pantry" not in out
     assert "Today's listed weekly hours: 9:00 AM-5:00 PM" in out
     assert "As of: 2025-11-04" in out
     assert (
@@ -407,14 +421,17 @@ async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_no
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "urgent": True},
+        ctx,
+    )
     await client.aclose()
 
-    assert "None of these nearest candidates is scheduled open now" in out
-    assert "Do not present them as food available now" in out
-    assert "No City-listed site in this feed is scheduled open now" in out
-    assert "do not offer to search farther" in out
-    assert "Open food pantries from NYC FoodHelp" not in out
+    assert "no City-listed site in this feed is scheduled open now" in out
+    assert "call 311" in out
+    assert "Do not show closed-site cards or offer to search farther in the same feed" in out
+    assert "Closed Pantry" not in out
+    assert not ctx.citations.mapping()
 
 
 async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
@@ -427,15 +444,20 @@ async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "urgent": True},
+        ctx,
+    )
     await client.aclose()
 
     assert "hours are unavailable" in out.lower()
     assert "may still be open" in out
     assert "No City-listed site in this feed is scheduled open now" not in out
+    assert "call-only leads" in out
+    assert "not travel unless a site confirms service" in out
 
 
-async def test_nearest_food_pantry_offers_farther_search_after_immediate_fallback(
+async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fallback(
     monkeypatch,
 ):
     monkeypatch.setattr(fp, "datetime", _Noon)
@@ -453,17 +475,30 @@ async def test_nearest_food_pantry_offers_farther_search_after_immediate_fallbac
             GlobalID="open-far",
             **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"},
         ),
+        _pantry_feature(
+            -73.9300, 40.8100, program="Second Farther Open Pantry", distadd="10 Far Ave",
+            distboro="Manhattan", distzip="10027", type_fp="FP", program_type="FP",
+            GlobalID="open-far-2",
+            **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"},
+        ),
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 1}, ctx)
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "k": 1, "urgent": True},
+        ctx,
+    )
     await client.aclose()
 
-    assert "Nearby Closed Pantry" in out
+    assert "Nearby Closed Pantry" not in out
     assert "call 311" in out
     assert "finder.nyc.gov/foodhelp" in out
-    assert "offer to search farther" in out
-    assert "Farther Open Pantry" not in out
+    assert "Farther Open Pantry" in out
+    assert "Second Farther Open Pantry" not in out
+    assert "farther scheduled-open lead" in out
+    assert "call before traveling" in out
+    assert "{cite:S1}" in out
+    assert len(ctx.citations.mapping()) == 1
 
 
 async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):
