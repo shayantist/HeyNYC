@@ -222,7 +222,7 @@
     options must be near Flushing. The cooling tool call must carry the resolved Saturday date,
     and the answer must use the returned Saturday schedule rather than current-day hours. If the
     City row has no Saturday schedule, say that specifically. Include a direct official event
-    index or event link and valid, complete directions links. Reject malformed Markdown links.
+    index or event link and valid, complete map links. Reject malformed Markdown links.
   notes: >-
     Exact owner probe from the 2026-07-23 PydanticAI parity gate. Both runtimes called generic
     permit listings family-friendly without evidence.

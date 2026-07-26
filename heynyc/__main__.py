@@ -621,6 +621,14 @@ async def _cmd_repl_raw(model: str | None = None) -> None:
 _EVAL_COST_PER_CASE_USD = 0.02
 
 
+def _repeat_eval_cases(cases: list, explicit_case_ids: list[str]) -> list:
+    """Repeat explicit case selections; otherwise keep the broad-run safety subset."""
+    if explicit_case_ids:
+        selected = set(explicit_case_ids)
+        return [case for case in cases if case.id in selected]
+    return [case for case in cases if case.safety_critical]
+
+
 def _eval_run_metadata(
     model: str,
     results: list,
@@ -704,29 +712,33 @@ async def _cmd_eval(
     # pass^k reliability on the safety-critical subset (customer-facing metric).
     repeat_summary = None
     if repeat > 1:
-        safety = [c for c in cases if c.safety_critical]
+        repeat_targets = _repeat_eval_cases(cases, case_ids or [])
         reliable = 0
-        repeat_cases = []
-        for case in safety:
+        repeated_cases = []
+        for case in repeat_targets:
             runs = await run_repeated(factory, case, k=repeat, reminders=_default_reminders())
             sub = await evaluate(runs)
             outcomes = [case_report.passed for case_report in sub.reports]
             is_reliable = all(outcomes)
             if is_reliable:
                 reliable += 1
-            repeat_cases.append({
+            repeated_cases.append({
                 "case_id": case.id,
                 "passed": outcomes,
                 "reliable": is_reliable,
             })
-        if safety:
+        if repeat_targets:
             repeat_summary = {
                 "k": repeat,
-                "eligible_case_count": len(safety),
+                "eligible_case_count": len(repeat_targets),
                 "reliable_case_count": reliable,
-                "cases": repeat_cases,
+                "cases": repeated_cases,
             }
-            print(f"\npass^{repeat} (safety subset): {reliable}/{len(safety)} cases reliable across {repeat} runs")
+            label = "explicit cases" if case_ids else "safety subset"
+            print(
+                f"\npass^{repeat} ({label}): {reliable}/{len(repeat_targets)} "
+                f"cases reliable across {repeat} runs"
+            )
 
     run_dir = Path(out) if out else (
         config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
@@ -820,7 +832,12 @@ def main() -> None:
     )
     # Back-compat hidden alias: `--judge` still maps to the same PAID API judge.
     ev.add_argument("--judge", dest="api_judge", action="store_true", help=argparse.SUPPRESS)
-    ev.add_argument("--repeat", type=int, default=1, help="run the safety subset K times and report pass^K")
+    ev.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="repeat explicit --case selections K times, or the safety subset on broader runs",
+    )
     ev.add_argument("--out", default=None, help="run directory to write traces + report into")
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
     ev.add_argument("--case", dest="case_ids", action="append", default=[],

@@ -294,9 +294,18 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     for index, item in enumerate(selected, 1):
         cite = _citation(ctx, item)
         distance = miles(item["distance_m"])
-        lines.append(
-            f"{index}. {item['name']}, {item['type']}, {distance:.2f} miles {{cite:{cite}}}"
+        item_type = (
+            "cooling center"
+            if planning_ahead and item["active"]
+            else item["type"]
         )
+        lines.append(
+            f"{index}. {item['name']}, {item_type}, {distance:.2f} miles {{cite:{cite}}}"
+        )
+        if planning_ahead and item["active"]:
+            lines.append(
+                f"   Activation: current at lookup only; not verified for {target_date_label}"
+            )
         if item["age_restricted"]:
             # F072: prominent, language-independent restriction data (the row's own audience);
             # the model translates "Older Adult Center" / "age-restricted" naturally.

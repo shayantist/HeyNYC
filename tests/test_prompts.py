@@ -95,6 +95,7 @@ def test_system_prompt_requires_citations_on_the_supported_sentence_or_bullet():
     low = build_system_prompt(Registry([])).lower()
     assert "same sentence or bullet" in low
     assert "elsewhere in a paragraph or list does not count" in low
+    assert "never put braces around a url" in low
 
 
 def test_system_prompt_describes_data_practices_accurately():

@@ -439,6 +439,11 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
     assert "Closer Friday Library" not in output
     assert "Saturday, July 25, 2026: 10:00 AM-05:00 PM" in output
     assert "Activation status is current at lookup time" in output
+    assert (
+        "Activation: current at lookup only; not verified for Saturday, July 25, 2026"
+        in output
+    )
+    assert "Saturday Library, activated cooling center" not in output
     assert "one-off closures" in output
     assert "scheduled open now" not in output
 

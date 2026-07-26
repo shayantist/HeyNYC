@@ -63,6 +63,16 @@ def test_eval_run_metadata_persists_repeat_outcomes():
     assert metadata["repeat"] == repeat_summary
 
 
+def test_explicit_eval_cases_are_repeat_targets_even_when_not_safety_critical():
+    from heynyc.__main__ import _repeat_eval_cases
+
+    ordinary = _case(id="ordinary")
+    safety = _case(id="safety", harm_category="misinformation")
+
+    assert _repeat_eval_cases([ordinary, safety], ["ordinary"]) == [ordinary]
+    assert _repeat_eval_cases([ordinary, safety], []) == [safety]
+
+
 # --- deterministic checks -------------------------------------------------
 
 def test_expected_tools_check():
