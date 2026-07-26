@@ -98,7 +98,9 @@ async def test_screen_posts_body_and_returns_programs():
 
     c = _client(handler)
     out = await screen(c, "https://sb", "tok", {"livingRenting": True},
-                       [{"age": 32, "householdMemberType": "HeadOfHousehold"}], ["S2R007"])
+                       [{"age": 32, "householdMemberType": "HeadOfHousehold",
+                         "pregnant": False, "student": False, "disabled": False,
+                         "veteran": False}], ["S2R007"])
     await c.aclose()
     assert out["eligiblePrograms"][0]["code"] == "S2R007"
     assert seen["path"] == "/eligibilityPrograms"
@@ -106,6 +108,11 @@ async def test_screen_posts_body_and_returns_programs():
     assert seen["params"]["interestedPrograms"] == "S2R007"
     assert seen["body"][0]["withholdPayload"] is True
     assert seen["body"][0]["person"][0]["age"] == 32
+    assert seen["body"][0]["person"][0]["pregnant"] is False
+    assert seen["body"][0]["person"][0]["student"] is False
+    assert seen["body"][0]["person"][0]["disabled"] is False
+    assert seen["body"][0]["person"][0]["veteran"] is False
+    assert "incomes" not in seen["body"][0]["person"][0]
 
 
 async def test_screen_preserves_schema_valid_money_fields_without_mutating_input():
@@ -250,6 +257,7 @@ async def test_screen_rejects_lowercase_program_codes_before_network():
         ({}, [{"age": "thirty-five", "householdMemberType": "HeadOfHousehold"}]),
         ({}, [{"age": 35, "householdMemberType": "HeadOfHousehold",
                "incomes": [{"amount": 1200, "type": "Wages", "frequency": "Monthly"}]}]),
+        ({}, [{"age": 35, "householdMemberType": "HeadOfHousehold", "incomes": []}]),
     ],
 )
 async def test_screen_rejects_values_outside_its_tool_schema_before_network(household, persons):

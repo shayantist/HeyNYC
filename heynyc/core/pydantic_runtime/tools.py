@@ -263,8 +263,10 @@ def build_module_capabilities(
                 id=capability_id,
                 description=(
                     f"{purpose}. Use when the resident requests this workflow, asks for "
-                    "its result, or accepts an offer to use it. Load before collecting "
-                    "its inputs; do not load merely to offer it."
+                    "its result, or accepts an offer to use it. If the resident requested "
+                    "or accepted this workflow in a prior turn and the current turn "
+                    "supplies or completes its required inputs, load this capability now. "
+                    "Load before collecting its inputs; do not load merely to offer it."
                 ),
                 instructions=(
                     f"The resident explicitly asked for or accepted {tool.title or tool.name}. "

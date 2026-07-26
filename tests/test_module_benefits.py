@@ -717,7 +717,8 @@ def test_get_tools_gates_screener_on_creds(monkeypatch):
 
 
 def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
-    schema = btools.screen_eligibility_tool().parameters
+    tool = btools.screen_eligibility_tool()
+    schema = tool.parameters
     household = schema["properties"]["household"]
     assert household["properties"]["cashOnHand"]["type"] == "string"
     assert household["additionalProperties"] is False
@@ -732,6 +733,12 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert schema["properties"]["persons"]["minContains"] == 1
     assert {"studentFulltime", "blind", "benefitsMedicaid", "livingRentalOnLease"} <= set(person)
     assert "HeadOfHousehold" in person["householdMemberType"]["enum"]
+    assert person["pregnant"]["description"] == screening.BOOLEAN_FACT_DESCRIPTION
+    assert household["properties"]["livingRenting"]["description"] == (
+        screening.BOOLEAN_FACT_DESCRIPTION
+    )
+    assert person["incomes"]["minItems"] == 1
+    assert "zero placeholder" in person["incomes"]["description"]
     income = person["incomes"]["items"]
     assert set(income["properties"]) == set(screening.MONEY_ITEM_FIELDS)
     assert income["required"] == ["amount", "frequency", "type"]
@@ -742,6 +749,7 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert schema["properties"]["interested_programs"]["items"]["pattern"] == r"^S2R\d{3}$"
     assert schema["properties"]["goal"]["type"] == "string"
     assert schema["properties"]["show_all"]["type"] == "boolean"
+    assert "explicitly supplied boolean as true or false" in tool.description
 
 
 def test_get_tools_gates_forms_on_flag(monkeypatch):

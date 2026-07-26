@@ -1031,8 +1031,80 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     assert "Run a read-only eligibility estimate" in screening_description
     assert "schema guidance" not in screening_description
     assert "requests this workflow" in screening_description
+    assert (
+        "If the resident requested or accepted this workflow in a prior turn and the "
+        "current turn supplies or completes its required inputs, load this capability "
+        "now."
+    ) in screening_description
     assert "Load before collecting its inputs" in screening_description
     assert "screen_eligibility" not in screening_description
+
+
+async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
+    seen: list[tuple[str, list[str]]] = []
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "done"
+
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            description="Find benefits",
+            prompt="Offer screening only after the resident accepts.",
+        )
+    ])
+    screening = Tool(
+        name="screen_eligibility",
+        description="Run a read-only eligibility estimate.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "household": {"type": "object"},
+                "persons": {"type": "array"},
+            },
+            "required": ["household", "persons"],
+        },
+        handler=handler,
+        module="benefits",
+        resident_fact_scope=("/household", "/persons"),
+    )
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        definitions = {tool.name: tool for tool in info.function_tools}
+        request = next(
+            message
+            for message in reversed(messages)
+            if isinstance(message, ModelRequest)
+        )
+        seen.append((
+            request.instructions or "",
+            [
+                str(part.content)
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, UserPromptPart)
+            ],
+        ))
+        assert definitions["confirm_screen_eligibility_facts"].defer_loading is True
+        return ModelResponse([TextPart("Tell me the household profile.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=registry,
+        tools={"screen_eligibility": screening},
+        use_module_capabilities=True,
+        guard_grounding=False,
+    )
+    conversation = runtime.conversation()
+
+    await conversation.send("Yes, screen me.")
+    await conversation.send("One adult, age 35.")
+
+    assert (
+        "prior turn and the current turn supplies or completes its required inputs"
+        in seen[1][0]
+    )
+    assert seen[1][1] == ["Yes, screen me.", "One adult, age 35."]
 
 
 async def test_loaded_module_capability_survives_redundant_follow_up_load(

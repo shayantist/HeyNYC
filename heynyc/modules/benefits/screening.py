@@ -46,6 +46,10 @@ PERSON_FIELDS = frozenset({
 })
 MONEY_ITEM_FIELDS = frozenset({"amount", "frequency", "type"})
 PROGRAM_CODE_PATTERN = r"^S2R\d{3}$"
+BOOLEAN_FACT_DESCRIPTION = (
+    "If the resident explicitly supplied this fact, include the field with true or false. "
+    "Omit it only when the fact is unknown; never infer it."
+)
 
 
 def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
@@ -75,13 +79,14 @@ def request_schema() -> dict:
         "livingShelter",
     )
     household_flags = {
-        name: {"type": "boolean"} for name in (*specific_housing_flags, "livingPreferNotToSay")
+        name: {"type": "boolean", "description": BOOLEAN_FACT_DESCRIPTION}
+        for name in (*specific_housing_flags, "livingPreferNotToSay")
     }
-    household_flags["livingPreferNotToSay"]["description"] = (
-        "True only when every specific housing flag is false or omitted."
+    household_flags["livingPreferNotToSay"]["description"] += (
+        " True only when every specific housing flag is false or omitted."
     )
     person_flags = {
-        name: {"type": "boolean"} for name in (
+        name: {"type": "boolean", "description": BOOLEAN_FACT_DESCRIPTION} for name in (
             "student", "studentFulltime", "pregnant", "unemployed",
             "unemployedWorkedLast18Months", "blind", "disabled", "veteran",
             "benefitsMedicaid", "benefitsMedicaidDisability", "livingOwnerOnDeed",
@@ -100,7 +105,15 @@ def request_schema() -> dict:
     person_properties = {
         "age": {"type": "number", "minimum": 0, "maximum": 999},
         "householdMemberType": {"type": "string", "enum": list(HOUSEHOLD_MEMBER_TYPES)},
-        "incomes": {"type": "array", "items": _money_item_schema(INCOME_TYPES, 15, 12)},
+        "incomes": {
+            "type": "array",
+            "minItems": 1,
+            "items": _money_item_schema(INCOME_TYPES, 15, 12),
+            "description": (
+                "Reported income items only. Omit when the resident reports no income or the "
+                "amount is unknown; never add a zero placeholder."
+            ),
+        },
         "expenses": {"type": "array", "items": _money_item_schema(EXPENSE_TYPES, 9, 6)},
         **person_flags,
     }
