@@ -114,7 +114,7 @@ FROM inbox WHERE state = 'failed' ORDER BY updated_at;
 
 ## Flagging a bad answer
 
-A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, or 👎 to flag the previous reply. Nothing is shared until they confirm: the command stages a pointer and replies with consent copy naming exactly what a human will see (that one exchange, nothing else); only YES writes the flag, anything else cancels and is handled as a normal message. Confirmed flags are pointers only (no message content) joined to the encrypted session by `heynyc feedback` for local triage; the redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error view.
+A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, 👎, or Apple's SMS `Disliked` tapback to flag the previous reply. Nothing is shared until they confirm: the command stages a pointer and replies with consent copy naming exactly what a human will see (that one exchange, nothing else); only YES writes the flag, anything else cancels and is handled as a normal message. Confirmed flags are pointers only (no message content) joined to the encrypted session by `heynyc feedback` for local triage; the redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error view.
 
 ## v1 scope
 

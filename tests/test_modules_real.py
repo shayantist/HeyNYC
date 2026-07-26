@@ -28,6 +28,7 @@ def test_cooling_center_binding_present():
 
     module = next(module for module in registry.modules if module.name == "cooling_centers")
     assert "services6.arcgis.com" in module.allowlist
+    assert "https://portal.311.nyc.gov/article/?kanumber=KA-02663" in module.seeds
 
 
 def test_public_restroom_binding_uses_the_operational_city_dataset():

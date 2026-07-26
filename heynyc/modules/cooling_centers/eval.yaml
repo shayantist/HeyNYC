@@ -66,6 +66,21 @@
   expect_same_outcome_as_base: true
   tags: [F072, must-win]
 
+- id: cooling_citywide_pet_policy
+  query: "whats a cooling center and can my dog come"
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F084, must-win]
+  utility_criterion: >-
+    Answer the citywide question without inventing a resident location. Explain what a cooling
+    center is from grounded official evidence, explain that pet access varies by location, and ask
+    for a neighborhood, address, or landmark before ranking nearby sites. Fail if "New York City",
+    "NYC", "the city", or another citywide placeholder is geocoded to a point of interest or used
+    as an origin for nearest-site results.
+  notes: Regression for F084, where a no-location citywide question ranked three sites near the New
+    York Mercantile Exchange after geocoding the literal words "New York City".
+
 # --- INV: phrasing/robustness invariance (same outcome as base) ------------
 - id: cooling_nearest_columbia__inv_slang
   tags: [must-win]

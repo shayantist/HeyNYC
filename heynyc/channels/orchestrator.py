@@ -28,6 +28,7 @@ _FLAG_TOKENS = {"wrong", "report", "incorrect", "bad answer", "👎"}
 # them, but the pre-consent reason is NOT persisted: the confirmation promises only the last
 # exchange is shared, so the reviewer sees exactly that and nothing else.
 _FLAG_COMMANDS = ("/wrong", "/report")
+_DISLIKED_TAPBACK_QUOTES = (('"', '"'), ("“", "”"))
 _CONFIRM_TOKENS = {"yes", "y"}
 # Consent is required, not implied: a flag is only recorded after the resident confirms, and the
 # confirmation states exactly what a human will see (the last exchange, nothing else). English-only
@@ -127,10 +128,20 @@ class Deps:
 
 def is_flag(text: str) -> bool:
     """The user is flagging the last answer as wrong: a bare token (`wrong`, `👎`) or a slash
-    command (`/wrong`, `/report`) that may carry an optional free-text reason. Routed to the
-    feedback log, never the agent. A sentence that merely contains 'wrong' is NOT a flag."""
+    command (`/wrong`, `/report`) that may carry an optional free-text reason, or Apple's SMS
+    `Disliked "<quoted message>"` tapback wrapper. Routed to the feedback log, never the agent.
+    A sentence that merely contains 'wrong' or 'disliked' is NOT a flag."""
     t = text.strip().lower()
-    return t in _FLAG_TOKENS or any(t == cmd or t.startswith(cmd + " ") for cmd in _FLAG_COMMANDS)
+    tapback = any(
+        t.startswith(f"disliked {opening}") and t.endswith(closing)
+        and len(t) > len(f"disliked {opening}{closing}")
+        for opening, closing in _DISLIKED_TAPBACK_QUOTES
+    )
+    return (
+        t in _FLAG_TOKENS
+        or any(t == cmd or t.startswith(cmd + " ") for cmd in _FLAG_COMMANDS)
+        or tapback
+    )
 
 
 def flag_note(text: str) -> str:
@@ -413,6 +424,8 @@ def _flag_token(text: str) -> str:
     """The bounded command/token the resident used (`report`, `👎`, `/wrong`, ...), never the
     free-text reason. Safe to store: it is a control word, not message content."""
     low = text.strip().lower()
+    if low.startswith("disliked "):
+        return "disliked"
     return next((cmd for cmd in _FLAG_COMMANDS if low.startswith(cmd)), text.strip())
 
 

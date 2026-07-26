@@ -36,11 +36,15 @@ datasets:
       phone: Phone
 seeds:
   - https://finder.nyc.gov/coolingcenters/
+  - https://portal.311.nyc.gov/article/?kanumber=KA-02663
 allowlist:
   - finder.nyc.gov
   - services6.arcgis.com
 tools: tools.py
 prompt: |
+  For definitions or access-policy questions that do not include a resident location, retrieve
+  the official NYC311 guidance before answering and ask for a neighborhood, address, or landmark
+  before ranking nearby sites.
   For heat-relief questions, call cool_options_lookup. Use kind="cooling_center" when the user
   specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
   and kind="all" for a general place to cool off. Pass `on` as an ISO date whenever the resident

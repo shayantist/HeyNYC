@@ -320,6 +320,28 @@ async def test_report_asks_to_confirm_and_writes_nothing_until_yes(tmp_path):
     assert (tmp_path / "fb.jsonl").exists()
 
 
+async def test_sms_disliked_tapback_enters_the_same_consent_flow(tmp_path):
+    deps = _deps(tmp_path)
+    await handle(_msg(text="when do cooling centers open?", mid="tap-q1"), FakeReplier(), deps)
+
+    report = FakeReplier()
+    await handle(
+        _msg(text='Disliked "Honestly, that one was too vague"', mid="tap-f1"),
+        report,
+        deps,
+    )
+
+    assert report.typed == 0
+    assert "yes" in report.sent[0].lower() and "human" in report.sent[0].lower()
+    assert deps.store.flags() == []
+
+    confirmed = FakeReplier()
+    await handle(_msg(text="YES", mid="tap-f2"), confirmed, deps)
+
+    assert confirmed.sent == ["Sent. A human will review that one exchange."]
+    assert deps.store.flags()[0]["flag"] == "disliked"
+
+
 async def test_non_yes_after_report_cancels_and_is_processed_as_a_normal_turn(tmp_path):
     deps = _deps(tmp_path)
     await handle(_msg(text="when do cooling centers open?", mid="q1"), FakeReplier(), deps)
@@ -462,7 +484,11 @@ def test_store_stages_confirms_and_lists_flag_pointers(tmp_path):
 
 def test_is_flag():
     assert is_flag("wrong") and is_flag("  Report ") and is_flag("👎")
+    assert is_flag('Disliked "Honestly, that one was too vague"')
+    assert is_flag("Disliked “Honestly, that one was too vague”")
     assert not is_flag("what's wrong with my application?")
+    assert not is_flag('Liked "That helped"')
+    assert not is_flag('I disliked "that answer"')
 
 
 def test_is_help_menu_only_matches_greetings_not_a_help_word_mid_question():
