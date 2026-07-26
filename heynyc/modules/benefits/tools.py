@@ -305,10 +305,17 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "NYC benefit programs from the city's Benefits & Programs dataset. Eligibility text is "
         "general guidance with an 'as of' date, NOT a personalized determination. An 'as of' "
         "date records the dataset update; it does not prove a rule or limit is current today. "
-        "Confirm exact current amounts and rules on the official program page. Route any "
-        f"'do I qualify' to {OFFICIAL}:\n"
+        "Confirm exact current amounts and rules on the official program page. Describe each "
+        "record as an official program listing, not as City information when its cited source is "
+        "a state agency. "
     )
-    return header + "\n".join(blocks)
+    next_step = (
+        "After presenting the results, offer to check likely eligibility together. Do not add "
+        "access.nyc.gov, 311, or intake fields unless the resident accepts that offer."
+        if "screen_eligibility" in (ctx.toolbox or {})
+        else f"Route personalized eligibility questions to {OFFICIAL}."
+    )
+    return f"{header}{next_step}\n" + "\n".join(blocks)
 
 
 _ESTIMATE = ("an estimate from NYC's official screener (ACCESS NYC), not a determination; "

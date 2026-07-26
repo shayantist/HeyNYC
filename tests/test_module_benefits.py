@@ -67,6 +67,24 @@ async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
     assert cite["valid_as_of"] == "2026-03-21"
 
 
+async def test_benefits_search_offers_conversational_screening_without_uncited_intake():
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([_FAKE_ROW])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+        toolbox={"screen_eligibility": btools.screen_eligibility_tool()},
+    )
+
+    out = await tool.handler({"query": "benefits for a new parent"}, ctx)
+    await client.aclose()
+
+    assert "offer to check likely eligibility together" in out
+    assert "Do not add access.nyc.gov, 311, or intake fields" in out
+
+
 async def test_benefits_search_citation_preserves_row_evidence():
     row = dict(
         _FAKE_ROW,
@@ -283,6 +301,17 @@ def test_benefits_prompt_keeps_screening_results_actionable_on_a_phone():
     assert "once the profile is complete, call screen_eligibility" in prompt
     assert "if any value is uncertain" in prompt
     assert "correct or confirm it" in prompt
+
+
+def test_benefits_prompt_does_not_turn_program_discovery_into_an_uncited_intake_form():
+    reg = Registry.discover(config.MODULES_DIR)
+    prompt = " ".join(next(m.prompt for m in reg.modules if m.name == "benefits").lower().split())
+
+    assert "only after the resident accepts" in prompt
+    assert "do not append an uncited external screener or 311 route" in prompt
+    assert "broad program-discovery question is not acceptance" in prompt
+    assert "official program listing" in prompt
+    assert "state source as city information" in prompt
 
 
 def test_fairness_metamorphic_cases_present_and_well_formed():
