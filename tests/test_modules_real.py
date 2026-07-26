@@ -16,21 +16,17 @@ def test_cooling_center_binding_present():
     bindings = registry.dataset_bindings()
     assert "cooling_center" in bindings
     binding = bindings["cooling_center"]
-    # The generic binding mirrors the active-center layer used by the current Cool Options app.
-    # The custom tool also queries the separate year-round Cool Options layer.
+    # The finder exposes activated centers and other Cool Options through one current layer.
     assert binding.source == "arcgis"
-    assert "services5.arcgis.com/tMsas0Edz7Aih7fO" in binding.url
-    assert "Cooling_Centers_PROD_view" in binding.url
+    assert "services6.arcgis.com/yG5s3afENB5iO9fj" in binding.url
+    assert "Cool_Options" in binding.url
+    assert binding.where == "Finder_status='OPEN' AND Space_type='Cooling Center'"
     assert binding.record_id_field == "NYCEM_ID"
     # field_map must cover the keys geo.normalize relies on
     for key in ("name", "lat", "lon", "status"):
         assert key in binding.field_map
 
-    cool_option = bindings["cool_option"]
-    assert "services6.arcgis.com/yG5s3afENB5iO9fj" in cool_option.url
-    assert "Cool_Options" in cool_option.url
     module = next(module for module in registry.modules if module.name == "cooling_centers")
-    assert "services5.arcgis.com" in module.allowlist
     assert "services6.arcgis.com" in module.allowlist
 
 

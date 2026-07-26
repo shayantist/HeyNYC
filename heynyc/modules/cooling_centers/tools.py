@@ -1,7 +1,6 @@
 """Live lookup for NYC cooling centers and other Cool Options."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -20,10 +19,6 @@ from heynyc.core.tools.geo import (
 COOL_OPTIONS_URL = (
     "https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/"
     "Cool_Options/FeatureServer/0"
-)
-ACTIVE_CENTERS_URL = (
-    "https://services5.arcgis.com/tMsas0Edz7Aih7fO/arcgis/rest/services/"
-    "Cooling_Centers_PROD_view/FeatureServer/0"
 )
 _NYC_TZ = ZoneInfo("America/New_York")
 _DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -107,6 +102,20 @@ def _scheduled_hours(record: dict, weekday: int) -> str:
     return ", ".join(intervals)
 
 
+def _scheduled_open(record: dict, weekday: int) -> bool | None:
+    displayed = str(record.get(_DAY_NAMES[weekday]) or "").strip()
+    if displayed.casefold().startswith("closed"):
+        return False
+    day = _DAYS[weekday]
+    for interval in (1, 2):
+        if (
+            _minutes(record.get(f"cc_{day}_open{interval}")) is not None
+            and _minutes(record.get(f"cc_{day}_close{interval}")) is not None
+        ):
+            return True
+    return None
+
+
 def _value(record: dict, mixed: str, upper: str) -> str:
     return str(record.get(mixed) or record.get(upper) or "").strip()
 
@@ -132,32 +141,23 @@ def _citation(ctx: ToolContext, item: dict) -> str:
     )
 
 
-def _item(record: dict, *, active: bool) -> dict | None:
+def _item(record: dict) -> dict | None:
     try:
         lat, lon = float(record["lat"]), float(record["lon"])
     except (KeyError, TypeError, ValueError):
         return None
+    item_type = str(record.get("Space_type") or "cool option").strip().lower()
+    active = item_type == "cooling center"
     if active:
         item_type = "activated cooling center"
-        source = ACTIVE_CENTERS_URL
-    else:
-        item_type = str(record.get("Space_type") or "cool option").strip().lower()
-        source = COOL_OPTIONS_URL
-    # F072: the audience a row itself declares, so an older-adults-only center is never handed to a
-    # parent as if it were all-ages. The active feed types this in FACILITY_TYPE (Older Adult Center
-    # / Library / Other); the Cool_Options feed marks it in Age_restriction (Yes/No). We surface the
-    # row's own value (language-independent data) and let the model phrase it in any language.
-    facility_type = _value(record, "Facility_type", "FACILITY_TYPE")
+    # F072: preserve the finder row's audience restriction so an older-adults-only center is never
+    # handed to a parent as if it were all-ages.
     age_restriction = str(record.get("Age_restriction") or "").strip()
-    if active:
-        audience = facility_type
-        age_restricted = facility_type.lower() == "older adult center"
-    else:
-        audience = "Age-restricted" if age_restriction.lower() == "yes" else facility_type
-        age_restricted = age_restriction.lower() == "yes"
+    audience = "Age-restricted" if age_restriction.lower() == "yes" else ""
+    age_restricted = age_restriction.lower() == "yes"
     return {
         "record": record,
-        "source": source,
+        "source": COOL_OPTIONS_URL,
         "name": _value(record, "Facility_name", "FACILITY_NAME"),
         "address": _value(record, "Address", "ADDRESS"),
         "phone": _value(record, "Phone", "PHONE"),
@@ -180,35 +180,27 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     if origin.low_confidence:
         return f"'{near}' may match several places. Ask for a specific NYC address or landmark."
 
-    general_result, active_result = await asyncio.gather(
-        query_feature_service(
+    try:
+        records = await query_feature_service(
             COOL_OPTIONS_URL,
             where="Finder_status='OPEN'",
             result_record_count=2000,
             client=ctx.http,
-        ),
-        query_feature_service(
-            ACTIVE_CENTERS_URL,
-            where="Finder_status='OPEN'",
-            result_record_count=2000,
-            client=ctx.http,
-        ),
-        return_exceptions=True,
-    )
-    general_failed = isinstance(general_result, BaseException)
-    active_failed = isinstance(active_result, BaseException)
-    general_records = [] if general_failed else general_result
-    active_records = [] if active_failed else active_result
+        )
+    except Exception:
+        return "The NYC Cool Options finder was unavailable, so I cannot safely list locations."
 
     kind = str(args.get("kind", "all"))
-    items = [item for record in active_records if (item := _item(record, active=True))]
-    if kind != "cooling_center":
-        for record in general_records:
-            if kind == "indoor" and str(record.get("Location_type", "")).lower() != "indoor":
-                continue
-            item = _item(record, active=False)
-            if item:
-                items.append(item)
+    items = []
+    for record in records:
+        space_type = str(record.get("Space_type") or "").strip().lower()
+        if kind == "cooling_center" and space_type != "cooling center":
+            continue
+        if kind == "indoor" and str(record.get("Location_type") or "").strip().lower() != "indoor":
+            continue
+        item = _item(record)
+        if item:
+            items.append(item)
 
     seen: set[str] = set()
     unique = []
@@ -222,21 +214,9 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
 
     if not unique:
         if kind == "cooling_center":
-            if active_failed:
-                return (
-                    "The NYC activated-center feed was unavailable, so I cannot safely say "
-                    "whether a cooling center is activated. Try kind='indoor' for other Cool Options."
-                )
             return (
                 "No activated cooling centers were returned by the NYC finder. "
                 "Try kind='indoor' for other indoor Cool Options."
-            )
-        if general_failed and active_failed:
-            return "Both NYC Cool Options feeds were unavailable, so I cannot safely list locations."
-        if general_failed:
-            return (
-                "The general Cool Options feed was unavailable, and the activated-center feed "
-                "returned no locations. I cannot safely list other Cool Options."
             )
         return "No matching NYC Cool Options were found near that location."
 
@@ -251,9 +231,15 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     for item in unique:
         item["open_now"] = _open_now(item["record"], now)
         item["target_hours"] = _scheduled_hours(item["record"], target_date.weekday())
+        item["target_open"] = _scheduled_open(item["record"], target_date.weekday())
         item["distance_m"] = haversine_m(origin.lat, origin.lon, item["lat"], item["lon"])
     if planning_ahead:
-        unique.sort(key=lambda item: (0 if item["target_hours"] else 1, item["distance_m"]))
+        unique.sort(
+            key=lambda item: (
+                0 if item["target_open"] is True else 2 if item["target_open"] is False else 1,
+                item["distance_m"],
+            )
+        )
     else:
         unique.sort(
             key=lambda item: (
@@ -356,7 +342,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
                 for item in unique
                 if not item["age_restricted"]
                 and (
-                    bool(item["target_hours"])
+                    item["target_open"] is True
                     if planning_ahead
                     else item["open_now"] is not False
                 )
@@ -380,10 +366,6 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         "Weekly hours, holiday schedules, one-off closures, and access policies can change. "
         "The City advises calling ahead before visiting."
     )
-    if general_failed:
-        lines.append("The general Cool Options feed was unavailable for this lookup.")
-    if active_failed:
-        lines.append("The activated-center feed was unavailable for this lookup.")
     return "\n".join(lines)
 
 

@@ -21,25 +21,11 @@ examples:
   - "It's too hot, where can I cool off indoors today?"
 datasets:
   - source: arcgis
-    url: https://services5.arcgis.com/tMsas0Edz7Aih7fO/arcgis/rest/services/Cooling_Centers_PROD_view/FeatureServer/0
+    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Cool_Options/FeatureServer/0
     category: cooling_center
     record_id_field: NYCEM_ID
-    title: NYC Emergency Management - Activated Cooling Centers
-    where: "Finder_status='OPEN'"
-    field_map:
-      name: FACILITY_NAME
-      lat: lat
-      lon: lon
-      address: ADDRESS
-      borough: Borough_name
-      status: Finder_status
-      phone: PHONE
-  - source: arcgis
-    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Cool_Options/FeatureServer/0
-    category: cool_option
-    record_id_field: NYCEM_ID
-    title: NYC Emergency Management - Year-round Cool Options
-    where: "Finder_status='OPEN'"
+    title: NYC Emergency Management - Cool Options
+    where: "Finder_status='OPEN' AND Space_type='Cooling Center'"
     field_map:
       name: Facility_name
       lat: lat
@@ -52,7 +38,6 @@ seeds:
   - https://finder.nyc.gov/coolingcenters/
 allowlist:
   - finder.nyc.gov
-  - services5.arcgis.com
   - services6.arcgis.com
 tools: tools.py
 prompt: |
