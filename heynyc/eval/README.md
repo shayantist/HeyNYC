@@ -42,6 +42,9 @@ uv run python -m heynyc eval --repeat 3         # pass^k reliability on the safe
 ```
 
 Needs an LLM API key (it runs the real agent); the web-search cases also need `TAVILY_API_KEY`. Output lands in `.data/eval/run-<ts>/`: `report.json` (gate), `report.txt`, and OpenInference `traces/`. The report metadata records the selected case IDs, model, measured tokens, model and tool call counts, latency, and priced cost so a phased run can stop before its next batch.
+`heynyc eval` and `heynyc bench` honor `HEYNYC_AGENT_RUNTIME`, so their normal runs exercise the
+same selected runtime as resident-facing channels. Set it to `legacy` only when testing the
+retained rollback path.
 
 ## Selective live-eval policy
 

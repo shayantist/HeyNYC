@@ -652,8 +652,8 @@ async def _cmd_eval(
     from datetime import timezone
     from pathlib import Path
 
-    from heynyc.core.agent import Agent
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
+    from heynyc.eval.bench import build_eval_agent
     from heynyc.eval.cases import select_cases
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
@@ -676,8 +676,10 @@ async def _cmd_eval(
         return
     print(f"Running {len(cases)} eval case(s) across {len(registry.modules)} module(s)...")
 
+    selected_model = model or config.HEYNYC_MODEL
+
     def factory():
-        return Agent(registry, model=model or config.HEYNYC_MODEL, index=retriever, scope_gate=True)
+        return build_eval_agent(registry, selected_model, retriever)
 
     results = await run_all(factory, cases, reminders=_default_reminders())
     judge = None
@@ -706,7 +708,7 @@ async def _cmd_eval(
     run_dir = Path(out) if out else (
         config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
     )
-    write_run(run_dir, report, metadata=_eval_run_metadata(config.HEYNYC_MODEL, results))
+    write_run(run_dir, report, metadata=_eval_run_metadata(selected_model, results))
     print(f"\nRun written to {run_dir}")
     raise SystemExit(0 if report.passed else 1)
 

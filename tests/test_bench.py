@@ -43,6 +43,48 @@ def test_render_bench_lists_every_model_and_marks_errors():
 
 # --- run_bench continues past a failing model -----------------------------
 
+def test_build_eval_agent_uses_configured_runtime(monkeypatch):
+    from heynyc.core import config
+    from heynyc.eval import bench as bench_mod
+
+    calls = []
+
+    def fake_pydantic(registry, *, model, index, current_awareness):
+        calls.append((registry, model, index, current_awareness))
+        return "pydantic-agent"
+
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_configured_runtime",
+        fake_pydantic,
+    )
+
+    agent = bench_mod.build_eval_agent("registry", "model", "index")
+
+    assert agent == "pydantic-agent"
+    assert calls[0][:3] == ("registry", "model", "index")
+
+
+def test_build_eval_agent_keeps_legacy_rollback(monkeypatch):
+    from heynyc.core import config
+    from heynyc.eval import bench as bench_mod
+
+    class FakeLegacy:
+        def __init__(self, registry, **kwargs):
+            self.registry = registry
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
+    monkeypatch.setattr(bench_mod, "Agent", FakeLegacy)
+
+    agent = bench_mod.build_eval_agent("registry", "model", "index")
+
+    assert agent.registry == "registry"
+    assert agent.kwargs["model"] == "model"
+    assert agent.kwargs["index"] == "index"
+    assert agent.kwargs["scope_gate"] is True
+
+
 async def test_run_bench_isolates_a_failing_model(monkeypatch):
     from heynyc.eval import bench as bench_mod
 
@@ -57,7 +99,13 @@ async def test_run_bench_isolates_a_failing_model(monkeypatch):
 
             return AgentResult(text="I couldn't find that; try 311.", citations={}, tool_calls_made=[])
 
-    monkeypatch.setattr(bench_mod, "Agent", _FakeAgent)
+    monkeypatch.setattr(
+        bench_mod,
+        "build_eval_agent",
+        lambda registry, model, retriever: _FakeAgent(
+            registry, model=model, index=retriever, scope_gate=True
+        ),
+    )
 
     case = EvalCase(id="c", module="m", query="q", abstain=True)
     rows = await bench_mod.run_bench(

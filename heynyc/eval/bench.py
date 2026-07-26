@@ -16,6 +16,29 @@ from .report import GateReport, evaluate, write_run
 from .runner import run_all
 
 
+def build_eval_agent(registry, model: str, retriever):
+    """Build the same selected runtime used by resident-facing channels."""
+    from ..core import config
+    from ..modules.advisories.tools import current_awareness
+
+    if config.HEYNYC_AGENT_RUNTIME == "pydantic":
+        from ..core.pydantic_runtime import build_configured_runtime
+
+        return build_configured_runtime(
+            registry,
+            model=model,
+            index=retriever,
+            current_awareness=current_awareness,
+        )
+    return Agent(
+        registry,
+        model=model,
+        index=retriever,
+        notify_awareness=current_awareness,
+        scope_gate=True,
+    )
+
+
 @dataclass
 class BenchRow:
     """One model's result: its gate report, or an error string if that model's run blew up."""
@@ -154,7 +177,7 @@ async def run_bench(
     for model in models:
         try:
             def factory(m=model):
-                return Agent(registry, model=m, index=retriever, scope_gate=True)
+                return build_eval_agent(registry, m, retriever)
 
             results = await run_all(factory, cases, reminders=reminders)
             report = await evaluate(results, judge=judge)
