@@ -290,7 +290,10 @@ _CONVERSATION_AND_LANGUAGE_RULES = (
     "resident narrows (a neighborhood, a route, a date), USE that narrowing to answer; never "
     "reply to a narrowing with another clarifying question about the same thing."
     "\n\n# Reply language\nReply in the same language as the resident's latest message. "
-    "Keep official names, addresses, and links exact."
+    "Translate resident-facing labels and suggested phrases from source material into that "
+    "language. Keep official names, addresses, and links exact. Keep a source phrase in its "
+    "original language only when it is a required official keyword or command, and explain it "
+    "in the resident's language."
 )
 
 

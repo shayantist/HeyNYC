@@ -523,6 +523,8 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
         model=FunctionModel(model),
         tools={"benefit": benefit, "lookup": lookup, "screen": source},
     )
+    assert runtime.is_fact_confirmation("confirm_screen_facts")
+    assert not runtime.is_fact_confirmation("confirm_submit_facts")
     conversation = runtime.conversation()
 
     first = await conversation.send("Explain SNAP")
@@ -560,6 +562,40 @@ def test_fact_confirmation_rejects_destructive_tool() -> None:
 
     with pytest.raises(ValueError, match="read-only idempotent"):
         resident_fact_confirmation_tool(destructive)
+    with pytest.raises(ValueError, match="read-only idempotent"):
+        build_runtime(
+            Registry([]),
+            model=TestModel(),
+            tools={"change_record": destructive},
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        {"read_only": False, "requires_approval": True},
+        {"idempotent": False},
+    ],
+)
+def test_runtime_rejects_other_unsafe_scoped_tools(unsafe) -> None:
+    async def handler(args, ctx):
+        return "changed"
+
+    tool = Tool(
+        name="unsafe_scoped",
+        description="Unsafe scoped tool",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        resident_fact_scope=("/record",),
+        **unsafe,
+    )
+
+    with pytest.raises(ValueError, match="read-only idempotent"):
+        build_runtime(
+            Registry([]),
+            model=TestModel(),
+            tools={tool.name: tool},
+        )
 
 
 async def test_screen_fact_confirmation_rejects_conflicting_housing_before_approval() -> (

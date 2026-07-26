@@ -10,7 +10,7 @@ from typing import Any
 
 from heynyc.__main__ import _default_reminders, _load_retriever
 from heynyc.core import config
-from heynyc.core.agent import Agent, AgentResult
+from heynyc.core.agent import Agent
 from heynyc.core.nli import PromptedNLI
 from heynyc.core.pydantic_runtime import (
     _uses_openai_responses,
@@ -23,112 +23,16 @@ from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.eval.cases import load_cases, select_cases
 from heynyc.eval.report import evaluate, write_run
-from heynyc.eval.runner import run_all
+from heynyc.eval.runner import (
+    PydanticEvalAgent,
+    PydanticEvalConversation,
+    merge_eval_results,
+    run_all,
+)
 from heynyc.modules.advisories.tools import current_awareness
 
-_ADDITIVE_USAGE_KEYS = {
-    "input_tokens",
-    "output_tokens",
-    "cached_input_tokens",
-    "answer_input_tokens",
-    "answer_output_tokens",
-    "answer_cached_input_tokens",
-    "requests",
-    "tool_calls",
-    "n_model_calls",
-    "n_answer_model_calls",
-    "n_tool_calls",
-    "iterations",
-    "latency_ms",
-    "model_time_ms",
-}
-
-
-def _merge_results(pending: AgentResult, final: AgentResult) -> AgentResult:
-    usage = {**pending.usage, **final.usage}
-    for key in _ADDITIVE_USAGE_KEYS:
-        if key in pending.usage or key in final.usage:
-            usage[key] = (pending.usage.get(key) or 0) + (final.usage.get(key) or 0)
-    costs = (pending.usage.get("cost_usd"), final.usage.get("cost_usd"))
-    usage["cost_usd"] = (
-        sum(costs) if all(isinstance(cost, (int, float)) for cost in costs) else None
-    )
-    usage["cost_status"] = "priced" if usage["cost_usd"] is not None else "unpriced"
-    usage["capabilities_used"] = list(
-        dict.fromkeys(
-            [
-                *(pending.usage.get("capabilities_used") or ()),
-                *(final.usage.get("capabilities_used") or ()),
-            ]
-        )
-    )
-    usage["executed_tool_calls"] = list(
-        dict.fromkeys(
-            [
-                *(pending.usage.get("executed_tool_calls") or ()),
-                *(final.usage.get("executed_tool_calls") or ()),
-            ]
-        )
-    )
-    usage["model_request_ms"] = [
-        *(pending.usage.get("model_request_ms") or ()),
-        *(final.usage.get("model_request_ms") or ()),
-    ]
-    tool_calls = [*pending.tool_calls_made, *final.tool_calls_made]
-    tool_calls.extend(
-        name.removeprefix("confirm_").removesuffix("_facts")
-        for name in final.usage.get("executed_tool_calls", ())
-        if name.startswith("confirm_") and name.endswith("_facts")
-    )
-    return AgentResult(
-        text=final.text,
-        citations={**pending.citations, **final.citations},
-        tool_calls_made=tool_calls,
-        iterations=pending.iterations + final.iterations,
-        hit_max_iters=pending.hit_max_iters or final.hit_max_iters,
-        status=final.status,
-        messages=[*pending.messages, *final.messages],
-        usage=usage,
-    )
-
-
-class _PydanticEvalConversation:
-    """Complete native fact review in evals; never approve an external action."""
-
-    def __init__(self, conversation: Any):
-        self.conversation = conversation
-
-    async def send(self, message: str, **kwargs: Any) -> AgentResult:
-        pending = await self.conversation.send(message, **kwargs)
-        approvals = self.conversation.pending_approvals
-        if (
-            pending.status != "approval_required"
-            or not approvals
-            or not all(
-                request["tool_name"].startswith("confirm_")
-                and request["tool_name"].endswith("_facts")
-                for request in approvals.values()
-            )
-        ):
-            return pending
-        self.conversation = self.conversation.runtime.conversation_from_state(
-            self.conversation.dump_state()
-        )
-        final = await self.conversation.resume_approvals(
-            {call_id: True for call_id in approvals}
-        )
-        return _merge_results(pending, final)
-
-
-class _PydanticEvalAgent:
-    def __init__(self, runtime: Any):
-        self.runtime = runtime
-
-    def conversation(self) -> _PydanticEvalConversation:
-        return _PydanticEvalConversation(self.runtime.conversation())
-
-    async def run(self, message: str, **kwargs: Any) -> AgentResult:
-        return await self.conversation().send(message, **kwargs)
+_PydanticEvalConversation = PydanticEvalConversation
+_merge_results = merge_eval_results
 
 
 def _runtime_route(arm: str, model: str) -> str:
@@ -237,7 +141,7 @@ def summarize_arm(
         "cost_status": "priced" if priced else "unpriced",
         "error_count": sum(1 for result in results if result.error),
         "fact_confirmation_policy": (
-            "auto_confirm_confirm_star_facts_only_never_actions"
+            "auto_confirm_runtime_generated_fact_reviews_only"
             if arm == "pydantic_ai"
             else "not_applicable"
         ),
@@ -346,7 +250,7 @@ def build_factories(
             notify_awareness=current_awareness,
             scope_gate=True,
         ),
-        "pydantic_ai": lambda: _PydanticEvalAgent(
+        "pydantic_ai": lambda: PydanticEvalAgent(
             build_runtime(registry, **candidate_kwargs)
         ),
     }

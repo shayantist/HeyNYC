@@ -182,7 +182,7 @@ def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
         "cost_usd": None,
         "cost_status": "unpriced",
         "error_count": 0,
-        "fact_confirmation_policy": "auto_confirm_confirm_star_facts_only_never_actions",
+        "fact_confirmation_policy": "auto_confirm_runtime_generated_fact_reviews_only",
         "reasoning_effort": pydantic_ai_ab.config.HEYNYC_REASONING_EFFORT,
     }
 
@@ -243,6 +243,9 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
             return final
 
     class Runtime:
+        def is_fact_confirmation(self, tool_name):
+            return tool_name == "confirm_screen_facts"
+
         def conversation_from_state(self, state):
             assert state == b"serialized native state"
             return RestoredConversation()
@@ -308,7 +311,7 @@ def test_merge_does_not_alias_unexecuted_fact_confirmation() -> None:
         usage={"executed_tool_calls": []},
     )
 
-    result = pydantic_ai_ab._merge_results(pending, final)
+    result = pydantic_ai_ab._merge_results(pending, final, set())
 
     assert result.tool_calls_made == ["confirm_screen_facts"]
 

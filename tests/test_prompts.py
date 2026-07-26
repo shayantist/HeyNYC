@@ -173,6 +173,13 @@ def test_system_prompt_same_discipline_in_every_language():
     assert "local law 34" in low or "20-840" in low
 
 
+def test_system_prompt_translates_resident_facing_source_language():
+    low = build_system_prompt(Registry([])).lower()
+    assert "translate resident-facing labels and suggested phrases" in low
+    assert "required official keyword" in low
+    assert "keep official names, addresses, and links exact" in low
+
+
 def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
     # RULED (2026-07-21): the equal-dignity values baseline is ambient in the standing prompt,
     # carried into every generated reply, not trapped in a canned denial template. Owner constraint:

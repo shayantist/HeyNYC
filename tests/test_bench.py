@@ -46,6 +46,7 @@ def test_render_bench_lists_every_model_and_marks_errors():
 def test_build_eval_agent_uses_configured_runtime(monkeypatch):
     from heynyc.core import config
     from heynyc.eval import bench as bench_mod
+    from heynyc.eval.runner import PydanticEvalAgent
 
     calls = []
 
@@ -61,7 +62,8 @@ def test_build_eval_agent_uses_configured_runtime(monkeypatch):
 
     agent = bench_mod.build_eval_agent("registry", "model", "index")
 
-    assert agent == "pydantic-agent"
+    assert isinstance(agent, PydanticEvalAgent)
+    assert agent.runtime == "pydantic-agent"
     assert calls[0][:3] == ("registry", "model", "index")
 
 

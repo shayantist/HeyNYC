@@ -290,10 +290,13 @@ class PydanticRuntimeAdapter:
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
+        fact_confirmation_names: set[str] = set()
         for tool in tools.values():
             if tool.resident_fact_scope:
                 confirmation = resident_fact_confirmation_tool(tool)
                 self.tools[confirmation.name] = confirmation
+                fact_confirmation_names.add(confirmation.name)
+        self._fact_confirmation_names = frozenset(fact_confirmation_names)
         self.model = getattr(model, "model_name", type(model).__name__)
         self._current_awareness = current_awareness
         self._usage_limits = usage_limits or UsageLimits(request_limit=8)
@@ -359,6 +362,9 @@ class PydanticRuntimeAdapter:
             self._agent.instructions(lambda ctx: prompt_builder(ctx.deps.query))
         if guard_grounding:
             self._agent.output_validator(self._validate_grounding)
+
+    def is_fact_confirmation(self, tool_name: str) -> bool:
+        return tool_name in self._fact_confirmation_names
 
     async def _validate_grounding(
         self,

@@ -431,7 +431,10 @@ async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_no
     assert "call 311" in out
     assert "Do not show closed-site cards or offer to search farther in the same feed" in out
     assert "Closed Pantry" not in out
-    assert not ctx.citations.mapping()
+    citations = ctx.citations.mapping()
+    assert "{cite:S1}" in out
+    assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_citywide"] == 0
+    assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_nearby"] == 0
 
 
 async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
@@ -498,7 +501,25 @@ async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fal
     assert "farther scheduled-open lead" in out
     assert "call before traveling" in out
     assert "{cite:S1}" in out
-    assert len(ctx.citations.mapping()) == 1
+    assert "{cite:S2}" in out
+    assert len(ctx.citations.mapping()) == 2
+
+
+async def test_nearest_food_pantry_cites_an_empty_official_feed():
+    client = _routed_client([])
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "urgent": True},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "No open food pantries came back" in out
+    assert "{cite:S1}" in out
+    citation = ctx.citations.mapping()["S1"]
+    assert citation["valid_as_of"] == ""
+    assert citation["provenance"]["snapshot"]["citywide_records_checked"] == 0
 
 
 async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):

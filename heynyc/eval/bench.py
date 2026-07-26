@@ -13,7 +13,7 @@ from typing import Optional
 from ..core.agent import Agent
 from ..core.telemetry import priced_cost_usd
 from .report import GateReport, evaluate, write_run
-from .runner import run_all
+from .runner import PydanticEvalAgent, run_all
 
 
 def build_eval_agent(registry, model: str, retriever):
@@ -24,11 +24,13 @@ def build_eval_agent(registry, model: str, retriever):
     if config.HEYNYC_AGENT_RUNTIME == "pydantic":
         from ..core.pydantic_runtime import build_configured_runtime
 
-        return build_configured_runtime(
-            registry,
-            model=model,
-            index=retriever,
-            current_awareness=current_awareness,
+        return PydanticEvalAgent(
+            build_configured_runtime(
+                registry,
+                model=model,
+                index=retriever,
+                current_awareness=current_awareness,
+            )
         )
     return Agent(
         registry,

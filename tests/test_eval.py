@@ -283,6 +283,76 @@ async def test_run_case_captures_messages():
     assert any(m.get("role") == "tool" and m["content"] == "RESULT ROWS" for m in cr.messages)
 
 
+async def test_pydantic_eval_agent_confirms_fact_reviews_but_not_actions():
+    from heynyc.core.agent import AgentResult
+    from heynyc.eval.runner import PydanticEvalAgent
+
+    class Conversation:
+        def __init__(self, tool_name, fact_confirmation_names=()):
+            self.runtime = self
+            self.tool_name = tool_name
+            self.fact_confirmation_names = set(fact_confirmation_names)
+            self.pending_approvals = {}
+            self.resumed = False
+
+        def is_fact_confirmation(self, tool_name):
+            return tool_name in self.fact_confirmation_names
+
+        async def send(self, message, **kwargs):
+            self.pending_approvals = {
+                "call-1": {"tool_name": self.tool_name, "args": {"value": 1}}
+            }
+            return AgentResult(
+                text="",
+                citations={},
+                status="approval_required",
+                tool_calls_made=[self.tool_name],
+                usage={"input_tokens": 2, "cost_usd": 0.1},
+            )
+
+        def dump_state(self):
+            return self
+
+        def conversation_from_state(self, state):
+            return state
+
+        async def resume_approvals(self, approvals):
+            self.resumed = True
+            return AgentResult(
+                text="done",
+                citations={},
+                status="success",
+                tool_calls_made=["screen_eligibility"],
+                usage={"input_tokens": 3, "cost_usd": 0.2},
+            )
+
+    class Runtime:
+        def __init__(self, tool_name, fact_confirmation_names=()):
+            self._conversation = Conversation(tool_name, fact_confirmation_names)
+
+        def conversation(self):
+            return self._conversation
+
+    facts_runtime = Runtime(
+        "confirm_screen_eligibility_facts",
+        {"confirm_screen_eligibility_facts"},
+    )
+    facts = await PydanticEvalAgent(facts_runtime).run("screen me")
+    assert facts.text == "done"
+    assert facts_runtime._conversation.resumed
+    assert facts.usage["input_tokens"] == 5
+
+    action_runtime = Runtime("submit_application")
+    action = await PydanticEvalAgent(action_runtime).run("submit it")
+    assert action.status == "approval_required"
+    assert not action_runtime._conversation.resumed
+
+    disguised_action_runtime = Runtime("confirm_submit_facts")
+    disguised_action = await PydanticEvalAgent(disguised_action_runtime).run("submit it")
+    assert disguised_action.status == "approval_required"
+    assert not disguised_action_runtime._conversation.resumed
+
+
 def test_judge_model_defaults_off_agent_model(monkeypatch):
     import importlib
 

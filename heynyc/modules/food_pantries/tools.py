@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -36,6 +37,17 @@ FOODHELP_URL = (
     "Food_Help_Programs_PROD_view/FeatureServer/0"
 )
 WHERE_OPEN = "status='Open'"
+FOODHELP_QUERY_URL = (
+    f"{FOODHELP_URL}/query?"
+    + urlencode(
+        {
+            "where": WHERE_OPEN,
+            "outFields": "*",
+            "f": "geojson",
+            "resultRecordCount": 2000,
+        }
+    )
+)
 OFFICIAL = "finder.nyc.gov/foodhelp or call 311"
 NO_LOCATION = (
     "The proposed search origin was not supplied by the user, so do not use it. "
@@ -308,6 +320,42 @@ def _pantry_citation(ctx: ToolContext, pantry: FoodPantry, *,
     )
 
 
+def _availability_citation(
+    ctx: ToolContext,
+    *,
+    pantries: list[FoodPantry],
+    nearby: list[FoodPantry],
+    now: datetime,
+) -> str:
+    scheduled_open_nearby = sum(_open_now(pantry.raw, now) is True for pantry in nearby)
+    scheduled_open_citywide = sum(_open_now(pantry.raw, now) is True for pantry in pantries)
+    snapshot = {
+        "lookup_at": now.isoformat(),
+        "status_filter": WHERE_OPEN,
+        "nearby_records_checked": len(nearby),
+        "citywide_records_checked": len(pantries),
+        "scheduled_open_nearby": scheduled_open_nearby,
+        "scheduled_open_citywide": scheduled_open_citywide,
+    }
+    return ctx.citations.register(
+        FOODHELP_QUERY_URL,
+        snippet=(
+            f"At lookup, {scheduled_open_nearby} of {len(nearby)} nearby and "
+            f"{scheduled_open_citywide} of {len(pantries)} City-listed sites had weekly "
+            "hours indicating open"
+        ),
+        title="NYC FoodHelp availability lookup",
+        kind="DATA",
+        valid_as_of="",
+        provenance=data_provenance(
+            snapshot,
+            record_id="availability-summary",
+            field_pointer="/",
+            derivation={"temporal_basis": "weekly_schedule"},
+        ),
+    )
+
+
 def _pantry_block(pantry: FoodPantry, cite: str, dist_mi: float, now: datetime) -> str:
     flags = _flags(pantry)
     flag_str = f" [{', '.join(flags)}]" if flags else ""
@@ -350,8 +398,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     pantries = [p for p in (_to_pantry(r) for r in records) if p is not None]
     if not pantries:
+        cite = _availability_citation(
+            ctx,
+            pantries=[],
+            nearby=[],
+            now=datetime.now(_NYC_TZ),
+        )
         return (f"No open food pantries came back from the city's FoodHelp data. Don't invent one, "
-                f"point the user to {OFFICIAL}.")
+                f"point the user to {OFFICIAL}. {{cite:{cite}}}")
 
     k = int(args.get("k") or 5)
     now = datetime.now(_NYC_TZ)
@@ -373,6 +427,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     scheduled_open_count = len(scheduled_open)
     citywide_scheduled_open = len(citywide_open)
     citywide_unknown_hours = sum(_open_now(pantry.raw, now) is None for pantry in unique)
+    availability_marker = (
+        f" {{cite:{_availability_citation(ctx, pantries=unique, nearby=ranked, now=now)}}}"
+        if urgent
+        else ""
+    )
     displayed = (
         scheduled_open or citywide_open[:1] or unknown_hours
         if urgent
@@ -394,7 +453,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             "Immediate food need: a weekly schedule does not confirm food availability now or "
             "later today. Lead with asking the resident to call the listed site now. If the site "
             "cannot confirm service, tell them to call 311 or use "
-            "https://finder.nyc.gov/foodhelp, then offer to search farther."
+            f"https://finder.nyc.gov/foodhelp, then offer to search farther.{availability_marker}"
         )
     elif urgent and citywide_scheduled_open:
         lines.append(
@@ -402,20 +461,21 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             "show their closed-site cards. Lead with call 311 or "
             "https://finder.nyc.gov/foodhelp, then give the single nearest farther site whose "
             "weekly schedule says open. Label it a farther scheduled-open lead and tell the "
-            "resident to call before traveling because the feed does not confirm food availability."
+            "resident to call before traveling because the feed does not confirm food "
+            f"availability.{availability_marker}"
         )
     elif urgent and unknown_hours:
         lines.append(
             "Immediate food need: the nearest candidates' hours are unavailable, so they may "
             "still be open. Lead with call 311 or https://finder.nyc.gov/foodhelp. The listed "
             "candidates are call-only leads: tell the resident to call now and not travel unless "
-            "a site confirms service."
+            f"a site confirms service.{availability_marker}"
         )
     elif urgent:
         lines.append(
             "Immediate food need: no City-listed site in this feed is scheduled open now. Lead "
             "with call 311 or https://finder.nyc.gov/foodhelp. Do not show closed-site cards or "
-            "offer to search farther in the same feed."
+            f"offer to search farther in the same feed.{availability_marker}"
         )
 
     if scheduled_open_count:
