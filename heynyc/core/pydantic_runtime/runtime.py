@@ -108,6 +108,10 @@ _STRUCTURED_GROUNDING_SYSTEM_PROMPT = (
     "Put retrieved source IDs only in citation_ids. The runtime renders citation "
     "markers after validation."
 )
+_MULTI_TOOL_SCOPE_REMINDER = (
+    "Keep each tool result within that tool call's own scope. "
+    "Do not apply a location, date, audience, or filter from one tool call to another."
+)
 TEMPORARY_FAILURE_FALLBACK = (
     "I hit a temporary problem before I could verify an answer. "
     "Please try again in a moment."
@@ -291,6 +295,48 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
             self.request_ms.append(round(elapsed_ms, 3))
 
 
+class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
+    """Reinforce tool-call boundaries before multi-result synthesis."""
+
+    def __init__(self, tool_names: set[str]) -> None:
+        self.tool_names = frozenset(tool_names)
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[ToolContext],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        messages = request_context.messages
+        turn_start = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if isinstance(message, ModelRequest)
+                and any(isinstance(part, UserPromptPart) for part in message.parts)
+            ),
+            default=0,
+        )
+        returned_tools = {
+            part.tool_name
+            for message in messages[turn_start:]
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name in self.tool_names
+        }
+        if len(returned_tools) < 2:
+            return request_context
+        request = next(
+            message
+            for message in reversed(messages[turn_start:])
+            if isinstance(message, ModelRequest)
+        )
+        if _MULTI_TOOL_SCOPE_REMINDER not in (request.instructions or ""):
+            request.instructions = "\n\n".join(
+                filter(None, (request.instructions, _MULTI_TOOL_SCOPE_REMINDER))
+            )
+        return request_context
+
+
 class PydanticRuntimeAdapter:
     """Run existing HeyNYC tools through PydanticAI without changing production runtime code."""
 
@@ -353,6 +399,7 @@ class PydanticRuntimeAdapter:
             tools=adapted_tools,
             capabilities=[
                 ReinjectSystemPrompt(),
+                _PreserveToolScopesCapability(set(self.tools)),
                 *capabilities,
                 *extra_capabilities,
             ],

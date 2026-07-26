@@ -2234,6 +2234,57 @@ async def test_runtime_uses_native_dynamic_instructions_for_each_query() -> None
     ]
 
 
+async def test_runtime_reinforces_separate_scopes_only_after_multiple_tools() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "result"
+
+    tools = {
+        name: Tool(
+            name=name,
+            description=name,
+            parameters={"type": "object", "properties": {}},
+            handler=handler,
+        )
+        for name in ("events", "cooling")
+    }
+    seen: list[str] = []
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        request = next(
+            message
+            for message in reversed(messages)
+            if isinstance(message, ModelRequest)
+        )
+        seen.append(request.instructions or "")
+        if calls == 1:
+            return ModelResponse([ToolCallPart("events", {}, "events-call-1")])
+        if calls == 2:
+            return ModelResponse([ToolCallPart("events", {}, "events-call-2")])
+        if calls == 3:
+            return ModelResponse([ToolCallPart("cooling", {}, "cooling-call")])
+        return ModelResponse([TextPart("Done")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools=tools,
+        guard_grounding=False,
+    )
+
+    conversation = runtime.conversation()
+    await conversation.send("events in Queens and cooling near Flushing")
+    await conversation.send("thanks")
+
+    assert "Keep each tool result within that tool call's own scope" not in seen[0]
+    assert "Keep each tool result within that tool call's own scope" not in seen[1]
+    assert "Keep each tool result within that tool call's own scope" not in seen[2]
+    assert "Keep each tool result within that tool call's own scope" in seen[3]
+    assert "Keep each tool result within that tool call's own scope" not in seen[4]
+
+
 async def test_runtime_injects_current_awareness_each_turn() -> None:
     seen: list[str] = []
 

@@ -472,6 +472,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     keyword = (args.get("keyword") or "").strip() or None
     classification = (args.get("classification") or "").strip() or None
     borough = (args.get("borough") or "").strip().lower()
+    audience = (args.get("audience") or "").strip().lower()
+    if audience not in {"", "kids"}:
+        raise ValueError(f"Unsupported audience: {audience}")
     limit = int(args.get("limit") or 12)
 
     now = datetime.now(NYC_TZ)
@@ -553,7 +556,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             is_event_preparation_query(ctx.query) and not _broad_temporal_query(ctx.query)
         )
         discovery_context = _broad_temporal_query(ctx.query)
-    broad_context = (discovery_context or preparation_context) and not borough
+    broad_context = (
+        (discovery_context or preparation_context) and not borough and not audience
+    )
     sources = [
         ("ticketmaster", ticketmaster_source()),
         ("parks", parks_source()),
@@ -612,7 +617,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                         **({"near": borough} if borough else {}),
                     }
                 sources.append((tool.name, tool.handler(tool_args, ctx)))
-    if keyword and not preparation_context and not borough:
+    if keyword and not preparation_context and not borough and not audience:
         # F085: a named keyword ("Bryant Park movie series") gets the scoped search as a
         # PARALLEL corroborating lane, query = the exact keyword, no date suffix, results
         # never window-stripped. The structured lanes are structurally blind to unticketed,
@@ -653,6 +658,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             kept = _tonight_only(kept, now)
         if borough:
             kept = [e for e in kept if borough in e.borough.lower()]
+        if audience == "kids":
+            kept = [e for e in kept if "kids" in e.audience.lower()]
         return _shortlist(kept, limit)
 
     events = _window_filter(events)
@@ -735,7 +742,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "Each links to its official page, cite them and don't add events that aren't listed here:\n"
     )
     catalog = header + "\n".join(blocks) if blocks else no_results
-    if borough:
+    if borough or audience:
         return catalog
     if not broad_context:
         return f"{catalog}{keyword_block}"
@@ -818,7 +825,8 @@ def get_tools() -> list[Tool]:
                 "and plaza events (from live Ticketmaster, NYC Parks, the NYC Permitted Events feed, "
                 "current editorial guides, and trusted web sources). Pass `keyword` (e.g. 'world "
                 "cup', 'jazz'), optional `classification` (Music/Sports/Arts & Theatre), and "
-                "optional `borough`. Returns grounded, dated, linked listings, future events only; "
+                "optional `borough` or source-backed `audience`. Returns grounded, dated, linked "
+                "listings, future events only; "
                 "it never invents events and already coordinates the event retrieval lanes. Use it "
                 "for 'what's happening' / 'events this weekend' AND for every follow-up inside an "
                 "events thread (another borough, a different date, more like these, cheaper ones): "
@@ -830,6 +838,7 @@ def get_tools() -> list[Tool]:
                     "keyword": {"type": "string", "description": "Topic/keyword, e.g. 'world cup', 'jazz', 'free'."},
                     "classification": {"type": "string", "description": "Optional Ticketmaster segment: Music, Sports, Arts & Theatre, etc."},
                     "borough": {"type": "string", "description": "Optional borough/city filter, e.g. 'Brooklyn'."},
+                    "audience": {"type": "string", "enum": ["kids"], "description": "Optional evidence-backed audience filter. Use `kids` only when the resident asks for children's events; returned rows must carry a source audience label for kids."},
                     "window_start": {"type": "string", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
                     "window_end": {"type": "string", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
                     "limit": {"type": "integer", "description": "Max events to return (default 12)."},

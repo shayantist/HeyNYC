@@ -861,6 +861,14 @@ async def test_whats_on_events_keeps_free_parks_rows_in_the_requested_borough(mo
                 "parknames": "Marine Park",
                 "startdate": "2099-07-25T00:00:00.000",
             },
+            {
+                "title": "Queens General Concert",
+                "description": "This concert is free.",
+                "categories": "Concerts",
+                "parkids": "Q021",
+                "parknames": "Cunningham Park",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
         ]
 
     monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
@@ -875,6 +883,7 @@ async def test_whats_on_events_keeps_free_parks_rows_in_the_requested_borough(mo
         {
             "keyword": "free events",
             "borough": "Queens",
+            "audience": "kids",
             "window_start": "2099-07-25",
             "window_end": "2099-07-25",
         },
@@ -883,7 +892,66 @@ async def test_whats_on_events_keeps_free_parks_rows_in_the_requested_borough(mo
 
     assert "Queens Open Run" in output
     assert "Best for Kids" in output
+    assert "Queens General Concert" not in output
     assert "Brooklyn Open Run" not in output
+    assert get_tools()[0].parameters["properties"]["audience"]["enum"] == ["kids"]
+
+
+async def test_whats_on_events_does_not_mix_unfiltered_context_into_audience_results(
+    monkeypatch,
+):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        return [
+            {
+                "title": "Kids In Motion",
+                "description": "This program is free.",
+                "categories": "Best for Kids",
+                "parkids": "Q021",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+            {
+                "title": "General Concert",
+                "description": "This concert is free.",
+                "categories": "Concerts",
+                "parkids": "Q021",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+        ]
+
+    async def editorial(*args, **kwargs):
+        return "Unfiltered adult event"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_editorial_context", editorial)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="free kids events citywide",
+        event_turn="discovery",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported audience"):
+        await get_tools()[0].handler({"audience": "families"}, ctx)
+
+    output = await get_tools()[0].handler(
+        {
+            "audience": "kids",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert "Kids In Motion" in output
+    assert "General Concert" not in output
+    assert "Unfiltered adult event" not in output
 
 
 async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypatch):

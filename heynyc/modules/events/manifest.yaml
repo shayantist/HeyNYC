@@ -56,8 +56,9 @@ prompt: |
   whats_on_events first. It coordinates live Ticketmaster and NYC Parks listings and, for
   broad time-sensitive questions, concurrently adds current official, editorial-guide, and news
   context. Pass `keyword` (the topic), optional `classification`
-  (Music/Sports/Arts & Theatre) and `borough`. Do not make the model repeat those coordinator
-  calls separately. When the user asks for free events, do not call an
+  (Music/Sports/Arts & Theatre), `borough`, and `audience="kids"` when the resident asks for
+  children's events. The audience filter returns only rows with a source-backed kids label. Do not
+  make the model repeat those coordinator calls separately. When the user asks for free events, do not call an
   event free unless the retrieved source explicitly establishes its cost; the NYC Parks feed
   itself has no price field. Say when cost could not be confirmed. Every normal turn already has
   a compact index of today's Notify NYC titles. If one materially affects the requested plan, call
