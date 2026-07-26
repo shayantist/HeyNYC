@@ -545,6 +545,26 @@ async def test_nyc_advisories_falls_back_to_recent_when_cap_empty():
     assert "Avoid flooded roadways" in flood["snippet"]
 
 
+async def test_recent_fallback_dedups_titles_already_delivered_this_conversation():
+    delivered = frozenset(
+        item["title"].casefold() for item in json.loads(RECENT_MESSAGES_JSON)
+    )
+    client = _combo_client(rss=_rss(), recent_json=RECENT_MESSAGES_JSON)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        delivered_notify_titles=delivered,
+    )
+
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "Nothing new" in out
+    assert "Do not re-brief" in out
+    assert "Avoid flooded roadways" not in out
+
+
 async def test_nyc_advisories_prefers_cap_when_it_has_active():
     # When the CAP feed is working AND has an active advisory, it stays the source (structured,
     # with severity + expiry); the RecentMessages fallback is not needed.

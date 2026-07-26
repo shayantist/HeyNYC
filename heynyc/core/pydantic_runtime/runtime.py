@@ -49,6 +49,7 @@ from pydantic_ai.usage import RunUsage
 from heynyc.core import config, events
 from heynyc.core.agent import (
     AgentResult,
+    _delivered_notify_titles,
     _emergency_backstop,
     _internal_config_backstop,
     _reply_script_feedback,
@@ -111,6 +112,32 @@ TEMPORARY_FAILURE_FALLBACK = (
     "I hit a temporary problem before I could verify an answer. "
     "Please try again in a moment."
 )
+
+
+def _notify_titles_from_result(result: AgentResult) -> frozenset:
+    return _delivered_notify_titles([
+        {
+            "role": "assistant",
+            "citations": used_citations(result.text, result.citations),
+        }
+    ])
+
+
+def _follow_up_awareness(awareness: str, delivered_titles: frozenset) -> str:
+    if not delivered_titles:
+        return awareness
+    titles = "; ".join(
+        line.lstrip("- ").split(": ", 1)[-1]
+        for line in awareness.splitlines()
+        if line.startswith("- ")
+    )[:400]
+    return (
+        "You already told the resident about today's Notify NYC notices earlier in "
+        "this conversation. Do NOT re-brief them. Mention one again only if it "
+        "directly bears on this new message. Current titles, for change detection "
+        f"only: {titles}"
+    )
+
 
 def _emit(
     sink: Callable[[events.Event], None] | None,
@@ -577,6 +604,16 @@ class PydanticRuntimeAdapter:
             for turn in transcript
             if turn.get("role") == "user"
         )
+        delivered_turns = [
+            {
+                **turn,
+                "citations": used_citations(
+                    str(turn.get("content") or ""), turn.get("citations") or {}
+                ),
+            }
+            for turn in transcript
+        ]
+        conversation._delivered_notify_titles = _delivered_notify_titles(delivered_turns)
         return conversation
 
     async def run(
@@ -609,6 +646,7 @@ class PydanticRuntimeAdapter:
         output_dir: Path | None,
         drafts: Any,
         resident_facts: dict[str, ResidentFact] | None,
+        delivered_notify_titles: frozenset,
         timing_capability: _ModelTimingCapability,
         event_sink: Callable[[events.Event], None] | None = None,
         citations: CitationRegistry | None = None,
@@ -681,13 +719,16 @@ class PydanticRuntimeAdapter:
             toolbox=self.tools,
             output_dir=output_dir,
             drafts=drafts,
+            delivered_notify_titles=delivered_notify_titles,
             resident_facts=resident_facts if resident_facts is not None else {},
         )
         instructions = list(reminders or ())
         if self._current_awareness is not None:
             awareness = await self._current_awareness()
             if awareness:
-                instructions.append(awareness)
+                instructions.append(
+                    _follow_up_awareness(awareness, delivered_notify_titles)
+                )
         try:
             with capture_run_messages() as captured:
                 native = await self._agent.run(
@@ -876,6 +917,7 @@ class _PydanticConversation:
         self._pending: DeferredToolRequests | None = None
         self._resident_facts: dict[str, ResidentFact] = {}
         self._citations = CitationRegistry()
+        self._delivered_notify_titles: frozenset = frozenset()
         self.continuity: ContinuityRecord | None = None
         self._memory_usage: dict = {}
         self._memory_spend = SpendGuard(config.HEYNYC_SPEND_CAP)
@@ -899,6 +941,9 @@ class _PydanticConversation:
             conversation.continuity = ContinuityRecord.model_validate(continuity)
         if citations := payload.get("citations") or payload.get("pending_citations"):
             conversation._citations = CitationRegistry.from_state(citations)
+        conversation._delivered_notify_titles = frozenset(
+            payload.get("delivered_notify_titles", ())
+        )
         if payload["pending"] is not None:
             conversation._pending = _DEFERRED_REQUESTS.validate_python(
                 payload["pending"]
@@ -971,6 +1016,7 @@ class _PydanticConversation:
                     else None
                 ),
                 "citations": self._citations.dump_state(),
+                "delivered_notify_titles": sorted(self._delivered_notify_titles),
             },
             separators=(",", ":"),
         ).encode()
@@ -1169,6 +1215,7 @@ class _PydanticConversation:
                 output_dir=output_dir,
                 drafts=drafts,
                 resident_facts=self._resident_facts,
+                delivered_notify_titles=self._delivered_notify_titles,
                 citations=self._citations,
                 memory_capability=memory_capability,
                 timing_capability=timing_capability,
@@ -1183,6 +1230,7 @@ class _PydanticConversation:
             self._memory_usage.clear()
         self._history.extend(new_messages)
         self._user_turns = (*self._user_turns, user_message)
+        self._delivered_notify_titles |= _notify_titles_from_result(result)
         return result
 
     async def resume_approvals(
@@ -1212,6 +1260,7 @@ class _PydanticConversation:
             toolbox=self.runtime.tools,
             output_dir=output_dir,
             drafts=drafts,
+            delivered_notify_titles=self._delivered_notify_titles,
             resident_facts=self._resident_facts,
         )
         started = time.perf_counter()
@@ -1278,6 +1327,7 @@ class _PydanticConversation:
         self.runtime._merge_semantic_usage(result, deps.semantic_verifier_runs)
         _finish_events(event_sink, message_id, result)
         self._history.extend(native.new_messages())
+        self._delivered_notify_titles |= _notify_titles_from_result(result)
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )

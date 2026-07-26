@@ -21,6 +21,7 @@ invent an advisory, a severity, or an expiry.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -239,6 +240,27 @@ def _norm_title(title: str) -> str:
     return (title or "").strip().casefold()
 
 
+def _render_recent_delta(
+    ctx: ToolContext,
+    notes: list[RecentNote],
+    delivered: frozenset,
+    render: Callable[[ToolContext, list[RecentNote]], str],
+) -> str:
+    new_notes = [note for note in notes if _norm_title(note.title) not in delivered]
+    old_notes = sorted(
+        (note for note in notes if note not in new_notes), key=lambda note: note.title
+    )
+    old_titles = "; ".join(
+        f"{note.title} {{cite:{_recent_citation(ctx, note)}}}" for note in old_notes
+    )
+    if delivered and not new_notes:
+        return _ALREADY_SHARED.format(titles=old_titles)
+    rendered = render(ctx, new_notes)
+    if old_notes:
+        rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles=old_titles)}"
+    return rendered
+
+
 async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     lang = (args.get("lang") or "").strip() or None
@@ -302,18 +324,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         return "\n\n".join(parts)
     if feed.confirmed:
         if recent.confirmed and recent_notes:
-            new_notes = [n for n in recent_notes if _norm_title(n.title) not in delivered]
-            old_notes = sorted(
-                (n for n in recent_notes if n not in new_notes), key=lambda n: n.title)
-            if delivered and not new_notes:
-                return _ALREADY_SHARED.format(titles="; ".join(
-                    f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in old_notes))
-            rendered = _render_recent_additions(ctx, new_notes)
-            if old_notes:
-                shared = "; ".join(
-                    f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in old_notes)
-                rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles=shared)}"
-            return rendered
+            return _render_recent_delta(
+                ctx, recent_notes, delivered, _render_recent_additions
+            )
         # F067: our own forced game-day/prep check finding nothing is not news — return
         # nothing so there is no null result for the model to narrate as an "update".
         # A resident who actually asked gets the plain NO_ACTIVE answer.
@@ -324,7 +337,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     # CAP feed DEGRADED (unreachable / empty body / unreadable), so do NOT trust its emptiness as an
     # all-clear. Consult the city's live notifications before ever telling the user there are none.
     if recent.confirmed and recent_notes:
-        return _render_recent(ctx, recent_notes, near)          # real-time fallback (today's alerts)
+        return _render_recent_delta(
+            ctx,
+            recent_notes,
+            delivered,
+            lambda context, notes: _render_recent(context, notes, near),
+        )
     return COULD_NOT_CONFIRM                                    # both sources degraded -> fail safe
 
 

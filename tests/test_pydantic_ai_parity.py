@@ -2261,6 +2261,194 @@ async def test_runtime_injects_current_awareness_each_turn() -> None:
     assert "Current citywide advisory" in seen[0]
 
 
+async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:
+    seen_instructions: list[str] = []
+    seen_titles: list[frozenset] = []
+    calls = 0
+
+    async def awareness() -> str:
+        return (
+            "- 07/26/2026 10:00: Heat Advisory in effect for NYC\n"
+            "  full alert payload"
+        )
+
+    async def advisory(args: dict, ctx: ToolContext) -> str:
+        seen_titles.append(ctx.delivered_notify_titles)
+        cite_id = ctx.citations.register(
+            "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
+            title="Heat Advisory in effect for NYC",
+            snippet="Heat Advisory in effect for NYC",
+            kind="DATA",
+        )
+        return f"Heat Advisory in effect for NYC {{cite:{cite_id}}}"
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        request = next(
+            message
+            for message in reversed(messages)
+            if isinstance(message, ModelRequest)
+        )
+        seen_instructions.append(request.instructions or "")
+        if calls in {1, 3}:
+            return ModelResponse([
+                ToolCallPart("nyc_advisories", {}, f"notify-{calls}")
+            ])
+        if calls == 2:
+            return ModelResponse([TextPart("Heat advisory. {cite:S1}")])
+        return ModelResponse([TextPart("Only the route delta")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "nyc_advisories": Tool(
+                "nyc_advisories",
+                "Current Notify NYC advisories",
+                {"type": "object", "properties": {}},
+                advisory,
+            )
+        },
+        current_awareness=awareness,
+    )
+    conversation = runtime.conversation()
+
+    await conversation.send("What should I know today?")
+    conversation = runtime.conversation_from_state(conversation.dump_state())
+    await conversation.send("Going from the Upper West Side to the Financial District")
+
+    assert seen_titles == [
+        frozenset(),
+        frozenset({"heat advisory in effect for nyc"}),
+    ]
+    assert "full alert payload" in seen_instructions[0]
+    assert "You already told the resident" in seen_instructions[2]
+    assert "full alert payload" not in seen_instructions[2]
+
+
+async def test_transcript_restore_ignores_notify_metadata_not_cited_in_text() -> None:
+    seen_titles: list[frozenset] = []
+    calls = 0
+
+    async def advisory(args: dict, ctx: ToolContext) -> str:
+        seen_titles.append(ctx.delivered_notify_titles)
+        return "No change"
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("nyc_advisories", {}, "notify")])
+        return ModelResponse([TextPart("Done")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "nyc_advisories": Tool(
+                "nyc_advisories",
+                "Current Notify NYC advisories",
+                {"type": "object", "properties": {}},
+                advisory,
+            )
+        },
+    )
+    conversation = runtime.conversation_from_transcript(
+        [
+            {"role": "user", "content": "What should I know today?"},
+            {
+                "role": "assistant",
+                "content": "Flood warning. {cite:S2}",
+                "citations": {
+                    "S1": {
+                        "url": (
+                            "https://a858-nycnotify.nyc.gov/"
+                            "notifynyc/Home/RecentMessages"
+                        ),
+                        "title": "Heat Advisory in effect for NYC",
+                    },
+                    "S2": {
+                        "url": (
+                            "https://a858-nycnotify.nyc.gov/"
+                            "notifynyc/Home/RecentMessages"
+                        ),
+                        "title": "Flood warning in effect for NYC",
+                    },
+                },
+            },
+        ]
+    )
+
+    await conversation.send("Anything new?")
+
+    assert seen_titles == [frozenset({"flood warning in effect for nyc"})]
+
+
+async def test_approval_resume_preserves_only_delivered_notify_titles() -> None:
+    seen_titles: list[frozenset] = []
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        seen_titles.append(ctx.delivered_notify_titles)
+        return "Prepared"
+
+    source = Tool(
+        name="prepare_application",
+        description="Prepare an application artifact",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        requires_approval=True,
+    )
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not _parts(messages, ToolReturnPart):
+            return ModelResponse(
+                [ToolCallPart("prepare_application", {}, "approval-call")]
+            )
+        return ModelResponse([TextPart("Prepared")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"prepare_application": source},
+        guard_grounding=False,
+    )
+    conversation = runtime.conversation_from_transcript(
+        [
+            {"role": "user", "content": "What should I know today?"},
+            {
+                "role": "assistant",
+                "content": "Flood warning. {cite:S2}",
+                "citations": {
+                    "S1": {
+                        "url": (
+                            "https://a858-nycnotify.nyc.gov/"
+                            "notifynyc/Home/RecentMessages"
+                        ),
+                        "title": "Heat Advisory in effect for NYC",
+                    },
+                    "S2": {
+                        "url": (
+                            "https://a858-nycnotify.nyc.gov/"
+                            "notifynyc/Home/RecentMessages"
+                        ),
+                        "title": "Flood warning in effect for NYC",
+                    },
+                },
+            },
+        ]
+    )
+
+    pending = await conversation.send("Prepare it")
+    assert pending.status == "approval_required"
+
+    restored = runtime.conversation_from_state(conversation.dump_state())
+    result = await restored.resume_approvals({"approval-call": True})
+
+    assert result.text == "Prepared"
+    assert seen_titles == [frozenset({"flood warning in effect for nyc"})]
+
+
 def test_runtime_accepts_native_cross_cutting_capabilities() -> None:
     thinking = Thinking(
         effort="high",
