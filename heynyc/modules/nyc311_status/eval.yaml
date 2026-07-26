@@ -13,8 +13,7 @@
   utility_criterion: >-
     Look up the request by its number and report its status verbatim (Open, In Progress, Assigned,
     Started, Pending, or Closed) with its opened and, when present, closed date and any resolution
-    text, each cited. State the once-a-day update caveat. Never upgrade an open status into a claim
-    that the problem is fixed.
+    text, each cited. Never upgrade an open status into a claim that the problem is fixed.
   notes: Use nyc311_status with sr_number and cite the returned row. Only the number is sent.
 
 - id: sr311_status_lookup__inv_plain_language
@@ -27,6 +26,21 @@
   expect_same_outcome_as_base: true
   expect_tools: [nyc311_status]
   abstain: false
+
+- id: sr311_closed_unresolved_refiles
+  tags: [F073, must-win]
+  query: "311 says my request 69741503 is closed, but nothing got fixed. What do I do?"
+  expect_tools: [nyc311_status]
+  expect_cite_kinds: [DATA, DOC]
+  abstain: false
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Report the request's recorded status and resolution, then tell the resident to refile the
+    service request if the problem remains unresolved. Do not tell them that feedback will resolve
+    the request, that the closed request can be reopened, or that the assistant filed a new one.
+  notes: Pins F073 to the current NYC311 closed-but-unresolved guidance.
 
 - id: sr311_area_movement
   tags: [must-win]
