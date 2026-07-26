@@ -53,6 +53,7 @@ from heynyc.core.agent import (
     _internal_config_backstop,
     _reply_script_feedback,
     _sensitive_identifier_backstop,
+    _unknown_citation_ids,
 )
 from heynyc.core.citations import CitationRegistry, used_citations
 from heynyc.core.freshness import attach_temporal_provenance
@@ -366,12 +367,12 @@ class PydanticRuntimeAdapter:
     ) -> str | GroundedAnswer | DeferredToolRequests:
         if isinstance(output, DeferredToolRequests):
             return output
+        mapping = ctx.deps.citations.mapping()
         if isinstance(output, GroundedAnswer):
             if not output.grounded_blocks:
                 raise ModelRetry(
                     "Answer with at least one grounded block supported by a retrieved source."
                 )
-            mapping = ctx.deps.citations.mapping()
             unknown = sorted({
                 citation_id
                 for block in output.grounded_blocks
@@ -403,9 +404,11 @@ class PydanticRuntimeAdapter:
             rendered = _render_grounded_answer(output)
         else:
             rendered = output
+        if _unknown_citation_ids(rendered, mapping):
+            raise ModelRetry("Use only citation IDs returned by tools in this run.")
         verdict = check_grounding(
             rendered,
-            ctx.deps.citations.mapping(),
+            mapping,
             ctx.deps.query,
         )
         if verdict is not None and verdict.blocking:

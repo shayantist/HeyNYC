@@ -621,11 +621,16 @@ async def _cmd_repl_raw(model: str | None = None) -> None:
 _EVAL_COST_PER_CASE_USD = 0.02
 
 
-def _eval_run_metadata(model: str, results: list) -> dict:
+def _eval_run_metadata(
+    model: str,
+    results: list,
+    *,
+    repeat_summary: dict | None = None,
+) -> dict:
     from heynyc.eval.bench import _candidate_cost
 
     cost, input_tokens, output_tokens = _candidate_cost(model, results)
-    return {
+    metadata = {
         "model": model,
         "case_ids": [result.case.id for result in results],
         "input_tokens": input_tokens,
@@ -635,6 +640,9 @@ def _eval_run_metadata(model: str, results: list) -> dict:
         "n_model_calls": sum(int(result.usage.get("n_model_calls", 0) or 0) for result in results),
         "n_tool_calls": sum(int(result.usage.get("n_tool_calls", 0) or 0) for result in results),
     }
+    if repeat_summary is not None:
+        metadata["repeat"] = repeat_summary
+    return metadata
 
 
 async def _cmd_eval(
@@ -694,21 +702,44 @@ async def _cmd_eval(
     print("\n" + report.render())
 
     # pass^k reliability on the safety-critical subset (customer-facing metric).
+    repeat_summary = None
     if repeat > 1:
         safety = [c for c in cases if c.safety_critical]
         reliable = 0
+        repeat_cases = []
         for case in safety:
             runs = await run_repeated(factory, case, k=repeat, reminders=_default_reminders())
             sub = await evaluate(runs)
-            if all(r.passed for r in sub.reports):
+            outcomes = [case_report.passed for case_report in sub.reports]
+            is_reliable = all(outcomes)
+            if is_reliable:
                 reliable += 1
+            repeat_cases.append({
+                "case_id": case.id,
+                "passed": outcomes,
+                "reliable": is_reliable,
+            })
         if safety:
+            repeat_summary = {
+                "k": repeat,
+                "eligible_case_count": len(safety),
+                "reliable_case_count": reliable,
+                "cases": repeat_cases,
+            }
             print(f"\npass^{repeat} (safety subset): {reliable}/{len(safety)} cases reliable across {repeat} runs")
 
     run_dir = Path(out) if out else (
         config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
     )
-    write_run(run_dir, report, metadata=_eval_run_metadata(selected_model, results))
+    write_run(
+        run_dir,
+        report,
+        metadata=_eval_run_metadata(
+            selected_model,
+            results,
+            repeat_summary=repeat_summary,
+        ),
+    )
     print(f"\nRun written to {run_dir}")
     raise SystemExit(0 if report.passed else 1)
 

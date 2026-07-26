@@ -91,6 +91,12 @@ def test_system_prompt_forbids_uncited_authority_on_substantive_facts():
     assert "emtali" in low or "emtala" in low       # names the find_clinic grounding route
 
 
+def test_system_prompt_requires_citations_on_the_supported_sentence_or_bullet():
+    low = build_system_prompt(Registry([])).lower()
+    assert "same sentence or bullet" in low
+    assert "elsewhere in a paragraph or list does not count" in low
+
+
 def test_system_prompt_describes_data_practices_accurately():
     # Privacy-accuracy fix: the prompt must NOT let the agent claim it "stores nothing"; it should
     # describe the in-progress application draft honestly and match the PIA.

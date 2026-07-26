@@ -207,9 +207,11 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     selected = sorted(candidates, key=lambda item: (item[0], item[1]))[:limit]
 
     lines = [f"Public restrooms near {origin.label}:"]
+    city_cites = []
     for index, (_, distance_m, place, corroboration, open_now) in enumerate(selected, 1):
         distance_mi = miles(distance_m)
         city_cite = _city_citation(ctx, binding, place, origin, distance_mi)
+        city_cites.append(city_cite)
         lines.append(f"{index}. {place.name}, {distance_mi:.2f} miles {{cite:{city_cite}}}")
         if corroboration:
             cool_cite = _cool_citation(ctx, corroboration)
@@ -233,38 +235,44 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
             if accessible:
                 lines.append(
                     f"   Wheelchair accessible: {accessible} for the site; restroom fixtures "
-                    "are not confirmed"
+                    f"are not confirmed {{cite:{cool_cite}}}"
                 )
         else:
             hours = str(place.raw.get("hours_of_operation", "")).strip()
             detail = "   NYC lists this restroom, but it is not independently confirmed open now"
             if hours:
                 detail += f". Listed hours: {hours}"
-            lines.append(detail)
+            lines.append(f"{detail} {{cite:{city_cite}}}")
         season = str(place.raw.get("open", "")).strip()
         accessibility = str(place.raw.get("accessibility", "")).strip()
         restroom_type = str(place.raw.get("restroom_type", "")).strip()
         changing_station = str(place.raw.get("changing_stations", "")).strip()
         access_note = str(place.raw.get("additional_notes", "")).strip()
         if season:
-            lines.append(f"   Seasonal availability: {season}")
+            lines.append(f"   Seasonal availability: {season} {{cite:{city_cite}}}")
         if accessibility:
-            lines.append(f"   NYC listing accessibility: {accessibility}")
+            lines.append(
+                f"   NYC listing accessibility: {accessibility} {{cite:{city_cite}}}"
+            )
         if restroom_type:
-            lines.append(f"   Restroom type: {restroom_type}")
+            lines.append(f"   Restroom type: {restroom_type} {{cite:{city_cite}}}")
         if changing_station:
-            lines.append(f"   Changing station: {changing_station}")
+            lines.append(f"   Changing station: {changing_station} {{cite:{city_cite}}}")
         if access_note:
-            lines.append(f"   Access note: {access_note}")
+            lines.append(f"   Access note: {access_note} {{cite:{city_cite}}}")
         if place.website:
             lines.append(f"   Official facility page: {place.website}")
         lines.append(f"   Map: {maps_link(place.lat, place.lon)}")
 
     record_dates = sorted({item[2].updated_at[:10] for item in selected if item[2].updated_at})
+    record_cites = " ".join(f"{{cite:{citation_id}}}" for citation_id in city_cites)
     if len(record_dates) == 1:
-        lines.append(f"NYC restroom record date: {record_dates[0]}.")
+        lines.append(f"NYC restroom record date: {record_dates[0]}. {record_cites}")
     elif record_dates:
-        lines.append(f"NYC restroom record dates: {record_dates[0]} through {record_dates[-1]}.")
+        lines.append(
+            f"NYC restroom record dates: {record_dates[0]} through {record_dates[-1]}. "
+            f"{record_cites}"
+        )
     lines.append(
         "NYC restroom records are not real-time. For a locked, closed, or unusable restroom, "
         "try the next result or report the problem to 311."

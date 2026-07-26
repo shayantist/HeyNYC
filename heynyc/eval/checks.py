@@ -166,6 +166,19 @@ def check_abstention(cr: CaseResult) -> Optional[CheckResult]:
     return CheckResult("abstention", passed=hedged, detail=detail, blocking=False)
 
 
+def check_citation_references(cr: CaseResult) -> Optional[CheckResult]:
+    """Fail when resident-facing citation markers do not exist in the result registry."""
+    referenced = set(_CITE_REF_RE.findall(cr.text or ""))
+    if not referenced:
+        return None
+    unknown = sorted(referenced - set(cr.citations))
+    return CheckResult(
+        "citation_references",
+        passed=not unknown,
+        detail="" if not unknown else f"unknown citation ids: {', '.join(unknown)}",
+    )
+
+
 LinkChecker = Callable[[str], Awaitable[int]]
 
 
@@ -180,7 +193,7 @@ async def _default_link_checker(url: str) -> int:
             return 0
 
 
-_CITE_REF_RE = re.compile(r"\{cite:(S\d+)\}")
+_CITE_REF_RE = re.compile(r"\{cite:([^{}]+)\}")
 
 
 async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = None) -> Optional[CheckResult]:
@@ -337,6 +350,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
         check_cite_kinds(cr),
         check_contains(cr),
         check_abstention(cr),
+        check_citation_references(cr),
         check_readability(cr),
         await check_link_liveness(cr, link_checker),
     ]

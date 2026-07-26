@@ -167,6 +167,15 @@ async def test_lookup_surfaces_city_access_and_family_details_without_corroborat
     assert "Changing station: Yes" in output
     assert "Access note: A key is needed to enter" in output
     assert "Official facility page: https://example.nyc/restroom" in output
+    for label in (
+        "Seasonal availability",
+        "NYC listing accessibility",
+        "Restroom type",
+        "Changing station",
+        "Access note",
+    ):
+        line = next(line for line in output.splitlines() if label in line)
+        assert line.endswith("{cite:S1}")
 
 
 @pytest.mark.asyncio

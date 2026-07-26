@@ -42,6 +42,27 @@ def test_load_cases_from_real_modules():
     assert any(c.abstain for c in cases)
 
 
+def test_eval_run_metadata_persists_repeat_outcomes():
+    from types import SimpleNamespace
+
+    from heynyc.__main__ import _eval_run_metadata
+
+    result = SimpleNamespace(
+        case=SimpleNamespace(id="repeat-me"),
+        usage={},
+    )
+    repeat_summary = {
+        "k": 3,
+        "eligible_case_count": 1,
+        "reliable_case_count": 1,
+        "cases": [{"case_id": "repeat-me", "passed": [True, True, True], "reliable": True}],
+    }
+
+    metadata = _eval_run_metadata("model", [result], repeat_summary=repeat_summary)
+
+    assert metadata["repeat"] == repeat_summary
+
+
 # --- deterministic checks -------------------------------------------------
 
 def test_expected_tools_check():

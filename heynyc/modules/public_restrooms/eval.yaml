@@ -42,7 +42,7 @@
   notes: Report site accessibility only when the tool returns it, and do not infer restroom fixtures.
 
 - id: restroom_accessible_changing_station
-  tags: [F117, must-win]
+  tags: [F117, F118, must-win]
   query: "Find a fully accessible public restroom with a changing station near Corona Plaza."
   capability: dataset_grounding
   test_type: MFT
