@@ -39,6 +39,13 @@ NYC_TZ = ZoneInfo("America/New_York")
 _SOURCE_TIMEOUT_S = 8.0
 SECRET_NYC_WEEKEND_URL = "https://secretnyc.co/what-to-do-this-weekend-nyc/"
 NYC_FOR_FREE_RSS_URL = "https://www.nycforfree.co/events?format=rss"
+_PARK_BOROUGHS = {
+    "B": "Brooklyn",
+    "M": "Manhattan",
+    "Q": "Queens",
+    "R": "Staten Island",
+    "X": "Bronx",
+}
 
 
 @dataclass
@@ -51,6 +58,8 @@ class Event:
     url: str
     source: str  # "Ticketmaster" | "NYC Parks" | "NYC Permitted Events"
     tier: str    # authoritative | editorial | community
+    free_evidence: str = ""
+    audience: str = ""
 
 
 def _iso_date(value: object) -> str:
@@ -60,6 +69,17 @@ def _iso_date(value: object) -> str:
     except ValueError:
         return ""
     return text
+
+
+def _parks_time(value: object) -> str:
+    text = str(value or "").strip()
+    if " " not in text:
+        return text
+    try:
+        parsed = datetime.strptime(text.rsplit(" ", 1)[-1], "%H:%M:%S")
+    except ValueError:
+        return text
+    return parsed.strftime("%I:%M %p").lstrip("0")
 
 
 def _from_ticketmaster(raw: dict) -> Optional[Event]:
@@ -91,11 +111,29 @@ def _from_parks(raw: dict) -> Optional[Event]:
         return None
     link = raw.get("link")
     url = link.get("url", "") if isinstance(link, dict) else (link or "")
+    _unused, description = clean_html(str(raw.get("description") or ""))
+    free_evidence = next(
+        (
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", description)
+            if re.search(r"\bfree\b", sentence, re.IGNORECASE)
+        ),
+        "",
+    )
+    categories = str(raw.get("categories") or "")
+    audience = next(
+        (category.strip() for category in categories.split("|")
+         if category.strip().lower().startswith("best for ")),
+        "",
+    )
+    park_id = str(raw.get("parkids") or "").strip().upper()
     return Event(
         name=title, start_date=start_date,
-        start_time=raw.get("starttime") or "",
+        start_time=_parks_time(raw.get("starttime")),
         venue=raw.get("parknames") or raw.get("location") or "",
-        borough="", url=url or PARKS_SOURCE_URL, source="NYC Parks", tier="authoritative",
+        borough=_PARK_BOROUGHS.get(park_id[:1], ""),
+        url=url or PARKS_SOURCE_URL, source="NYC Parks", tier="authoritative",
+        free_evidence=free_evidence, audience=audience,
     )
 
 
@@ -239,14 +277,22 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
     where = f" @ {ev.venue}" if ev.venue else ""
     started = "; already started or ended earlier today" if now and _started_today(ev, now) else ""
+    free = "; free" if ev.free_evidence else ""
+    audience = f"; {ev.audience}" if ev.audience else ""
     details = f"\n  Details: {ev.url}" if ev.url else ""
-    return f"- {ev.name}{where}, {when}{started} ({ev.source}) {{cite:{cite}}}{details}"
+    return (
+        f"- {ev.name}{where}, {when}{started}{free}{audience} "
+        f"({ev.source}) {{cite:{cite}}}{details}"
+    )
 
 
 def _explicitly_free(events: list[Event], query: str) -> list[Event]:
     if "free" not in query.lower():
         return events
-    return [event for event in events if re.search(r"\bfree\b", event.name, re.IGNORECASE)]
+    return [
+        event for event in events
+        if event.free_evidence or re.search(r"\bfree\b", event.name, re.IGNORECASE)
+    ]
 
 
 def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
@@ -660,7 +706,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         weekday = date.fromisoformat(ev.start_date).strftime("%A")
         # The snapshot carries the FULL row the model will describe, time and source included,
         # so cited prose stays supported by its own evidence.
-        snippet_bits = [ev.name, weekday, ev.start_date, ev.start_time, ev.venue, f"({ev.source})"]
+        snippet_bits = [
+            ev.name, weekday, ev.start_date, ev.start_time, ev.venue, ev.borough,
+            ev.free_evidence, ev.audience, f"({ev.source})",
+        ]
         cite = ctx.citations.register(
             ev.url or PARKS_SOURCE_URL,
             snippet=" ".join(bit for bit in snippet_bits if bit).strip(),
@@ -669,7 +718,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         blocks.append(_event_block(ev, cite, now))
 
     window = f" for {window_start} through {window_end}" if window_end else ""
-    free_scope = " whose official source titles explicitly say free" if "free" in ctx.query.lower() else ""
+    free_scope = " whose official source evidence says free" if "free" in ctx.query.lower() else ""
     broadened_note = (
         "These listings came from a BROADENED search after the keyword matched nothing. If the "
         "resident's request was for something these listings do not actually satisfy, such as a "

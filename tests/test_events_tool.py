@@ -77,6 +77,28 @@ def test_from_parks_maps_nested_link():
     assert ev.source == "NYC Parks" and ev.tier == "authoritative"
 
 
+def test_from_parks_preserves_source_free_audience_and_borough_fields():
+    ev = _from_parks({
+        "title": "NYRR Open Run: Cunningham Park",
+        "description": "The program is free and open to runners and walkers of all ages.",
+        "categories": "Best for Kids | Running/Jogging",
+        "parkids": "Q021",
+        "parknames": "Cunningham Park",
+        "startdate": "2026-07-26T00:00:00.000",
+        "starttime": "2026-07-20 15:00:00",
+    })
+
+    assert ev is not None
+    assert ev.borough == "Queens"
+    assert ev.start_time == "3:00 PM"
+    assert "free" in ev.free_evidence.lower()
+    assert ev.audience == "Best for Kids"
+    assert _explicitly_free([ev], "free events in Queens") == [ev]
+    block = _event_block(ev, "S1")
+    assert "free" in block.lower()
+    assert "Best for Kids" in block
+
+
 def test_from_parks_drops_cancelled_titles():
     for title in ("CANCELLED: Movie Night", "Canceled - Outdoor Concert", "POSTPONED: Movie"):
         assert _from_parks({"title": title, "startdate": "2026-07-19"}) is None
@@ -814,6 +836,54 @@ async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
     assert "Queens Event" in output
     assert "Bronx Event" not in output
     assert web_calls == 0
+
+
+async def test_whats_on_events_keeps_free_parks_rows_in_the_requested_borough(monkeypatch):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        return [
+            {
+                "title": "Queens Open Run",
+                "description": "This program is free and open to all ages.",
+                "categories": "Best for Kids | Running/Jogging",
+                "parkids": "Q021",
+                "parknames": "Cunningham Park",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+            {
+                "title": "Brooklyn Open Run",
+                "description": "This program is free and open to all ages.",
+                "parkids": "B057",
+                "parknames": "Marine Park",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+        ]
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="free events for kids in Queens",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "free events",
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert "Queens Open Run" in output
+    assert "Best for Kids" in output
+    assert "Brooklyn Open Run" not in output
 
 
 async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypatch):
