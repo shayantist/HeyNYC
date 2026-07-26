@@ -166,7 +166,12 @@ async def test_lookup_surfaces_city_access_and_family_details_without_corroborat
     assert "Restroom type: Single-Stall All Gender Restroom(s)" in output
     assert "Changing station: Yes" in output
     assert "Access note: A key is needed to enter" in output
-    assert "Official facility page: https://example.nyc/restroom" in output
+    assert "Official facility page: https://example.nyc/restroom {cite:S1}" in output
+    assert "Map: https://www.google.com/maps/search/" in output
+    assert "query=40.00100,-73.00000 {cite:S1}" in output
+    assert "Current entry and restroom fixture condition were not verified" in output
+    assert "report the problem to 311" not in output
+    assert "records are not real-time" not in output
     for label in (
         "Seasonal availability",
         "NYC listing accessibility",
@@ -301,9 +306,11 @@ async def test_lookup_uses_the_residents_requested_date(monkeypatch):
         "or restroom quality."
     ) in output
     limitation = next(
-        line for line in output.splitlines() if line.startswith("NYC restroom records are not")
+        line
+        for line in output.splitlines()
+        if line.startswith("Current entry and restroom fixture condition")
     )
-    assert limitation.endswith("{cite:S1}")
+    assert "{cite:" not in limitation
     assert seen_where == ["1=1"]
 
 

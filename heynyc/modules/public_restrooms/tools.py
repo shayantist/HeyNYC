@@ -316,8 +316,12 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         if access_note:
             lines.append(f"   Access note: {access_note} {{cite:{city_cite}}}")
         if place.website:
-            lines.append(f"   Official facility page: {place.website}")
-        lines.append(f"   Map: {maps_link(place.lat, place.lon)}")
+            lines.append(
+                f"   Official facility page: {place.website} {{cite:{city_cite}}}"
+            )
+        lines.append(
+            f"   Map: {maps_link(place.lat, place.lon)} {{cite:{city_cite}}}"
+        )
 
     record_dates = sorted({item[2].updated_at[:10] for item in selected if item[2].updated_at})
     record_cites = " ".join(f"{{cite:{citation_id}}}" for citation_id in city_cites)
@@ -329,8 +333,8 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
             f"{record_cites}"
         )
     lines.append(
-        "NYC restroom records are not real-time. For a locked, closed, or unusable restroom, "
-        f"try the next result or report the problem to 311. {record_cites}"
+        "Current entry and restroom fixture condition were not verified by this lookup. "
+        "If the first result does not work, try the next listed option."
     )
     if cool_failed:
         lines.append("The NYC Cool Options cross-check was unavailable for this lookup.")
