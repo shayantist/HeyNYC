@@ -62,6 +62,7 @@ def test_health_and_twilio_route_mounted(monkeypatch, tmp_path):
     monkeypatch.setattr("heynyc.core.config.HEYNYC_DATA_DIR", tmp_path)
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     from heynyc.channels import app as appmod
+    monkeypatch.setattr(appmod, "build_agent", lambda: SimpleNamespace())
     api = appmod.create_app(provider="twilio")
     with TestClient(api) as client:
         assert client.get("/health").json() == {"status": "ok"}
@@ -93,6 +94,7 @@ def test_lifespan_runs_private_data_purge(monkeypatch, tmp_path):
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     calls = []
     from heynyc.channels import app as appmod
+    monkeypatch.setattr(appmod, "build_agent", lambda: SimpleNamespace())
     monkeypatch.setattr(appmod, "purge_private_data", lambda data: calls.append(data))
     monkeypatch.setattr(appmod, "purge_channel_data", lambda store: calls.append(store))
     api = appmod.create_app(provider="twilio")
@@ -108,6 +110,7 @@ def test_lifespan_migrates_legacy_private_data_before_purge(monkeypatch, tmp_pat
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     calls = []
     from heynyc.channels import app as appmod
+    monkeypatch.setattr(appmod, "build_agent", lambda: SimpleNamespace())
     monkeypatch.setattr(appmod, "migrate_private_data", lambda data: calls.append(("migrate", data)))
     monkeypatch.setattr(appmod, "purge_private_data", lambda data: calls.append(("purge", data)))
     with TestClient(appmod.create_app(provider="twilio")):

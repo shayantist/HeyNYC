@@ -6,6 +6,8 @@ from __future__ import annotations
 import shutil
 from io import StringIO
 
+from pydantic_ai.models.test import TestModel
+
 from heynyc.channels.base import InboundMessage
 from heynyc.channels.identity import user_key
 from heynyc.channels.orchestrator import handle
@@ -111,7 +113,10 @@ def test_console_sink_ignores_reminder_and_approval_events():
 
 def _console_deps(tmp_path, *, model=None):
     from heynyc.channels.console import build_console_deps
+    from heynyc.core import config
 
+    if model is None and config.HEYNYC_AGENT_RUNTIME == "pydantic":
+        model = TestModel()
     return build_console_deps(console=_recording_console(), model=model, data_dir=tmp_path)
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from heynyc.core import config, events
 from heynyc.core.agent import Agent
@@ -182,7 +182,7 @@ def _load_retriever(data_dir: Path):
     return IndexRetriever(store=open_store(index_path), embedder=default_embedder())
 
 
-def build_console_deps(*, console, model: Optional[str] = None, data_dir: Optional[Path] = None) -> Deps:
+def build_console_deps(*, console, model: Optional[Any] = None, data_dir: Optional[Path] = None) -> Deps:
     """Assemble the console channel's `Deps`, mirroring `app.build_deps` but with a console-native
     agent. The legacy runtime carries the local approver; the Pydantic runtime uses the shared
     durable channel approval flow. Both honor the `--model` override. `--user` identity + the

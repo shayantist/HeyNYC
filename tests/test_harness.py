@@ -383,12 +383,13 @@ def test_repl_temp_flag_isolates_and_randomizes(monkeypatch):
     import tempfile
     from pathlib import Path
 
+    from pydantic_ai.models.test import TestModel
     from rich.console import Console
 
     from heynyc.channels.console import build_console_deps
 
     with tempfile.TemporaryDirectory() as td:
-        deps = build_console_deps(console=Console(), data_dir=Path(td))
+        deps = build_console_deps(console=Console(), model=TestModel(), data_dir=Path(td))
         assert str(Path(td)) in str(deps.sessions_dir)
     import heynyc.__main__ as cli
     src = __import__("inspect").getsource(cli._cmd_repl)

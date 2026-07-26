@@ -135,15 +135,15 @@ def configured_model(model: str) -> Any:
 def build_configured_runtime(
     registry: Registry,
     *,
-    model: str,
+    model: Any,
     index: Any = None,
     current_awareness: Callable[[], Awaitable[str]] | None = None,
 ) -> PydanticRuntimeAdapter:
     return build_runtime(
         registry,
-        model=configured_model(model),
+        model=configured_model(model) if isinstance(model, str) else model,
         tools=build_toolbox(registry, index=index),
         use_module_capabilities=True,
         current_awareness=current_awareness,
-        answer_model_route=model,
+        answer_model_route=model if isinstance(model, str) else None,
     )
