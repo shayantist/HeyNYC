@@ -217,15 +217,13 @@ def build_module_capabilities(
         availability = (
             "Enabled module action tools: "
             + ", ".join(f"`{tool.name}`" for tool in available_tools)
-            + ". These are the only module actions currently available. Do not collect "
-            "inputs for or claim to perform any other module action. An action absent "
-            "from this enabled list is disabled even if earlier instructions describe "
-            "it conditionally."
+            + "."
             if available_tools
-            else "This capability has no module-specific action tools enabled. Do not "
-            "collect inputs for or claim to perform a module action. An action absent "
-            "from this enabled list is disabled even if earlier instructions describe "
-            "it conditionally."
+            else "This capability has no module-specific action tools enabled."
+        )
+        availability += (
+            " Other workflows may be available through the deferred capability catalog. "
+            "Do not collect inputs for or claim to perform an action unless its tool is loaded."
         )
         instructions = "\n\n".join(part for part in (instructions, availability) if part)
         capabilities.append(
@@ -240,12 +238,14 @@ def build_module_capabilities(
     for (module_name, tool_name), available_tools in governed_tools.items():
         tool = governed[tool_name]
         capability_id = f"{module_name}-{tool_name.replace('_', '-')}"
+        purpose = tool.description.partition(". ")[0].rstrip(".")
         capabilities.append(
             Capability(
                 id=capability_id,
                 description=(
-                    f"Load only after the resident explicitly asks to run or accepts "
-                    f"{tool.title or tool.name}. Do not load it merely to offer help."
+                    f"{purpose}. Load only after the resident explicitly asks to "
+                    f"run or accepts {tool.title or tool.name}. Do not load it merely to "
+                    "offer help."
                 ),
                 instructions=(
                     f"The resident explicitly asked for or accepted {tool.title or tool.name}. "

@@ -838,7 +838,10 @@ async def test_governed_workflow_schema_stays_out_of_discovery_capability() -> N
     )
     screening = Tool(
         name="screen_eligibility",
-        description="Run a read-only eligibility estimate",
+        description=(
+            "Run a read-only eligibility estimate. "
+            "This second sentence is schema guidance, not discovery metadata."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -883,6 +886,15 @@ async def test_governed_workflow_schema_stays_out_of_discovery_capability() -> N
 
     assert result.text == "I can screen you if you want."
     assert result.usage["capabilities_used"] == ["benefits"]
+    benefits_capability = next(
+        capability
+        for capability in runtime._agent.root_capability.capabilities
+        if getattr(capability, "id", None) == "benefits"
+    )
+    benefits_instructions = "\n".join(benefits_capability.get_instructions())
+    assert "deferred capability catalog" in benefits_instructions
+    assert "benefits-screen-eligibility" not in benefits_instructions
+    assert "absent from" not in benefits_instructions
 
 
 async def test_governed_workflow_capability_loads_for_explicit_request() -> None:
@@ -898,7 +910,10 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     ])
     screening = Tool(
         name="screen_eligibility",
-        description="Run a read-only eligibility estimate",
+        description=(
+            "Run a read-only eligibility estimate. "
+            "This second sentence is schema guidance, not discovery metadata."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -942,6 +957,15 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
 
     assert result.text == "Let's check."
     assert result.usage["capabilities_used"] == ["benefits-screen-eligibility"]
+    screening_capability = next(
+        capability
+        for capability in runtime._agent.root_capability.capabilities
+        if getattr(capability, "id", None) == "benefits-screen-eligibility"
+    )
+    screening_description = screening_capability.get_description()
+    assert "Run a read-only eligibility estimate" in screening_description
+    assert "schema guidance" not in screening_description
+    assert "explicitly asks to run or accepts" in screening_description
 
 
 async def test_loaded_module_capability_survives_redundant_follow_up_load(
@@ -3878,9 +3902,9 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
     assert capability.get_description() == "Help with SNAP"
     assert capability.get_instructions() == [
         "UNIQUE BENEFITS INSTRUCTIONS\n\n"
-        "This capability has no module-specific action tools enabled. Do not collect "
-        "inputs for or claim to perform a module action. An action absent from this "
-        "enabled list is disabled even if earlier instructions describe it conditionally."
+        "This capability has no module-specific action tools enabled. Other workflows "
+        "may be available through the deferred capability catalog. Do not collect inputs "
+        "for or claim to perform an action unless its tool is loaded."
     ]
 
 
