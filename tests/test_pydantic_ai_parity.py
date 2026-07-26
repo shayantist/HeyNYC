@@ -466,12 +466,25 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
                         "worked": {"type": "boolean"},
                     },
                     "required": ["age"],
-                }
+                },
+                "household": {
+                    "type": "object",
+                    "properties": {
+                        "address": {
+                            "type": "object",
+                            "properties": {
+                                "borough": {"type": "string"},
+                            },
+                            "required": ["borough"],
+                        }
+                    },
+                    "required": ["address"],
+                },
             },
-            "required": ["profile"],
+            "required": ["profile", "household"],
         },
         handler=handler,
-        resident_fact_scope=("/profile",),
+        resident_fact_scope=("/profile", "/household/address"),
     )
     benefit = Tool(
         name="benefit",
@@ -509,13 +522,15 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
                     ToolCallPart("lookup", {}, "lookup-call"),
                     ToolCallPart(
                         "confirm_screen_facts",
-                        {"profile": {"age": 35, "worked": False}},
+                        {
+                            "profile": {"age": 35, "worked": False},
+                            "household": {"address": {"borough": "Queens"}},
+                        },
                         "confirm-call",
                     )
                 ]
             )
         assert model_calls == 4
-        assert "screen" in definitions
         return ModelResponse([TextPart("Food help {cite:S2}; screened {cite:S3}")])
 
     runtime = build_runtime(
@@ -540,7 +555,29 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     assert result.citations["S1"]["title"] == "SNAP"
     assert result.citations["S2"]["title"] == "NYC FoodHelp"
     assert result.citations["S3"]["title"] == "ACCESS NYC screening"
-    assert screened == [{"profile": {"age": 35, "worked": False}}]
+    assert screened == [
+        {
+            "profile": {"age": 35, "worked": False},
+            "household": {"address": {"borough": "Queens"}},
+        }
+    ]
+    assert restored._resident_facts == {
+        "/profile/age": ResidentFact(
+            value=35,
+            source_turn_id="turn-2",
+            status="confirmed",
+        ),
+        "/profile/worked": ResidentFact(
+            value=False,
+            source_turn_id="turn-2",
+            status="confirmed",
+        ),
+        "/household/address/borough": ResidentFact(
+            value="Queens",
+            source_turn_id="turn-2",
+            status="confirmed",
+        ),
+    }
     assert result.usage["executed_tool_calls"] == ["confirm_screen_facts"]
     assert len(result.usage["model_request_ms"]) == result.usage["requests"]
     assert model_calls == 4
@@ -898,7 +935,10 @@ async def test_governed_workflow_schema_stays_out_of_discovery_capability() -> N
 
 
 async def test_governed_workflow_capability_loads_for_explicit_request() -> None:
+    screened: list[dict] = []
+
     async def handler(args: dict, ctx: ToolContext) -> str:
+        screened.append(args)
         return "done"
 
     registry = Registry([
@@ -941,8 +981,21 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
                     "load-screening",
                 )
             ])
+        if model_calls == 2:
+            assert "screen_eligibility" not in definitions
+            assert definitions["confirm_screen_eligibility_facts"].defer_loading is False
+            return ModelResponse([
+                ToolCallPart(
+                    "confirm_screen_eligibility_facts",
+                    {
+                        "household": {"householdSize": 1},
+                        "persons": [{"age": 35}],
+                    },
+                    "confirm-screening",
+                )
+            ])
+        assert model_calls == 3
         assert "screen_eligibility" not in definitions
-        assert definitions["confirm_screen_eligibility_facts"].defer_loading is False
         return ModelResponse([TextPart("Let's check.")])
 
     runtime = PydanticRuntimeAdapter(
@@ -953,10 +1006,22 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
         guard_grounding=False,
     )
 
-    result = await runtime.run("Yes, screen me.")
+    conversation = runtime.conversation()
+    pending = await conversation.send("Yes, screen me.")
+    result = await conversation.resume_approvals({"confirm-screening": True})
 
+    assert pending.status == "approval_required"
+    assert pending.usage["capabilities_used"] == ["benefits-screen-eligibility"]
     assert result.text == "Let's check."
-    assert result.usage["capabilities_used"] == ["benefits-screen-eligibility"]
+    assert result.usage["executed_tool_calls"] == [
+        "confirm_screen_eligibility_facts"
+    ]
+    assert screened == [
+        {
+            "household": {"householdSize": 1},
+            "persons": [{"age": 35}],
+        }
+    ]
     screening_capability = next(
         capability
         for capability in runtime._agent.root_capability.capabilities

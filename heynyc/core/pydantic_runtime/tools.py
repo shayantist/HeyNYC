@@ -16,6 +16,8 @@ from pydantic_ai.tools import Tool as PydanticTool
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 
+_MISSING = object()
+
 
 def _fact_leaves(value: object, path: str) -> list[tuple[str, object]]:
     if isinstance(value, dict):
@@ -36,20 +38,43 @@ def _fact_leaves(value: object, path: str) -> list[tuple[str, object]]:
     return [(path, value)]
 
 
+def _pointer_value(value: object, pointer: str) -> object:
+    if not pointer.startswith("/"):
+        return _MISSING
+    for token in pointer[1:].split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, dict) and token in value:
+            value = value[token]
+        elif isinstance(value, list) and token.isdecimal():
+            index = int(token)
+            if index >= len(value):
+                return _MISSING
+            value = value[index]
+        else:
+            return _MISSING
+    return value
+
+
+def _scoped_fact_leaves(
+    args: dict[str, object],
+    scopes: Sequence[str],
+) -> list[tuple[str, object]]:
+    return [
+        leaf
+        for scope in scopes
+        if (value := _pointer_value(args, scope)) is not _MISSING
+        for leaf in _fact_leaves(value, scope)
+    ]
+
+
 def _resident_fact_errors(
     args: dict[str, object],
     ctx: ToolContext,
     scopes: Sequence[str],
 ) -> list[str]:
-    leaves = [
-        leaf
-        for scope in scopes
-        if scope.removeprefix("/") in args
-        for leaf in _fact_leaves(args[scope.removeprefix("/")], scope)
-    ]
     return [
         path
-        for path, value in leaves
+        for path, value in _scoped_fact_leaves(args, scopes)
         if (fact := ctx.resident_facts.get(path)) is None
         or type(fact.value) is not type(value)
         or fact.value != value
@@ -126,16 +151,12 @@ def resident_fact_confirmation_tool(tool: Tool) -> Tool:
 
     async def confirm(args: dict, ctx: ToolContext) -> str:
         source_turn_id = f"turn-{len(ctx.user_turns)}"
-        for scope in tool.resident_fact_scope:
-            key = scope.removeprefix("/")
-            if key not in args:
-                continue
-            for path, value in _fact_leaves(args[key], scope):
-                ctx.resident_facts[path] = ResidentFact(
-                    value=value,
-                    source_turn_id=source_turn_id,
-                    status="confirmed",
-                )
+        for path, value in _scoped_fact_leaves(args, tool.resident_fact_scope):
+            ctx.resident_facts[path] = ResidentFact(
+                value=value,
+                source_turn_id=source_turn_id,
+                status="confirmed",
+            )
         return await tool.handler(args, ctx)
 
     return Tool(
@@ -185,14 +206,12 @@ def build_module_capabilities(
     governed_tools: dict[tuple[str, str], list[PydanticTool]] = {}
     shared_tools: list[PydanticTool] = []
     for tool in tools.values():
+        if tool.name in governed:
+            continue
         adapted = adapt_tool(tool)
         if tool.module in modules:
             root = root_name(tool.module)
-            workflow = (
-                tool.name
-                if tool.name in governed
-                else confirmation_for.get(tool.name)
-            )
+            workflow = confirmation_for.get(tool.name)
             if workflow:
                 governed_tools.setdefault((root, workflow), []).append(adapted)
             else:
@@ -250,8 +269,8 @@ def build_module_capabilities(
                 instructions=(
                     f"The resident explicitly asked for or accepted {tool.title or tool.name}. "
                     "Gather only the schema's required resident facts, a few at a time. "
-                    "Omit unknown optional facts and use the confirmation tool before the "
-                    "governed read-only check."
+                    "Omit unknown optional facts. Once the required facts are present, use "
+                    "the confirmation tool; after approval it runs the governed read-only check."
                 ),
                 tools=available_tools,
                 defer_loading=True,
