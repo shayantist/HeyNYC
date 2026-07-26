@@ -113,6 +113,11 @@ def load_cases(registry: Registry, global_path: Optional[Path] = None) -> list[E
                     tags=list(entry.get("tags", []) or []),
                 )
             )
+    by_id = {case.id: case for case in cases}
+    for case in cases:
+        base = by_id.get(case.base)
+        if case.test_type == "INV" and base and not case.utility_criterion:
+            case.utility_criterion = base.utility_criterion
     return cases
 
 

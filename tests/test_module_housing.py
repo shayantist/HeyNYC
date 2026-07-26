@@ -519,6 +519,7 @@ def test_housing_module_loads_with_tool_and_eval():
     module = next((m for m in registry.modules if m.name == "housing"), None)
     assert module is not None
     assert module.category == "housing"
+    assert "Do not describe this as recent reports" in module.prompt
     tool_names = {t.name for t in registry.load_module_tools()}
     assert "hpd_building_lookup" in tool_names
     assert "hpd_litigation_lookup" in tool_names

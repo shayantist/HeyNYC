@@ -127,9 +127,11 @@
     provide, how to report it (311 / HPD complaint, Housing Court), and that a whole-block outage can
     be a water-main problem. Fail if the answer serves the hot-water frame instead, for example the
     120°F hot-water minimum or the heat-season temperature standard, which is the opposite question.
+    Also fail an unsupported offer to check recent building reports or current conditions; the
+    available address lookup establishes only current open HPD complaints and violations.
   notes: Must call housing_guidance(topic="no_water"), never no_heat. Regression for F070, where a
     cold-water complaint was answered with the hot-water 120°F standard. The resident's own noun
-    decides the frame, so this holds in any language (the matched Spanish/Bengali case must pass too).
+    decides the frame; the matched Spanish case must preserve the same distinction.
 
 - id: housing_no_cold_water__es
   query: "¿Es normal que mi edificio no tenga agua fría hoy?"

@@ -244,7 +244,8 @@ def test_load_cases_parses_taxonomy(tmp_path):
     }))
     (mod / "eval.yaml").write_text(yaml.safe_dump([
         {"id": "demo_ground", "query": "where?", "capability": "dataset_grounding",
-         "test_type": "MFT", "invariants": {"must_ground": True, "must_not_fabricate": True}},
+         "test_type": "MFT", "invariants": {"must_ground": True, "must_not_fabricate": True},
+         "utility_criterion": "Return a useful grounded place"},
         {"id": "demo_inv", "query": "where???", "test_type": "INV",
          "base": "demo_ground", "perturbation": "typo", "expect_same_outcome_as_base": True,
          "language": "es"},
@@ -256,6 +257,7 @@ def test_load_cases_parses_taxonomy(tmp_path):
     assert cases["demo_inv"].base == "demo_ground"
     assert cases["demo_inv"].perturbation == "typo"
     assert cases["demo_inv"].language == "es"
+    assert cases["demo_inv"].utility_criterion == "Return a useful grounded place"
 
 
 async def test_run_case_captures_messages():
