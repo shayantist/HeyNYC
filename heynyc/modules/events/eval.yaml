@@ -43,6 +43,10 @@
   capability: grounding
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [F057, F065, general-chat, must-win]
+  utility_criterion: >-
+    Recommend only events the resident can still attend. Exclude cancelled or postponed records,
+    and do not recommend a same-day event whose known start time has already passed. If an event's
+    end time is unknown after it started, label that uncertainty instead of calling it attendable.
   notes: Ticketmaster status and NYC Parks cancellation-title signals must be honored before
     results are ranked. Cancelled or postponed records must not be recommended as happening.
 

@@ -87,6 +87,7 @@ def test_cross_module_cases_declare_resident_outcomes():
         "restroom_open_now",
         "food_holiday_hours",
         "events_groundable_weekend",
+        "events_cancelled_not_recommended",
         "clinic_immigration_safe_cited",
         "benefits_snap_work_rule_loss_spanish",
     }
@@ -95,3 +96,5 @@ def test_cross_module_cases_declare_resident_outcomes():
     location = by_id["drinking_fountain_cross_module"].utility_criterion.lower()
     assert "directions" in location
     assert "scheduled" in location
+    events = by_id["events_cancelled_not_recommended"].utility_criterion.lower()
+    assert "already passed" in events
