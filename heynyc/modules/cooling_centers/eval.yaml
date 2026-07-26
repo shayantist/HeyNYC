@@ -49,12 +49,22 @@
   tags: [F072, must-win]
   utility_criterion: >-
     Serve a parent asking about children. Any older-adult (Older Adult Center / age-restricted) result
-    must be flagged as age-restricted, not offered as if all-ages, and the answer must surface an
-    all-ages option (a library, pool, or spray shower) from the tool output. Fail if the reply hands
-    the parent only older-adults-only senior centers with no all-ages alternative (the F072 failure).
+    must be flagged as age-restricted, not offered as if it accepts children, and the answer must
+    surface an option whose City row is not marked age-restricted. Do not infer broader child
+    suitability than the source establishes. Fail if the reply hands the parent only
+    older-adults-only centers with no unrestricted alternative (the F072 failure).
   notes: Regression for F072, where a parent was given two "older adults only" senior centers and no
-    pools/spray showers. The tool annotates each row with its declared audience and, when older-adult
-    rows dominate, cites an all-ages lane; the model must carry both through in natural phrasing.
+    usable alternative. The tool annotates each row with its declared audience and, when
+    older-adult rows dominate, cites an option the City row does not mark age-restricted.
+
+- id: cooling_kids_all_ages__inv_bengali
+  query: "এই গরমে বাচ্চাদের নিয়ে ফোর্ডহ্যাম রোডের কাছে কোথায় একটু ঠান্ডায় থাকতে পারি?"
+  capability: robustness
+  test_type: INV
+  base: cooling_kids_all_ages
+  perturbation: translation_bn
+  expect_same_outcome_as_base: true
+  tags: [F072, must-win]
 
 # --- INV: phrasing/robustness invariance (same outcome as base) ------------
 - id: cooling_nearest_columbia__inv_slang

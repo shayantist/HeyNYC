@@ -1,7 +1,7 @@
 name: cooling_centers
 category: health
 description: >-
-  Find activated NYC cooling centers and other indoor or outdoor Cool Options,
+  Find activated NYC cooling centers and other currently listed Cool Options,
   with current City-listed hours, access details, distance, and directions.
 keywords:
   - cooling
@@ -45,9 +45,11 @@ prompt: |
   specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
   and kind="all" for a general place to cool off. Pass `on` as an ISO date whenever the resident
   names a day or date; omit it only for a current right-now lookup. Pass limit when the user
-  requests a count.
+  requests a count. Use audience="not_age_restricted" when the resident needs options without
+  a City-listed age restriction, including when asking for children. This field does not prove
+  child-specific amenities or suitability.
   Preserve the tool's distinction between activated cooling centers and other Cool Options,
-  including outdoor options. Report its scheduled status, hours, access details, and citations.
+  and report its scheduled status, hours, access details, and citations.
   City-listed weekly hours are not a guarantee of holiday hours or entry, so preserve the
   call-ahead warning.
   If no activated center is returned, offer other indoor Cool Options instead of merely linking

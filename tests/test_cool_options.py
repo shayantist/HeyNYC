@@ -271,10 +271,9 @@ async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch
 @pytest.mark.asyncio
 async def test_older_adult_centers_annotated_and_all_ages_note(monkeypatch):
     # F072: a parent asking where to take kids must not be handed only "older adults only"
-        # senior centers with no all-ages option. Rows the dataset itself marks age-restricted
-        # carry their restriction as language-independent data the model can translate,
-    # and when such rows dominate the shown results the tool surfaces an all-ages option it
-    # can cite (here the library), plus the pools/spray-showers/libraries category note.
+    # senior centers. Rows the dataset itself marks age-restricted carry their restriction
+    # as language-independent data the model can translate, and when such rows dominate the
+    # shown results the tool surfaces a cited option not marked age-restricted.
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.7580, -73.9780, text)
 
@@ -306,17 +305,25 @@ async def test_older_adult_centers_annotated_and_all_ages_note(monkeypatch):
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Central Park", "kind": "cooling_center", "limit": 2}, ctx
+        {
+            "near": "Central Park",
+            "kind": "cooling_center",
+            "audience": "not_age_restricted",
+            "limit": 2,
+        },
+        ctx,
     )
 
-    # The two nearest are older-adult centers; each carries its declared restriction as data.
-    assert "Age-restricted" in output
-    assert "age-restricted" in output.lower()
-    # They dominate the shown results, so an all-ages lane is surfaced and cited (the library),
-    # with the general all-ages category note.
-    assert "all ages" in output.lower()
-    assert "nearest all-ages option" in output.lower()
+    assert "Carter Older Adult Center" not in output
+    assert "Dyckman Older Adult Center" not in output
+    assert "City row is not marked age-restricted" in output
+    assert "pools" not in output.lower()
+    assert "spray showers" not in output.lower()
     assert "Morningside Library" in output
+    assert (
+        cooling.get_tools()[0].parameters["properties"]["audience"]["enum"]
+        == ["any", "not_age_restricted"]
+    )
 
 
 @pytest.mark.asyncio

@@ -166,6 +166,7 @@ def _item(record: dict) -> dict | None:
         "type": item_type,
         "audience": audience,
         "age_restricted": age_restricted,
+        "not_age_restricted": age_restriction.lower() == "no",
         "lat": lat,
         "lon": lon,
         "active": active,
@@ -191,6 +192,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         return "The NYC Cool Options finder was unavailable, so I cannot safely list locations."
 
     kind = str(args.get("kind", "all"))
+    audience = str(args.get("audience", "any"))
     items = []
     for record in records:
         space_type = str(record.get("Space_type") or "").strip().lower()
@@ -199,7 +201,9 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         if kind == "indoor" and str(record.get("Location_type") or "").strip().lower() != "indoor":
             continue
         item = _item(record)
-        if item:
+        if item and (
+            audience != "not_age_restricted" or item["not_age_restricted"]
+        ):
             items.append(item)
 
     seen: set[str] = set()
@@ -311,6 +315,8 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             # the model translates "Older Adult Center" / "age-restricted" naturally.
             label = item["audience"] or "Age-restricted"
             lines.append(f"   Audience: {label} (age-restricted, not open to all ages)")
+        elif audience == "not_age_restricted":
+            lines.append(f"   Audience: City row is not marked age-restricted {{cite:{cite}}}")
         if item["address"]:
             lines.append(f"   {item['address']}")
         if planning_ahead and item["target_hours"]:
@@ -339,38 +345,6 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             lines.append(f"   Phone: {item['phone']}")
         lines.append(f"   Map: {maps_link(item['lat'], item['lon'])}")
 
-    # F072: when the shown results are dominated by age-restricted (older-adult) centers, say so and
-    # point to an all-ages option the tool can cite. Driven by the rows' declared audience, not the
-    # query wording, so it holds in any language and never leaves a parent with only senior centers.
-    restricted_shown = [item for item in selected if item["age_restricted"]]
-    if restricted_shown and len(restricted_shown) * 2 >= len(selected):
-        shown_ids = {id(item) for item in selected}
-        all_ages = next(
-            (
-                item
-                for item in unique
-                if not item["age_restricted"]
-                and (
-                    item["target_open"] is True
-                    if planning_ahead
-                    else item["open_now"] is not False
-                )
-                and id(item) not in shown_ids
-            ),
-            None,
-        )
-        note = (
-            "Some of these are age-restricted older-adult centers. Public libraries, pools, and "
-            "spray showers are open to all ages, including children and families."
-        )
-        if all_ages is not None:
-            cite = _citation(ctx, all_ages)
-            note += (
-                f" The nearest all-ages option here is {all_ages['name']}, {all_ages['type']}, "
-                f"{miles(all_ages['distance_m']):.2f} miles {{cite:{cite}}}."
-            )
-        lines.append(note)
-
     lines.append(
         "Weekly hours, holiday schedules, one-off closures, and access policies can change. "
         "The City advises calling ahead before visiting."
@@ -386,7 +360,9 @@ def get_tools() -> list[Tool]:
                 "Find live NYC Cool Options. Use kind='cooling_center' for activated centers, "
                 "kind='indoor' for indoor A/C options, or kind='all' for any heat-relief option. "
                 "Pass `on` when the resident asks about a specific day or date; the result will "
-                "rank and report that date's City-listed weekly schedule instead of today's status."
+                "rank and report that date's City-listed weekly schedule instead of today's status. "
+                "Use audience='not_age_restricted' when the resident needs options without a City "
+                "age restriction, including when asking for children."
             ),
             parameters={
                 "type": "object",
@@ -397,6 +373,16 @@ def get_tools() -> list[Tool]:
                         "enum": ["all", "indoor", "cooling_center"],
                         "default": "all",
                         "description": "Type of heat-relief location requested",
+                    },
+                    "audience": {
+                        "type": "string",
+                        "enum": ["any", "not_age_restricted"],
+                        "default": "any",
+                        "description": (
+                            "Use not_age_restricted when the resident needs options without a "
+                            "City-listed age restriction. This does not prove child-specific "
+                            "amenities or suitability."
+                        ),
                     },
                     "limit": {
                         "type": "integer",
