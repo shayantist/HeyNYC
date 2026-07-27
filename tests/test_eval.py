@@ -462,6 +462,148 @@ async def test_run_repeated_runs_k_times():
     assert calls["n"] == 3
 
 
+async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import heynyc.__main__ as cli
+    import heynyc.eval as eval_pkg
+    import heynyc.eval.bench as bench
+
+    case = _case(id="repeat_saved")
+    initial = _result(case, text="initial")
+    initial.usage = {
+        "cost_usd": 0.01,
+        "input_tokens": 10,
+        "output_tokens": 1,
+        "latency_ms": 100,
+        "n_model_calls": 2,
+        "n_tool_calls": 1,
+    }
+    extras = [_result(case, text=f"extra-{index}") for index in range(2)]
+    for result in extras:
+        result.usage = {
+            "cost_usd": 0.01,
+            "input_tokens": 10,
+            "output_tokens": 1,
+            "latency_ms": 100,
+            "n_model_calls": 2,
+            "n_tool_calls": 1,
+        }
+
+    async def fake_run_all(factory, cases, reminders=None):
+        return [initial]
+
+    async def fake_run_repeated(factory, target, k, reminders=None):
+        assert target is case
+        assert k == 2
+        return extras
+
+    monkeypatch.setattr(
+        cli.Registry,
+        "discover",
+        lambda *args, **kwargs: SimpleNamespace(modules={"m": object()}),
+    )
+    monkeypatch.setattr(cli, "_load_retriever", lambda required=False: None)
+    monkeypatch.setattr(eval_pkg, "load_cases", lambda registry: [case])
+    monkeypatch.setattr(eval_pkg, "run_all", fake_run_all)
+    monkeypatch.setattr(eval_pkg, "run_repeated", fake_run_repeated)
+    monkeypatch.setattr(bench, "build_eval_agent", lambda *args, **kwargs: object())
+    writes = []
+    real_write_run = eval_pkg.write_run
+
+    def tracked_write_run(directory, *args, **kwargs):
+        writes.append(directory)
+        return real_write_run(directory, *args, **kwargs)
+
+    monkeypatch.setattr(eval_pkg, "write_run", tracked_write_run)
+
+    import pytest
+
+    with pytest.raises(SystemExit, match="0"):
+        await cli._cmd_eval(
+            use_api_judge=False,
+            repeat=3,
+            out=str(tmp_path),
+            case_ids=[case.id],
+        )
+
+    repeat_root = tmp_path / "repeats" / case.id
+    saved = [
+        json.loads((repeat_root / f"run-{index:02d}" / "traces" / f"{case.id}.json").read_text())
+        for index in range(1, 4)
+    ]
+    assert [item["final_text"] for item in saved] == ["initial", "extra-0", "extra-1"]
+    metadata = json.loads((tmp_path / "report.json").read_text())["metadata"]
+    assert metadata["input_tokens"] == 30
+    assert metadata["output_tokens"] == 3
+    assert metadata["candidate_cost_usd"] == 0.03
+    assert metadata["latency_ms"] == 300
+    assert metadata["n_model_calls"] == 6
+    assert metadata["n_tool_calls"] == 3
+    assert writes[-1] == tmp_path
+
+
+async def test_eval_repeat_failure_blocks_the_run_and_report(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import heynyc.__main__ as cli
+    import heynyc.eval as eval_pkg
+    import heynyc.eval.bench as bench
+
+    case = _case(id="repeat_failure", expect_tools=["needed"])
+    initial = _result(case, text="initial", tools=["needed"])
+    failed_repeat = _result(case, text="missed tool")
+
+    async def fake_run_all(factory, cases, reminders=None):
+        return [initial]
+
+    async def fake_run_repeated(factory, target, k, reminders=None):
+        return [failed_repeat]
+
+    monkeypatch.setattr(
+        cli.Registry,
+        "discover",
+        lambda *args, **kwargs: SimpleNamespace(modules={"m": object()}),
+    )
+    monkeypatch.setattr(cli, "_load_retriever", lambda required=False: None)
+    monkeypatch.setattr(eval_pkg, "load_cases", lambda registry: [case])
+    monkeypatch.setattr(eval_pkg, "run_all", fake_run_all)
+    monkeypatch.setattr(eval_pkg, "run_repeated", fake_run_repeated)
+    monkeypatch.setattr(bench, "build_eval_agent", lambda *args, **kwargs: object())
+
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        await cli._cmd_eval(
+            use_api_judge=False,
+            repeat=2,
+            out=str(tmp_path),
+            case_ids=[case.id],
+        )
+
+    assert exc.value.code == 1
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["passed"] is False
+    assert report["metadata"]["repeat"]["reliable_case_count"] == 0
+    assert "(FAIL)" in (tmp_path / "report.txt").read_text()
+
+
+def test_repeat_count_must_be_positive():
+    import argparse
+
+    import pytest
+
+    from heynyc.__main__ import _positive_int
+
+    assert _positive_int("3") == 3
+    with pytest.raises(argparse.ArgumentTypeError):
+        _positive_int("0")
+    with pytest.raises(argparse.ArgumentTypeError):
+        _positive_int("-1")
+
+
 async def test_gate_with_injected_judge():
     case = _case(id="j", abstain=True)
     agent = _FakeAgent("I don't have that.", [], {})
