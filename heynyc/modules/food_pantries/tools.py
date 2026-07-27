@@ -93,8 +93,6 @@ def _resident_supplied_origin(near: str, query: str, user_turns: tuple[str, ...]
     for candidate in candidates:
         tokens = [_ORIGIN_TOKEN_ALIASES.get(token.lower(), token.lower())
                   for token in _ORIGIN_TOKEN_RE.findall(candidate)]
-        if len(tokens) < 2 and len(parts) > 1:
-            continue
         for start in range(len(turn_tokens) - len(tokens) + 1):
             if tokens != turn_tokens[start:start + len(tokens)]:
                 continue

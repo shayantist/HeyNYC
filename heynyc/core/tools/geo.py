@@ -672,7 +672,13 @@ def _resolution_note(query: str, point: GeoPoint) -> str:
         zip5 = z.group() if z else point.label
         return (f"(Resolved '{query}' to the center of ZIP {zip5}; "
                 f"for a precise spot, give a street address.)")
-    source = "NYC GeoSearch" if point.match_type == "geosearch" else "map search"
+    source = (
+        "NYC GeoSearch"
+        if point.match_type == "geosearch"
+        else "official NYC neighborhood data"
+        if point.match_type == "nta"
+        else "map search"
+    )
     note = f"(Resolved '{query}' to '{point.label}' via {source}."
     if _looks_like_intersection(query) and point.match_type == "geosearch":
         # Fell back to the strict geocoder for an intersection, least reliable case.

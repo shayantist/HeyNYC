@@ -7,9 +7,9 @@ Deterministic city DATA consulted before any fuzzy geocoder, the same shape as t
 ZCTA centroids. Keys are pre-normalized (casefold, no apostrophes, collapsed spaces) and cover:
 
 - every full NTA name (ntatype 0, residential neighborhoods only)
-- each multiword part of a compound name ("Upper West Side-Lincoln Square" also keys
-  "upper west side" and "lincoln square"); single-word parts are skipped because they are
-  genuinely ambiguous ("Bedford" could be Bedford-Stuyvesant or Bedford Park)
+- each unique part of a compound name ("Upper West Side-Lincoln Square" also keys
+  "upper west side" and "lincoln square"); repeated single-word parts are skipped because they
+  are ambiguous ("Bedford" could refer to more than one NTA)
 - a curated alias table for the short forms residents actually text (uws, fidi, bed-stuy...)
 
 A key claimed by more than one NTA gets the average of the member centroids (they share the
@@ -71,6 +71,7 @@ def main() -> int:
 
     # key -> list of (borough, lat, lon, ntaname)
     entries: dict[str, list[tuple[str, float, float, str]]] = {}
+    single_parts: dict[str, list[tuple[dict, float, float]]] = {}
 
     def add(key: str, row: dict, lat: float, lon: float) -> None:
         entries.setdefault(key, []).append((row["boroname"], lat, lon, row["ntaname"]))
@@ -81,8 +82,17 @@ def main() -> int:
         add(full, row, lat, lon)
         for part in row["ntaname"].split("-"):
             key = normalize(part)
-            if key != full and len(key.split()) >= 2:
+            if key == full:
+                continue
+            if len(key.split()) >= 2:
                 add(key, row, lat, lon)
+            elif len(key) > 2:
+                single_parts.setdefault(key, []).append((row, lat, lon))
+
+    for key, matches in single_parts.items():
+        if len(matches) == 1:
+            row, lat, lon = matches[0]
+            add(key, row, lat, lon)
 
     # Aliases resolve against the keys built above; fail loudly if a target vanished.
     for alias, target in ALIASES.items():

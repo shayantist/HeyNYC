@@ -326,6 +326,28 @@ async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_resident_lan
     assert seen == ["Union Square"]
 
 
+async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_one_word_neighborhood(
+    monkeypatch,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="Is there a food pantry near Flushing?",
+        user_turns=("Is there a food pantry near Flushing?",),
+    )
+
+    await get_tools()[0].handler({"near": "Flushing, Queens, NYC"}, ctx)
+
+    assert seen == ["Flushing"]
+
+
 async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
