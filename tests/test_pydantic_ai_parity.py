@@ -2120,6 +2120,74 @@ async def test_approval_resume_honors_runtime_request_limit() -> None:
     assert result.hit_max_iters
     assert result.status == "max_turns"
     assert result.usage["requests"] == 1
+    assert result.diagnostics == {
+        "semantic_verifier_runs": [],
+        "validation_rejections": [
+            {"attempt": 1, "stage": "unknown_citation"},
+        ],
+    }
+
+
+async def test_successful_approval_resume_keeps_retry_diagnostics() -> None:
+    async def handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official result",
+            kind="WEB",
+            snippet="The approved action finished.",
+        )
+        return f"The approved action finished. {{cite:{citation_id}}}"
+
+    action = Tool(
+        name="act",
+        description="Complete an approved action",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        requires_approval=True,
+    )
+    calls = 0
+
+    async def model(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("act", {}, "act-call")])
+        citation_id = "unknown" if calls == 2 else "S1"
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [
+                        {
+                            "text": "The approved action finished.",
+                            "citation_ids": [citation_id],
+                        }
+                    ]
+                },
+                f"final-{calls}",
+            )
+        ])
+
+    conversation = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"act": action},
+        structured_grounding=True,
+    ).conversation()
+    await conversation.send("Do it")
+
+    result = await conversation.resume_approvals({"act-call": True})
+
+    assert result.status == "success"
+    assert result.diagnostics == {
+        "semantic_verifier_runs": [],
+        "validation_rejections": [
+            {"attempt": 1, "stage": "unknown_citation"},
+        ],
+    }
 
 
 def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
@@ -2451,7 +2519,15 @@ async def test_eval_retains_usage_after_output_retry_failure() -> None:
     assert result.usage["retry_kinds"] == ["unknown_citation"] * 2
     assert result.turn_results[0].status == "error"
     assert "resident-secret" not in json.dumps(result.usage)
-    assert result.diagnostics == {"semantic_verifier_runs": []}
+    assert result.diagnostics == {
+        "semantic_verifier_runs": [],
+        "validation_rejections": [
+            {"attempt": 1, "stage": "unknown_citation"},
+            {"attempt": 2, "stage": "unknown_citation"},
+            {"attempt": 3, "stage": "unknown_citation"},
+        ],
+    }
+    assert "resident-secret" not in json.dumps(result.diagnostics)
 
 
 async def test_runtime_adapter_conversation_preserves_history_through_eval_runner() -> (

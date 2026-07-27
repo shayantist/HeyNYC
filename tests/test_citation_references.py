@@ -44,6 +44,28 @@ async def test_pydantic_plain_output_accepts_registered_citation_id():
     assert await runtime._validate_grounding(context, output) == output
 
 
+async def test_pydantic_plain_output_rejects_discovery_citation_id():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://www.nyc.gov/example",
+        title="Search result",
+        snippet="A truncated discovery snippet",
+        kind="WEB",
+        provenance={"evidence_grade": "discovery"},
+    )
+    runtime = object.__new__(PydanticRuntimeAdapter)
+    runtime._semantic_verifier = None
+    context = SimpleNamespace(
+        deps=ToolContext(citations=citations, registry=None)
+    )
+
+    with pytest.raises(ModelRetry, match="authoritative source"):
+        await runtime._validate_grounding(
+            context,
+            f"An unsupported completion of the snippet. {{cite:{citation_id}}}",
+        )
+
+
 async def test_eval_rejects_unknown_citation_id():
     result = CaseResult(
         case=EvalCase(id="unknown-citation", module="test", query="Where is it?"),
@@ -61,6 +83,29 @@ async def test_eval_rejects_unknown_citation_id():
     assert check.passed is False
     assert check.blocking is True
     assert check.detail == "unknown citation ids: S4"
+
+
+async def test_eval_rejects_discovery_citation_id():
+    result = CaseResult(
+        case=EvalCase(id="discovery-citation", module="test", query="Is that confirmed?"),
+        text="The search snippet confirms it. {cite:S1}",
+        citations={
+            "S1": {
+                "kind": "WEB",
+                "provenance": {"evidence_grade": "discovery"},
+            },
+        },
+    )
+
+    checks = await run_checks(result, link_checker=lambda _: None)
+    check = next(
+        candidate for candidate in checks
+        if candidate.name == "citation_references"
+    )
+
+    assert check.passed is False
+    assert check.blocking is True
+    assert check.detail == "discovery-only citation ids: S1"
 
 
 async def test_eval_rejects_malformed_citation_id():

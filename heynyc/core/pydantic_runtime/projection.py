@@ -39,6 +39,7 @@ class GroundedBlock(BaseModel):
     )
     citation_ids: list[str] = Field(
         min_length=1,
+        max_length=8,
         description="IDs of retrieved sources that support the whole claim.",
     )
 
@@ -54,7 +55,10 @@ class GroundedAnswer(BaseModel):
             "or dates."
         ),
     )
-    grounded_blocks: list[GroundedBlock] = Field(default_factory=list)
+    grounded_blocks: list[GroundedBlock] = Field(
+        default_factory=list,
+        max_length=12,
+    )
     follow_up_question: str = Field(
         default="",
         max_length=240,
@@ -288,11 +292,16 @@ def _captured_usage(messages: Sequence[ModelMessage]) -> RunUsage:
 
 def _retry_kinds(messages: Sequence[ModelMessage]) -> list[str]:
     prefixes = {
+        "Answer with at least one grounded block": "missing_grounded_blocks",
         "Use only citation IDs returned": "unknown_citation",
         "When a grounded block includes legacy citation markers": "citation_mismatch",
         "Do not write citation markers": "citation_marker",
-        "Return a complete replacement answer to the resident's full request": "grounding",
+        "Search snippets are discovery only": "discovery_only",
+        "Return a complete replacement answer to the resident's full request": (
+            "deterministic_grounding"
+        ),
         "Return a complete replacement answer. Keep every supported outcome": "semantic_grounding",
+        "The resident wrote primarily": "reply_script",
     }
     return [
         next(

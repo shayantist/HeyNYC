@@ -29,7 +29,31 @@ async def test_web_search_filters_to_allowlist_and_cites():
     assert "Official" in out
     assert "Spam" not in out
     assert ctx.citations.mapping()["S1"]["kind"] == "WEB"
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "discovery",
+    }
     assert len(ctx.citations) == 1
+
+
+async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
+    snippet = "x" * 250 + " decisive detail"
+
+    async def fake_search(query, domains, recency=None):
+        return [
+            {
+                "title": "Official",
+                "url": "https://www.nyc.gov/snap",
+                "snippet": snippet,
+            },
+        ]
+
+    tool = web_search_tools(ALLOW, search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    out = await tool.handler({"query": "current SNAP rule"}, ctx)
+
+    assert "decisive detail" in ctx.citations.mapping()["S1"]["snippet"]
+    assert "call official_sources" in out
+    assert "beyond these snippets" in out
 
 
 async def test_web_search_no_results_abstains():
@@ -62,12 +86,16 @@ async def test_web_search_ranks_by_tier_and_disclaims_community():
     allow = ["nycgovparks.org", "eventbrite.com"]
     tool = web_search_tools(allow, source_tiers=tiers, search_fn=fake_search)[0]  # default web_search
 
-    out = await _run(tool, "free events")
+    ctx = _ctx()
+    out = await tool.handler({"query": "free events"}, ctx)
     # authoritative ranked above community:
     assert out.index("nycgovparks.org") < out.index("eventbrite.com")
     # community carries the disclaimer:
     assert "⚠️" in out
     assert "confirm before you go" in out.lower()
+    citations = ctx.citations.mapping()
+    assert citations["S1"]["provenance"] == {"evidence_grade": "discovery"}
+    assert citations["S2"]["provenance"] == {}
 
 
 async def test_web_search_still_hard_gates_ugc_off_allowlist():

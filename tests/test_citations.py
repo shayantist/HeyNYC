@@ -29,11 +29,40 @@ def test_identical_source_dedupes():
     assert len(reg) == 1
 
 
+def test_same_url_with_different_evidence_does_not_reuse_stale_citation():
+    reg = CitationRegistry()
+    prefix = "same opening " * 12
+
+    first = reg.register("https://a.gov", snippet=prefix + "old detail", kind="WEB")
+    second = reg.register("https://a.gov", snippet=prefix + "new detail", kind="WEB")
+
+    assert first != second
+    assert reg.mapping()[second]["snippet"].endswith("new detail")
+
+
 def test_same_url_different_kind_is_distinct():
     reg = CitationRegistry()
     a = reg.register("https://a.gov", snippet="x", kind="DATA")
     b = reg.register("https://a.gov", snippet="x", kind="WEB")
     assert a != b
+
+
+def test_same_web_evidence_with_different_grade_is_distinct():
+    reg = CitationRegistry()
+    discovery = reg.register(
+        "https://a.gov",
+        snippet="same",
+        kind="WEB",
+        provenance={"evidence_grade": "discovery"},
+    )
+    authoritative = reg.register(
+        "https://a.gov",
+        snippet="same",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+
+    assert discovery != authoritative
     assert len(reg) == 2
 
 
@@ -186,3 +215,32 @@ def test_legacy_nyc_gov_hosts_normalize_at_registration():
     assert registry.mapping()[cid]["url"] == "https://www.nyc.gov/site/hra/help/snap.page?x=1"
     other = registry.register("https://home4.nyc.gov/site/hpd/x.page")
     assert registry.mapping()[other]["url"] == "https://home4.nyc.gov/site/hpd/x.page"
+
+
+def test_legacy_nyc_gov_hosts_normalize_when_state_is_restored():
+    registry = CitationRegistry.from_state({
+        "citations": {
+            "S1": {
+                "id": "S1",
+                "url": "https://www1.nyc.gov/site/hra/help/snap.page",
+                "title": "SNAP",
+                "snippet": "Current guidance",
+                "kind": "WEB",
+                "valid_as_of": "",
+                "provenance": {},
+            },
+        },
+        "counter": 1,
+    })
+
+    cite_id = registry.register(
+        "https://www.nyc.gov/site/hra/help/snap.page",
+        title="SNAP",
+        snippet="Current guidance",
+        kind="WEB",
+    )
+
+    assert cite_id == "S1"
+    assert registry.mapping()["S1"]["url"] == (
+        "https://www.nyc.gov/site/hra/help/snap.page"
+    )

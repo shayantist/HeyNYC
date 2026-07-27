@@ -3,9 +3,10 @@ from __future__ import annotations
 import pytest
 
 from heynyc.core import events
-from heynyc.core.agent import Agent, _with_retry
+from heynyc.core.agent import Agent, AgentResult, _with_retry
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.eval.runner import merge_eval_results
 
 
 @pytest.fixture
@@ -39,6 +40,28 @@ def _scripted_stream(*responses):
     return sf
 
 
+def test_merge_eval_results_keeps_pending_and_final_diagnostics():
+    pending = AgentResult(
+        text="",
+        citations={},
+        diagnostics={"validation_rejections": [{"stage": "pending"}]},
+    )
+    final = AgentResult(
+        text="done",
+        citations={},
+        diagnostics={"validation_rejections": [{"stage": "final"}]},
+    )
+
+    result = merge_eval_results(pending, final, set())
+
+    assert result.diagnostics == {
+        "validation_rejections": [
+            {"stage": "pending"},
+            {"stage": "final"},
+        ]
+    }
+
+
 async def test_stream_emits_text_then_done(empty_registry):
     sf = _scripted_stream([_text("Hello "), _text("there"), _message("Hello there")])
     agent = Agent(empty_registry, tools={}, stream_fn=sf)
@@ -64,6 +87,40 @@ async def test_unknown_citation_marker_is_rejected_and_regenerated(empty_registr
     assert [event.text for event in completed] == ["", "Draft ready"]
     assert sum(e.type == "message.start" for e in evs) == 2
     assert evs[-1].result.text == "Draft ready"
+
+
+async def test_discovery_citation_marker_is_rejected_and_regenerated(empty_registry):
+    async def discovery(_args, ctx: ToolContext):
+        cite_id = ctx.citations.register(
+            "https://www.nyc.gov/search-result",
+            snippet="A truncated search result",
+            kind="WEB",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"A truncated search result {{cite:{cite_id}}}"
+
+    raw = "The snippet proves more than it says. {cite:S1}"
+    sf = _scripted_stream(
+        [_message(None, [_tool_call("discovery")])],
+        [_text(raw), _message(raw)],
+        [_text("I couldn't verify that detail."), _message("I couldn't verify that detail.")],
+    )
+    agent = Agent(
+        empty_registry,
+        tools={
+            "discovery": Tool(
+                name="discovery",
+                description="Search for a source",
+                parameters={"type": "object", "properties": {}},
+                handler=discovery,
+            ),
+        },
+        stream_fn=sf,
+    )
+
+    evs = [event async for event in agent.stream("Can you confirm it?")]
+
+    assert evs[-1].result.text == "I couldn't verify that detail."
 
 
 async def test_stream_tool_lifecycle(empty_registry):
