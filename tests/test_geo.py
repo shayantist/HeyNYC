@@ -18,6 +18,7 @@ from heynyc.core.tools.geo import (
     _looks_like_intersection,
     _nearest_handler,
     _point_in_named_borough,
+    _resolution_note,
     _zip_centroid,
     geocode,
     haversine_m,
@@ -864,6 +865,7 @@ async def test_neighborhood_normalization_and_aliases():
         "FiDi": "Manhattan",
         "upper west side, manhattan": "Manhattan",
         "bed-stuy": "Brooklyn",
+        "Flushing": "Queens",
         "Queens Village": "Queens",
     }
     for query, borough in cases.items():
@@ -872,6 +874,21 @@ async def test_neighborhood_normalization_and_aliases():
         await client.aclose()
         assert point is not None and point.match_type == "nta", query
         assert borough in point.label, query
+
+
+def test_neighborhood_resolution_note_names_official_nta_source():
+    point = GeoPoint(
+        40.760197,
+        -73.832301,
+        "Flushing, Queens",
+        confidence=1.0,
+        match_type="nta",
+    )
+
+    note = _resolution_note("Flushing", point)
+
+    assert "official NYC neighborhood data" in note
+    assert "map search" not in note
 
 
 async def test_neighborhood_with_contradictory_borough_falls_through():
