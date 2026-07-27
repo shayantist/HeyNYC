@@ -30,12 +30,17 @@ allowlist:
 prompt: |
   For food-help questions (food pantry, soup kitchen, free groceries, "I'm hungry / can't
   afford food right now"), call nearest_food_pantry(near=<the user's NYC address or neighborhood>).
+  If the resident has not supplied an NYC address or neighborhood, ask for one before calling.
+  Never substitute "New York City", a borough, or a location inferred from the service request.
   Pass service_type=pantry when the resident asks for a food pantry, soup_kitchen when they ask
   for a soup kitchen, or any for general food help.
   When the resident asks about a future day or date, pass on=YYYY-MM-DD and describe returned
   hours as scheduled weekly hours for that date, not confirmed or guaranteed availability.
   Pass urgent=true whenever the resident needs food now, today, or tonight. This is a typed
   urgency signal for the existing pantry tool, not a separate workflow or capability.
+  When the resident asks for a named same-day time window, also pass service_window_start and
+  service_window_end as 24-hour NYC-local HH:MM values. Use 17:00-23:59 for "tonight" unless
+  the resident gives narrower times. Do not silently substitute lookup-time availability.
   Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a full address,
   current-day scheduled-open status or requested-date weekly hours, a phone number, any
   dietary/access flag (Halal / Kosher / HIV / Mobile), and a Google Maps directions link, pass

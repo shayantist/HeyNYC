@@ -85,9 +85,15 @@ def test_build_factories_gives_both_arms_the_same_live_awareness(
                 "index": "retriever",
                 "use_module_capabilities": True,
                 "current_awareness": pydantic_ai_ab.current_awareness,
-            },
-        ),
-    ]
+                "fact_review_model": (
+                    f"chat:{pydantic_ai_ab.config.HEYNYC_FACT_REVIEW_MODEL}"
+                ),
+                "fact_review_model_name": (
+                    pydantic_ai_ab.config.HEYNYC_FACT_REVIEW_MODEL
+                ),
+                },
+            ),
+        ]
 
 
 def test_build_factories_can_enable_structured_grounding(monkeypatch) -> None:
@@ -294,6 +300,12 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
     assert result.usage["cost_usd"] == pytest.approx(0.03)
     assert result.usage["capabilities_used"] == ["food", "benefits"]
     assert result.usage["model_request_ms"] == [1.0, 2.0, 3.0]
+    assert result.diagnostics["fact_confirmation_reviews"] == [
+        {
+            "tool_name": "confirm_screen_facts",
+            "args": {"profile": {"age": 35}},
+        }
+    ]
     assert restored == [True]
 
 

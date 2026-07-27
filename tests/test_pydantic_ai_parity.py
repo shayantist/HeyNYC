@@ -132,6 +132,80 @@ def test_adapter_accepts_every_current_tool_schema() -> None:
         assert adapted[name].function_schema.json_schema == tool._input_schema()
 
 
+def test_benefits_discovery_capability_excludes_deferred_workflow_intake() -> None:
+    registry = Registry.discover(Path("heynyc/modules"))
+    _, capabilities = build_module_capabilities(
+        registry,
+        build_toolbox(registry),
+    )
+    benefits = next(
+        capability
+        for capability in capabilities
+        if getattr(capability, "id", None) == "benefits"
+    )
+    instructions = "\n".join(benefits.get_instructions())
+
+    assert "SCREENING (when screen_eligibility is in your toolset)" not in instructions
+    assert "APPLYING (when prepare_snap_application is in your toolset)" not in instructions
+    assert "Only legal name and home address are required" not in instructions
+
+
+def test_side_effecting_tool_gets_its_own_deferred_capability() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        return "done"
+
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            description="Find benefits",
+            prompt="Discover benefits without collecting application fields.",
+        )
+    ])
+    discovery = Tool(
+        name="benefits_search",
+        description="Find benefits",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        module="benefits",
+    )
+    application = Tool(
+        name="prepare_application",
+        description="Prepare an application draft",
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+        handler=handler,
+        read_only=False,
+        idempotent=False,
+        requires_approval=True,
+        module="benefits",
+    )
+
+    _, capabilities = build_module_capabilities(
+        registry,
+        {
+            discovery.name: discovery,
+            application.name: application,
+        },
+    )
+    by_id = {
+        capability.id: capability
+        for capability in capabilities
+    }
+
+    assert [
+        tool.name
+        for tool in by_id["benefits"].tools
+    ] == ["benefits_search"]
+    assert [
+        tool.name
+        for tool in by_id["benefits-prepare-application"].tools
+    ] == ["prepare_application"]
+    assert by_id["benefits-prepare-application"].defer_loading is True
+
+
 async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -> None:
     calls: list[tuple[str, dict]] = []
 
@@ -537,6 +611,13 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
         Registry([]),
         model=FunctionModel(model),
         tools={"benefit": benefit, "lookup": lookup, "screen": source},
+        fact_review_model=TestModel(
+            custom_output_args={
+                "profile": {"age": 35, "worked": False},
+                "household": {"address": {"borough": "Queens"}},
+            }
+        ),
+        fact_review_model_name="review-model",
     )
     assert runtime.is_fact_confirmation("confirm_screen_facts")
     assert not runtime.is_fact_confirmation("confirm_submit_facts")
@@ -700,9 +781,7 @@ async def test_screen_fact_confirmation_rejects_conflicting_housing_before_appro
 
     assert isinstance(pending.output, DeferredToolRequests)
     assert pending.output.approvals[0].tool_call_id == "valid-confirmation"
-    assert pending.output.approvals[0].args["household"] == {
-        "livingRenting": True
-    }
+    assert pending.output.approvals[0].args["household"] == {"livingRenting": True}
     assert ctx.resident_facts == {}
 
 
@@ -752,6 +831,10 @@ async def test_rejected_fact_confirmation_does_not_unlock_screening() -> None:
         Registry([]),
         model=FunctionModel(model),
         tools={"screen": source},
+        fact_review_model=TestModel(
+            custom_output_args={"profile": {"age": 35}}
+        ),
+        fact_review_model_name="review-model",
     )
     conversation = runtime.conversation()
     await conversation.send("Screen me")
@@ -1038,6 +1121,19 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     ) in screening_description
     assert "Load before collecting its inputs" in screening_description
     assert "screen_eligibility" not in screening_description
+    screening_instructions = "\n".join(screening_capability.get_instructions())
+    assert (
+        "Do not ask follow-up questions only to replace them"
+        in screening_instructions
+    )
+    assert (
+        "Do not ask for a separate prose confirmation before calling it"
+        in screening_instructions
+    )
+    assert (
+        "Never describe optional fields as missing or required"
+        in screening_instructions
+    )
 
 
 async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
@@ -1284,10 +1380,102 @@ async def test_adapter_preserves_schema_and_retries_invalid_arguments() -> None:
     assert len(retries) == 1
     assert retries[0].tool_call_id == "bad-call"
     assert (
-        retries[0].content == "Invalid arguments for lookup: 7 is not of type 'string'"
+        retries[0].content
+        == "Invalid arguments for lookup: borough: 7 is not of type 'string'"
     )
     returns = _parts(result.all_messages(), ToolReturnPart)
     assert returns[0].content == "Grounded result for Queens {cite:S1}"
+
+
+async def test_adapter_reports_all_distinct_required_fields_in_one_retry() -> None:
+    executed: list[dict] = []
+
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        executed.append(args)
+        return "reviewed"
+
+    source = Tool(
+        name="review",
+        description="Review a profile",
+        parameters={
+            "type": "object",
+            "properties": {
+                "persons": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pregnant": {"type": "boolean"},
+                            "veteran": {"type": "boolean"},
+                        },
+                        "required": ["pregnant", "veteran"],
+                    },
+                }
+            },
+            "required": ["persons"],
+        },
+        handler=handler,
+        requires_approval=True,
+    )
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                [ToolCallPart("review", {"persons": [{}, {}]}, "incomplete")]
+            )
+        if calls == 2:
+            retry_text = str(_parts(messages, RetryPromptPart)[-1].content)
+            assert "'pregnant' is a required property" in retry_text
+            assert "'veteran' is a required property" in retry_text
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        "review",
+                        {
+                            "persons": [
+                                {"pregnant": False, "veteran": False},
+                                {"pregnant": False, "veteran": False},
+                            ]
+                        },
+                        "complete",
+                    )
+                ]
+            )
+        return ModelResponse([TextPart("Done")])
+
+    agent = Agent(
+        FunctionModel(model),
+        deps_type=ToolContext,
+        tools=[adapt_tool(source)],
+        output_type=[str, DeferredToolRequests],
+        retries={"tools": 1},
+    )
+    pending = await agent.run("Review it", deps=_context())
+
+    assert isinstance(pending.output, DeferredToolRequests)
+    assert executed == []
+    retry = _parts(pending.all_messages(), RetryPromptPart)[0]
+    assert retry.content.count("'pregnant' is a required property") == 1
+    assert retry.content.count("'veteran' is a required property") == 1
+    call_id = pending.output.approvals[0].tool_call_id
+    result = await agent.run(
+        message_history=pending.all_messages(),
+        deferred_tool_results=DeferredToolResults(approvals={call_id: True}),
+        deps=_context(),
+    )
+
+    assert result.output == "Done"
+    assert executed == [
+        {
+            "persons": [
+                {"pregnant": False, "veteran": False},
+                {"pregnant": False, "veteran": False},
+            ]
+        }
+    ]
 
 
 async def test_adapter_preserves_approval_and_resumes_exact_call() -> None:
@@ -1855,7 +2043,7 @@ async def test_output_validator_retries_without_sharing_tool_budget() -> None:
     assert result.output == "grounded"
     retries = _parts(result.all_messages(), RetryPromptPart)
     assert [retry.content for retry in retries] == [
-        "Invalid arguments for validate: 'bad' is not of type 'integer'",
+        "Invalid arguments for validate: value: 'bad' is not of type 'integer'",
         "Final answer was not grounded",
     ]
 
@@ -3993,6 +4181,23 @@ async def test_pydantic_event_sink_observes_tool_and_text_stream() -> None:
     assert any(isinstance(event, events.ToolCompleted) for event in seen_events)
     assert any(isinstance(event, events.TextDelta) for event in seen_events)
     assert isinstance(seen_events[-1], events.Done)
+
+
+async def test_pydantic_runtime_streams_without_an_event_sink() -> None:
+    async def stream(messages: list[ModelMessage], info: AgentInfo):
+        yield "Streamed answer"
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(stream_function=stream),
+        registry=Registry([]),
+        tools={},
+        guard_grounding=False,
+        stream_model_requests=True,
+    )
+
+    result = await runtime.conversation().send("Help")
+
+    assert result.text == "Streamed answer"
 
 
 async def test_pydantic_event_sink_finishes_failed_runs(monkeypatch) -> None:

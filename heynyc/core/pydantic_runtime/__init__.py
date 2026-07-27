@@ -78,8 +78,21 @@ def build_runtime(
     answer_model_route: str | None = None,
     structured_grounding: bool = False,
     semantic_verifier: Any = None,
+    fact_review_model: Any = None,
+    fact_review_model_name: str = "",
+    stream_model_requests: bool = False,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
+    runtime_tools = tools if tools is not None else build_toolbox(registry, index=index)
+    has_governed_tools = any(tool.resident_fact_scope for tool in runtime_tools.values())
+    use_module_capabilities = use_module_capabilities or has_governed_tools
+    if has_governed_tools and fact_review_model is None:
+        fact_review_model = model
+        fact_review_model_name = (
+            fact_review_model_name
+            or answer_model_route
+            or getattr(model, "model_name", type(model).__name__)
+        )
     stable_prompt, _ = build_system_prompt_tiers(
         registry,
         query="",
@@ -88,7 +101,7 @@ def build_runtime(
     return PydanticRuntimeAdapter(
         model,
         registry=registry,
-        tools=tools if tools is not None else build_toolbox(registry, index=index),
+        tools=runtime_tools,
         system_prompt=stable_prompt,
         prompt_builder=lambda query: build_system_prompt_tiers(
             registry,
@@ -102,6 +115,9 @@ def build_runtime(
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
         semantic_verifier=semantic_verifier,
+        fact_review_model=fact_review_model,
+        fact_review_model_name=fact_review_model_name,
+        stream_model_requests=stream_model_requests,
     )
 
 
@@ -146,4 +162,7 @@ def build_configured_runtime(
         use_module_capabilities=True,
         current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
+        fact_review_model=configured_model(config.HEYNYC_FACT_REVIEW_MODEL),
+        fact_review_model_name=config.HEYNYC_FACT_REVIEW_MODEL,
+        stream_model_requests=True,
     )

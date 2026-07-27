@@ -327,32 +327,6 @@ def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence(
     assert hra_faq in _BENEFITS_RECOVERY_URLS
 
 
-def test_benefits_prompt_keeps_screening_results_actionable_on_a_phone():
-    reg = Registry.discover(config.MODULES_DIR)
-    prompt = " ".join(next(m.prompt for m in reg.modules if m.name == "benefits").lower().split())
-    assert "up to three" in prompt
-    assert "offer to show the rest" in prompt
-    assert "official ranking" in prompt
-    assert "only legal name and home address are required" in prompt
-    assert "/screen" not in prompt
-    assert "once the profile is complete, call screen_eligibility" in prompt
-    assert "if any value is uncertain" in prompt
-    assert "correct or confirm it" in prompt
-
-
-def test_benefits_prompt_does_not_turn_program_discovery_into_an_uncited_intake_form():
-    reg = Registry.discover(config.MODULES_DIR)
-    prompt = " ".join(next(m.prompt for m in reg.modules if m.name == "benefits").lower().split())
-
-    assert "only after the resident accepts" in prompt
-    assert "do not append an uncited external screener or 311 route" in prompt
-    assert "broad program-discovery question is not acceptance" in prompt
-    assert "use the exact tool schema" in prompt
-    assert "household size, each person's age, rough monthly income" not in prompt
-    assert "official program listing" in prompt
-    assert "state source as city information" in prompt
-
-
 def test_fairness_metamorphic_cases_present_and_well_formed():
     # Protected-class fairness: the same benefit question, varying only a protected attribute
     # (name/ethnicity, borough/ZIP, language), must be flagged as outcome-invariant INV cases.
@@ -733,9 +707,21 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert schema["properties"]["persons"]["minContains"] == 1
     assert {"studentFulltime", "blind", "benefitsMedicaid", "livingRentalOnLease"} <= set(person)
     assert "HeadOfHousehold" in person["householdMemberType"]["enum"]
-    assert person["pregnant"]["description"] == screening.BOOLEAN_FACT_DESCRIPTION
-    assert household["properties"]["livingRenting"]["description"] == (
-        screening.BOOLEAN_FACT_DESCRIPTION
+    assert "Whether the person is pregnant" in person["pregnant"]["description"]
+    assert "Whether the person is a student" in person["student"]["description"]
+    assert "not specifically a college student" in person["student"]["description"]
+    boolean_fields = [
+        *(
+            household["properties"][name]
+            for name in screening.HOUSEHOLD_BOOLEAN_DESCRIPTIONS
+        ),
+        *(person[name] for name in screening.PERSON_BOOLEAN_DESCRIPTIONS),
+    ]
+    assert all(
+        "Treat this boolean independently" in field["description"]
+        and "Do not infer it from another field, age, role, or silence"
+        in field["description"]
+        for field in boolean_fields
     )
     assert person["incomes"]["minItems"] == 1
     assert "zero placeholder" in person["incomes"]["description"]

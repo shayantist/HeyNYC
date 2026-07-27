@@ -111,7 +111,7 @@ class PydanticEvalConversation:
         final = await self.conversation.resume_approvals(
             {call_id: True for call_id in approvals}
         )
-        return merge_eval_results(
+        result = merge_eval_results(
             pending,
             final,
             {
@@ -120,6 +120,10 @@ class PydanticEvalConversation:
                 if is_fact_confirmation(request["tool_name"])
             },
         )
+        result.diagnostics["fact_confirmation_reviews"] = list(
+            approvals.values()
+        )
+        return result
 
 
 class PydanticEvalAgent:
