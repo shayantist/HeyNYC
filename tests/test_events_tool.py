@@ -274,8 +274,13 @@ def test_event_block_flags_a_today_event_whose_start_time_already_passed():
     assert "already started or ended" not in events._event_block(upcoming, "S2", now)
     assert "already started or ended" not in events._event_block(tomorrow, "S3", now)
     assert "already started or ended" not in events._event_block(undated, "S4", now)
+    assert "starts later today" in events._event_block(upcoming, "S2", now)
+    assert "starts later today" not in events._event_block(started, "S1", now)
+    assert "starts later today" not in events._event_block(tomorrow, "S3", now)
+    assert "starts later today" not in events._event_block(undated, "S4", now)
     # Back-compat: without a `now` reference there is no annotation (existing callers/tests).
     assert "already started or ended" not in events._event_block(started, "S1")
+    assert "starts later today" not in events._event_block(upcoming, "S2")
 
 
 def test_tonight_filter_keeps_only_parseable_future_evening_events():
@@ -328,6 +333,204 @@ async def test_whats_on_events_merges_grounds_and_filters_future():
     assert "Old Festival" not in out          # past event filtered (§12)
     assert "{cite:" in out                     # everything is grounded + cited
     assert citations.mapping()                 # at least one DATA citation registered
+
+
+async def test_whats_on_events_retries_only_failed_catalog_sources(monkeypatch):
+    attempts = 0
+
+    async def flaky_ticketmaster(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("transient")
+        return [{
+            "name": "Mets vs. Braves",
+            "url": "https://www.ticketmaster.com/event/game",
+            "dates": {"start": {"localDate": "2099-07-19", "localTime": "19:10:00"}},
+        }]
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", flaky_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {"window_start": "2099-07-19", "window_end": "2099-07-19"}, ctx,
+    )
+
+    assert attempts == 2
+    assert "Mets vs. Braves" in output
+    assert "Results are partial" not in output
+
+
+async def test_whats_on_events_discloses_a_catalog_source_that_stays_unavailable(monkeypatch):
+    attempts = 0
+
+    async def broken_ticketmaster(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("still unavailable")
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", broken_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "game",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert attempts == 2
+    assert "Sources unavailable for part of this lookup: Ticketmaster" in output
+    assert "do not claim complete coverage or that no matching event exists" in output
+    assert "No matching events were confirmed from the sources that responded" in output
+    assert "No upcoming NYC events matched" not in output
+
+
+async def test_whats_on_events_does_not_call_recovered_source_a_third_time(monkeypatch):
+    attempts = 0
+
+    async def recovered_ticketmaster(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("transient")
+        return []
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", recovered_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "game",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert attempts == 2
+    assert "available catalog sources" in output
+    assert "complete catalog" not in output
+
+
+async def test_whats_on_events_does_not_broaden_permitted_source_twice(monkeypatch):
+    permitted_attempts = 0
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def count_permitted(dataset_id, *args, **kwargs):
+        nonlocal permitted_attempts
+        if dataset_id == events.PERMITTED_DATASET_ID:
+            permitted_attempts += 1
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", count_permitted)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="free fairs today",
+    )
+
+    await get_tools()[0].handler(
+        {
+            "keyword": "fairs",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert permitted_attempts == 2
+
+
+async def test_whats_on_events_discloses_broadening_source_failure(monkeypatch):
+    attempts = 0
+
+    async def ticketmaster_fails_only_when_broadened(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if kwargs["keyword"] is None:
+            raise httpx.ReadTimeout("broadening unavailable")
+        return []
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", ticketmaster_fails_only_when_broadened)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "game",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert attempts == 2
+    assert "Ticketmaster" in output
+    assert "Results are partial" in output
+    assert "No upcoming NYC events matched" not in output
+
+
+async def test_whats_on_events_discloses_permitted_internal_broadening_failure(monkeypatch):
+    permitted_attempts = 0
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def permitted_fails_when_broadened(dataset_id, *args, **kwargs):
+        nonlocal permitted_attempts
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        permitted_attempts += 1
+        if kwargs.get("q") is None:
+            raise httpx.ReadTimeout("broadening unavailable")
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", permitted_fails_when_broadened)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="free fairs today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "fairs",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert permitted_attempts == 2
+    assert "NYC Permitted Events" in output
+    assert "Results are partial" in output
+    assert "No upcoming NYC events matched" not in output
 
 
 async def test_broad_temporal_events_gather_current_city_context_concurrently(monkeypatch):

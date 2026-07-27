@@ -262,26 +262,28 @@ def _parse_start_time(text: str):
     return None
 
 
-def _started_today(ev: Event, now: datetime) -> bool:
-    """F065: True when ev is dated today and its known local start time is already past `now`, so a
-    finished event is not offered as still attendable. Data-shaped and language-independent: only
-    start_date and start_time the tool already holds, compared to the NYC clock."""
+def _today_timing_note(ev: Event, now: datetime) -> str:
+    """Describe a known same-day start relative to the NYC clock."""
     if ev.start_date != now.date().isoformat() or not ev.start_time.strip():
-        return False
+        return ""
     parsed = _parse_start_time(ev.start_time)
-    return parsed is not None and parsed < now.replace(tzinfo=None).time()
+    if parsed is None:
+        return ""
+    if parsed < now.replace(tzinfo=None).time():
+        return "; already started or ended earlier today"
+    return "; starts later today"
 
 
 def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     weekday = date.fromisoformat(ev.start_date).strftime("%A")
     when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
     where = f" @ {ev.venue}" if ev.venue else ""
-    started = "; already started or ended earlier today" if now and _started_today(ev, now) else ""
+    timing = _today_timing_note(ev, now) if now else ""
     free = "; free" if ev.free_evidence else ""
     audience = f"; {ev.audience}" if ev.audience else ""
     details = f"\n  Details: {ev.url}" if ev.url else ""
     return (
-        f"- {ev.name}{where}, {when}{started}{free}{audience} "
+        f"- {ev.name}{where}, {when}{timing}{free}{audience} "
         f"({ev.source}) {{cite:{cite}}}{details}"
     )
 
@@ -528,7 +530,13 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         + (f" AND start_date_time <= '{window_end}T23:59:59'" if window_end else "")
     )
 
+    permitted_attempts = 0
+    broadened_catalog: set[str] = set()
+    partial_catalog: set[str] = set()
+
     async def permitted_source():
+        nonlocal permitted_attempts
+        permitted_attempts += 1
         rows = await query_dataset(
             PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
             q=keyword, limit=50, client=ctx.http,
@@ -538,11 +546,15 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         # all-lanes-empty retry never fires (observed live 2026-07-18). The agency+window
         # WHERE already bounds this slice to the week's public street events, so retry
         # once unkeyworded and let the shortlist and the model select.
-        if not rows and keyword:
-            rows = await query_dataset(
-                PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
-                limit=50, client=ctx.http,
-            )
+        if not rows and keyword and permitted_attempts == 1:
+            broadened_catalog.add("permitted")
+            try:
+                rows = await query_dataset(
+                    PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
+                    limit=50, client=ctx.http,
+                )
+            except Exception:
+                partial_catalog.add("permitted")
         return rows
 
     # The semantic scope-preflight tri-state arrives via ToolContext and is authoritative when
@@ -559,11 +571,17 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     broad_context = (
         (discovery_context or preparation_context) and not borough and not audience
     )
-    sources = [
-        ("ticketmaster", ticketmaster_source()),
-        ("parks", parks_source()),
-        ("permitted", permitted_source()),
-    ]
+    catalog_sources = {
+        "ticketmaster": ticketmaster_source,
+        "parks": parks_source,
+        "permitted": permitted_source,
+    }
+    catalog_labels = {
+        "ticketmaster": "Ticketmaster",
+        "parks": "NYC Parks",
+        "permitted": "NYC Permitted Events",
+    }
+    sources = [(name, source()) for name, source in catalog_sources.items()]
     if broad_context:
         sources.append(("editorial_guides", _editorial_context(ctx, window_start, window_end)))
         for tool in _context_tools(ctx):
@@ -633,6 +651,21 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         asyncio.wait_for(call, timeout=_SOURCE_TIMEOUT_S) for _, call in sources
     ), return_exceptions=True)
     results = dict(zip((name for name, _ in sources), gathered))
+    failed_catalog = [
+        name for name in catalog_sources if isinstance(results[name], BaseException)
+    ]
+    retryable_failed = [
+        name for name in failed_catalog if name not in broadened_catalog
+    ]
+    if retryable_failed:
+        retried = await asyncio.gather(*(
+            asyncio.wait_for(catalog_sources[name](), timeout=_SOURCE_TIMEOUT_S)
+            for name in retryable_failed
+        ), return_exceptions=True)
+        results.update(zip(retryable_failed, retried))
+    unavailable_catalog = [
+        name for name in catalog_sources if isinstance(results[name], BaseException)
+    ]
     keyword_context = results.get("keyword_web")
     if keyword_context is None or isinstance(keyword_context, BaseException):
         keyword_block = ""
@@ -668,25 +701,38 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         # A stuffed keyword phrase can full-text-match nothing while the window alone holds
         # the rows (observed live). Retry the two catalog lanes once without the keyword and
         # let the window, free, and borough filters do the selection.
-        retry_tm, retry_parks, retry_permitted = await asyncio.gather(
-            asyncio.wait_for(ticketmaster_events(
+        retry_calls = {}
+        blocked_broadening = set(failed_catalog) | broadened_catalog
+        if "ticketmaster" not in blocked_broadening:
+            retry_calls["ticketmaster"] = asyncio.wait_for(ticketmaster_events(
                 keyword=None, classification=classification, start_datetime=start_dt,
                 size=20, client=ctx.http,
-            ), timeout=_SOURCE_TIMEOUT_S),
-            asyncio.wait_for(query_dataset(
+            ), timeout=_SOURCE_TIMEOUT_S)
+        if "parks" not in blocked_broadening:
+            retry_calls["parks"] = asyncio.wait_for(query_dataset(
                 PARKS_DATASET_ID,
                 where=(
                     f"startdate >= '{window_start}'"
                     + (f" AND startdate <= '{window_end}T23:59:59'" if window_end else "")
                 ),
                 order="startdate", q=None, limit=50, client=ctx.http,
-            ), timeout=_SOURCE_TIMEOUT_S),
-            asyncio.wait_for(query_dataset(
+            ), timeout=_SOURCE_TIMEOUT_S)
+        if "permitted" not in blocked_broadening:
+            retry_calls["permitted"] = asyncio.wait_for(query_dataset(
                 PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
                 q=None, limit=50, client=ctx.http,
-            ), timeout=_SOURCE_TIMEOUT_S),
-            return_exceptions=True,
+            ), timeout=_SOURCE_TIMEOUT_S)
+        retry_values = await asyncio.gather(
+            *retry_calls.values(), return_exceptions=True,
         )
+        retry_results = dict(zip(retry_calls, retry_values))
+        partial_catalog.update(
+            name for name, value in retry_results.items()
+            if isinstance(value, BaseException)
+        )
+        retry_tm = retry_results.get("ticketmaster", [])
+        retry_parks = retry_results.get("parks", [])
+        retry_permitted = retry_results.get("permitted", [])
         retried = [] if isinstance(retry_tm, BaseException) else [
             e for e in (_from_ticketmaster(r) for r in retry_tm) if e
         ]
@@ -699,10 +745,30 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         events = _window_filter(retried)
         broadened = bool(events)
 
-    no_results = _NO_RESULTS
+    limited_catalog = set(unavailable_catalog) | partial_catalog
+    coverage_note = ""
+    if limited_catalog:
+        names = ", ".join(
+            catalog_labels[name] for name in catalog_sources if name in limited_catalog
+        )
+        coverage_note = (
+            f"Sources unavailable for part of this lookup: {names}. Results are partial; "
+            "do not claim complete coverage or that no matching event exists.\n"
+        )
+    no_results = (
+        f"{coverage_note}No matching events were confirmed from the sources that responded. "
+        "Do not treat that as proof that no matching event exists."
+        if coverage_note
+        else _NO_RESULTS
+    )
     if not events and keyword:
+        catalog_scope = (
+            "available catalog sources"
+            if failed_catalog or partial_catalog
+            else "complete catalog"
+        )
         no_results += (
-            " This lookup already retried the complete catalog without the keyword. "
+            f" This lookup already retried the {catalog_scope} without the keyword. "
             "Do not call this tool again with synonyms for the same date and borough."
         )
     if not events and not broad_context:
@@ -726,16 +792,23 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     window = f" for {window_start} through {window_end}" if window_end else ""
     free_scope = " whose official source evidence says free" if "free" in ctx.query.lower() else ""
-    broadened_note = (
-        "These listings came from a BROADENED search after the keyword matched nothing. If the "
-        "resident's request was for something these listings do not actually satisfy, such as a "
-        "private or unlisted gathering or a specific event not shown, say so plainly, do not "
-        "substitute these as the answer, and point to 311 for official help; you may offer them "
-        "separately as public alternatives.\n"
-        if broadened else ""
-    )
+    broadened_note = ""
+    if broadened:
+        retry_limit_note = (
+            " A source that needed a recovery retry was not queried a third time, so this "
+            "broadened shortlist does not restore complete catalog coverage."
+            if failed_catalog
+            else ""
+        )
+        broadened_note = (
+            "These listings came from a BROADENED search after the keyword matched nothing."
+            f"{retry_limit_note} If the resident's request was for something these listings do "
+            "not actually satisfy, such as a private or unlisted gathering or a specific event "
+            "not shown, say so plainly, do not substitute these as the answer, and point to 311 "
+            "for official help; you may offer them separately as public alternatives.\n"
+        )
     header = (
-        f"{broadened_note}"
+        f"{coverage_note}{broadened_note}"
         f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
         "NYC Permitted Events, the Street Activity Permit Office feed of street fairs, farmers "
         "markets, block parties, parades, and plaza events). "
