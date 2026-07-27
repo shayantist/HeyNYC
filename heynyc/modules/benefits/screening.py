@@ -46,10 +46,45 @@ PERSON_FIELDS = frozenset({
 })
 MONEY_ITEM_FIELDS = frozenset({"amount", "frequency", "type"})
 PROGRAM_CODE_PATTERN = r"^S2R\d{3}$"
-BOOLEAN_FACT_DESCRIPTION = (
+_BOOLEAN_FACT_RULE = (
     "If the resident explicitly supplied this fact, include the field with true or false. "
-    "Omit it only when the fact is unknown; never infer it."
+    "Treat this boolean independently. Do not infer it from another field, age, role, or "
+    "silence. Omit it when this exact fact is unknown."
 )
+# Field meanings mirror the City's published request schema:
+# https://screeningapidocs.cityofnewyork.us/making-a-request
+HOUSEHOLD_BOOLEAN_DESCRIPTIONS = {
+    "livingRenting": "Whether the household rents its current home.",
+    "livingOwner": "Whether a household member owns the current home or apartment.",
+    "livingStayingWithFriend": "Whether the household is staying with a friend.",
+    "livingHotel": "Whether the household is staying in a hotel.",
+    "livingShelter": "Whether the household is in a shelter or homeless.",
+    "livingPreferNotToSay": "Whether the resident prefers not to disclose housing.",
+}
+PERSON_BOOLEAN_DESCRIPTIONS = {
+    "student": (
+        "Whether the person is a student, not specifically a college student."
+    ),
+    "studentFulltime": "Whether the person is a full-time student.",
+    "pregnant": "Whether the person is pregnant.",
+    "unemployed": "Whether the person is unemployed.",
+    "unemployedWorkedLast18Months": (
+        "Whether the person is unemployed and worked within the last 18 months."
+    ),
+    "blind": "Whether the person is blind.",
+    "disabled": "Whether the person has any disabilities.",
+    "veteran": "Whether the person is a veteran.",
+    "benefitsMedicaid": "Whether the person receives Medicaid benefits.",
+    "benefitsMedicaidDisability": (
+        "Whether the person receives disability-related Medicaid benefits."
+    ),
+    "livingOwnerOnDeed": (
+        "If the household owns its home, whether the person is an owner or on the deed."
+    ),
+    "livingRentalOnLease": (
+        "If the household rents its home, whether the person is on the lease."
+    ),
+}
 
 
 def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
@@ -79,19 +114,21 @@ def request_schema() -> dict:
         "livingShelter",
     )
     household_flags = {
-        name: {"type": "boolean", "description": BOOLEAN_FACT_DESCRIPTION}
-        for name in (*specific_housing_flags, "livingPreferNotToSay")
+        name: {
+            "type": "boolean",
+            "description": f"{description} {_BOOLEAN_FACT_RULE}",
+        }
+        for name, description in HOUSEHOLD_BOOLEAN_DESCRIPTIONS.items()
     }
     household_flags["livingPreferNotToSay"]["description"] += (
         " True only when every specific housing flag is false or omitted."
     )
     person_flags = {
-        name: {"type": "boolean", "description": BOOLEAN_FACT_DESCRIPTION} for name in (
-            "student", "studentFulltime", "pregnant", "unemployed",
-            "unemployedWorkedLast18Months", "blind", "disabled", "veteran",
-            "benefitsMedicaid", "benefitsMedicaidDisability", "livingOwnerOnDeed",
-            "livingRentalOnLease",
-        )
+        name: {
+            "type": "boolean",
+            "description": f"{description} {_BOOLEAN_FACT_RULE}",
+        }
+        for name, description in PERSON_BOOLEAN_DESCRIPTIONS.items()
     }
     household_properties = {
         "cashOnHand": {

@@ -38,6 +38,11 @@ HEYNYC_REASONING_EFFORT = os.getenv("HEYNYC_REASONING_EFFORT") or None
 HEYNYC_SERVICE_TIER = os.getenv("HEYNYC_SERVICE_TIER") or None
 # Structured continuity compaction runs only when measured context pressure requires it.
 HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
+# Governed PII-free workflow profiles get one schema-bound review before resident approval.
+HEYNYC_FACT_REVIEW_MODEL = os.getenv(
+    "HEYNYC_FACT_REVIEW_MODEL",
+    "openai/gpt-5.6-sol",
+)
 # Context window for self-hosted Ollama models. Ollama defaults to ~2-4K tokens, which silently
 # truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
 OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))

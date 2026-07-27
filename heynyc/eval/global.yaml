@@ -244,10 +244,20 @@
   abstain: false
   capability: multi-intent
   language: es
-  tags: [F100, F105, F106, F107, F108, F113, conversation, cross-module, multilingual, current-information, must-win]
+  tags: [F100, F105, F106, F107, F108, F113, F125, F126, conversation, cross-module, multilingual, current-information, must-win]
   utility_criterion: >-
     After the resident supplies this sufficient PII-free household profile, run the official
     read-only screener and label the result as an estimate, not a final eligibility decision.
+    The reviewed profile and the City screening call must preserve the resident's explicit false
+    facts for pregnancy, disability, and veteran status. The City's generic `student` field does
+    not mean only college student, so the resident's narrower college statement must not turn
+    into `student: false` for school-age children. Unknown booleans, including blindness, child
+    unemployment, Medicaid, lease or deed status, and generic student status, must stay unknown
+    rather than becoming unsupported defaults.
+    When application preparation is disabled or no application tool is available, do not ask
+    for a legal name, date of birth, SSN, or a street address for application intake. A resident
+    may still offer a location solely to find nearby food. Offer guidance to the official
+    application instead.
     Stay in warm Spanish. If a nearby food site can be established for tonight, give its address,
     phone or directions, source date, and schedule limitation. If the nearest records are not
     scheduled open or cannot establish availability, do not present them as tonight options:

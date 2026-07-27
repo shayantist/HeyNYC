@@ -237,6 +237,8 @@ def build_factories(
         "index": retriever,
         "use_module_capabilities": True,
         "current_awareness": current_awareness,
+        "fact_review_model": _comparison_model(config.HEYNYC_FACT_REVIEW_MODEL),
+        "fact_review_model_name": config.HEYNYC_FACT_REVIEW_MODEL,
     }
     if structured_grounding:
         candidate_kwargs["structured_grounding"] = True

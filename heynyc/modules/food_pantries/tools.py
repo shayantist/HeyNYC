@@ -203,6 +203,26 @@ def _scheduled_on(record: dict, requested: date) -> bool | None:
     return None
 
 
+def _scheduled_during(
+    record: dict,
+    requested: date,
+    window_start: int,
+    window_end: int,
+) -> bool | None:
+    if _schedule_conflict(record, requested):
+        return None
+    prefix = _prefix(record)
+    slots = _day_slots(record, prefix, _DAYS[requested.weekday()])
+    if slots:
+        return any(
+            opened < window_end and (closed if closed > opened else closed + 1440) > window_start
+            for opened, closed in slots
+        )
+    if any(_day_slots(record, prefix, day) for day in _DAYS):
+        return False
+    return None
+
+
 def _schedule_conflict(record: dict, requested: date) -> bool:
     prefix = _prefix(record)
     source_days = _clean(record.get(f"{prefix}_days_orig"))
@@ -357,9 +377,28 @@ def _availability_citation(
     pantries: list[FoodPantry],
     nearby: list[FoodPantry],
     now: datetime,
+    requested: date | None = None,
+    service_window: tuple[int, int] | None = None,
 ) -> str:
-    scheduled_open_nearby = sum(_open_now(pantry.raw, now) is True for pantry in nearby)
-    scheduled_open_citywide = sum(_open_now(pantry.raw, now) is True for pantry in pantries)
+    if service_window:
+        requested = requested or now.date()
+        start, end = service_window
+        scheduled_open_nearby = sum(
+            _scheduled_during(pantry.raw, requested, start, end) is True
+            for pantry in nearby
+        )
+        scheduled_open_citywide = sum(
+            _scheduled_during(pantry.raw, requested, start, end) is True
+            for pantry in pantries
+        )
+        basis = (
+            f"weekly hours overlapping "
+            f"{start // 60:02d}:{start % 60:02d}-{end // 60:02d}:{end % 60:02d}"
+        )
+    else:
+        scheduled_open_nearby = sum(_open_now(pantry.raw, now) is True for pantry in nearby)
+        scheduled_open_citywide = sum(_open_now(pantry.raw, now) is True for pantry in pantries)
+        basis = "weekly hours indicating open"
     snapshot = {
         "lookup_at": now.isoformat(),
         "status_filter": WHERE_OPEN,
@@ -372,8 +411,7 @@ def _availability_citation(
         FOODHELP_QUERY_URL,
         snippet=(
             f"At lookup, {scheduled_open_nearby} of {len(nearby)} nearby and "
-            f"{scheduled_open_citywide} of {len(pantries)} City-listed sites had weekly "
-            "hours indicating open"
+            f"{scheduled_open_citywide} of {len(pantries)} City-listed sites had {basis}"
         ),
         title="NYC FoodHelp availability lookup",
         kind="DATA",
@@ -393,10 +431,24 @@ def _pantry_block(
     dist_mi: float,
     now: datetime,
     requested: date | None = None,
+    service_window: tuple[int, int] | None = None,
 ) -> str:
     flags = _flags(pantry)
     flag_str = f" [{', '.join(flags)}]" if flags else ""
-    if requested and requested != now.date():
+    if service_window:
+        requested = requested or now.date()
+        start, end = service_window
+        scheduled = _scheduled_during(pantry.raw, requested, start, end)
+        status = (
+            f"weekly schedule overlaps the requested "
+            f"{start // 60:02d}:{start % 60:02d}-{end // 60:02d}:{end % 60:02d} service window"
+            if scheduled is True
+            else "weekly schedule does not overlap the requested service window"
+            if scheduled is False
+            else "requested-window hours are not established, call ahead"
+        )
+        weekday = requested.weekday()
+    elif requested and requested != now.date():
         day = requested.strftime("%A, %Y-%m-%d")
         if _schedule_conflict(pantry.raw, requested):
             status = (
@@ -458,7 +510,27 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             "NYC FoodHelp provides current weekly schedules, so I cannot verify a past "
             "service date. Ask for today or a future date."
         )
+    window_start = str(args.get("service_window_start") or "").strip()
+    window_end = str(args.get("service_window_end") or "").strip()
+    if bool(window_start) != bool(window_end):
+        return "Pass both service_window_start and service_window_end, or omit both."
+    service_window = None
+    if window_start:
+        start = _parse_time(window_start)
+        end = _parse_time(window_end)
+        if start is None or end is None or end <= start:
+            return (
+                "The requested service window is invalid. Use same-day 24-hour HH:MM values "
+                "with the end after the start."
+            )
+        service_window = (start, end)
     future_schedule = requested is not None and requested > now.date()
+    requested_day = requested or now.date()
+    if args.get("urgent") is True and not future_schedule and service_window is None:
+        return (
+            "urgent=true requires service_window_start and service_window_end. Preserve the "
+            "resident's requested same-day timeframe and pass it as NYC-local 24-hour HH:MM."
+        )
     resident_origin = _resident_supplied_origin(near, ctx.query, ctx.user_turns)
     if not resident_origin:
         return NO_LOCATION
@@ -512,7 +584,21 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             continue
         seen.add(key)
         unique.append(pantry)
-    if future_schedule:
+    if service_window:
+        def requested_window_rank(pantry: FoodPantry) -> tuple[float, float]:
+            scheduled = _scheduled_during(
+                pantry.raw,
+                requested_day,
+                service_window[0],
+                service_window[1],
+            )
+            return (
+                0 if scheduled is True else 2 if scheduled is False else 1,
+                haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon),
+            )
+
+        unique.sort(key=requested_window_rank)
+    elif future_schedule:
         def requested_day_rank(pantry: FoodPantry) -> tuple[float, float]:
             scheduled = _scheduled_on(pantry.raw, requested)
             return (
@@ -523,19 +609,33 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         unique.sort(key=requested_day_rank)
     ranked = unique[:k]
     urgent = args.get("urgent") is True and not future_schedule
-    scheduled_open = [pantry for pantry in ranked if _open_now(pantry.raw, now) is True]
-    unknown_hours = [pantry for pantry in ranked if _open_now(pantry.raw, now) is None]
-    citywide_open = [pantry for pantry in unique if _open_now(pantry.raw, now) is True]
+    if service_window:
+        def availability(pantry: FoodPantry) -> bool | None:
+            return _scheduled_during(
+                pantry.raw,
+                requested_day,
+                service_window[0],
+                service_window[1],
+            )
+    else:
+        def availability(pantry: FoodPantry) -> bool | None:
+            return _open_now(pantry.raw, now)
+
+    scheduled_open = [pantry for pantry in ranked if availability(pantry) is True]
+    unknown_hours = [pantry for pantry in ranked if availability(pantry) is None]
+    citywide_open = [pantry for pantry in unique if availability(pantry) is True]
     scheduled_open_count = len(scheduled_open)
     citywide_scheduled_open = len(citywide_open)
-    citywide_unknown_hours = sum(_open_now(pantry.raw, now) is None for pantry in unique)
+    citywide_unknown_hours = sum(availability(pantry) is None for pantry in unique)
     availability_marker = (
-        f" {{cite:{_availability_citation(ctx, pantries=unique, nearby=ranked, now=now)}}}"
+        f" {{cite:{_availability_citation(ctx, pantries=unique, nearby=ranked, now=now, requested=requested_day, service_window=service_window)}}}"
         if urgent
         else ""
     )
     displayed = (
-        scheduled_open or citywide_open[:1] or unknown_hours
+        scheduled_open
+        if urgent and service_window
+        else scheduled_open or citywide_open[:1] or unknown_hours
         if urgent
         else ranked
     )
@@ -556,7 +656,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"Results are ranked for the weekly schedule on "
             f"{requested.strftime('%A, %Y-%m-%d')}; this does not confirm service that day."
         )
-    if urgent and scheduled_open:
+    if urgent and service_window and scheduled_open:
+        lines.append(
+            f"Immediate food need in the requested {window_start}-{window_end} service window: "
+            "the listed weekly schedule overlaps that window but does not confirm food "
+            "availability. Lead with asking the resident to call the listed site before "
+            "traveling. If it cannot confirm service, tell them to call 311 or use "
+            f"https://finder.nyc.gov/foodhelp.{availability_marker}"
+        )
+    elif urgent and service_window:
+        lines.append(
+            f"Immediate food need in the requested {window_start}-{window_end} service window: "
+            "no City-listed site in this feed has weekly hours establishing service in that "
+            "window. Lead with call 311 or https://finder.nyc.gov/foodhelp. Do not present "
+            f"another time of day as an option for that window.{availability_marker}"
+        )
+    elif urgent and scheduled_open:
         lines.append(
             "Immediate food need: a weekly schedule does not confirm food availability now or "
             "later today. Lead with asking the resident to call the listed site now. If the site "
@@ -586,7 +701,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"offer to search farther in the same feed.{availability_marker}"
         )
 
-    if not future_schedule and scheduled_open_count:
+    if not future_schedule and scheduled_open_count and not service_window:
         verb = "is" if scheduled_open_count == 1 else "are"
         lines.append(f"{scheduled_open_count} of these candidates {verb} scheduled open now.")
     elif not future_schedule and not urgent:
@@ -611,13 +726,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 "then offer to search farther if the resident wants. Do not include a farther "
                 "site until they ask to widen the search."
             )
-    if urgent and not scheduled_open and citywide_scheduled_open:
+    if urgent and not scheduled_open and citywide_scheduled_open and not service_window:
         lines.append("Farther scheduled-open lead, call before traveling:")
     for pantry in displayed:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon))
         cite = _pantry_citation(ctx, pantry, origin_lat=origin.lat, origin_lon=origin.lon,
                                 dist_mi=dist_mi)
-        lines.append(_pantry_block(pantry, cite, dist_mi, now, requested))
+        lines.append(
+            _pantry_block(
+                pantry,
+                cite,
+                dist_mi,
+                now,
+                requested,
+                service_window,
+            )
+        )
     lines.append("The listed weekly schedule has no holiday or temporary exception fields, so "
                  "tell the user to call before leaving. Eligibility isn't always listed; if a "
                  "field isn't shown, say you don't have it. The data has no language info.")
@@ -631,7 +755,8 @@ def get_tools() -> list[Tool]:
             description=(
                 "Find the nearest City-listed NYC food pantries / soup kitchens to an address, grounded in "
                 "the city's official FoodHelp data (finder.nyc.gov/foodhelp). Pass `near` = the "
-                "user's NYC address or neighborhood. Pass `service_type=pantry` for a pantry "
+                "user's NYC address or neighborhood. If they have not supplied one, ask before "
+                "calling and never invent a broad origin. Pass `service_type=pantry` for a pantry "
                 "request, `soup_kitchen` for a soup-kitchen request, or `any` for general food "
                 "help. Pass `on=YYYY-MM-DD` for a future date and label its results as scheduled "
                 "weekly hours, not guaranteed availability; optional `k` defaults to 5. Returns "
@@ -640,6 +765,9 @@ def get_tools() -> list[Tool]:
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
                 "Set `urgent=true` when the resident needs food now, today, or tonight so the "
                 "result leads with the immediate fallback and does not overstate weekly hours. "
+                "When they need service during a named same-day time window, also pass "
+                "`service_window_start` and `service_window_end` as 24-hour HH:MM values. For "
+                "example, tonight is 17:00-23:59 unless the resident gives narrower times. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
                 "The source has no language info and eligibility notes are often blank, don't invent."
             ),
@@ -664,6 +792,22 @@ def get_tools() -> list[Tool]:
                         "description": (
                             "Requested service date in YYYY-MM-DD. Pass when the resident names "
                             "a specific future date or day."
+                        ),
+                    },
+                    "service_window_start": {
+                        "type": "string",
+                        "pattern": r"^\d{2}:\d{2}$",
+                        "description": (
+                            "Start of the resident's requested same-day service window in local "
+                            "NYC 24-hour HH:MM time. Pass together with service_window_end."
+                        ),
+                    },
+                    "service_window_end": {
+                        "type": "string",
+                        "pattern": r"^\d{2}:\d{2}$",
+                        "description": (
+                            "End of the resident's requested same-day service window in local "
+                            "NYC 24-hour HH:MM time. Pass together with service_window_start."
                         ),
                     },
                     "service_type": {

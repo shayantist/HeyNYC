@@ -51,6 +51,7 @@ class ToolContext:
     event_turn: Optional[str] = None  # semantic scope-preflight tri-state: none|discovery|preparation (None → tool falls back to its regexes)
     delivered_notify_titles: frozenset = frozenset()  # F080: normalized Notify titles already cited earlier in THIS conversation; a repeat advisories call answers with a marker, not a re-brief
     resident_facts: dict[str, ResidentFact] = field(default_factory=dict)
+    fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
     semantic_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
 

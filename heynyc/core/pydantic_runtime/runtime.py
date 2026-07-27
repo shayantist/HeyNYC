@@ -98,6 +98,7 @@ from .projection import (
     _semantic_citation_evidence,
 )
 from .tools import (
+    ResidentFactReviewCapability,
     adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
@@ -207,7 +208,7 @@ def _finish_events(
 
 
 async def _forward_events(
-    sink: Callable[[events.Event], None],
+    sink: Callable[[events.Event], None] | None,
     message_id: str,
     stream: AsyncIterable[AgentStreamEvent],
 ) -> None:
@@ -378,21 +379,27 @@ class PydanticRuntimeAdapter:
         answer_model_route: str | None = None,
         structured_grounding: bool = False,
         semantic_verifier: Any = None,
+        fact_review_model: Any = None,
+        fact_review_model_name: str = "",
+        stream_model_requests: bool = False,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
         fact_confirmation_names: set[str] = set()
+        fact_confirmation_sources: dict[str, Tool] = {}
         for tool in tools.values():
             if tool.resident_fact_scope:
                 confirmation = resident_fact_confirmation_tool(tool)
                 self.tools[confirmation.name] = confirmation
                 fact_confirmation_names.add(confirmation.name)
+                fact_confirmation_sources[confirmation.name] = tool
         self._fact_confirmation_names = frozenset(fact_confirmation_names)
         self.model = getattr(model, "model_name", type(model).__name__)
         self._current_awareness = current_awareness
         self._usage_limits = usage_limits or UsageLimits(request_limit=8)
         self._answer_model_route = answer_model_route
         self._semantic_verifier = semantic_verifier
+        self._stream_model_requests = stream_model_requests
         self._context_budget = (
             context_capacity(answer_model_route, None, True)
             if context_budget is None and answer_model_route is not None
@@ -400,11 +407,14 @@ class PydanticRuntimeAdapter:
         )
         self._measure_context = measure_context
         self._compact_context = compact_context
-        adapted_tools, capabilities = (
-            build_module_capabilities(registry, self.tools)
-            if use_module_capabilities
-            else ([adapt_tool(tool) for tool in self.tools.values()], [])
-        )
+        if use_module_capabilities:
+            adapted_tools, capabilities = build_module_capabilities(
+                registry,
+                self.tools,
+            )
+        else:
+            adapted_tools = [adapt_tool(tool) for tool in self.tools.values()]
+            capabilities = []
         agent_model = InstrumentedModel(model, instrument) if instrument else model
         if structured_grounding:
             system_prompt = "\n\n".join(filter(None, (
@@ -418,6 +428,17 @@ class PydanticRuntimeAdapter:
             capabilities=[
                 ReinjectSystemPrompt(),
                 _PreserveToolScopesCapability(set(self.tools)),
+                *(
+                    [
+                        ResidentFactReviewCapability(
+                            fact_review_model,
+                            model_name=fact_review_model_name,
+                            governed=fact_confirmation_sources,
+                        )
+                    ]
+                    if fact_confirmation_sources and fact_review_model is not None
+                    else []
+                ),
                 *capabilities,
                 *extra_capabilities,
             ],
@@ -671,6 +692,50 @@ class PydanticRuntimeAdapter:
             "priced" if result.usage["cost_usd"] is not None else "unpriced"
         )
 
+    @staticmethod
+    def _merge_fact_review_usage(
+        result: AgentResult,
+        runs: list[dict[str, Any]],
+    ) -> None:
+        if not runs:
+            return
+        input_tokens = sum(int(run["input_tokens"]) for run in runs)
+        output_tokens = sum(int(run["output_tokens"]) for run in runs)
+        cached_tokens = sum(int(run["cached_input_tokens"]) for run in runs)
+        requests = sum(int(run["requests"]) for run in runs)
+        elapsed_ms = sum(float(run["latency_ms"]) for run in runs)
+        costs = [run.get("cost_usd") for run in runs]
+        review_cost = (
+            sum(float(cost) for cost in costs)
+            if all(isinstance(cost, (int, float)) for cost in costs)
+            else None
+        )
+        models = sorted({str(run["model"]) for run in runs})
+        result.usage.update({
+            "fact_review_model": models[0] if len(models) == 1 else models,
+            "fact_review_requests": requests,
+            "fact_review_input_tokens": input_tokens,
+            "fact_review_output_tokens": output_tokens,
+            "fact_review_cached_input_tokens": cached_tokens,
+            "fact_review_cost_usd": review_cost,
+            "fact_review_time_ms": elapsed_ms,
+        })
+        result.usage["input_tokens"] += input_tokens
+        result.usage["output_tokens"] += output_tokens
+        result.usage["cached_input_tokens"] += cached_tokens
+        result.usage["requests"] += requests
+        result.usage["n_model_calls"] += requests
+        result.usage["model_time_ms"] += elapsed_ms
+        answer_cost = result.usage.get("cost_usd")
+        result.usage["cost_usd"] = (
+            float(answer_cost) + review_cost
+            if isinstance(answer_cost, (int, float)) and review_cost is not None
+            else None
+        )
+        result.usage["cost_status"] = (
+            "priced" if result.usage["cost_usd"] is not None else "unpriced"
+        )
+
     def conversation(self) -> "_PydanticConversation":
         return _PydanticConversation(self)
 
@@ -681,6 +746,7 @@ class PydanticRuntimeAdapter:
         citations: CitationRegistry,
         started: float,
         timing_capability: _ModelTimingCapability,
+        fact_review_runs: list[dict[str, Any]],
         semantic_verifier_runs: list[dict[str, Any]],
         validation_rejections: list[dict[str, Any]],
         status: str,
@@ -696,8 +762,10 @@ class PydanticRuntimeAdapter:
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
         result.usage["retry_kinds"] = _retry_kinds(messages)
+        self._merge_fact_review_usage(result, fact_review_runs)
         self._merge_semantic_usage(result, semantic_verifier_runs)
         result.diagnostics = {
+            **({"fact_review_runs": fact_review_runs} if fact_review_runs else {}),
             "semantic_verifier_runs": semantic_verifier_runs,
             "validation_rejections": validation_rejections,
         }
@@ -858,7 +926,7 @@ class PydanticRuntimeAdapter:
                                 stream,
                             )
                         )
-                        if event_sink is not None
+                        if event_sink is not None or self._stream_model_requests
                         else None
                     ),
                     capabilities=(
@@ -892,6 +960,7 @@ class PydanticRuntimeAdapter:
                 citations=citations,
                 started=started,
                 timing_capability=timing_capability,
+                fact_review_runs=deps.fact_review_runs,
                 semantic_verifier_runs=deps.semantic_verifier_runs,
                 validation_rejections=deps.validation_rejections,
                 status=(
@@ -917,8 +986,14 @@ class PydanticRuntimeAdapter:
             model_time_ms=timing_capability.elapsed_ms,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        self._merge_fact_review_usage(result, deps.fact_review_runs)
         self._merge_semantic_usage(result, deps.semantic_verifier_runs)
         result.diagnostics = {
+            **(
+                {"fact_review_runs": deps.fact_review_runs}
+                if deps.fact_review_runs
+                else {}
+            ),
             "semantic_verifier_runs": deps.semantic_verifier_runs,
             "validation_rejections": deps.validation_rejections,
         }
@@ -1406,6 +1481,7 @@ class _PydanticConversation:
                             )
                         )
                         if event_sink is not None
+                        or self.runtime._stream_model_requests
                         else None
                     ),
                 )
@@ -1418,6 +1494,7 @@ class _PydanticConversation:
                 citations=citations,
                 started=started,
                 timing_capability=timing_capability,
+                fact_review_runs=deps.fact_review_runs,
                 semantic_verifier_runs=deps.semantic_verifier_runs,
                 validation_rejections=deps.validation_rejections,
                 status=(
@@ -1443,8 +1520,14 @@ class _PydanticConversation:
             model_time_ms=timing_capability.elapsed_ms,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        self.runtime._merge_fact_review_usage(result, deps.fact_review_runs)
         self.runtime._merge_semantic_usage(result, deps.semantic_verifier_runs)
         result.diagnostics = {
+            **(
+                {"fact_review_runs": deps.fact_review_runs}
+                if deps.fact_review_runs
+                else {}
+            ),
             "semantic_verifier_runs": deps.semantic_verifier_runs,
             "validation_rejections": deps.validation_rejections,
         }
