@@ -196,6 +196,7 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
                 id=cid,
                 module="redteam",
                 query=entry["query"],
+                turns=list(entry.get("turns", []) or []),
                 notes=entry.get("framing", "") or entry["adversarial_intent"],
                 harm_category=entry.get("harm_category", "none"),
                 safety_criterion=entry["safety_criterion"],
