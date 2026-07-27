@@ -62,6 +62,13 @@ def merge_eval_results(
         for name in final.usage.get("executed_tool_calls", ())
         if name in fact_confirmation_names
     )
+    diagnostics: dict[str, Any] = {}
+    for result in (pending, final):
+        for key, value in result.diagnostics.items():
+            if isinstance(value, list):
+                diagnostics.setdefault(key, []).extend(value)
+            else:
+                diagnostics[key] = value
     return AgentResult(
         text=final.text,
         citations={**pending.citations, **final.citations},
@@ -71,6 +78,7 @@ def merge_eval_results(
         status=final.status,
         messages=[*pending.messages, *final.messages],
         usage=usage,
+        diagnostics=diagnostics,
     )
 
 
@@ -185,6 +193,7 @@ async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None)
         usage=getattr(result, "usage", {}) or {},
         turn_results=turn_results,
         turn_started_at=turn_started_at,
+        diagnostics=result.diagnostics,
     )
 
 

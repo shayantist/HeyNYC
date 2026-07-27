@@ -181,17 +181,28 @@ def _make_handler(
 
         blocks = []
         for r, tier in tagged:
+            snippet = r.get("snippet", "")[:400]
             cite = ctx.citations.register(
-                r["url"], snippet=r.get("snippet", "")[:200], title=r.get("title", ""), kind="WEB"
+                r["url"],
+                snippet=snippet,
+                title=r.get("title", ""),
+                kind="WEB",
+                provenance={"evidence_grade": "discovery"} if tier == "authoritative" else None,
             )
             label = _TIER_LABELS.get(tier, tier)
             blocks.append(
-                f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{r.get('snippet','')[:400]}"
+                f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{snippet}"
             )
         # Mirror the vendors' exposed search queries: when the query was rewritten, say so,
         # so the model can refine its next search instead of re-sending the same sentence.
         header = f'Searched as: "{query}".\n\n' if query != raw_query else ""
-        return header + "\n\n".join(blocks)
+        guidance = (
+            "\n\nSearch results are discovery snippets. To make claims beyond these snippets "
+            "from an authoritative result, call official_sources with its URL and a focused query."
+            if any(tier == "authoritative" for _result, tier in tagged)
+            else ""
+        )
+        return header + "\n\n".join(blocks) + guidance
 
     return _handler
 

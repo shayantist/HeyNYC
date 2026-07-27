@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict
 
 from . import config, events
-from .citations import CitationRegistry, used_citations
+from .citations import CitationRegistry, used_citations, used_discovery_citations
 from .crisis_lines import compose_crisis_floor
 from .freshness import attach_temporal_provenance
 from .grounding import GroundingResult, check_grounding
@@ -1743,6 +1743,18 @@ def _unknown_citation_feedback(ids: list[str]) -> str:
     )
 
 
+def _discovery_citation_feedback(ids: list[str]) -> str:
+    joined = ", ".join(ids)
+    return (
+        "<system-reminder>\n"
+        f"Your last answer used search-result snippets as final evidence: {joined}. "
+        "Search snippets are for discovery only. Fetch the relevant official page with "
+        "official_sources and cite that evidence, or omit the unsupported claim and explain "
+        "that you could not verify it.\n"
+        "</system-reminder>"
+    )
+
+
 def _routing_query(user_message: str, history: Optional[list[dict]]) -> str:
     """Route detailed blurbs from the current turn plus recent resident messages."""
     context = [
@@ -2264,6 +2276,7 @@ class AgentResult:
     status: str = "success"
     messages: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=dict)  # {input_tokens, output_tokens, latency_ms} per turn
+    diagnostics: dict = field(default_factory=dict)
 
 
 class Agent:
@@ -3262,6 +3275,31 @@ class Agent:
                         messages.append({
                             "role": "user",
                             "content": _unknown_citation_feedback(unknown_citations),
+                        })
+                        continue
+                    text = GROUNDING_ABSTAIN_FALLBACK
+                discovery_citations = used_discovery_citations(
+                    text, citations.mapping(),
+                )
+                if discovery_citations:
+                    if guard_retries < self.guard_max_retries:
+                        guard_retries += 1
+                        yield events.MessageCompleted(
+                            message_id=message_id,
+                            text="",
+                            citations=citations.mapping(),
+                        )
+                        yield events.Reminder(
+                            summary=(
+                                "citation guard: discovery-only evidence, retrying "
+                                f"({guard_retries}/{self.guard_max_retries})"
+                            )
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": _discovery_citation_feedback(
+                                discovery_citations,
+                            ),
                         })
                         continue
                     text = GROUNDING_ABSTAIN_FALLBACK

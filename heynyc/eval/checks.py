@@ -13,7 +13,7 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from ..core.citations import content_hash
+from ..core.citations import content_hash, used_discovery_citations
 
 # The cited-claim grounding logic lives in core.grounding, shared VERBATIM with the runtime guard
 # (core/agent.py), one implementation, no drift. _CITED_CLAIM_GROUNDING_BLOCKING is re-exported here
@@ -172,6 +172,13 @@ def check_citation_references(cr: CaseResult) -> Optional[CheckResult]:
     if not referenced:
         return None
     unknown = sorted(referenced - set(cr.citations))
+    discovery = used_discovery_citations(cr.text, cr.citations)
+    if discovery:
+        return CheckResult(
+            "citation_references",
+            passed=False,
+            detail=f"discovery-only citation ids: {', '.join(discovery)}",
+        )
     return CheckResult(
         "citation_references",
         passed=not unknown,
