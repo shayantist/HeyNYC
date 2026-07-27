@@ -1203,7 +1203,7 @@ async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
     assert seen[1][1] == ["Yes, screen me.", "One adult, age 35."]
 
 
-async def test_loaded_module_capability_survives_redundant_follow_up_load(
+async def test_loaded_module_capability_resets_between_resident_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -1253,30 +1253,25 @@ async def test_loaded_module_capability_survives_redundant_follow_up_load(
             return ModelResponse(
                 [ToolCallPart("load_capability", {"id": "benefits"}, "load-first")]
             )
-        assert any(
-            isinstance(part, ToolCallPart) and part.tool_name == "load_capability"
-            for message in messages
-            for part in message.parts
-        )
-        assert any(
-            isinstance(part, ToolReturnPart) and part.tool_name == "load_capability"
-            for message in messages
-            for part in message.parts
-        )
-        assert definitions["screen_eligibility"].defer_loading is False
         if model_calls == 2:
+            assert definitions["screen_eligibility"].defer_loading is False
             return ModelResponse([TextPart("Ready")])
         if model_calls == 3:
+            assert definitions["screen_eligibility"].defer_loading is True
+            assert not any(
+                isinstance(part, ToolCallPart)
+                and part.tool_name == "load_capability"
+                for message in messages
+                for part in message.parts
+            )
+            assert "Ready" in [
+                part.content for part in _parts(messages, TextPart)
+            ]
             return ModelResponse(
                 [ToolCallPart("load_capability", {"id": "benefits"}, "load-again")]
             )
         if model_calls == 4:
-            assert any(
-                isinstance(part, RetryPromptPart)
-                and "already available" in str(part.content)
-                for message in messages
-                for part in message.parts
-            )
+            assert definitions["screen_eligibility"].defer_loading is False
             return ModelResponse(
                 [ToolCallPart("screen_eligibility", {}, "screen-call")]
             )
@@ -1309,16 +1304,9 @@ async def test_loaded_module_capability_survives_redundant_follow_up_load(
     ]
     assert follow_up_measurements
     assert all(
-        any(
-            call["function"]["name"] == "load_capability"
-            for message in messages
-            for call in message.get("tool_calls") or ()
-        )
-        for messages in follow_up_measurements
-    )
-    assert all(
-        any(
-            message["role"] == "tool" and message["tool_call_id"] == "load-first"
+        not any(
+            message["role"] == "tool"
+            and message["tool_call_id"] == "load-first"
             for message in messages
         )
         for messages in follow_up_measurements
