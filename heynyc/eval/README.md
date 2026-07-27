@@ -45,6 +45,10 @@ uv run python -m heynyc.eval.redteam --model openai/gpt-5.4-mini --api-judge  # 
 ```
 
 Needs an LLM API key (it runs the real agent); the web-search cases also need `TAVILY_API_KEY`. Output lands in `.data/eval/run-<ts>/`: `report.json` (gate), `report.txt`, and OpenInference `traces/`. The report metadata records the selected case IDs, model, measured tokens, model and tool call counts, latency, and priced cost so a phased run can stop before its next batch.
+With `--repeat K`, the initial run counts as run one instead of being billed twice. Every repeated
+trace is retained under `repeats/<case-id>/run-NN/`, and the top-level usage metadata includes all
+K runs so a qualitative reviewer can inspect variance against the complete observed spend. Any
+mechanical repeat failure fails the command and the top-level report.
 `heynyc eval` and `heynyc bench` honor `HEYNYC_AGENT_RUNTIME`, so their normal runs exercise the
 same selected runtime as resident-facing channels. Set it to `legacy` only when testing the
 retained rollback path.

@@ -107,14 +107,16 @@ class GateReport:
                     bucket[0] += 1
         return {name: f"{ok}/{n}" for name, (ok, n) in sorted(totals.items())}
 
-    def render(self) -> str:
+    def render(self, *, overall_passed: Optional[bool] = None) -> str:
         review_failed = any(
             r.qualitative_review_required
             and r.qualitative_reviewed
             and not r.promotion_ready
             for r in self.reports
         )
-        if self.mechanical_passed_count != self.total or review_failed:
+        if overall_passed is False:
+            status = "FAIL"
+        elif self.mechanical_passed_count != self.total or review_failed:
             status = "FAIL"
         elif self.qualitative_pending_count:
             status = "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED"
@@ -180,13 +182,19 @@ async def evaluate(
     return GateReport(reports=reports)
 
 
-def write_run(directory, report: "GateReport", metadata: Optional[dict] = None) -> None:
+def write_run(
+    directory,
+    report: "GateReport",
+    metadata: Optional[dict] = None,
+    *,
+    overall_passed: Optional[bool] = None,
+) -> None:
     """Persist a run: report.json (the CI gate), report.txt, and OpenInference traces."""
     directory = Path(directory)
     (directory / "traces").mkdir(parents=True, exist_ok=True)
     payload = {
         "metadata": metadata or {},
-        "passed": report.passed,
+        "passed": report.passed if overall_passed is None else overall_passed,
         "passed_count": report.passed_count,
         "mechanical_passed": (
             report.total > 0 and report.mechanical_passed_count == report.total
@@ -212,7 +220,7 @@ def write_run(directory, report: "GateReport", metadata: Optional[dict] = None) 
         ],
     }
     (directory / "report.json").write_text(json.dumps(payload, indent=2))
-    (directory / "report.txt").write_text(report.render())
+    (directory / "report.txt").write_text(report.render(overall_passed=overall_passed))
     for r in report.reports:
         if r.trace is not None:
             r.trace.write(directory / "traces")
