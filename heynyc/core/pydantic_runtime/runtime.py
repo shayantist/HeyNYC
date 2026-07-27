@@ -1402,7 +1402,7 @@ class _PydanticConversation:
         try:
             result, new_messages, self._pending = await self.runtime._run(
                 user_message,
-                message_history=self._history,
+                message_history=_native_history(_resident_history(self._history)),
                 prior_user_turns=self._user_turns,
                 reminders=reminders,
                 output_dir=output_dir,
