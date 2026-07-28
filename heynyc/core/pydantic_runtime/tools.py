@@ -199,7 +199,7 @@ class ResidentFactReviewCapability(AbstractCapability[ToolContext]):
             started = time.perf_counter()
             result = await self.reviewers[part.tool_name].run(
                 _fact_review_prompt(ctx.deps.user_turns),
-                model_settings={"openai_reasoning_effort": "low", "timeout": 30},
+                model_settings={"thinking": "low", "timeout": 30},
             )
             usage = result.usage
             ctx.deps.fact_review_runs.append({
@@ -500,6 +500,42 @@ def build_module_capabilities(
                 defer_loading=True,
             )
         )
+        for member in descendants[module.name]:
+            for hint in member.situations:
+                normalized_module = module.name.replace("_", "-")
+                hint_id = hint.name.replace("_", "-").removeprefix(
+                    f"{normalized_module}-"
+                )
+                instructions = "\n".join(
+                    part
+                    for part in (
+                        f"Situation: {hint.name}",
+                        hint.definition,
+                        (
+                            "Retrieve a current official source before answering."
+                            if hint.high_stakes else ""
+                        ),
+                        f"Current-source query: {hint.query}" if hint.query else "",
+                        (
+                            "Official pages: " + ", ".join(hint.urls)
+                            if hint.urls else ""
+                        ),
+                        (
+                            "Prioritize tools: " + ", ".join(hint.focus_tools)
+                            if hint.focus_tools else ""
+                        ),
+                        hint.reminder,
+                    )
+                    if part
+                )
+                capabilities.append(
+                    Capability(
+                        id=f"{module.name}-{hint_id}",
+                        description=hint.definition,
+                        instructions=instructions,
+                        defer_loading=True,
+                    )
+                )
     for (module_name, tool_name), available_tools in governed_tools.items():
         tool = governed[tool_name]
         capability_id = f"{module_name}-{tool_name.replace('_', '-')}"

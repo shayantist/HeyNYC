@@ -38,5 +38,6 @@ prompt: |
   "Operational" or a scheduled-open result into a guarantee that a restroom is open, unlocked,
   clean, accessible, or usable right now. Do not invent fees, restrictions, or amenities the tool
   did not return. Do not add a "best bet", superlative, or comparison unless the tool explicitly
-  returned that comparison. Route closures and maintenance problems to NYC 311.
+  returned that comparison. Only route an explicitly reported closure or maintenance problem to
+  NYC 311; do not add that route to a location-search answer.
 eval: eval.yaml

@@ -25,6 +25,16 @@ SearchFn = Callable[..., Awaitable[list[dict]]]
 
 # Tavily's time_range accepts exactly these; anything else falls back to "year".
 _RECENCY_WINDOWS = ("day", "week", "month", "year")
+_ARCHIVE_WARNING = (
+    "SOURCE STATUS: ARCHIVED. The publisher identifies this as historical or "
+    "out-of-date content; do not present it as current."
+)
+_ARCHIVE_MARKERS = (
+    "archived content",
+    "out of date",
+    "no longer current",
+    "historical content",
+)
 
 
 # Server-side query normalization, the layer where Gemini and ChatGPT put query understanding
@@ -72,24 +82,35 @@ def _domain_allowed(url: str, allowlist: list[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in allowlist)
 
 
+def archive_warning(url: str, text: str = "") -> str:
+    path = (urlparse(url).path or "").lower()
+    haystack = text.lower()
+    if "/archive/" in path or "save-policy-news-archive" in path:
+        return _ARCHIVE_WARNING
+    return _ARCHIVE_WARNING if any(marker in haystack for marker in _ARCHIVE_MARKERS) else ""
+
+
 async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]:
     """Shared Tavily call. Returns [] when no API key (caller treats as unavailable)."""
     if not config.TAVILY_API_KEY:
         return []
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": config.TAVILY_API_KEY,
-                "query": query,
-                "include_domains": allowed_domains,
-                "max_results": 5,
-                "search_depth": "basic",
-                **extra,
-            },
-        )
-        response.raise_for_status()
-        results = response.json().get("results", [])
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": config.TAVILY_API_KEY,
+                    "query": query,
+                    "include_domains": allowed_domains,
+                    "max_results": 5,
+                    "search_depth": "basic",
+                    **extra,
+                },
+            )
+            response.raise_for_status()
+            results = response.json().get("results", [])
+    except (httpx.TimeoutException, httpx.TransportError):
+        return []
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")} for r in results]
 
 
@@ -182,12 +203,14 @@ def _make_handler(
         blocks = []
         for r, tier in tagged:
             snippet = r.get("snippet", "")[:400]
+            if warning := archive_warning(r["url"], f"{r.get('title', '')}\n{snippet}"):
+                snippet = f"{warning}\n\n{snippet}"
             cite = ctx.citations.register(
                 r["url"],
                 snippet=snippet,
                 title=r.get("title", ""),
                 kind="WEB",
-                provenance={"evidence_grade": "discovery"} if tier == "authoritative" else None,
+                provenance={"evidence_grade": "discovery"},
             )
             label = _TIER_LABELS.get(tier, tier)
             blocks.append(

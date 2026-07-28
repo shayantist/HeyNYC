@@ -126,7 +126,7 @@ def test_benefits_manifest_declares_the_snap_work_rules_situation():
         for host in ("nyc.gov", "access.nyc.gov", "otda.ny.gov")
     )
     assert "fair-hearing" in hint.reminder
-    assert "benefits_search" in hint.focus_tools
+    assert "official_sources" in hint.focus_tools
     # Meaning-based, never a keyword list (the Bengali acid test): the definition must read as a
     # description of the situation, not as SNAP/work terms.
     assert len(hint.definition.split()) >= 8

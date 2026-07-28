@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -50,7 +51,7 @@ from heynyc.channels.store import ChannelStore
 from heynyc.core import events, pii_crypto
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.grounding import check_grounding
-from heynyc.core.manifest import ServiceModule
+from heynyc.core.manifest import ServiceModule, SituationHint
 from heynyc.core.memory import (
     ContextCapacityError,
     ContinuityRecord,
@@ -74,6 +75,7 @@ from heynyc.core.pydantic_runtime import (
     build_runtime,
     resident_fact_confirmation_tool,
 )
+from heynyc.core.pydantic_runtime.runtime import TEMPORARY_FAILURE_FALLBACK
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
@@ -96,6 +98,55 @@ def _parts(messages: Sequence[ModelMessage], part_type: type) -> list:
         for part in message.parts
         if isinstance(part, part_type)
     ]
+
+
+async def test_definitive_upstream_tool_failure_returns_to_model_for_recovery() -> None:
+    async def unavailable(_args: dict, _ctx: ToolContext) -> str:
+        response = httpx.Response(
+            432,
+            request=httpx.Request("POST", "https://api.example.test/search"),
+        )
+        raise httpx.HTTPStatusError(
+            "plan limit",
+            request=response.request,
+            response=response,
+        )
+
+    async def official(_args: dict, _ctx: ToolContext) -> str:
+        return "Official source available"
+
+    search = Tool(
+        name="web_search",
+        description="Search the web",
+        parameters={"type": "object", "properties": {}},
+        handler=unavailable,
+    )
+    source = Tool(
+        name="official_sources",
+        description="Fetch an official source",
+        parameters={"type": "object", "properties": {}},
+        handler=official,
+    )
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        returns = _parts(messages, ToolReturnPart)
+        if not returns:
+            return ModelResponse([ToolCallPart("web_search", {}, "search-1")])
+        if returns[-1].tool_name == "web_search":
+            return ModelResponse([ToolCallPart("official_sources", {}, "source-1")])
+        return ModelResponse([TextPart("Recovered from the official source.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={tool.name: tool for tool in (search, source)},
+        guard_grounding=False,
+    )
+
+    result = await runtime.run("Help")
+
+    assert result.text == "Recovered from the official source."
+    assert result.tool_calls_made == ["web_search", "official_sources"]
 
 
 @pytest.mark.parametrize(
@@ -143,11 +194,111 @@ def test_benefits_discovery_capability_excludes_deferred_workflow_intake() -> No
         for capability in capabilities
         if getattr(capability, "id", None) == "benefits"
     )
+    work_rules = next(
+        capability
+        for capability in capabilities
+        if getattr(capability, "id", None) == "benefits-snap-work-rules"
+    )
     instructions = "\n".join(benefits.get_instructions())
+    work_rule_instructions = "\n".join(work_rules.get_instructions())
 
     assert "SCREENING (when screen_eligibility is in your toolset)" not in instructions
     assert "APPLYING (when prepare_snap_application is in your toolset)" not in instructions
     assert "Only legal name and home address are required" not in instructions
+    assert "faq_general_en.shtml" not in instructions
+    assert "https://otda.ny.gov/oah/" not in instructions
+    assert (
+        "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
+        in work_rule_instructions
+    )
+    assert "https://otda.ny.gov/oah/" in work_rule_instructions
+    assert "Do not load for a generic question about whether SNAP may end" in (
+        work_rules.description
+    )
+    assert (
+        "Prioritize tools: official_sources, web_search, nearest_food_pantry"
+        in work_rule_instructions
+    )
+    assert "recent_developments" not in work_rule_instructions
+    assert "ALWAYS offer the nearest food pantry via the tool" not in instructions
+
+
+def test_module_capability_includes_its_manifest_situation_runbook() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            description="Find benefits",
+            prompt="Use current official evidence.",
+            situations=[
+                SituationHint(
+                    name="snap_work_rules",
+                    definition="A resident says SNAP may stop because of a work requirement.",
+                    query="current NYC SNAP work requirement rules",
+                    urls=["https://access.nyc.gov/programs/snap/"],
+                    reminder="Answer the notice reason before discussing next steps.",
+                    high_stakes=True,
+                    focus_tools=["official_sources"],
+                )
+            ],
+        )
+    ])
+
+    _, capabilities = build_module_capabilities(registry, {})
+    by_id = {capability.id: capability for capability in capabilities}
+    benefits_instructions = "\n".join(by_id["benefits"].get_instructions())
+    situation = by_id["benefits-snap-work-rules"]
+    instructions = "\n".join(situation.get_instructions())
+
+    assert "snap_work_rules" not in benefits_instructions
+    assert "snap_work_rules" in instructions
+    assert "A resident says SNAP may stop because of a work requirement." in instructions
+    assert "current NYC SNAP work requirement rules" in instructions
+    assert "https://access.nyc.gov/programs/snap/" in instructions
+    assert "Answer the notice reason before discussing next steps." in instructions
+    assert situation.description == (
+        "A resident says SNAP may stop because of a work requirement."
+    )
+    assert situation.defer_loading is True
+
+
+def test_situation_capability_does_not_repeat_the_module_prefix() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="immigration",
+            situations=[
+                SituationHint(
+                    name="immigration_enforcement_rights",
+                    definition="Know your rights during an enforcement encounter.",
+                )
+            ],
+        )
+    ])
+
+    _, capabilities = build_module_capabilities(registry, {})
+    ids = {capability.id for capability in capabilities}
+
+    assert "immigration-enforcement-rights" in ids
+    assert "immigration-immigration-enforcement-rights" not in ids
+
+
+def test_situation_capability_normalizes_an_underscored_module_prefix_once() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="worker_rights",
+            situations=[
+                SituationHint(
+                    name="worker_rights_tip_theft",
+                    definition="Recover stolen tips.",
+                )
+            ],
+        )
+    ])
+
+    _, capabilities = build_module_capabilities(registry, {})
+    ids = {capability.id for capability in capabilities}
+
+    assert "worker_rights-tip-theft" in ids
+    assert "worker_rights-worker-rights-tip-theft" not in ids
 
 
 def test_side_effecting_tool_gets_its_own_deferred_capability() -> None:
@@ -2110,7 +2261,6 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
                 ToolCallPart(
                     info.output_tools[0].name,
                     {
-                        "acknowledgment": "I can help.",
                         "grounded_blocks": [
                             {
                                 "text": text,
@@ -2135,7 +2285,6 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
 
     assert calls == 3
     assert result.text == (
-        "I can help.\n\n"
         "Call 311 for current case help. {cite:S1}\n\n"
         "Do you want the phone link?"
     )
@@ -2162,7 +2311,6 @@ async def test_structured_grounding_rejects_an_empty_answer() -> None:
             }
             if calls == 1
             else {
-                "acknowledgment": "I can help.",
                 "grounded_blocks": [],
                 "follow_up_question": "Which service do you need?",
             }
@@ -2184,6 +2332,277 @@ async def test_structured_grounding_rejects_an_empty_answer() -> None:
     assert calls == 3
     assert caught.value.partial_result.status == "error"
     assert caught.value.partial_result.usage["requests"] == 3
+
+
+async def test_deterministic_grounding_diagnostics_name_only_safe_mismatch_metadata() -> None:
+    async def handler(_args: dict, ctx: ToolContext) -> str:
+        cid = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official hotline",
+            kind="WEB",
+            snippet="Call 311.",
+        )
+        return f"Call 311. {{cite:{cid}}}"
+
+    source = Tool(
+        name="official_guidance",
+        description="Get current official guidance",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("official_guidance", {}, "source-1")])
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [{
+                        "text": "Call (212) 555-9999.",
+                        "citation_ids": ["S1"],
+                    }]
+                },
+                f"final-{calls}",
+            )
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={source.name: source},
+        structured_grounding=True,
+    )
+
+    with pytest.raises(PydanticRunFailure) as caught:
+        await runtime.run("Help")
+
+    rejections = caught.value.partial_result.diagnostics["validation_rejections"]
+    assert rejections == [
+        {
+            "attempt": attempt,
+            "stage": "deterministic_grounding",
+            "mismatches": [{"kind": "phone", "cited": ["S1"]}],
+        }
+        for attempt in (1, 2, 3)
+    ]
+    assert "555-9999" not in json.dumps(rejections)
+
+
+async def test_final_grounding_retry_keeps_supported_blocks() -> None:
+    async def handler(_args: dict, ctx: ToolContext) -> str:
+        hotline = ctx.citations.register(
+            "https://www.nyc.gov/help",
+            title="Official help",
+            kind="WEB",
+            snippet="Call 311 for free help.",
+        )
+        decision = ctx.citations.register(
+            "https://www.nyc.gov/decision",
+            title="Official decision",
+            kind="WEB",
+            snippet="The decision was issued June 25, 2026.",
+        )
+        later = ctx.citations.register(
+            "https://www.nyc.gov/later-decision",
+            title="Later official decision",
+            kind="WEB",
+            snippet="The decision was issued July 28, 2026.",
+        )
+        return (
+            f"Call 311. {{cite:{hotline}}} Decision date. {{cite:{decision}}} "
+            f"Later decision. {{cite:{later}}}"
+        )
+
+    source = Tool(
+        name="official_guidance",
+        description="Get current official guidance",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("official_guidance", {}, "source-1")])
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [
+                        {
+                            "text": (
+                                "The decision was issued July 28, 2026. "
+                                "These sources do not determine your individual outcome."
+                            ),
+                            "citation_ids": ["S2"],
+                        },
+                        {
+                            "text": "Call 311 for free help.",
+                            "citation_ids": ["S1"],
+                        },
+                        {
+                            "text": "The decision was issued July 28, 2026.",
+                            "citation_ids": ["S3"],
+                        },
+                    ]
+                },
+                f"final-{calls}",
+            )
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={source.name: source},
+        structured_grounding=True,
+    )
+
+    result = await runtime.run("What changed and where can I get help?")
+
+    assert calls == 4
+    assert result.status == "success"
+    assert result.text == (
+        "These sources do not determine your individual outcome. {cite:S2}\n\n"
+        "Call 311 for free help. {cite:S1}\n\n"
+        "The decision was issued July 28, 2026. {cite:S3}"
+    )
+
+
+async def test_final_grounding_retry_fails_when_every_claim_is_rejected() -> None:
+    async def handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/decision",
+            title="Official decision",
+            kind="WEB",
+            snippet="The decision was issued June 25, 2026.",
+        )
+        return f"Decision date. {{cite:{citation_id}}}"
+
+    source = Tool(
+        name="official_guidance",
+        description="Get current official guidance",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("official_guidance", {}, "source-1")])
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [{
+                        "text": "The decision was issued July 28, 2026.",
+                        "citation_ids": ["S1"],
+                    }]
+                },
+                f"final-{calls}",
+            )
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={source.name: source},
+        structured_grounding=True,
+    )
+
+    with pytest.raises(PydanticRunFailure):
+        await runtime.run("When was the decision issued?")
+
+    assert calls == 4
+
+
+async def test_structured_grounding_returns_safe_fallback_with_only_discovery_evidence() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://example.org/search-result",
+            title="Search result",
+            kind="WEB",
+            snippet="An unverified search snippet.",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"Search result only. {{cite:{citation_id}}}"
+
+    search = Tool(
+        name="search",
+        description="Search for a source",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+        assert info.output_tools == []
+        return ModelResponse([TextPart("The unverified result says to act now.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={search.name: search},
+        structured_grounding=True,
+    )
+
+    result = await runtime.run("What should I do?")
+
+    assert result.text == TEMPORARY_FAILURE_FALLBACK
+    assert result.status == "error"
+
+
+async def test_structured_grounding_does_not_fallback_before_retrieval() -> None:
+    async def handler(args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://example.org/search-result",
+            title="Search result",
+            kind="WEB",
+            snippet="An unverified search snippet.",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"Search result only. {{cite:{citation_id}}}"
+
+    search = Tool(
+        name="search",
+        description="Search for a source",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([TextPart("I give up.")])
+        if calls == 2:
+            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+        return ModelResponse([TextPart("I still cannot verify it.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={search.name: search},
+        structured_grounding=True,
+    )
+
+    result = await runtime.run("What should I do?")
+
+    assert calls == 3
+    assert result.text == TEMPORARY_FAILURE_FALLBACK
+    assert result.tool_calls_made == ["search"]
 
 
 async def test_approval_resume_retains_usage_after_output_retry_failure() -> None:
@@ -2242,6 +2661,49 @@ async def test_approval_resume_retains_usage_after_output_retry_failure() -> Non
     assert partial.usage["requests"] == 3
     assert partial.usage["retry_kinds"] == ["unknown_citation"] * 2
     assert "resident-secret" not in json.dumps(partial.usage)
+
+
+async def test_approval_resume_timeout_preserves_pending_state() -> None:
+    async def handler(_args: dict, _ctx: ToolContext) -> str:
+        return "done"
+
+    action = Tool(
+        name="act",
+        description="Complete an approved action",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        requires_approval=True,
+    )
+    calls = 0
+
+    async def model(
+        _messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("act", {}, "act-call")])
+        await asyncio.sleep(1)
+        return ModelResponse([TextPart("too late")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"act": action},
+        run_timeout_s=0.05,
+    )
+    conversation = runtime.conversation()
+    await conversation.send("Do it")
+    before = conversation.dump_state()
+
+    with pytest.raises(PydanticRunFailure):
+        await conversation.resume_approvals({"act-call": True})
+
+    assert conversation.dump_state() == before
+    assert conversation.pending_approvals == {
+        "act-call": {"tool_name": "act", "args": {}}
+    }
 
 
 async def test_approval_resume_honors_runtime_request_limit() -> None:
@@ -2392,7 +2854,6 @@ def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
                 ToolCallPart(
                     "grounded_answer",
                     {
-                        "acknowledgment": "I can help.",
                         "grounded_blocks": [],
                         "follow_up_question": "Which service do you need?",
                     },
@@ -2415,7 +2876,7 @@ def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
         {"role": "user", "content": "Help"},
         {
             "role": "assistant",
-            "content": "I can help.\n\nWhich service do you need?",
+            "content": "Which service do you need?",
         },
     ]
 
@@ -3895,6 +4356,28 @@ def test_candidate_bounds_native_tool_calls() -> None:
     )
 
     assert runtime._agent._tool_timeout == 30
+
+
+async def test_candidate_bounds_the_complete_provider_run() -> None:
+    async def model(
+        _messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        await asyncio.sleep(1)
+        return ModelResponse([TextPart("too late")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        run_timeout_s=0.01,
+    )
+
+    with pytest.raises(PydanticRunFailure) as caught:
+        await runtime.run("Help")
+
+    assert caught.value.partial_result.status == "error"
+    assert caught.value.partial_result.diagnostics["run_timeout_s"] == 0.01
 
 
 def test_volatile_run_instructions_are_callable_for_cache_ordering() -> None:

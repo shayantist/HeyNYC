@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -8,13 +10,16 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import ToolDefinition
 from pytest import MonkeyPatch
 
+from heynyc.core.citations import CitationRegistry
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
 from heynyc.core.pydantic_runtime import (
     PydanticRuntimeAdapter,
     _semantic_citation_evidence,
 )
+from heynyc.core.pydantic_runtime.runtime import _authoritative_output_tools
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.eval.cases import EvalCase
@@ -96,14 +101,14 @@ def test_semantic_evidence_never_falls_back_to_full_provenance() -> None:
     }) == ""
 
 
-def test_semantic_evidence_is_bounded() -> None:
+def test_semantic_evidence_preserves_the_bounded_retrieval_chunk() -> None:
     evidence = _semantic_citation_evidence({
-        "snippet": f"{'x' * 2_000} private-tail",
+        "snippet": f"{'x' * 1_000} appeal-deadline {'y' * 1_000}",
         "title": "Official guidance",
     })
 
+    assert "appeal-deadline" in evidence
     assert len(evidence) <= 1_200
-    assert "private-tail" not in evidence
 
 
 async def test_structured_answer_contract_requires_direct_useful_answer() -> None:
@@ -142,15 +147,15 @@ async def test_structured_answer_contract_requires_direct_useful_answer() -> Non
     normalized = description.lower()
     assert "answer the resident's actual question first" in normalized
     assert "first grounded block" in normalized
-    assert "not in the acknowledgment" in normalized
     assert "individual outcome" in normalized
     assert "concrete official next step" in normalized
-    assert "state that limitation in the acknowledgment" in normalized
-    acknowledgment_description = (
-        output_schema["properties"]["acknowledgment"]["description"].lower()
-    )
-    assert "explicit limitation on what can be determined" in acknowledgment_description
-    assert "external factual or procedural claims" in acknowledgment_description
+    assert "acknowledgment" not in output_schema["properties"]
+    assert "framing" not in output_schema["properties"]
+    assert "opening" not in output_schema["properties"]
+    assert "state that limitation in the first grounded block" in normalized
+    assert "a related source is not enough" in normalized
+    assert "procedure or condition" in normalized
+    assert "data-minimization reminders belong only in follow_up_question" in normalized
     follow_up_description = (
         output_schema["properties"]["follow_up_question"]["description"].lower()
     )
@@ -219,6 +224,63 @@ async def test_structured_answer_normalizes_matching_embedded_citation_marker() 
 
     assert model_calls == 2
     assert result.text == "Benefits may change. {cite:S1}"
+
+
+async def test_structured_answer_rejects_internal_url_markup() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official guidance",
+            kind="WEB",
+            snippet="Free legal help is available.",
+        )
+        return f"Free legal help is available. {{cite:{citation_id}}}"
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        text = (
+            "Free legal help: {URL:https://www.nyc.gov/example}"
+            if model_calls == 2
+            else "Free legal help is available."
+        )
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [
+                        {"text": text, "citation_ids": ["S1"]},
+                    ]
+                },
+                f"final-{model_calls}",
+            )
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get current official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    )
+
+    result = await runtime.run("Where can I get free legal help?")
+
+    assert model_calls == 3
+    assert "{URL:" not in result.text
+    assert result.diagnostics["validation_rejections"] == [
+        {"attempt": 1, "stage": "internal_markup"},
+    ]
 
 
 async def test_structured_answer_retries_extra_declared_id_with_embedded_marker() -> None:
@@ -390,7 +452,7 @@ async def test_pydantic_semantic_validator_retries_and_accounts_for_verifier() -
     ]
 
 
-async def test_pydantic_semantic_validator_uses_framing_and_bounded_citation_chunks() -> None:
+async def test_pydantic_semantic_validator_uses_bounded_citation_chunks() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -426,10 +488,6 @@ async def test_pydantic_semantic_validator_uses_framing_and_bounded_citation_chu
             ToolCallPart(
                 info.output_tools[0].name,
                 {
-                    "acknowledgment": (
-                        "I understand why you are worried. "
-                        "I cannot tell from this message alone."
-                    ),
                     "grounded_blocks": [
                         {
                             "text": "Eligibility depends on household circumstances.",
@@ -452,14 +510,138 @@ async def test_pydantic_semantic_validator_uses_framing_and_bounded_citation_chu
     await runtime.run("Will my benefits stop?")
 
     inputs = verifier.inputs[0]
-    acknowledgment = next(item for item in inputs if item.id == "acknowledgment")
     grounded = next(item for item in inputs if item.id == "block-0")
-    assert acknowledgment.kind == "framing"
-    assert acknowledgment.source == ""
     assert grounded.source == (
         "[S1] Eligibility depends on household circumstances. Official guidance"
     )
     assert "private_irrelevant_field" not in grounded.source
+
+
+async def test_structured_output_offers_only_authoritative_citation_ids() -> None:
+    calls = 0
+
+    async def discovery(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/search",
+            title="Search result",
+            kind="WEB",
+            snippet="A search snippet.",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"Search result. {{cite:{citation_id}}}"
+
+    async def official(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/guidance",
+            title="Official guidance",
+            kind="WEB",
+            snippet="Benefits depend on household circumstances.",
+            provenance={"evidence_grade": "authoritative"},
+        )
+        return f"Benefits depend on household circumstances. {{cite:{citation_id}}}"
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        output = next(
+            (tool for tool in info.output_tools if tool.name == "grounded_answer"),
+            None,
+        )
+        if calls == 1:
+            assert output is not None
+            return ModelResponse([ToolCallPart("discovery", {}, "discovery-1")])
+        if calls == 2:
+            assert output is None
+            return ModelResponse([ToolCallPart("official", {}, "official-1")])
+        assert output is not None
+        citation_schema = output.parameters_json_schema["$defs"]["GroundedBlock"][
+            "properties"
+        ]["citation_ids"]["items"]
+        assert citation_schema["enum"] == ["S2"]
+        return ModelResponse([
+            ToolCallPart(
+                output.name,
+                {
+                    "grounded_blocks": [
+                        {
+                            "text": "Benefits depend on household circumstances.",
+                            "citation_ids": ["S2"],
+                        }
+                    ]
+                },
+                "final-1",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "discovery": Tool(
+                name="discovery",
+                description="Search for a source",
+                parameters={"type": "object", "properties": {}},
+                handler=discovery,
+            ),
+            "official": Tool(
+                name="official",
+                description="Fetch an official source",
+                parameters={"type": "object", "properties": {}},
+                handler=official,
+            ),
+        },
+        structured_grounding=True,
+    ).run("Will my benefits change?")
+
+    assert result.text == (
+        "Benefits depend on household circumstances. {cite:S2}"
+    )
+
+
+async def test_structured_output_hides_answer_when_schema_shape_changes() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/guidance",
+        title="Official guidance",
+        kind="WEB",
+        snippet="Official evidence.",
+    )
+    ctx = SimpleNamespace(deps=SimpleNamespace(citations=citations))
+    malformed = ToolDefinition(
+        name="grounded_answer",
+        parameters_json_schema={"type": "object"},
+    )
+
+    prepared = await _authoritative_output_tools(ctx, [malformed])
+
+    assert prepared == []
+
+
+async def test_structured_output_hides_answer_when_citation_items_shape_changes() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/guidance",
+        title="Official guidance",
+        kind="WEB",
+        snippet="Official evidence.",
+    )
+    ctx = SimpleNamespace(deps=SimpleNamespace(citations=citations))
+    malformed = ToolDefinition(
+        name="grounded_answer",
+        parameters_json_schema={
+            "$defs": {
+                "GroundedBlock": {
+                    "properties": {
+                        "citation_ids": {"items": "unexpected"},
+                    }
+                }
+            }
+        },
+    )
+
+    prepared = await _authoritative_output_tools(ctx, [malformed])
+
+    assert prepared == []
 
 
 async def test_semantic_verifier_bounds_total_evidence_per_claim() -> None:
@@ -627,7 +809,7 @@ async def test_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
     assert "private diagnostic reason" not in str(result.diagnostics)
 
 
-async def test_pydantic_semantic_validator_checks_conversational_fields() -> None:
+async def test_pydantic_semantic_validator_retries_unsupported_fields() -> None:
     model_calls = 0
 
     async def source(_args: dict, ctx: ToolContext) -> str:
@@ -649,11 +831,6 @@ async def test_pydantic_semantic_validator_checks_conversational_fields() -> Non
             ToolCallPart(
                 info.output_tools[0].name,
                 {
-                    "acknowledgment": (
-                        "Your benefits end tomorrow."
-                        if unsupported
-                        else "I'm sorry you're dealing with this."
-                    ),
                     "follow_up_question": (
                         "Your benefits end tomorrow. What is your ZIP code?"
                         if unsupported
@@ -690,14 +867,11 @@ async def test_pydantic_semantic_validator_checks_conversational_fields() -> Non
 
     assert model_calls == 3
     assert [item.id for item in verifier.inputs[0]] == [
-        "acknowledgment",
         "block-0",
         "follow-up-question",
     ]
-    assert verifier.inputs[0][0].source == ""
-    assert verifier.inputs[0][2].source == ""
+    assert verifier.inputs[0][1].source == ""
     assert result.text == (
-        "I'm sorry you're dealing with this.\n\n"
         "Benefits depend on household circumstances. {cite:S1}\n\n"
         "What is your ZIP code?"
     )
@@ -718,7 +892,7 @@ async def test_pydantic_semantic_validator_fails_safely_when_provider_is_down() 
                 info.output_tools[0].name,
                 {
                     "grounded_blocks": [
-                        {"text": "Your benefits end tomorrow.", "citation_ids": ["S1"]},
+                            {"text": "Benefits are available.", "citation_ids": ["S1"]},
                     ],
                 },
                 "final-1",
@@ -752,8 +926,8 @@ async def test_pydantic_semantic_validator_fails_safely_when_provider_is_down() 
     result = await runtime.run("Will my benefits end?")
 
     assert result.text == (
-        "I'm sorry, I couldn't verify the sources needed to answer safely right now. "
-        "Please try again."
+        "I hit a temporary problem before I could verify an answer. "
+        "Please try again in a moment."
     )
     assert result.usage["semantic_verifier_error"] == "RuntimeError"
 

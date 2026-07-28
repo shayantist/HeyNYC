@@ -162,6 +162,7 @@ def build_configured_runtime(
         use_module_capabilities=True,
         current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
+        structured_grounding=True,
         fact_review_model=configured_model(config.HEYNYC_FACT_REVIEW_MODEL),
         fact_review_model_name=config.HEYNYC_FACT_REVIEW_MODEL,
         stream_model_requests=True,

@@ -30,7 +30,7 @@ from pydantic_ai.usage import RunUsage
 from heynyc.core.telemetry import priced_cost_usd
 
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
-_SEMANTIC_EVIDENCE_CHARS = 1_200
+_SEMANTIC_CITATION_CHARS = 1_200
 
 class GroundedBlock(BaseModel):
     text: str = Field(
@@ -45,16 +45,6 @@ class GroundedBlock(BaseModel):
 
 
 class GroundedAnswer(BaseModel):
-    acknowledgment: str = Field(
-        default="",
-        max_length=240,
-        description=(
-            "A brief empathetic reaction and, when needed, an explicit limitation on "
-            "what can be determined, in the resident's language. No external factual "
-            "or procedural claims, advice, predictions, eligibility, actions, names, "
-            "or dates."
-        ),
-    )
     grounded_blocks: list[GroundedBlock] = Field(
         default_factory=list,
         max_length=12,
@@ -82,11 +72,11 @@ def _semantic_citation_evidence(citation: dict) -> str:
     return " ".join(
         str(citation.get(field) or "").strip()
         for field in ("snippet", "title")
-    ).strip()[:_SEMANTIC_EVIDENCE_CHARS]
+    ).strip()[:_SEMANTIC_CITATION_CHARS]
 
 
 def _render_grounded_answer(answer: GroundedAnswer) -> str:
-    parts = [answer.acknowledgment.strip()]
+    parts: list[str] = []
     parts.extend(
         " ".join(
             (

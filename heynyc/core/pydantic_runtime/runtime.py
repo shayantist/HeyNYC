@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterable, Awaitable, Sequence
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 from pydantic import TypeAdapter
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
@@ -19,6 +22,7 @@ from pydantic_ai import (
     PartDeltaEvent,
     PartStartEvent,
     RunContext,
+    TextOutput,
     TextPartDelta,
     ToolOutput,
     UnexpectedModelBehavior,
@@ -28,9 +32,12 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import (
     AbstractCapability,
+    Hooks,
+    PrepareOutputTools,
     ReinjectSystemPrompt,
     WrapModelRequestHandler,
 )
+from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -44,6 +51,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
 from heynyc.core import config, events
@@ -123,6 +131,65 @@ TEMPORARY_FAILURE_FALLBACK = (
     "I hit a temporary problem before I could verify an answer. "
     "Please try again in a moment."
 )
+
+
+def _safe_text_fallback(_text: str) -> str:
+    return TEMPORARY_FAILURE_FALLBACK
+
+
+async def _recover_upstream_tool_error(
+    _ctx: RunContext[ToolContext],
+    *,
+    call: Any,
+    tool_def: Any,
+    args: Any,
+    error: Exception,
+) -> Any:
+    del call, tool_def, args
+    if not isinstance(error, httpx.HTTPStatusError):
+        raise error
+    status = error.response.status_code
+    if status == 429 or status >= 500:
+        raise ModelRetry(
+            f"The upstream service returned HTTP {status}. Retry this tool once."
+        )
+    raise ToolFailed(
+        f"The upstream service is unavailable for this request (HTTP {status}). "
+        "Use another available source or explain the limitation."
+    )
+
+
+async def _authoritative_output_tools(
+    ctx: RunContext[ToolContext],
+    tool_defs: list[ToolDefinition],
+) -> list[ToolDefinition]:
+    citations = ctx.deps.citations.mapping()
+    if not citations:
+        return tool_defs
+    allowed = [
+        citation_id
+        for citation_id, citation in citations.items()
+        if (citation.get("provenance") or {}).get("evidence_grade") != "discovery"
+    ]
+    if not allowed:
+        return [tool for tool in tool_defs if tool.name != _GROUNDED_OUTPUT_TOOL]
+    prepared = []
+    for tool in tool_defs:
+        if tool.name != _GROUNDED_OUTPUT_TOOL:
+            prepared.append(tool)
+            continue
+        tool = deepcopy(tool)
+        try:
+            citation_items = tool.parameters_json_schema["$defs"]["GroundedBlock"][
+                "properties"
+            ]["citation_ids"]["items"]
+        except (KeyError, TypeError):
+            continue
+        if not isinstance(citation_items, dict):
+            continue
+        citation_items["enum"] = allowed
+        prepared.append(tool)
+    return prepared
 
 
 def _safe_semantic_label(label: str) -> str:
@@ -382,6 +449,7 @@ class PydanticRuntimeAdapter:
         fact_review_model: Any = None,
         fact_review_model_name: str = "",
         stream_model_requests: bool = False,
+        run_timeout_s: float = 180,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -400,6 +468,8 @@ class PydanticRuntimeAdapter:
         self._answer_model_route = answer_model_route
         self._semantic_verifier = semantic_verifier
         self._stream_model_requests = stream_model_requests
+        self._run_timeout_s = run_timeout_s
+        self._structured_grounding = structured_grounding
         self._context_budget = (
             context_capacity(answer_model_route, None, True)
             if context_budget is None and answer_model_route is not None
@@ -427,7 +497,13 @@ class PydanticRuntimeAdapter:
             tools=adapted_tools,
             capabilities=[
                 ReinjectSystemPrompt(),
+                Hooks(tool_execute_error=_recover_upstream_tool_error),
                 _PreserveToolScopesCapability(set(self.tools)),
+                *(
+                    [PrepareOutputTools(_authoritative_output_tools)]
+                    if structured_grounding and guard_grounding
+                    else []
+                ),
                 *(
                     [
                         ResidentFactReviewCapability(
@@ -452,20 +528,29 @@ class PydanticRuntimeAdapter:
                         name=_GROUNDED_OUTPUT_TOOL,
                         description=(
                             "Answer the resident's actual question first, in the first "
-                            "grounded block, not in the acknowledgment. If the resident's "
+                            "grounded block. If the resident's "
                             "individual outcome cannot be determined from retrieved "
-                            "evidence, state that limitation in the acknowledgment, then "
+                            "evidence, state that limitation in the first grounded block, then "
                             "give the supported general guidance and next step. Return each "
                             "resident-facing factual or procedural claim as an atomic "
                             "grounded block with retrieved citation IDs. If the evidence "
                             "gives only general rules, plainly distinguish them from the "
-                            "resident's individual outcome. When the resident asks what "
-                            "will happen or how to protect or access a service, include a "
-                            "concrete official next step supported by a retrieved source."
+                            "resident's individual outcome. A related source is not enough: "
+                            "the cited evidence must explicitly support the whole procedure "
+                            "or condition in that block. Data-minimization reminders belong "
+                            "only in follow_up_question. When the resident asks "
+                            "what will happen or how to protect or access a service, include "
+                            "a concrete official next step explicitly supported by its cited "
+                            "evidence."
                         ),
                     )
                     if structured_grounding
                     else str
+                ),
+                *(
+                    [TextOutput(_safe_text_fallback)]
+                    if structured_grounding
+                    else []
                 ),
                 DeferredToolRequests,
             ],
@@ -495,6 +580,27 @@ class PydanticRuntimeAdapter:
         if isinstance(output, DeferredToolRequests):
             return output
         mapping = ctx.deps.citations.mapping()
+        if (
+            getattr(self, "_structured_grounding", False)
+            and isinstance(output, str)
+            and output == TEMPORARY_FAILURE_FALLBACK
+        ):
+            if not mapping:
+                reject(
+                    "retrieval_required",
+                    "Use the relevant retrieval tools before returning the text fallback.",
+                )
+            if any(
+                (citation.get("provenance") or {}).get("evidence_grade")
+                != "discovery"
+                for citation in mapping.values()
+            ):
+                reject(
+                    "structured_output_required",
+                    "Authoritative evidence is available. Return GroundedAnswer with its "
+                    "registered citation IDs.",
+                )
+            return output
         if isinstance(output, GroundedAnswer):
             if not output.grounded_blocks:
                 reject(
@@ -522,7 +628,6 @@ class PydanticRuntimeAdapter:
                         "markers must exactly match citation_ids.",
                     )
             authored = [
-                output.acknowledgment,
                 output.follow_up_question,
                 *(_grounded_block_text(block) for block in output.grounded_blocks),
             ]
@@ -535,6 +640,11 @@ class PydanticRuntimeAdapter:
             rendered = _render_grounded_answer(output)
         else:
             rendered = output
+        if "{URL:" in rendered.upper():
+            reject(
+                "internal_markup",
+                "Do not expose internal URL markup. Write a normal Markdown link or a plain URL.",
+            )
         if _unknown_citation_ids(rendered, mapping):
             reject(
                 "unknown_citation",
@@ -553,23 +663,65 @@ class PydanticRuntimeAdapter:
             ctx.deps.query,
         )
         if verdict is not None and verdict.blocking:
+            details = {
+                "mismatches": [
+                    {"kind": mismatch.kind, "cited": mismatch.cited}
+                    for mismatch in verdict.hard_failures[:_SEMANTIC_RETRY_ITEMS]
+                ]
+            }
+            if isinstance(output, GroundedAnswer) and ctx.retry >= ctx.max_retries:
+                def remaining_text(block: Any) -> str:
+                    text = _grounded_block_text(block)
+                    block_verdict = check_grounding(
+                        _render_grounded_answer(
+                            GroundedAnswer(grounded_blocks=[block])
+                        ),
+                        mapping,
+                        ctx.deps.query,
+                    )
+                    rejected_claims = (
+                        {
+                            mismatch.claim.strip()
+                            for mismatch in block_verdict.hard_failures
+                        }
+                        if block_verdict is not None and block_verdict.blocking
+                        else set()
+                    )
+                    for claim in rejected_claims:
+                        text = text.replace(claim, " ")
+                    return " ".join(text.split())
+
+                recovered = output.model_copy(update={
+                    "grounded_blocks": [
+                        block.model_copy(update={"text": remaining})
+                        for block in output.grounded_blocks
+                        if (remaining := remaining_text(block))
+                    ]
+                })
+                if recovered.grounded_blocks:
+                    recovered_verdict = check_grounding(
+                        _render_grounded_answer(recovered),
+                        mapping,
+                        ctx.deps.query,
+                    )
+                    if recovered_verdict is None or not recovered_verdict.blocking:
+                        ctx.deps.validation_rejections.append({
+                            "attempt": len(ctx.deps.validation_rejections) + 1,
+                            "stage": "deterministic_grounding",
+                            **details,
+                        })
+                        return recovered
             reject(
                 "deterministic_grounding",
                 "Return a complete replacement answer to the resident's full request, "
                 "not a correction or addendum. Preserve all still-supported requested "
                 "outcomes from prior tool results, omit unsupported details, and cite every "
-                "factual claim. A deterministic grounding check rejected at least one claim."
+                "factual claim. A deterministic grounding check rejected at least one claim.",
+                **details,
             )
         if isinstance(output, GroundedAnswer) and self._semantic_verifier is not None:
             mapping = ctx.deps.citations.mapping()
             inputs = []
-            if output.acknowledgment.strip():
-                inputs.append(NLIInput(
-                    id="acknowledgment",
-                    claim=output.acknowledgment,
-                    source="",
-                    kind="framing",
-                ))
             inputs.extend(
                 NLIInput(
                     id=f"block-{index}",
@@ -614,12 +766,7 @@ class PydanticRuntimeAdapter:
                 ][:_SEMANTIC_RETRY_ITEMS],
             })
             if semantic_error is not None:
-                return GroundedAnswer(
-                    acknowledgment=(
-                        "I'm sorry, I couldn't verify the sources needed to answer safely "
-                        "right now. Please try again."
-                    )
-                )
+                return TEMPORARY_FAILURE_FALLBACK
             if any(not verdict.supported for verdict in semantic.verdicts):
                 rejected = [
                     {
@@ -912,35 +1059,36 @@ class PydanticRuntimeAdapter:
                 )
         try:
             with capture_run_messages() as captured:
-                native = await self._agent.run(
-                    user_message,
-                    message_history=message_history or None,
-                    instructions=_dynamic_instructions(instructions),
-                    deps=deps,
-                    usage_limits=self._usage_limits,
-                    event_stream_handler=(
-                        (
-                            lambda ctx, stream: _forward_events(
-                                event_sink,
-                                message_id,
-                                stream,
+                async with asyncio.timeout(self._run_timeout_s):
+                    native = await self._agent.run(
+                        user_message,
+                        message_history=message_history or None,
+                        instructions=_dynamic_instructions(instructions),
+                        deps=deps,
+                        usage_limits=self._usage_limits,
+                        event_stream_handler=(
+                            (
+                                lambda ctx, stream: _forward_events(
+                                    event_sink,
+                                    message_id,
+                                    stream,
+                                )
                             )
-                        )
-                        if event_sink is not None or self._stream_model_requests
-                        else None
-                    ),
-                    capabilities=(
-                        [
-                            timing_capability,
-                            *(
-                                [memory_capability]
-                                if memory_capability is not None
-                                else []
-                            ),
-                        ]
-                    ),
-                )
-        except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
+                            if event_sink is not None or self._stream_model_requests
+                            else None
+                        ),
+                        capabilities=(
+                            [
+                                timing_capability,
+                                *(
+                                    [memory_capability]
+                                    if memory_capability is not None
+                                    else []
+                                ),
+                            ]
+                        ),
+                    )
+        except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
             current_index = max(
                 (
                     index
@@ -969,10 +1117,16 @@ class PydanticRuntimeAdapter:
                     else "error"
                 ),
             )
-            if isinstance(exc, UnexpectedModelBehavior):
+            if isinstance(exc, (UnexpectedModelBehavior, TimeoutError)):
+                if isinstance(exc, TimeoutError):
+                    result.diagnostics["run_timeout_s"] = self._run_timeout_s
                 _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(
-                    exc.message,
+                    (
+                        exc.message
+                        if isinstance(exc, UnexpectedModelBehavior)
+                        else f"Provider run exceeded {self._run_timeout_s:g} seconds"
+                    ),
                     result,
                     result.diagnostics,
                 ) from exc
@@ -1071,12 +1225,15 @@ class PydanticRuntimeAdapter:
                 ),
                 citations.mapping(),
             )
+        result_status = status or ("approval_required" if pending else "success")
+        if status is None and text == TEMPORARY_FAILURE_FALLBACK:
+            result_status = "error"
         return AgentResult(
             text=text,
             citations=citations.mapping(),
             tool_calls_made=tool_calls,
             iterations=iterations,
-            status=status or ("approval_required" if pending else "success"),
+            status=result_status,
             messages=_openai_messages(new_messages),
             usage={
                 "input_tokens": usage.input_tokens,
@@ -1466,29 +1623,28 @@ class _PydanticConversation:
         timing_capability = _ModelTimingCapability()
         try:
             with capture_run_messages() as captured:
-                native = await self.runtime._agent.run(
-                    message_history=self._history,
-                    deferred_tool_results=DeferredToolResults(approvals=approvals),
-                    deps=deps,
-                    capabilities=[timing_capability],
-                    usage_limits=self.runtime._usage_limits,
-                    event_stream_handler=(
-                        (
-                            lambda ctx, stream: _forward_events(
-                                event_sink,
-                                message_id,
-                                stream,
+                async with asyncio.timeout(self.runtime._run_timeout_s):
+                    native = await self.runtime._agent.run(
+                        message_history=self._history,
+                        deferred_tool_results=DeferredToolResults(approvals=approvals),
+                        deps=deps,
+                        capabilities=[timing_capability],
+                        usage_limits=self.runtime._usage_limits,
+                        event_stream_handler=(
+                            (
+                                lambda ctx, stream: _forward_events(
+                                    event_sink,
+                                    message_id,
+                                    stream,
+                                )
                             )
-                        )
-                        if event_sink is not None
-                        or self.runtime._stream_model_requests
-                        else None
-                    ),
-                )
-        except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
+                            if event_sink is not None
+                            or self.runtime._stream_model_requests
+                            else None
+                        ),
+                    )
+        except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
             new_messages = captured[len(self._history):]
-            self._history.extend(new_messages)
-            self._pending = None
             result = self.runtime._failed_result(
                 new_messages,
                 citations=citations,
@@ -1503,6 +1659,16 @@ class _PydanticConversation:
                     else "error"
                 ),
             )
+            if isinstance(exc, TimeoutError):
+                result.diagnostics["run_timeout_s"] = self.runtime._run_timeout_s
+                _finish_events(event_sink, message_id, result)
+                raise PydanticRunFailure(
+                    f"Provider run exceeded {self.runtime._run_timeout_s:g} seconds",
+                    result,
+                    result.diagnostics,
+                ) from exc
+            self._history.extend(new_messages)
+            self._pending = None
             if isinstance(exc, UnexpectedModelBehavior):
                 _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(

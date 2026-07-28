@@ -112,6 +112,20 @@ def test_trace_preserves_expected_response_language():
     assert trace.to_dict()["language"] == "es"
 
 
+def test_trace_persists_sanitized_runtime_diagnostics():
+    cr = _cr(
+        diagnostics={
+            "validation_rejections": [
+                {"attempt": 1, "stage": "structured_grounding", "items": ["money"]}
+            ]
+        }
+    )
+
+    trace = build_trace(cr).to_dict()
+
+    assert trace["diagnostics"] == cr.diagnostics
+
+
 def test_trace_persists_every_conversation_turn_for_qualitative_review():
     cr = _cr(
         case=EvalCase(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import httpx
+import pytest
+
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import web_search as web_search_mod
@@ -56,6 +59,28 @@ async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
     assert "beyond these snippets" in out
 
 
+async def test_web_search_marks_archived_results_as_not_current():
+    async def fake_search(query, domains, recency=None):
+        return [
+            {
+                "title": "Temporary Protected Status Designated Country",
+                "url": (
+                    "https://www.uscis.gov/archive/"
+                    "temporary-protected-status-designated-country-haiti"
+                ),
+                "snippet": "DHS announced an older effective date.",
+            },
+        ]
+
+    tool = web_search_tools(["uscis.gov"], search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await tool.handler({"query": "current Haiti TPS status"}, ctx)
+
+    assert "SOURCE STATUS: ARCHIVED" in out
+    assert "SOURCE STATUS: ARCHIVED" in ctx.citations.mapping()["S1"]["snippet"]
+
+
 async def test_web_search_no_results_abstains():
     async def empty(query, domains, recency=None):
         return []
@@ -64,6 +89,49 @@ async def test_web_search_no_results_abstains():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
     out = await tool.handler({"query": "x"}, ctx)
     assert "couldn't find" in out.lower() or "no results" in out.lower()
+
+
+async def test_tavily_transport_failure_degrades_to_no_results(monkeypatch):
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            raise httpx.ConnectError("provider unavailable")
+
+    monkeypatch.setattr(web_search_mod.config, "TAVILY_API_KEY", "configured")
+    monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    assert await web_search_mod._tavily("query", ["nyc.gov"]) == []
+
+
+async def test_tavily_http_status_failure_is_not_reported_as_no_results(monkeypatch):
+    class _Response:
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError(
+                "provider rejected request",
+                request=httpx.Request("POST", "https://api.tavily.com/search"),
+                response=httpx.Response(429),
+            )
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr(web_search_mod.config, "TAVILY_API_KEY", "configured")
+    monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await web_search_mod._tavily("query", ["nyc.gov"])
 
 
 def _ctx():
@@ -95,7 +163,7 @@ async def test_web_search_ranks_by_tier_and_disclaims_community():
     assert "confirm before you go" in out.lower()
     citations = ctx.citations.mapping()
     assert citations["S1"]["provenance"] == {"evidence_grade": "discovery"}
-    assert citations["S2"]["provenance"] == {}
+    assert citations["S2"]["provenance"] == {"evidence_grade": "discovery"}
 
 
 async def test_web_search_still_hard_gates_ugc_off_allowlist():

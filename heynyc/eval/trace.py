@@ -117,6 +117,7 @@ class Trace:
     citations: dict = field(default_factory=dict)
     outcome: str = "answered"
     turns: list[dict] = field(default_factory=list)
+    diagnostics: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -128,6 +129,7 @@ class Trace:
             "citations": self.citations,
             "outcome": self.outcome,
             "turns": self.turns,
+            "diagnostics": self.diagnostics,
         }
 
     def write(self, directory: Path) -> Path:
@@ -202,4 +204,5 @@ def build_trace(case_result: CaseResult) -> Trace:
             grounded=bool({c.get("kind") for c in case_result.citations.values()} & {"DATA", "DOC"}),
         ),
         turns=turns,
+        diagnostics=case_result.diagnostics,
     )
