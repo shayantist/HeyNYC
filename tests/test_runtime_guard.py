@@ -256,6 +256,13 @@ async def test_clear_chest_pain_short_circuits_before_any_model_text(query, expe
 
     agent = Agent(Registry([]), tools={}, complete_fn=unsafe_model)
     seen = [event async for event in agent.stream(query)]
+    expects_poison_source = "Poison Control" in expected
+    if expects_poison_source:
+        expected = (
+            f"{expected} {{cite:S1}} {{cite:S2}}"
+            if "dose for a baby" in expected or "dosis exacta para un bebé" in expected
+            else f"{expected} {{cite:S1}}"
+        )
 
     assert [event.type for event in seen] == [
         "message.start", "text.delta", "message.completed", "done",
@@ -265,7 +272,12 @@ async def test_clear_chest_pain_short_circuits_before_any_model_text(query, expe
     assert result.text == expected
     assert result.iterations == 0
     assert result.tool_calls_made == []
-    assert result.citations == {}
+    if expects_poison_source:
+        assert next(iter(result.citations.values()))["url"].startswith(
+            "https://www.poison.org/"
+        )
+    else:
+        assert result.citations == {}
     assert result.usage["input_tokens"] == 0
     assert result.usage["output_tokens"] == 0
 
@@ -306,15 +318,15 @@ async def test_chest_pain_history_or_general_question_still_reaches_model(query)
     [
         (
             "How much acetaminophen can I give my 6-month-old? Give me the exact dose in mL.",
-            "Do not guess an exact dose for a baby. Contact the child's pediatric clinician or "
-            "a pharmacist now because dosing depends on weight and the product concentration. "
+            "Do not guess an exact dose for a baby. Contact the child's pediatric clinician now "
+            "because dosing depends on weight and the product concentration. "
             "If a dose may already have been given incorrectly, call Poison Control at "
             "1-800-222-1222. Call 911 only for emergency symptoms.",
         ),
         (
             "¿Cuántos mL de acetaminofén le doy a mi bebé de 6 meses? Dime la dosis exacta.",
-            "No adivines una dosis exacta para un bebé. Comunícate ahora con su pediatra o un "
-            "farmacéutico porque la dosis depende del peso y de la concentración del producto. "
+            "No adivines una dosis exacta para un bebé. Comunícate ahora con su pediatra porque "
+            "la dosis depende del peso y de la concentración del producto. "
             "Si es posible que ya le hayas dado una dosis incorrecta, llama a Poison Control al "
             "1-800-222-1222. Llama al 911 solo si tiene síntomas de emergencia.",
         ),
@@ -328,8 +340,11 @@ async def test_exact_infant_dose_request_short_circuits_before_model(query, expe
 
     result = await agent.run(query)
 
-    assert result.text == expected
+    assert result.text == f"{expected} {{cite:S1}} {{cite:S2}}"
     assert result.iterations == 0
+    assert result.citations["S2"]["url"] == (
+        "https://www.poison.org/need-immediate-assistance"
+    )
 
 
 @pytest.mark.parametrize(
@@ -338,6 +353,7 @@ async def test_exact_infant_dose_request_short_circuits_before_model(query, expe
         "What should I know about acetaminophen for children?",
         "My 8-year-old needs medicine. Where can I find a pediatrician?",
         "What are emergency symptoms in a baby with a fever?",
+        "¿Qué debo saber sobre el acetaminofén para bebés?",
     ],
 )
 async def test_general_child_medication_question_still_reaches_model(query):

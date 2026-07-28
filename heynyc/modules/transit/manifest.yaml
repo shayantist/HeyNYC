@@ -1,0 +1,38 @@
+name: transit
+category: transportation
+description: >-
+  Plan an accessible NYC subway or bus trip and check current MTA elevator and
+  escalator status using official MTA accessibility information.
+keywords:
+  - subway
+  - bus
+  - MTA
+  - transit
+  - accessible route
+  - wheelchair
+  - elevator
+  - escalator
+  - step-free
+examples:
+  - "How do I get there by subway with a wheelchair?"
+  - "Are the elevators working at my station?"
+seeds:
+  - https://www.mta.info/accessibility
+  - https://www.mta.info/accessibility/subway
+  - https://www.mta.info/accessibility/stations
+  - https://www.mta.info/elevator-escalator-status
+  - https://www.mta.info/tripplanner/results
+allowlist:
+  - mta.info
+prompt: |
+  For an accessible trip, retrieve the official MTA accessible-trip guidance, accessible-station
+  information, and current elevator or escalator status before answering. Preserve the resident's
+  origin and destination from the conversation; ask for either one only when it is missing or
+  ambiguous. When an endpoint is too broad to choose a station, say that route-level accessibility
+  and service status remain unverified, ask for a nearby landmark or address at each broad
+  endpoint, and retain the resident's requested day. This capability requires a grounded handoff
+  before any clarification. Do not invent a route, transfer, accessible entrance, outage, or
+  restoration time. State which current status could not be verified if an official page cannot
+  be retrieved, while preserving any other verified result. Use and cite the official MTA
+  accessible trip planner when a step-by-step route cannot be grounded from the retrieved pages.
+eval: eval.yaml

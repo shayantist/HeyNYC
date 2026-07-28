@@ -53,7 +53,13 @@ def chunk_text(text: str, max_chars: int = 1200, overlap: int = 150) -> list[str
 
 
 async def fetch_clean(url: str, client: httpx.AsyncClient) -> tuple[str, str]:
-    response = await client.get(url, follow_redirects=True, headers={"User-Agent": "HeyNYC/0.1"})
+    response = await client.get(
+        url,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; HeyNYC/0.1; +https://reach4help.org)",
+        },
+    )
     response.raise_for_status()
     return clean_html(response.text)
 

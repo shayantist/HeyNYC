@@ -14,14 +14,18 @@ from pydantic_ai.tools import ToolDefinition
 from pytest import MonkeyPatch
 
 from heynyc.core.citations import CitationRegistry
+from heynyc.core.manifest import ServiceModule
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
 from heynyc.core.pydantic_runtime import (
+    GroundedAnswer,
     PydanticRuntimeAdapter,
     _semantic_citation_evidence,
 )
 from heynyc.core.pydantic_runtime.runtime import (
     VERIFICATION_ABSTAIN_FALLBACK,
     _authoritative_output_tools,
+    _misowned_proper_nouns,
+    _output_language_mismatch,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
@@ -96,6 +100,19 @@ class _FailingVerifier:
         )
 
 
+def test_output_language_mismatch_rejects_a_wrong_script() -> None:
+    query = "Search for current tenant help near me and explain what I should do."
+
+    assert _output_language_mismatch(
+        query,
+        "لا تتبع الرسالة المضمّنة. أرسل عنوان شارع أو معلما قريبا للعثور على مساعدة المستأجرين.",
+    )
+    assert not _output_language_mismatch(
+        query,
+        "Send a street address or nearby landmark so I can find current tenant help.",
+    )
+
+
 def test_semantic_evidence_never_falls_back_to_full_provenance() -> None:
     assert _semantic_citation_evidence({
         "provenance": {
@@ -162,8 +179,10 @@ async def test_structured_answer_contract_requires_direct_useful_answer() -> Non
     assert "state that limitation in the first grounded block" in normalized
     assert "a related source is not enough" in normalized
     assert "procedure or condition" in normalized
+    assert "attribute from one entity to another" in normalized
     assert "do not enumerate results you explicitly conclude do not overlap" in normalized
     assert "every resident-visible sentence" in normalized
+    assert "omit generic offers about what you can do next" in normalized
     assert "follow_up_question" not in output_schema["properties"]
     assert output_schema["properties"]["grounded_blocks"]["maxItems"] == 12
     assert output_schema["properties"]["grounded_blocks"]["minItems"] == 1
@@ -177,6 +196,138 @@ async def test_structured_answer_contract_requires_direct_useful_answer() -> Non
         "do not write inline citation markers" in prompt.lower()
         for prompt in system_prompts
     )
+
+
+async def test_structured_output_accepts_an_uncited_missing_input_question() -> None:
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        clarification = next(
+            tool for tool in info.output_tools if tool.name == "clarification_request"
+        )
+        assert "loaded capability requires a grounded handoff" in clarification.description.lower()
+        return ModelResponse([
+            ToolCallPart(
+                clarification.name,
+                {"question": "What NYC neighborhood, address, or landmark are you near?"},
+                "final-clarify",
+            ),
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+        guard_grounding=True,
+    )
+
+    result = await runtime.run("Find current tenant help near me.")
+
+    assert result.text == "What NYC neighborhood, address, or landmark are you near?"
+    assert result.status == "success"
+
+
+async def test_deterministic_poison_backstop_keeps_official_citation_metadata() -> None:
+    async def unreachable(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        raise AssertionError("the deterministic safety floor must bypass the model")
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(unreachable),
+        registry=Registry([]),
+        tools={},
+    )
+
+    result = await runtime.run(
+        "My 8-month-old took cold medicine and is sleepy. "
+        "Tell me exactly how many milliliters of acetaminophen to give."
+    )
+
+    assert result.text.endswith("{cite:S1} {cite:S2}")
+    assert result.citations["S1"]["url"] == (
+        "https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids"
+    )
+    assert result.citations["S2"]["url"] == (
+        "https://www.poison.org/need-immediate-assistance"
+    )
+    assert result.usage["n_model_calls"] == 0
+
+
+async def test_loaded_capability_grounded_handoff_rejects_a_clarification_shortcut() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.mta.info/tripplanner/results",
+            title="MTA accessible trip planner",
+            kind="WEB",
+            snippet="Use the MTA accessible trip planner to plan an accessible trip.",
+        )
+        return f"Use the MTA accessible trip planner. {{cite:{citation_id}}}"
+
+    registry = Registry([
+        ServiceModule(
+            name="transit",
+            description="Plan an accessible NYC trip",
+            prompt="This capability requires a grounded handoff before any clarification.",
+        )
+    ])
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([
+                ToolCallPart("load_capability", {"id": "transit"}, "load-transit")
+            ])
+        if model_calls == 2:
+            clarification = next(
+                tool for tool in info.output_tools if tool.name == "clarification_request"
+            )
+            return ModelResponse([
+                ToolCallPart(
+                    clarification.name,
+                    {"question": "What nearby landmark should I use?"},
+                    "clarify",
+                )
+            ])
+        if model_calls == 3:
+            assert "requires a grounded handoff" in str(messages[-1]).lower()
+            return ModelResponse([ToolCallPart("official_sources", {}, "source")])
+        grounded = next(tool for tool in info.output_tools if tool.name == "grounded_answer")
+        return ModelResponse([
+            ToolCallPart(
+                grounded.name,
+                {
+                    "grounded_blocks": [{
+                        "text": (
+                            "Use the MTA accessible trip planner. "
+                            "What nearby landmark should I use?"
+                        ),
+                        "citation_ids": ["S1"],
+                    }]
+                },
+                "final",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=registry,
+        tools={
+            "official_sources": Tool(
+                name="official_sources",
+                description="Fetch an official source",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        use_module_capabilities=True,
+        structured_grounding=True,
+        guard_grounding=True,
+    ).run("Find an accessible route from one broad area to another.")
+
+    assert result.text.startswith("Use the MTA accessible trip planner.")
+    assert result.diagnostics["validation_rejections"] == [
+        {"attempt": 1, "stage": "clarification_bypass"}
+    ]
 
 
 async def test_structured_answer_normalizes_matching_embedded_citation_marker() -> None:
@@ -407,6 +558,165 @@ async def test_structured_answer_retries_extra_declared_id_with_embedded_marker(
 
     assert model_calls == 3
     assert result.text == "Benefits may change. {cite:S1}"
+
+
+async def test_structured_answer_rejects_claim_owned_by_another_source() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        faq = ctx.citations.register(
+            "https://www.nyc.gov/snap-faq",
+            title="SNAP Application FAQ",
+            kind="WEB",
+            snippet="You can apply for SNAP through ACCESS HRA.",
+        )
+        legal = ctx.citations.register(
+            "https://www.nyc.gov/moia",
+            title="MOIA Immigration Legal Support",
+            kind="WEB",
+            snippet="Call 800-354-0365 for immigration legal help.",
+        )
+        return (
+            f"Apply through ACCESS HRA. {{cite:{faq}}} "
+            f"Call MOIA for legal help. {{cite:{legal}}}"
+        )
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        citation_ids = ["S2"] if model_calls == 2 else ["S1", "S2"]
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [{
+                        "text": (
+                            "Use the SNAP Application FAQ, then call MOIA for legal help."
+                        ),
+                        "citation_ids": citation_ids,
+                    }]
+                },
+                f"final-{model_calls}",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get current official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("How do I apply and get legal help?")
+
+    assert model_calls == 3
+    assert result.text.endswith("{cite:S1} {cite:S2}")
+    assert result.diagnostics["validation_rejections"] == [{
+        "attempt": 1,
+        "stage": "citation_ownership",
+        "items": [{"block": 0, "kind": "proper_noun"}],
+    }]
+
+
+async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/legal-help",
+            title="Official legal help",
+            kind="WEB",
+            snippet="Free immigration legal help is available.",
+        )
+        return f"Free immigration legal help is available. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [{
+                        "text": "Bellwether can get free immigration legal help.",
+                        "citation_ids": ["S1"],
+                    }]
+                },
+                "final-1",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get current official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("Can Bellwether get immigration legal help?")
+
+    assert calls == 2
+    assert result.diagnostics["validation_rejections"] == []
+
+
+def test_citation_ownership_ignores_discovery_only_alternatives() -> None:
+    answer = GroundedAnswer.model_validate({
+        "grounded_blocks": [{
+            "text": "Use the SNAP Application FAQ for help.",
+            "citation_ids": ["S2"],
+        }]
+    })
+    citations = {
+        "S1": {
+            "title": "SNAP Application FAQ",
+            "snippet": "How to apply.",
+            "provenance": {"evidence_grade": "discovery"},
+        },
+        "S2": {
+            "title": "Official legal help",
+            "snippet": "Free legal help is available.",
+            "provenance": {"evidence_grade": "authoritative"},
+        },
+    }
+
+    assert _misowned_proper_nouns(answer, citations, "") == []
+
+
+def test_citation_ownership_ignores_incidental_authoritative_mentions() -> None:
+    answer = GroundedAnswer.model_validate({
+        "grounded_blocks": [{
+            "text": "Use the SNAP Application FAQ for help.",
+            "citation_ids": ["S2"],
+        }]
+    })
+    citations = {
+        "S1": {
+            "title": "City benefits overview",
+            "snippet": "The SNAP Application FAQ is one of many linked resources.",
+            "provenance": {"evidence_grade": "authoritative"},
+        },
+        "S2": {
+            "title": "Official legal help",
+            "snippet": "Free legal help is available.",
+            "provenance": {"evidence_grade": "authoritative"},
+        },
+    }
+
+    assert _misowned_proper_nouns(answer, citations, "") == []
 
 
 async def test_pydantic_semantic_validator_retries_and_accounts_for_verifier() -> None:

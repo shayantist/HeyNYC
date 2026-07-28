@@ -281,6 +281,14 @@ async def test_geocode_no_match_returns_none():
     await client.aclose()
 
 
+async def test_geocode_rejects_a_deictic_location_without_device_coordinates():
+    async def should_not_run(_text):
+        raise AssertionError("deictic location reached the place-name geocoder")
+
+    assert await geocode("near me", forgiving=should_not_run) is None
+    assert await geocode("my current location", forgiving=should_not_run) is None
+
+
 def _fake_forgiving(point):
     """Build an injectable forgiving-geocoder coroutine returning a fixed GeoPoint."""
     async def fn(text):
@@ -572,6 +580,23 @@ async def test_low_confidence_origin_makes_nearest_clarify(monkeypatch):
     await client.aclose()
     assert "which borough" in out.lower()
     assert "- " not in out  # no location list emitted
+
+
+async def test_nearest_rejects_a_citywide_origin(monkeypatch):
+    async def should_not_geocode(_text, **_kwargs):
+        raise AssertionError("citywide placeholder reached the geocoder")
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "New York City"},
+        ctx,
+    )
+
+    await client.aclose()
+    assert "neighborhood, address, or landmark" in out
 
 
 def _registry_with_cooling() -> Registry:

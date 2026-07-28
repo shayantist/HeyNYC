@@ -52,6 +52,16 @@ def select_cases(cases, case_ids: list[str]):
     return [by_id[case_id] for case_id in case_ids]
 
 
+def _load_standalone_env() -> None:
+    """Load `.env` before a standalone run reads environment-backed config."""
+    from importlib import reload
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    reload(config)
+
+
 async def run_redteam(
     candidate_model: str,
     grader_model: Optional[str] = None,
@@ -106,8 +116,7 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
     OWNER-GATED: every run spends candidate API calls. Review defaults to a fresh subscription
     agent reading the saved traces. `--api-judge` additionally spends grader API calls and enforces
     a model family different from the candidate."""
-    from dotenv import load_dotenv
-    load_dotenv()  # standalone entrypoint: load .env so the candidate + grader API keys are present
+    _load_standalone_env()
 
     import argparse
     import asyncio

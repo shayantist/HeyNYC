@@ -556,6 +556,8 @@ async def geocode(
     geopy backend (see `geocoder.py`); `forgiving` is injectable for tests.
     Ambiguous intersection results are flagged `low_confidence` so the agent clarifies.
     """
+    if text.strip().casefold() in {"here", "near me", "my location", "my current location", "current location"}:
+        return None
     if forgiving is None:
         from .geocoder import forgiving_geocode
         forgiving = forgiving_geocode
@@ -751,6 +753,8 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     if binding is None:
         available = list(ctx.registry.dataset_bindings())
         return f"No dataset for category '{category}'. Available categories: {available}"
+    if args["near"].strip().casefold() in {"new york", "new york city", "nyc", "the city"}:
+        return "Ask the user for a NYC neighborhood, address, or landmark before ranking nearby sites."
 
     origin = await geocode(args["near"], client=ctx.http)
     if origin is None:

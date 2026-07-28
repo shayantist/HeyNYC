@@ -323,6 +323,7 @@ def test_unrelated_citation_does_not_ground_specialized_advice():
         "Contact HRA and ask about repayment or a fair hearing.",
         "Llama al 800-354-0365 y di public charge.",
         "Con tu bebé, ve esta noche a PATH, el centro de ingreso para familias.",
+        "Ve al centro de admisión PATH esta noche.",
     ],
 )
 def test_specialized_advice_routing_accepts_normal_sentence_boundaries(text):

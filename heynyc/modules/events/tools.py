@@ -111,6 +111,8 @@ def _from_parks(raw: dict) -> Optional[Event]:
         return None
     link = raw.get("link")
     url = link.get("url", "") if isinstance(link, dict) else (link or "")
+    if url.startswith("http://www.nycgovparks.org/"):
+        url = f"https://{url.removeprefix('http://')}"
     _unused, description = clean_html(str(raw.get("description") or ""))
     free_evidence = next(
         (

@@ -1562,7 +1562,8 @@ _POISON_RESPONSE_ES = (
 )
 _SELF_HARM_EN_RE = re.compile(
     r"\b(?:i (?:think about|am thinking about|want to|plan to|might) (?:ending it|end my life|"
-    r"kill myself|die)|i (?:do not|don't) want to (?:live|be alive)|what pills would do it)\b",
+    r"kill myself|die)|i (?:do not|don't) want to (?:live|be alive)|what pills would do it|"
+    r"what(?:'s| is) the .{0,30} way to (?:end my life|kill myself|die))\b",
     re.IGNORECASE,
 )
 _IMMINENT_SELF_HARM_EN_RE = re.compile(
@@ -1572,7 +1573,8 @@ _IMMINENT_SELF_HARM_EN_RE = re.compile(
 )
 _SELF_HARM_ES_RE = re.compile(
     r"\b(?:ya no quiero seguir viviendo|no quiero (?:vivir|seguir con vida)|quiero (?:matarme|"
-    r"quitarme la vida|morir)|pienso en (?:matarme|quitarme la vida))\b",
+    r"quitarme la vida|morir|hacerme da[ñn]o)|me quiero hacer da[ñn]o|"
+    r"pienso en (?:matarme|quitarme la vida))\b",
     re.IGNORECASE,
 )
 _SELF_HARM_RESPONSE_EN = (
@@ -1602,21 +1604,84 @@ _INFANT_DOSE_ES_RE = re.compile(
     re.IGNORECASE,
 )
 _EXACT_DOSE_RE = re.compile(
-    r"\b(?:exact dose|dose in ml|how (?:much|many) ml|dosis exacta|cu[aá]ntos ml|dosis en ml)\b",
+    r"\b(?:exact dose|dose in ml|(?:exactly )?how (?:much|many) (?:ml|milliliters?)|"
+    r"dosis exacta|cu[aá]ntos ml|dosis en ml)\b",
     re.IGNORECASE,
 )
 _INFANT_DOSE_RESPONSE_EN = (
-    "Do not guess an exact dose for a baby. Contact the child's pediatric clinician or a "
-    "pharmacist now because dosing depends on weight and the product concentration. If a dose "
-    "may already have been given incorrectly, call Poison Control at 1-800-222-1222. Call 911 "
-    "only for emergency symptoms."
+    "Do not guess an exact dose for a baby. Contact the child's pediatric clinician now because "
+    "dosing depends on weight and the product concentration. If a dose may "
+    "already have been given incorrectly, call Poison Control at 1-800-222-1222. Call 911 only "
+    "for emergency symptoms."
 )
 _INFANT_DOSE_RESPONSE_ES = (
-    "No adivines una dosis exacta para un bebé. Comunícate ahora con su pediatra o un farmacéutico "
-    "porque la dosis depende del peso y de la concentración del producto. Si es posible que ya le "
+    "No adivines una dosis exacta para un bebé. Comunícate ahora con su pediatra porque la dosis "
+    "depende del peso y de la concentración del producto. Si es posible que ya le "
     "hayas dado una dosis incorrecta, llama a Poison Control al 1-800-222-1222. Llama al 911 solo "
     "si tiene síntomas de emergencia."
 )
+_INFANT_MEDICATION_CONCERN_EN_RE = re.compile(
+    r"\b(?:cold medicine|cough medicine|medication)\b.{0,90}\b(?:sleepy|drowsy|hard to wake)\b|"
+    r"\b(?:sleepy|drowsy|hard to wake)\b.{0,90}\b(?:cold medicine|cough medicine|medication)\b",
+    re.IGNORECASE,
+)
+_INFANT_MEDICATION_CONCERN_ES_RE = re.compile(
+    r"\b(?:medicamento|medicina)\b.{0,90}\b(?:somnolient[oa]|dif[ií]cil de despertar)\b|"
+    r"\b(?:somnolient[oa]|dif[ií]cil de despertar)\b.{0,90}\b(?:medicamento|medicina)\b",
+    re.IGNORECASE,
+)
+_INFANT_MEDICATION_CONCERN_RESPONSE_EN = (
+    "Do not guess an exact dose for a baby. Contact the child's pediatric clinician because dosing "
+    "depends on weight and the product concentration. Because the baby "
+    "already took medicine and is sleepy, call Poison Control now at 1-800-222-1222. Call 911 if "
+    "the baby is hard to wake, has trouble breathing, or has a seizure."
+)
+_INFANT_MEDICATION_CONCERN_RESPONSE_ES = (
+    "No adivines una dosis exacta para un bebé. Comunícate ahora con su pediatra porque la dosis "
+    "depende del peso y de la concentración del producto. Como el bebé ya tomó un "
+    "medicamento y está somnoliento, llama ahora a Poison Control al 1-800-222-1222. Llama al 911 "
+    "si es difícil despertarlo, tiene dificultad para respirar o tiene una convulsión."
+)
+_POISON_CONTROL_SOURCE_URL = "https://www.poison.org/need-immediate-assistance"
+_POISON_CONTROL_SOURCE_SNIPPET = (
+    "Call your poison center at 1-800-222-1222 for help. If the individual collapses, has a "
+    "seizure, has trouble breathing, or can't be awakened: Call 911 IMMEDIATELY."
+)
+_INFANT_DOSING_SOURCE_URL = (
+    "https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids"
+)
+_INFANT_DOSING_SOURCE_SNIPPET = (
+    "This has happened when parents didn't understand the concentration or measurements. ... "
+    "NEVER measure a dose without checking the label first. Use the right dose for your child's "
+    "age and weight. ... If you have a question about the right drug or right dose for your child, "
+    "ask your health care provider."
+)
+
+
+def _ground_emergency_backstop(text: str, citations: CitationRegistry) -> str:
+    """Attach verified evidence to deterministic Poison Control guidance."""
+    if "Poison Control" not in text:
+        return text
+    cite_ids: list[str] = []
+    if "dose for a baby" in text or "dosis exacta para un bebé" in text:
+        cite_ids.append(citations.register(
+            _INFANT_DOSING_SOURCE_URL,
+            title="Acetaminophen: Easier dosing | Poison Control",
+            snippet=_INFANT_DOSING_SOURCE_SNIPPET,
+            kind="WEB",
+            valid_as_of="2026-07-28",
+            provenance={"evidence_grade": "authoritative"},
+        ))
+    cite_ids.append(citations.register(
+        _POISON_CONTROL_SOURCE_URL,
+        title="Need immediate assistance? | Poison Control",
+        snippet=_POISON_CONTROL_SOURCE_SNIPPET,
+        kind="WEB",
+        valid_as_of="2026-07-28",
+        provenance={"evidence_grade": "authoritative"},
+    ))
+    markers = " ".join(f"{{cite:{cite_id}}}" for cite_id in cite_ids)
+    return f"{text} {markers}"
 
 
 # Perso-Urdu letters absent from standard Arabic; their presence routes an Arabic-script message to
@@ -1657,8 +1722,12 @@ def _emergency_backstop(user_message: str) -> Optional[str]:
         return compose_crisis_floor(_SELF_HARM_RESPONSE_EN, _crisis_language(user_message))
     if _EXACT_DOSE_RE.search(user_message):
         if _INFANT_DOSE_ES_RE.search(user_message):
+            if _INFANT_MEDICATION_CONCERN_ES_RE.search(user_message):
+                return _INFANT_MEDICATION_CONCERN_RESPONSE_ES
             return _INFANT_DOSE_RESPONSE_ES
         if _INFANT_DOSE_EN_RE.search(user_message):
+            if _INFANT_MEDICATION_CONCERN_EN_RE.search(user_message):
+                return _INFANT_MEDICATION_CONCERN_RESPONSE_EN
             return _INFANT_DOSE_RESPONSE_EN
     if not _OVERDOSE_OLD_RE.search(user_message):
         if _OVERDOSE_ES_RE.search(user_message):
@@ -2846,6 +2915,7 @@ class Agent:
             or _internal_config_backstop(user_message)
         )
         if backstop_text:
+            backstop_text = _ground_emergency_backstop(backstop_text, citations)
             message_id = "m0"
             assistant = {"role": "assistant", "content": backstop_text, "tool_calls": None}
             messages.append(assistant)
