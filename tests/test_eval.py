@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from heynyc.core import config
 from heynyc.core.citations import content_hash
 from heynyc.core.registry import Registry
-from heynyc.eval.cases import EvalCase, load_cases
+from heynyc.eval.cases import EvalCase, load_cases, select_cases
 from heynyc.eval.checks import (
     check_abstention,
     check_cite_kinds,
@@ -82,11 +84,31 @@ def test_expected_tools_check():
     assert not check_expected_tools(cr2).passed
 
 
+def test_expected_tools_check_uses_the_whole_conversation():
+    cr = _result(_case(expect_tools=["nearest"]))
+    cr.turn_results = [
+        SimpleNamespace(tool_calls_made=["nearest"]),
+        SimpleNamespace(tool_calls_made=[]),
+    ]
+
+    assert check_expected_tools(cr).passed
+
+
 def test_forbidden_tools_check():
     cr = _result(_case(forbid_tools=["nearest"]), tools=["web_search"])
     assert check_forbidden_tools(cr).passed
     cr2 = _result(_case(forbid_tools=["nearest"]), tools=["nearest"])
     assert not check_forbidden_tools(cr2).passed
+
+
+def test_forbidden_tools_check_uses_the_whole_conversation():
+    cr = _result(_case(forbid_tools=["submit_application"]))
+    cr.turn_results = [
+        SimpleNamespace(tool_calls_made=["submit_application"]),
+        SimpleNamespace(tool_calls_made=[]),
+    ]
+
+    assert not check_forbidden_tools(cr).passed
 
 
 def test_cite_kinds_check():
@@ -1024,6 +1046,22 @@ def test_multi_turn_case_schema_derives_final_query(tmp_path):
     assert cases["convo_case"].turns == ["first question", "and a follow-up?"]
     assert cases["convo_case"].query == "and a follow-up?"  # checks apply to the final turn
     assert cases["single_case"].turns == ["one shot"]  # single-turn stays the degenerate case
+
+
+def test_public_capability_gate_stays_compact_and_complete():
+    cases = load_cases(Registry.discover(config.MODULES_DIR))
+    selected = select_cases(cases, tags=["public-capability"])
+
+    assert {case.id for case in selected} == {
+        "immigration_tps_change",
+        "public_capability_city_day_plan",
+        "public_capability_landmark_essentials",
+        "public_capability_new_parent_services",
+        "public_capability_spanish_snap_food_and_center",
+        "public_capability_tenant_rights_and_311_status",
+        "public_capability_urgent_housing_then_lotteries",
+        "workers_tip_theft",
+    }
 
 
 async def test_runner_plays_multi_turn_cases_through_a_conversation():

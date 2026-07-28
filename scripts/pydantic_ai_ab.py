@@ -191,7 +191,7 @@ async def run_arms(
     *,
     arm_order: tuple[str, ...] | None = None,
     parallel: bool = False,
-    structured_grounding: bool = False,
+    structured_grounding: bool = True,
     semantic_verifier_model: str | None = None,
 ) -> dict[str, Any]:
     order = arm_order or tuple(factories)
@@ -228,7 +228,7 @@ def build_factories(
     retriever: Any,
     model: str,
     *,
-    structured_grounding: bool = False,
+    structured_grounding: bool = True,
     semantic_verifier: Any = None,
 ) -> dict[str, Any]:
     candidate_kwargs = {
@@ -239,9 +239,8 @@ def build_factories(
         "current_awareness": current_awareness,
         "fact_review_model": _comparison_model(config.HEYNYC_FACT_REVIEW_MODEL),
         "fact_review_model_name": config.HEYNYC_FACT_REVIEW_MODEL,
+        "structured_grounding": structured_grounding,
     }
-    if structured_grounding:
-        candidate_kwargs["structured_grounding"] = True
     if semantic_verifier is not None:
         candidate_kwargs["semantic_verifier"] = semantic_verifier
     return {
@@ -278,23 +277,27 @@ def _parser() -> argparse.ArgumentParser:
         help="Run only one arm for a focused probe",
     )
     parser.add_argument(
+        "--unstructured-parity-probe",
+        action="store_false",
+        dest="structured_grounding",
+        help="Disable fail-closed structured grounding for a non-promotional parity probe",
+    )
+    parser.add_argument(
         "--structured-grounding",
         action="store_true",
-        help="Use typed grounded answer blocks in the PydanticAI candidate",
+        dest="structured_grounding",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--semantic-verifier-model",
-        help="Candidate-only claim verifier model; requires --structured-grounding",
+        help="Candidate-only claim verifier model",
     )
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.structured_grounding and args.arm == "production":
-        print("--structured-grounding only applies to the pydantic_ai arm.")
-        return 2
     if args.semantic_verifier_model and not args.structured_grounding:
-        print("--semantic-verifier-model requires --structured-grounding.")
+        print("--semantic-verifier-model cannot run with --unstructured-parity-probe.")
         return 2
     registry = Registry.discover(
         config.MODULES_DIR,

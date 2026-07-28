@@ -634,6 +634,22 @@ async def test_nyc_advisories_reports_borough_notices_alongside_citywide():
     assert "citywide_only" not in schema
 
 
+async def test_advisory_results_keep_non_overlapping_notices_out_of_plan_answers():
+    client = _combo_client(rss=_rss(), recent_json=RECENT_MESSAGES_JSON)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+    )
+
+    out = await get_tools()[0].handler({"near": "Flushing Meadows Corona Park"}, ctx)
+    await client.aclose()
+
+    assert "Do not enumerate notices that clearly do not overlap" in out
+    assert "name the date and place you checked" in out
+    assert "list these as-is" not in out
+
+
 # --- the shipped module stays valid (mirrors test_module_food_pantries) ----
 
 def test_advisories_module_loads_with_tool_and_eval():

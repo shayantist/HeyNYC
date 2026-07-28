@@ -75,7 +75,9 @@ from heynyc.core.pydantic_runtime import (
     build_runtime,
     resident_fact_confirmation_tool,
 )
-from heynyc.core.pydantic_runtime.runtime import TEMPORARY_FAILURE_FALLBACK
+from heynyc.core.pydantic_runtime.runtime import (
+    VERIFICATION_ABSTAIN_FALLBACK,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
@@ -769,6 +771,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
             }
         ),
         fact_review_model_name="review-model",
+        structured_grounding=False,
     )
     assert runtime.is_fact_confirmation("confirm_screen_facts")
     assert not runtime.is_fact_confirmation("confirm_submit_facts")
@@ -986,6 +989,7 @@ async def test_rejected_fact_confirmation_does_not_unlock_screening() -> None:
             custom_output_args={"profile": {"age": 35}}
         ),
         fact_review_model_name="review-model",
+        structured_grounding=False,
     )
     conversation = runtime.conversation()
     await conversation.send("Screen me")
@@ -2267,7 +2271,6 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
                                 "citation_ids": [citation_id],
                             }
                         ],
-                        "follow_up_question": "Do you want the phone link?",
                     },
                     f"final-{calls}",
                 )
@@ -2284,10 +2287,7 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
     result = await runtime.run("What should I do?")
 
     assert calls == 3
-    assert result.text == (
-        "Call 311 for current case help. {cite:S1}\n\n"
-        "Do you want the phone link?"
-    )
+    assert result.text == "Call 311 for current case help. {cite:S1}"
     assert result.tool_calls_made == ["official_guidance"]
     assert result.messages[-1] == {
         "role": "assistant",
@@ -2312,7 +2312,7 @@ async def test_structured_grounding_rejects_an_empty_answer() -> None:
             if calls == 1
             else {
                 "grounded_blocks": [],
-                "follow_up_question": "Which service do you need?",
+                "follow_up_question": "",
             }
         )
         return ModelResponse(
@@ -2332,6 +2332,33 @@ async def test_structured_grounding_rejects_an_empty_answer() -> None:
     assert calls == 3
     assert caught.value.partial_result.status == "error"
     assert caught.value.partial_result.usage["requests"] == 3
+
+
+async def test_structured_grounding_rejects_a_question_only_clarification() -> None:
+    async def model(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [],
+                    "follow_up_question": (
+                        "¿En qué vecindario de NYC necesitas comida esta noche?"
+                    ),
+                },
+                "clarify",
+            )
+        ])
+
+    with pytest.raises(PydanticRunFailure):
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={},
+            structured_grounding=True,
+        ).run("Necesito comida esta noche")
 
 
 async def test_deterministic_grounding_diagnostics_name_only_safe_mismatch_metadata() -> None:
@@ -2377,10 +2404,11 @@ async def test_deterministic_grounding_diagnostics_name_only_safe_mismatch_metad
         structured_grounding=True,
     )
 
-    with pytest.raises(PydanticRunFailure) as caught:
-        await runtime.run("Help")
+    result = await runtime.run("Help")
 
-    rejections = caught.value.partial_result.diagnostics["validation_rejections"]
+    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
+    assert result.status == "success"
+    rejections = result.diagnostics["validation_rejections"]
     assert rejections == [
         {
             "attempt": attempt,
@@ -2410,7 +2438,7 @@ async def test_final_grounding_retry_keeps_supported_blocks() -> None:
             "https://www.nyc.gov/later-decision",
             title="Later official decision",
             kind="WEB",
-            snippet="The decision was issued July 28, 2026.",
+            snippet="The decision was issued July 28, 2099.",
         )
         return (
             f"Call 311. {{cite:{hotline}}} Decision date. {{cite:{decision}}} "
@@ -2437,7 +2465,7 @@ async def test_final_grounding_retry_keeps_supported_blocks() -> None:
                     "grounded_blocks": [
                         {
                             "text": (
-                                "The decision was issued July 28, 2026. "
+                                "The decision was issued July 28, 2099. "
                                 "These sources do not determine your individual outcome."
                             ),
                             "citation_ids": ["S2"],
@@ -2447,7 +2475,7 @@ async def test_final_grounding_retry_keeps_supported_blocks() -> None:
                             "citation_ids": ["S1"],
                         },
                         {
-                            "text": "The decision was issued July 28, 2026.",
+                            "text": "The decision was issued July 28, 2099.",
                             "citation_ids": ["S3"],
                         },
                     ]
@@ -2470,11 +2498,11 @@ async def test_final_grounding_retry_keeps_supported_blocks() -> None:
     assert result.text == (
         "These sources do not determine your individual outcome. {cite:S2}\n\n"
         "Call 311 for free help. {cite:S1}\n\n"
-        "The decision was issued July 28, 2026. {cite:S3}"
+        "The decision was issued July 28, 2099. {cite:S3}"
     )
 
 
-async def test_final_grounding_retry_fails_when_every_claim_is_rejected() -> None:
+async def test_final_grounding_retry_abstains_when_every_claim_is_rejected() -> None:
     async def handler(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/decision",
@@ -2502,7 +2530,7 @@ async def test_final_grounding_retry_fails_when_every_claim_is_rejected() -> Non
                 info.output_tools[0].name,
                 {
                     "grounded_blocks": [{
-                        "text": "The decision was issued July 28, 2026.",
+                        "text": "The decision was issued July 28, 2099.",
                         "citation_ids": ["S1"],
                     }]
                 },
@@ -2517,14 +2545,15 @@ async def test_final_grounding_retry_fails_when_every_claim_is_rejected() -> Non
         structured_grounding=True,
     )
 
-    with pytest.raises(PydanticRunFailure):
-        await runtime.run("When was the decision issued?")
+    result = await runtime.run("When was the decision issued?")
 
     assert calls == 4
+    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
+    assert result.status == "success"
 
 
-async def test_structured_grounding_returns_safe_fallback_with_only_discovery_evidence() -> None:
-    async def handler(args: dict, ctx: ToolContext) -> str:
+async def test_discovery_evidence_cannot_support_resident_visible_text() -> None:
+    async def handler(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://example.org/search-result",
             title="Search result",
@@ -2534,33 +2563,54 @@ async def test_structured_grounding_returns_safe_fallback_with_only_discovery_ev
         )
         return f"Search result only. {{cite:{citation_id}}}"
 
-    search = Tool(
-        name="search",
-        description="Search for a source",
-        parameters={"type": "object", "properties": {}},
-        handler=handler,
-    )
     calls = 0
 
-    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    async def model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
             return ModelResponse([ToolCallPart("search", {}, "search-1")])
-        assert info.output_tools == []
-        return ModelResponse([TextPart("The unverified result says to act now.")])
+        assert not info.allow_text_output
+        grounded = next(
+            tool for tool in info.output_tools
+            if tool.name == "grounded_answer"
+        )
+        return ModelResponse([
+            ToolCallPart(
+                grounded.name,
+                {
+                    "grounded_blocks": [{
+                        "text": "Would you like me to check a different date?",
+                        "citation_ids": ["S1"],
+                    }],
+                },
+                f"answer-{calls}",
+            )
+        ])
 
-    runtime = PydanticRuntimeAdapter(
+    result = await PydanticRuntimeAdapter(
         FunctionModel(model),
         registry=Registry([]),
-        tools={search.name: search},
+        tools={
+            "search": Tool(
+                name="search",
+                description="Search for a source",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+            )
+        },
         structured_grounding=True,
-    )
+    ).run("What should I do?")
 
-    result = await runtime.run("What should I do?")
-
-    assert result.text == TEMPORARY_FAILURE_FALLBACK
-    assert result.status == "error"
+    assert calls == 4
+    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
 
 
 async def test_structured_grounding_does_not_fallback_before_retrieval() -> None:
@@ -2586,10 +2636,25 @@ async def test_structured_grounding_does_not_fallback_before_retrieval() -> None
         nonlocal calls
         calls += 1
         if calls == 1:
-            return ModelResponse([TextPart("I give up.")])
+            return ModelResponse([TextPart(VERIFICATION_ABSTAIN_FALLBACK)])
         if calls == 2:
             return ModelResponse([ToolCallPart("search", {}, "search-1")])
-        return ModelResponse([TextPart("I still cannot verify it.")])
+        grounded = next(
+            tool for tool in info.output_tools
+            if tool.name == "grounded_answer"
+        )
+        return ModelResponse([
+            ToolCallPart(
+                grounded.name,
+                {
+                    "grounded_blocks": [{
+                        "text": "Would you like me to check a different source?",
+                        "citation_ids": ["S1"],
+                    }],
+                },
+                f"answer-{calls}",
+            )
+        ])
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -2600,8 +2665,9 @@ async def test_structured_grounding_does_not_fallback_before_retrieval() -> None
 
     result = await runtime.run("What should I do?")
 
-    assert calls == 3
-    assert result.text == TEMPORARY_FAILURE_FALLBACK
+    assert calls == 5
+    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
+    assert result.status == "success"
     assert result.tool_calls_made == ["search"]
 
 
@@ -2854,8 +2920,10 @@ def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
                 ToolCallPart(
                     "grounded_answer",
                     {
-                        "grounded_blocks": [],
-                        "follow_up_question": "Which service do you need?",
+                        "grounded_blocks": [{
+                            "text": "Which service do you need?",
+                            "citation_ids": ["S1"],
+                        }],
                     },
                     "accepted",
                 )
@@ -2876,7 +2944,7 @@ def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
         {"role": "user", "content": "Help"},
         {
             "role": "assistant",
-            "content": "Which service do you need?",
+            "content": "Which service do you need? {cite:S1}",
         },
     ]
 
@@ -4077,6 +4145,7 @@ async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_roun
         tools={"whats_on_events": source},
         model=FunctionModel(model),
         use_module_capabilities=True,
+        structured_grounding=False,
     )
 
     result = await runtime.run("Find events")
@@ -4162,6 +4231,7 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
         model=FunctionModel(model),
         use_module_capabilities=True,
         answer_model_route="openai/gpt-test",
+        structured_grounding=False,
     )
 
     await runtime.run("Help")
@@ -4209,6 +4279,7 @@ async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
         tools={},
         model=FunctionModel(model),
         answer_model_route="openai/gpt-test",
+        structured_grounding=False,
     )
     compacting = runtime.conversation()
     independent = runtime.conversation()
@@ -4268,6 +4339,7 @@ async def test_default_compactor_failure_fails_before_answer_model(
         tools={},
         model=FunctionModel(model),
         answer_model_route="openai/gpt-test",
+        structured_grounding=False,
     ).conversation()
     await conversation.send("First")
     await conversation.send("Second")
@@ -4478,6 +4550,7 @@ async def test_default_context_measurement_counts_structured_continuity_once(
             lambda messages, info: ModelResponse([TextPart("Done")])
         ),
         answer_model_route="openai/gpt-test",
+        structured_grounding=False,
     )
     conversation = runtime.conversation()
     await conversation.send("Keep helping with food")
@@ -4741,6 +4814,7 @@ async def test_build_runtime_keeps_stable_prompt_out_of_dynamic_instructions() -
         Registry([]),
         tools={},
         model=FunctionModel(model),
+        structured_grounding=False,
     )
 
     await runtime.run("First")
@@ -4777,6 +4851,7 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
         tools={},
         model=FunctionModel(model),
         use_module_capabilities=True,
+        structured_grounding=False,
     )
 
     await runtime.run("SNAP help")

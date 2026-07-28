@@ -21,6 +21,7 @@ import httpx
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
+from heynyc.core.grounding import check_grounding
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import GeoPoint
@@ -384,6 +385,7 @@ async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
     out, citations = await _run_guidance("no_heat")
     low = out.lower()
     assert "october 1" in low and "may 31" in low   # heat season, from the HPD page
+    assert "current applicability" in low
     assert "68" in out and "62" in out and "55" in out and "120" in out
     assert "311" in out                              # how to file
     # the exact Housing Maintenance Code sections, grounded in the statute, not just the explainer
@@ -399,6 +401,25 @@ async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
     assert mapping["S2"]["kind"] == "DOC"
     assert "amlegal" in mapping["S2"]["url"]
     assert "{cite:S1}" in out and "{cite:S2}" in out
+
+
+def test_heat_season_status_states_current_applicability():
+    assert "currently in effect" in housing._heat_season_status(date(2026, 1, 15))
+    assert "not currently in effect" in housing._heat_season_status(date(2026, 7, 27))
+    assert "currently in effect" in housing._heat_season_status(date(2026, 11, 15))
+
+
+async def test_guidance_no_heat_evidence_supports_its_measured_units():
+    _out, citations = await _run_guidance("no_heat")
+    answer = (
+        "During heat season, apartments must be at least 68°F when it is below 55°F "
+        "outside during the day, at least 62°F overnight, and hot water must be at "
+        "least 120°F year-round. {cite:S1}"
+    )
+
+    verdict = check_grounding(answer, citations.mapping())
+
+    assert verdict is not None and not verdict.blocking
 
 
 async def test_guidance_no_water_grounds_cold_water_service_not_hot_standard():

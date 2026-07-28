@@ -36,6 +36,12 @@ from heynyc.core.tools.notify_nyc import (
 
 OFFICIAL = "Notify NYC (nyc.gov/notifynyc) or call 311"
 NYC_TZ = ZoneInfo("America/New_York")
+PLAN_RELEVANCE = (
+    "When the resident asks which notices could affect a current or future plan, compare each "
+    "notice's stated area and time with the requested place and date. Do not enumerate notices "
+    "that clearly do not overlap. If none overlap, say so plainly and name the date and place "
+    "you checked."
+)
 
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
 # state may tell the user there are no active advisories.
@@ -167,7 +173,8 @@ def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
     if near:
         lines.append(
             f"(User asked about '{near}'. The feed's geography is usually citywide, so these are "
-            f"listed as-is, do not filter them out for a specific location.)"
+            f"returned for individual area and time comparison rather than suppressed by the "
+            f"location hint.)"
         )
     for advisory in advisories:
         cite = _advisory_citation(ctx, advisory)
@@ -179,6 +186,7 @@ def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
         "AIR QUALITY, pass along the advisory's sensitive-groups guidance; for a CLOSURE/transport "
         "advisory, point to transit."
     )
+    lines.append(PLAN_RELEVANCE)
     return "\n".join(lines)
 
 
@@ -195,8 +203,8 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
     ]
     if near:
         lines.append(
-            f"(User asked about '{near}'. Notify NYC is usually citywide, so list these as-is and do "
-            f"not filter them out for a specific location.)"
+            f"(User asked about '{near}'. Notify NYC is usually citywide, so these are returned for "
+            f"individual area and time comparison rather than suppressed by the location hint.)"
         )
     for note in notes:
         cite = _recent_citation(ctx, note)
@@ -208,6 +216,7 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
         "FLOODING, pass along any safe-location or road-safety guidance in the notification text. For "
         "a life-threatening emergency, tell the user to call 911 right away."
     )
+    lines.append(PLAN_RELEVANCE)
     return "\n".join(lines)
 
 
@@ -218,6 +227,7 @@ def _render_recent_additions(ctx: ToolContext, notes: list[RecentNote]) -> str:
     ]
     for note in notes:
         lines.append(_recent_block(note, _recent_citation(ctx, note)))
+    lines.append(PLAN_RELEVANCE)
     return "\n".join(lines)
 
 

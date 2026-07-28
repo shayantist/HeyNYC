@@ -484,6 +484,18 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
                 f"fp_{now_day}_close1": "8:00 PM",
             },
         ),
+        _pantry_feature(
+            -73.9700,
+            40.7700,
+            program="Second Evening Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="evening-second",
+            **{
+                f"fp_{now_day}_open1": "6:00 PM",
+                f"fp_{now_day}_close1": "9:00 PM",
+            },
+        ),
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
@@ -491,7 +503,7 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     out = await get_tools()[0].handler(
         {
             "near": "Union Square",
-            "k": 1,
+            "k": 3,
             "urgent": True,
             "service_window_start": "17:00",
             "service_window_end": "23:59",
@@ -501,10 +513,12 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     await client.aclose()
 
     assert "Evening Pantry" in out
+    assert "Second Evening Pantry" not in out
     assert "Nearby Morning Pantry" not in out
     assert "requested 17:00-23:59 service window" in out
     assert "weekly schedule overlaps that window" in out
     assert "does not confirm food availability" in out
+    assert "Lead with call 311 or https://finder.nyc.gov/foodhelp" in out
     schema = get_tools()[0].parameters["properties"]
     assert schema["service_window_start"]["pattern"] == r"^\d{2}:\d{2}$"
     assert schema["service_window_end"]["pattern"] == r"^\d{2}:\d{2}$"

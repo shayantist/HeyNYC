@@ -91,12 +91,15 @@ def test_build_factories_gives_both_arms_the_same_live_awareness(
                 "fact_review_model_name": (
                     pydantic_ai_ab.config.HEYNYC_FACT_REVIEW_MODEL
                 ),
+                "structured_grounding": True,
                 },
             ),
         ]
 
 
-def test_build_factories_can_enable_structured_grounding(monkeypatch) -> None:
+def test_build_factories_can_explicitly_disable_structured_grounding_for_a_probe(
+    monkeypatch,
+) -> None:
     built = []
 
     def fake_runtime(registry, **kwargs):
@@ -114,11 +117,11 @@ def test_build_factories_can_enable_structured_grounding(monkeypatch) -> None:
         "registry",
         "retriever",
         "openai/gpt-test",
-        structured_grounding=True,
+        structured_grounding=False,
     )
     factories["pydantic_ai"]()
 
-    assert built[0]["structured_grounding"] is True
+    assert built[0]["structured_grounding"] is False
 
 
 def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
@@ -545,33 +548,25 @@ def test_parser_can_select_one_benchmark_arm() -> None:
     assert args.arm == "pydantic_ai"
 
 
-def test_parser_can_enable_structured_grounding_for_candidate() -> None:
+def test_parser_uses_structured_grounding_by_default() -> None:
     args = pydantic_ai_ab._parser().parse_args(
-        [
-            "--case",
-            "one",
-            "--arm",
-            "pydantic_ai",
-            "--structured-grounding",
-        ]
+        ["--case", "one", "--arm", "pydantic_ai"]
     )
 
     assert args.structured_grounding is True
 
 
-async def test_structured_grounding_rejects_production_only_receipt(capsys) -> None:
+def test_parser_can_disable_structured_grounding_only_for_a_parity_probe() -> None:
     args = pydantic_ai_ab._parser().parse_args(
         [
             "--case",
             "one",
-            "--arm",
-            "production",
-            "--structured-grounding",
+            "--arm", "pydantic_ai",
+            "--unstructured-parity-probe",
         ]
     )
 
-    assert await pydantic_ai_ab._run(args) == 2
-    assert "only applies to the pydantic_ai arm" in capsys.readouterr().out
+    assert args.structured_grounding is False
 
 
 @pytest.mark.parametrize("arm", ["production", "pydantic_ai"])

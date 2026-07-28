@@ -384,6 +384,24 @@ def test_date_abbreviation_is_not_a_salient_fact():
     assert res is None or res.passed, (res.detail if res else "")
 
 
+def test_citation_valid_as_of_supports_the_rendered_source_date():
+    cr = _result(
+        "The listing is dated 2026-04-11 {cite:S1}.",
+        citations={
+            "S1": {
+                "url": "https://example.gov/row",
+                "kind": "DATA",
+                "snippet": "City-listed food pantry",
+                "valid_as_of": "2026-04-11",
+            }
+        },
+    )
+
+    result = check_cited_claim_grounding(cr)
+
+    assert result is not None and result.passed, result.detail
+
+
 def test_plural_singular_drift_passes():
     # Answer "Picnic Performances" vs source title "…Picnic Performance" (singular) → grounded.
     cr = _result("Catch the Bryant Park Picnic Performances series {cite:S1}.",

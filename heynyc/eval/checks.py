@@ -106,21 +106,31 @@ def check_turn_completion(cr: CaseResult) -> Optional[CheckResult]:
     )
 
 
+def _all_tool_calls(cr: CaseResult) -> list[str]:
+    calls = [
+        tool
+        for turn in cr.turn_results
+        for tool in getattr(turn, "tool_calls_made", [])
+    ]
+    return list(dict.fromkeys([*calls, *cr.tool_calls_made]))
+
+
 def check_expected_tools(cr: CaseResult) -> Optional[CheckResult]:
     if not cr.case.expect_tools:
         return None
-    missing = [t for t in cr.case.expect_tools if t not in cr.tool_calls_made]
+    called = _all_tool_calls(cr)
+    missing = [t for t in cr.case.expect_tools if t not in called]
     return CheckResult(
         "expected_tools",
         passed=not missing,
-        detail="" if not missing else f"missing {missing}; called {cr.tool_calls_made}",
+        detail="" if not missing else f"missing {missing}; called {called}",
     )
 
 
 def check_forbidden_tools(cr: CaseResult) -> Optional[CheckResult]:
     if not cr.case.forbid_tools:
         return None
-    used = [t for t in cr.case.forbid_tools if t in cr.tool_calls_made]
+    used = [t for t in cr.case.forbid_tools if t in _all_tool_calls(cr)]
     return CheckResult(
         "forbidden_tools",
         passed=not used,

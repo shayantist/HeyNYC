@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import (
     LoadCapabilityCallPart,
     LoadCapabilityReturnPart,
@@ -30,6 +30,11 @@ from pydantic_ai.usage import RunUsage
 from heynyc.core.telemetry import priced_cost_usd
 
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
+_NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
+NONFACTUAL_OUTCOME_TEXT = (
+    "I can't know that yet. I can help with the practical NYC part instead."
+)
+_OUTPUT_TOOLS = {_GROUNDED_OUTPUT_TOOL, _NONFACTUAL_OUTPUT_TOOL}
 _SEMANTIC_CITATION_CHARS = 1_200
 
 class GroundedBlock(BaseModel):
@@ -45,18 +50,11 @@ class GroundedBlock(BaseModel):
 
 
 class GroundedAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     grounded_blocks: list[GroundedBlock] = Field(
-        default_factory=list,
+        min_length=1,
         max_length=12,
-    )
-    follow_up_question: str = Field(
-        default="",
-        max_length=240,
-        description=(
-            "An optional neutral clarification question. It may include a narrow "
-            "data-minimization reminder not to share sensitive identifiers. Do not "
-            "add other factual or procedural claims or direct another action."
-        ),
     )
 
 
@@ -76,8 +74,7 @@ def _semantic_citation_evidence(citation: dict) -> str:
 
 
 def _render_grounded_answer(answer: GroundedAnswer) -> str:
-    parts: list[str] = []
-    parts.extend(
+    return "\n\n".join(
         " ".join(
             (
                 _grounded_block_text(block),
@@ -89,8 +86,6 @@ def _render_grounded_answer(answer: GroundedAnswer) -> str:
         )
         for block in answer.grounded_blocks
     )
-    parts.append(answer.follow_up_question.strip())
-    return "\n\n".join(part for part in parts if part)
 
 
 def _accepted_grounded_outputs(
@@ -102,17 +97,21 @@ def _accepted_grounded_outputs(
         if isinstance(message, ModelRequest)
         for part in message.parts
         if isinstance(part, ToolReturnPart)
-        and part.tool_name == _GROUNDED_OUTPUT_TOOL
+        and part.tool_name in _OUTPUT_TOOLS
     }
     return {
-        part.tool_call_id: _render_grounded_answer(
-            GroundedAnswer.model_validate(part.args_as_dict())
+        part.tool_call_id: (
+            _render_grounded_answer(
+                GroundedAnswer.model_validate(part.args_as_dict())
+            )
+            if part.tool_name == _GROUNDED_OUTPUT_TOOL
+            else NONFACTUAL_OUTCOME_TEXT
         )
         for message in messages
         if isinstance(message, ModelResponse)
         for part in message.parts
         if isinstance(part, ToolCallPart)
-        and part.tool_name == _GROUNDED_OUTPUT_TOOL
+        and part.tool_name in _OUTPUT_TOOLS
         and part.tool_call_id in accepted
     }
 
@@ -121,15 +120,16 @@ def _response_text(
     message: ModelResponse,
     accepted_outputs: dict[str, str],
 ) -> str:
-    parts = [part.content for part in message.parts if isinstance(part, TextPart)]
-    for part in message.parts:
-        if (
-            isinstance(part, ToolCallPart)
-            and part.tool_name == _GROUNDED_OUTPUT_TOOL
-            and part.tool_call_id in accepted_outputs
-        ):
-            parts.append(accepted_outputs[part.tool_call_id])
-    return "".join(parts)
+    structured = [
+        accepted_outputs[part.tool_call_id]
+        for part in message.parts
+        if isinstance(part, ToolCallPart)
+        and part.tool_name in _OUTPUT_TOOLS
+        and part.tool_call_id in accepted_outputs
+    ]
+    return "".join(structured or [
+        part.content for part in message.parts if isinstance(part, TextPart)
+    ])
 
 
 def _openai_messages(
@@ -162,7 +162,7 @@ def _openai_messages(
                 }
                 for part in message.parts
                 if isinstance(part, (ToolCallPart, NativeToolSearchCallPart))
-                and part.tool_name != _GROUNDED_OUTPUT_TOOL
+                and part.tool_name not in _OUTPUT_TOOLS
             ]
             translated.append(
                 {
@@ -191,7 +191,7 @@ def _openai_messages(
                         RetryPromptPart,
                         NativeToolSearchReturnPart,
                     ),
-                ) and part.tool_name != _GROUNDED_OUTPUT_TOOL:
+                ) and part.tool_name not in _OUTPUT_TOOLS:
                     translated.append(
                         {
                             "role": "tool",

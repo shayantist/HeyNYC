@@ -12,7 +12,7 @@
 
 # --- program change: Temporary Protected Status ------------------------------------------------
 - id: immigration_tps_change
-  tags: [must-win, F128, F129, F130]
+  tags: [must-win, F128, F129, F130, public-capability]
   query: "My neighbor says the Supreme Court ended TPS for Haitians. Is my TPS gone?"
   language: en
   capability: dataset_grounding

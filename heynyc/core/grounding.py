@@ -151,6 +151,8 @@ def citation_evidence(c: dict) -> Optional[str]:
         parts.append(str(c["snippet"]))
     if c.get("title"):
         parts.append(str(c["title"]))
+    if c.get("valid_as_of"):
+        parts.append(str(c["valid_as_of"]))
     return " ".join(parts) if parts else None
 
 

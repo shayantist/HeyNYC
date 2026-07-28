@@ -82,6 +82,13 @@ def test_to_site_drops_rows_without_coords():
     assert _to_site(_record(location_1=None)) is None
 
 
+def test_to_site_renders_source_phone_suffix_as_extension():
+    site = _to_site(_record(phone_number="(718) 839-8900+8903"))
+
+    assert site is not None
+    assert site.phone == "(718) 839-8900 ext. 8903"
+
+
 def test_source_date_preserves_valid_value_and_rejects_invalid_value():
     assert _valid_as_of({":updated_at": "2026-04-30T15:38:21.253Z"}) == "2026-04-30"
     assert _valid_as_of({":updated_at": "not-a-date"}) == ""
@@ -141,6 +148,14 @@ async def test_nearest_wic_site_ranks_grounds_and_links():
     assert "row-close" in mapping["S1"]["url"]
     assert mapping["S1"]["provenance"]["record_id"] == "row-close"
     assert mapping["S1"]["valid_as_of"]
+
+
+async def test_wic_query_creates_client_when_runtime_does_not_inject_one(monkeypatch):
+    client = _routed_client([])
+    monkeypatch.setattr(wic.httpx, "AsyncClient", lambda **_kwargs: client)
+
+    assert await wic._query_wic(None, where=wic.WHERE_NYC) == []
+    assert client.is_closed
 
 
 async def test_nearest_wic_site_flags_temporary_site():
