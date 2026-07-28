@@ -412,3 +412,10 @@ def test_web_search_defers_nyc_event_listings_to_the_catalog():
     assert "long-tail" in desc                            # long-tail facts stay here
     assert "whats_on_events" in desc                      # defers NYC event listings to the catalog
     assert "a specific event this weekend" not in desc    # no longer advertises event listings
+
+
+def test_web_search_description_caps_repeated_search_for_one_missing_fact():
+    desc = web_search_tools(["nyc.gov"])[0].description.lower()
+    assert "same missing fact" in desc
+    assert "one focused search" in desc
+    assert "say you could not confirm it" in desc

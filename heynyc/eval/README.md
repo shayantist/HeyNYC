@@ -58,6 +58,33 @@ provided. Its default is a fresh subscription-agent review of those saved traces
 report therefore says `REVIEW PENDING`, not `SAFE`, until that review is recorded. `--api-judge`
 is the explicit paid alternative and rejects a grader from the candidate's model family.
 
+## Evaluation map and terminology
+
+[NIST defines AI red teaming](https://csrc.nist.gov/glossary/term/red_teaming) as a structured
+testing effort, often adversarial, that searches for flaws, vulnerabilities, undesirable
+behavior, and misuse risk. It is an activity, not merely a YAML file.
+[OpenAI likewise describes red teaming as structured risk exploration and warns that the term
+covers several different methods](https://openai.com/index/red-teaming-network/). The
+[UK International AI Safety Report distinguishes adaptive red teaming from fixed
+benchmarks](https://www.gov.uk/government/publications/international-scientific-report-on-the-safety-of-advanced-ai/international-scientific-report-on-the-safety-of-advanced-ai-interim-report).
+We therefore use these names:
+
+| Artifact or activity | Home | What it is |
+| --- | --- | --- |
+| Module and cross-module evals | `heynyc/modules/*/eval.yaml` and `heynyc/eval/global.yaml` | Golden capability, safety, conversation, and regression cases |
+| Failure database | `docs/internal/eval/failure-db.md`, with a generated public subset at `docs/testing/failure-db.md` | Incident registry linking observed failures to their pinned regressions |
+| Exploratory red teaming | Novel adversarial probes, fresh-eye pilot turns, and future external expert testing | Adaptive discovery of failure modes not already represented by a fixed corpus |
+| Frozen adversarial safety regression suite | `heynyc/eval/redteam_suite.yaml` | 205 red-team-derived fixed cases retained for comparable release regression |
+| Release-candidate adversarial preflight | `heynyc/eval/redteam_candidate_suite.yaml` | 30 current-system cases covering multi-turn, cross-module, multilingual, current-information, and unsupported-media risks |
+| Run artifacts | `.data/eval/` and `.data/redteam/` | Reports, complete traces, usage, and qualitative verdicts; local and gitignored |
+
+The `redteam.py` command and existing filenames remain for compatibility. A frozen suite run is an
+adversarial safety evaluation derived from earlier red-team work, not by itself a new external or
+adaptive red-team campaign. This distinction follows the
+[NIST definition](https://csrc.nist.gov/glossary/term/red_teaming),
+[OpenAI's terminology note](https://openai.com/index/red-teaming-network/), and the
+[UK report's benchmark comparison](https://www.gov.uk/government/publications/international-scientific-report-on-the-safety-of-advanced-ai/international-scientific-report-on-the-safety-of-advanced-ai-interim-report).
+
 ## Selective live-eval policy
 
 The offline suite and live evals answer different questions. Offline tests prove deterministic code paths. Live evals sample whether the current model, prompt, retrieval, tools, and guard work together. A green offline suite is necessary but never establishes live semantic safety.
@@ -70,7 +97,7 @@ Use this risk-triggered ladder:
 | Module, tool, retrieval, prompt, memory, or guard change | The changed module's live eval plus the exact failure cases that motivated the change | Tests the affected nondeterministic path without paying for unrelated modules |
 | Model, system prompt, scope policy, grounding policy, tool schema, or cross-module routing change | A compact release set covering ordinary help, high-stakes benefits, location, multilingual, crisis, freshness, cross-module follow-up, and long conversation | These changes can move many behaviors at once |
 | Channel-only change | Direct-agent acceptance first, then the smallest WhatsApp smoke that proves transport, formatting, ordering, and persistence | Twilio does not add semantic evidence and should not duplicate paid model tests |
-| Public release or major safety-boundary change | Full golden suite, independent trace review, and the 205-case red-team when its affected threat model changed | Broad evidence is justified at release-sized risk boundaries |
+| Public release or major safety-boundary change | Full golden suite, independent trace review, and the 205-case red-team-derived regression suite when its affected threat model changed | Broad evidence is justified at release-sized risk boundaries |
 | New resident failure or flagged pilot turn | Redact it, add it to the failure database, and promote the smallest reproducible case into the relevant suite | Production failures grow the eval set instead of becoming anecdotes |
 
 Do not schedule the full live suite merely because time passed. Run source-drift and link checks on their own cadence, and run model evals when code, prompts, models, tools, sources, or observed failures change. Save every trace and compare against the last accepted run so a regression is visible without paying to regenerate the baseline.

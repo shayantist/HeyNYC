@@ -218,6 +218,27 @@ def test_system_prompt_teaches_per_turn_composition_in_stable_tier():
     assert "cooling centers near their route" not in volatile.lower()
 
 
+def test_system_prompt_sequences_dependent_tool_calls():
+    low = build_system_prompt(Registry([])).lower()
+    assert "parallelize only independent tool calls" in low
+    assert "wait for that result" in low
+
+
+def test_system_prompt_stops_retrieval_once_requested_constraints_are_supported():
+    low = build_system_prompt(Registry([])).lower()
+    assert "once the tool results support every requested constraint" in low
+    assert "compose the answer instead of searching for a better result" in low
+    assert "one required fact is still missing" in low
+
+
+def test_system_prompt_minimizes_missing_attachment_recovery():
+    low = build_system_prompt(Registry([])).lower()
+    assert "attachment was not received" in low
+    assert "redacted image or text summary" in low
+    assert "case or client numbers" in low
+    assert "never ask for a full case number" in low
+
+
 # --- Change 1: progressive disclosure of the per-module detailed blurbs ---------------------------
 
 def test_router_matches_module_on_curated_keyword():

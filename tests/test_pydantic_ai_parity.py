@@ -1204,6 +1204,13 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
         module="benefits",
         resident_fact_scope=("/household", "/persons"),
     )
+    guidance = Tool(
+        name="benefits_search",
+        description="Get current official guidance",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        module="benefits",
+    )
     model_calls = 0
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -1239,7 +1246,10 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
         registry=registry,
-        tools={"screen_eligibility": screening},
+        tools={
+            "benefits_search": guidance,
+            "screen_eligibility": screening,
+        },
         use_module_capabilities=True,
         guard_grounding=False,
     )
@@ -1289,6 +1299,146 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
         "Never describe optional fields as missing or required"
         in screening_instructions
     )
+    assert "load the parent `benefits` capability" in screening_instructions
+    assert "`benefits_search`" in screening_instructions
+    assert "use `search_tools`" in screening_instructions
+    assert "requires a grounded handoff before any clarification" in (
+        screening_instructions
+    )
+    assert (
+        "Complete this workflow's first grounded handoff before loading capabilities "
+        "for non-urgent secondary concerns"
+    ) in screening_instructions
+    assert (
+        "Do not enumerate possible results or application documents before the check"
+        in screening_instructions
+    )
+    assert "Keep the data-minimization warning uncited" in screening_instructions
+    assert (
+        "Do not calculate a household count or infer who belongs in the workflow"
+        in screening_instructions
+    )
+    assert "Ask for observable facts, not legal or program classifications" in (
+        screening_instructions
+    )
+
+
+async def test_governed_workflow_rejects_clarification_before_grounded_handoff() -> (
+    None
+):
+    async def guidance_handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page",
+            title="Official SNAP guidance",
+            kind="WEB",
+            snippet="To estimate eligibility, provide your household size.",
+        )
+        return (
+            "To estimate eligibility, provide your household size. "
+            f"{{cite:{citation_id}}}"
+        )
+
+    async def screening_handler(_args: dict, _ctx: ToolContext) -> str:
+        return "unused"
+
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            description="Find benefits",
+            prompt="Offer screening only after the resident accepts.",
+        )
+    ])
+    tools = {
+        "benefits_search": Tool(
+            name="benefits_search",
+            description="Get current official guidance",
+            parameters={"type": "object", "properties": {}},
+            handler=guidance_handler,
+            module="benefits",
+        ),
+        "screen_eligibility": Tool(
+            name="screen_eligibility",
+            description="Run a read-only eligibility estimate.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "household": {"type": "object"},
+                    "persons": {"type": "array"},
+                },
+                "required": ["household", "persons"],
+            },
+            handler=screening_handler,
+            module="benefits",
+            resident_fact_scope=("/household", "/persons"),
+        ),
+    }
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([
+                ToolCallPart(
+                    "load_capability",
+                    {"id": "benefits-screen-eligibility"},
+                    "load-screening",
+                )
+            ])
+        if calls == 2:
+            clarification = next(
+                tool
+                for tool in info.output_tools
+                if tool.name == "clarification_request"
+            )
+            return ModelResponse([
+                ToolCallPart(
+                    clarification.name,
+                    {"question": "What is your household size?"},
+                    "clarify-before-guidance",
+                )
+            ])
+        if calls == 3:
+            assert _parts(messages, RetryPromptPart)
+            return ModelResponse([
+                ToolCallPart("benefits_search", {}, "official-guidance")
+            ])
+        grounded = next(
+            tool for tool in info.output_tools if tool.name == "grounded_answer"
+        )
+        return ModelResponse([
+            ToolCallPart(
+                grounded.name,
+                {
+                    "grounded_blocks": [{
+                        "text": (
+                            "To estimate eligibility, provide your household size. "
+                            "What is your household size?"
+                        ),
+                        "citation_ids": ["S1"],
+                    }]
+                },
+                "grounded-handoff",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=registry,
+        tools=tools,
+        use_module_capabilities=True,
+        structured_grounding=True,
+        guard_grounding=True,
+    ).run("Yes, screen me.")
+
+    assert result.text == (
+        "To estimate eligibility, provide your household size. "
+        "What is your household size? {cite:S1}"
+    )
+    assert result.tool_calls_made.index("load_capability") < (
+        result.tool_calls_made.index("benefits_search")
+    )
+    assert len(result.diagnostics["validation_rejections"]) == 1
 
 
 async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
@@ -2295,6 +2445,210 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
         "tool_calls": None,
     }
     assert result.usage["executed_tool_calls"] == ["official_guidance"]
+    assert all(
+        rejection["stage"] != "response_priority"
+        for rejection in result.diagnostics["validation_rejections"]
+    )
+
+
+async def test_priority_tool_evidence_leads_a_mixed_intent_answer() -> None:
+    async def urgent_handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://finder.nyc.gov/foodhelp/",
+            title="Immediate food help",
+            kind="WEB",
+            snippet="Use NYC FoodHelp now for immediate food help.",
+        )
+        ctx.response_priority_citation_ids.add(citation_id)
+        return f"Use NYC FoodHelp now. {{cite:{citation_id}}}"
+
+    async def estimate_handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://access.nyc.gov/",
+            title="Benefits estimate",
+            kind="WEB",
+            snippet="The benefits result is an estimate.",
+        )
+        return f"The benefits result is an estimate. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([
+                ToolCallPart("urgent_help", {}, "urgent"),
+                ToolCallPart("estimate", {}, "estimate"),
+            ])
+        if calls == 2:
+            clarification = next(
+                tool
+                for tool in info.output_tools
+                if tool.name == "clarification_request"
+            )
+            return ModelResponse([
+                ToolCallPart(
+                    clarification.name,
+                    {"question": "Which need should I answer first?"},
+                    "clarification-after-urgent",
+                )
+            ])
+        grounded = next(
+            tool for tool in info.output_tools if tool.name == "grounded_answer"
+        )
+        first_citation = "S2" if calls == 3 else "S1"
+        first_text = (
+            "The benefits result is an estimate."
+            if calls == 3
+            else "Use NYC FoodHelp now for immediate food help."
+        )
+        return ModelResponse([
+            ToolCallPart(
+                grounded.name,
+                {
+                    "grounded_blocks": [
+                        {
+                            "text": first_text,
+                            "citation_ids": [first_citation],
+                        },
+                        {
+                            "text": (
+                                "Use NYC FoodHelp now for immediate food help."
+                                if calls == 3
+                                else "The benefits result is an estimate."
+                            ),
+                            "citation_ids": ["S1" if calls == 3 else "S2"],
+                        },
+                    ]
+                },
+                f"answer-{calls}",
+            )
+        ])
+
+    tools = {
+        "urgent_help": Tool(
+            name="urgent_help",
+            description="Find immediate help",
+            parameters={"type": "object", "properties": {}},
+            handler=urgent_handler,
+        ),
+        "estimate": Tool(
+            name="estimate",
+            description="Estimate benefits",
+            parameters={"type": "object", "properties": {}},
+            handler=estimate_handler,
+        ),
+    }
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools=tools,
+        structured_grounding=True,
+    ).run("I need food tonight and also want a benefits estimate.")
+
+    assert result.text.startswith(
+        "Use NYC FoodHelp now for immediate food help. {cite:S1}"
+    )
+    assert calls == 4
+    assert len(result.diagnostics["validation_rejections"]) == 2
+
+
+async def test_priority_evidence_survives_approval_state_round_trip() -> None:
+    async def urgent_handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://finder.nyc.gov/foodhelp/",
+            title="Immediate food help",
+            kind="WEB",
+            snippet="Use NYC FoodHelp now for immediate food help.",
+        )
+        ctx.response_priority_citation_ids.add(citation_id)
+        return f"Use NYC FoodHelp now. {{cite:{citation_id}}}"
+
+    async def estimate_handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://access.nyc.gov/",
+            title="Benefits estimate",
+            kind="WEB",
+            snippet="The benefits result is an estimate.",
+        )
+        return f"The benefits result is an estimate. {{cite:{citation_id}}}"
+
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([
+                ToolCallPart("urgent_help", {}, "urgent"),
+                ToolCallPart("estimate", {}, "estimate-call"),
+            ])
+        grounded = next(
+            tool for tool in info.output_tools if tool.name == "grounded_answer"
+        )
+        priority_first = bool(_parts(messages, RetryPromptPart))
+        return ModelResponse([
+            ToolCallPart(
+                grounded.name,
+                {
+                    "grounded_blocks": [
+                        {
+                            "text": (
+                                "Use NYC FoodHelp now for immediate food help."
+                                if priority_first
+                                else "The benefits result is an estimate."
+                            ),
+                            "citation_ids": ["S1" if priority_first else "S2"],
+                        },
+                        {
+                            "text": (
+                                "The benefits result is an estimate."
+                                if priority_first
+                                else "Use NYC FoodHelp now for immediate food help."
+                            ),
+                            "citation_ids": ["S2" if priority_first else "S1"],
+                        },
+                    ]
+                },
+                f"answer-{model_calls}",
+            )
+        ])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "urgent_help": Tool(
+                name="urgent_help",
+                description="Find immediate help",
+                parameters={"type": "object", "properties": {}},
+                handler=urgent_handler,
+            ),
+            "estimate": Tool(
+                name="estimate",
+                description="Estimate benefits",
+                parameters={"type": "object", "properties": {}},
+                handler=estimate_handler,
+                requires_approval=True,
+            ),
+        },
+        structured_grounding=True,
+    )
+    conversation = runtime.conversation()
+    pending = await conversation.send(
+        "I need food tonight and also want a benefits estimate."
+    )
+    restored = runtime.conversation_from_state(conversation.dump_state())
+    result = await restored.resume_approvals({"estimate-call": True})
+
+    assert pending.status == "approval_required"
+    assert result.text.startswith(
+        "Use NYC FoodHelp now for immediate food help. {cite:S1}"
+    )
+    assert result.diagnostics["validation_rejections"] == [
+        {"attempt": 1, "stage": "response_priority"}
+    ]
 
 
 async def test_structured_grounding_rejects_an_empty_answer() -> None:
@@ -2715,6 +3069,7 @@ async def test_approval_resume_retains_usage_after_output_retry_failure() -> Non
     )
     conversation = runtime.conversation()
     pending = await conversation.send("Do it")
+    conversation._response_priority_citation_ids.add("resident-secret")
 
     assert pending.status == "approval_required"
     with pytest.raises(PydanticRunFailure) as caught:
@@ -2727,6 +3082,7 @@ async def test_approval_resume_retains_usage_after_output_retry_failure() -> Non
     assert partial.usage["requests"] == 3
     assert partial.usage["retry_kinds"] == ["unknown_citation"] * 2
     assert "resident-secret" not in json.dumps(partial.usage)
+    assert conversation._response_priority_citation_ids == set()
 
 
 async def test_approval_resume_timeout_preserves_pending_state() -> None:
@@ -2761,6 +3117,7 @@ async def test_approval_resume_timeout_preserves_pending_state() -> None:
     )
     conversation = runtime.conversation()
     await conversation.send("Do it")
+    conversation._response_priority_citation_ids.add("S1")
     before = conversation.dump_state()
 
     with pytest.raises(PydanticRunFailure):

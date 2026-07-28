@@ -303,6 +303,30 @@ async def test_benefits_search_prefers_application_link_over_help_link():
     assert ctx.citations.mapping()["S1"]["url"] == "https://nystateofhealth.ny.gov/"
 
 
+async def test_benefits_search_prefers_official_how_to_link_over_brittle_direct_login():
+    row = dict(_FAKE_ROW)
+    row["url_of_online_application"] = "https://unemployment.labor.ny.gov/en-US/login"
+    row["how_to_apply_or_enroll_online"] = (
+        '<a href="https://dol.ny.gov/unemployment/unemployment-insurance-assistance">'
+        "How to apply for unemployment insurance</a>"
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+    )
+
+    out = await tool.handler({"query": "unemployment insurance"}, ctx)
+    await client.aclose()
+
+    expected = "https://dol.ny.gov/unemployment/unemployment-insurance-assistance"
+    assert f"Apply: {expected}" in out
+    assert ctx.citations.mapping()["S1"]["url"] == expected
+
+
 def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     # For a denial/problem with a benefit, the benefits blurb must surface the human/appeal
     # path — call the agency / 311 and the right to a fair hearing.
@@ -311,6 +335,10 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     low = benefits.prompt.lower()
     assert "fair hearing" in low
     assert "311" in benefits.prompt
+    assert (
+        "When the resident already requested the eligibility screening workflow"
+        in benefits.prompt
+    )
 
 
 def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence():

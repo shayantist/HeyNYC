@@ -180,6 +180,9 @@ def _as_of(record: dict) -> str:
 
 
 def _apply_url(record: dict) -> str:
+    for field in ("how_to_apply_or_enroll_online", "how_to_apply_summary"):
+        if url := _first_href(record.get(field)):
+            return url
     return _clean(record.get("url_of_online_application")) or _clean(
         record.get("url_of_pdf_application_forms")
     )

@@ -204,6 +204,7 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
                 redteam_category=entry["category"],
                 language=entry.get("language", "en"),
                 grounded_fact=entry.get("grounded_fact", ""),
+                invariants=dict(entry.get("invariants") or {}),
                 utility_criterion=(
                     entry.get("utility_criterion")
                     or REDTEAM_REVIEW_REQUIRED

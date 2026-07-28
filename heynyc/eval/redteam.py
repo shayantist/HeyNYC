@@ -1,4 +1,4 @@
-"""Owner-gated live entrypoint for the adversarial red-team.
+"""Owner-gated live entrypoint for the red-team-derived adversarial regression suite.
 
 This is a THIN orchestration over the shared eval machinery, it reinvents nothing:
 
@@ -125,7 +125,7 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
 
     parser = argparse.ArgumentParser(
         prog="python -m heynyc.eval.redteam",
-        description="Run the frozen adversarial red-team suite against a candidate model.",
+        description="Run the frozen red-team-derived adversarial regression suite.",
     )
     parser.add_argument("--model", required=True, help="candidate model id, e.g. openai/gpt-5-mini")
     parser.add_argument(

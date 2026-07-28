@@ -13,6 +13,7 @@ Honest limitations (enforced in the manifest prompt too): the source has NO lang
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from urllib.parse import urlencode
@@ -29,6 +30,7 @@ from heynyc.core.tools.geo import (
     geocode,
     haversine_m,
     miles,
+    resident_supplied_location,
 )
 
 # The live backend of finder.nyc.gov/foodhelp, verified public + tokenless.
@@ -55,6 +57,18 @@ NO_LOCATION = (
     "https://finder.nyc.gov/foodhelp. Also ask where they are, using an NYC address or "
     "neighborhood, so the next search can return nearby options. Never guess their location."
 )
+SOURCE_LOCATION_NEEDS_FETCH = (
+    "The cited search result is not enough to establish that origin. First call official_sources on "
+    "the cited page for a source span containing both the resident-named place and exact address, "
+    "then retry with its new citation id. If the fetched page does not contain both together, ask "
+    "the resident for their NYC address or neighborhood."
+)
+SOURCE_LOCATION_NEEDS_CONFIRMATION = (
+    "The authoritative source did not establish that the proposed address belongs to the "
+    "resident-named place. Stop calling tools for this location and ask the resident for their "
+    "exact NYC address or intersection. Do not repeat the unverified proposed address or mention "
+    "tool, source-validation, or internal safety mechanics in the resident answer."
+)
 _NYC_TZ = ZoneInfo("America/New_York")
 
 # datetime.weekday(): Monday=0 … Sunday=6 → the source's fp_<day>_* prefixes.
@@ -65,13 +79,6 @@ _DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _TYPE_DESCRIPTORS = {
     "FPH": "Halal", "FPHA": "HIV Customers", "FPK": "Kosher", "FPM": "Mobile",
     "SKK": "Kosher", "SKM": "Mobile",
-}
-_ORIGIN_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
-_ORIGIN_NEGATION_RE = re.compile(r"\b(?:no|not|never|without|don['’]?t|do\s+not)\b", re.IGNORECASE)
-_ORIGIN_STALE_RE = re.compile(r"\b(?:used to|formerly|previously)\b", re.IGNORECASE)
-_ORIGIN_TOKEN_ALIASES = {
-    "st": "street", "ave": "avenue", "rd": "road", "blvd": "boulevard",
-    "ln": "lane", "dr": "drive", "pkwy": "parkway",
 }
 def _clean(value) -> str:
     """None / literal 'NULL' / blanks → ''. ArcGIS returns JSON null for empty fields."""
@@ -85,28 +92,69 @@ def _resident_supplied_origin(near: str, query: str, user_turns: tuple[str, ...]
     current_turn = query or (user_turns[-1] if user_turns else "")
     if not current_turn:
         return near
-    parts = [part.strip() for part in near.split(",") if part.strip()]
-    candidates = [", ".join(parts[:end]) for end in range(len(parts), 0, -1)]
-    turn_matches = list(_ORIGIN_TOKEN_RE.finditer(current_turn))
-    turn_tokens = [_ORIGIN_TOKEN_ALIASES.get(match.group().lower(), match.group().lower())
-                   for match in turn_matches]
-    for candidate in candidates:
-        tokens = [_ORIGIN_TOKEN_ALIASES.get(token.lower(), token.lower())
-                  for token in _ORIGIN_TOKEN_RE.findall(candidate)]
-        for start in range(len(turn_tokens) - len(tokens) + 1):
-            if tokens != turn_tokens[start:start + len(tokens)]:
-                continue
-            raw_start = turn_matches[start].start()
-            raw_end = turn_matches[start + len(tokens) - 1].end()
-            clause_start = max(current_turn.rfind(mark, 0, raw_start) for mark in ".!?;,") + 1
-            clause_ends = [current_turn.find(mark, raw_end) for mark in ".!?;,"]
-            clause_end = min((end for end in clause_ends if end >= 0), default=len(current_turn))
-            # ponytail: lexical negation is a fail-closed floor; semantic review covers other languages.
-            clause = current_turn[clause_start:clause_end]
-            if _ORIGIN_NEGATION_RE.search(clause) or _ORIGIN_STALE_RE.search(clause):
-                continue
-            return current_turn[raw_start:raw_end]
-    return ""
+    return resident_supplied_location(near, current_turn, ())
+
+
+def _source_span_supports_origin(sentence: str, place: str, address: str) -> bool:
+    def normalized(value: str) -> str:
+        value = unicodedata.normalize("NFKC", value).casefold()
+        return " ".join(
+            "".join(
+                " " if unicodedata.category(character)[0] in {"P", "Z"} else character
+                for character in value
+            ).split()
+        )
+
+    sentence = normalized(sentence)
+    place = normalized(place)
+    address = normalized(address)
+    place_start = sentence.find(place)
+    address_start = sentence.find(address)
+    if place_start < 0 or address_start < 0:
+        return False
+    if place_start < address_start:
+        between = sentence[place_start + len(place):address_start]
+    else:
+        between = sentence[address_start + len(address):place_start]
+    return not any(character.isdigit() for character in between)
+
+
+def _source_origin(
+    near: str,
+    source_place: str,
+    source_id: str,
+    ctx: ToolContext,
+) -> tuple[str, str]:
+    resident_place = resident_supplied_location(source_place, ctx.query, ())
+    if not resident_place:
+        return "", source_id
+    citations = ctx.citations.mapping()
+    candidates = (
+        [(source_id, citations.get(source_id, {}))]
+        if source_id
+        else list(citations.items())
+    )
+    matches = [
+        (candidate_id, citation)
+        for candidate_id, citation in candidates
+        if any(
+            _source_span_supports_origin(sentence, resident_place, near)
+            for sentence in re.split(
+                r"(?<=[.!?])\s+|\n+",
+                citation.get("snippet", ""),
+            )
+        )
+    ]
+    authoritative = [
+        (candidate_id, citation)
+        for candidate_id, citation in matches
+        if (citation.get("provenance") or {}).get("evidence_grade") == "authoritative"
+    ]
+    if len(authoritative) == 1:
+        return near, authoritative[0][0]
+    if matches:
+        return "", matches[0][0]
+    return "", source_id
 
 
 # --- hours / open-now ------------------------------------------------------
@@ -418,7 +466,10 @@ def _availability_citation(
             snapshot,
             record_id="availability-summary",
             field_pointer="/",
-            derivation={"temporal_basis": "weekly_schedule"},
+            derivation={
+                "temporal_basis": "weekly_schedule",
+                "response_priority_anchors": ["311", OFFICIAL],
+            },
         ),
     )
 
@@ -524,21 +575,45 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         service_window = (start, end)
     future_schedule = requested is not None and requested > now.date()
     requested_day = requested or now.date()
+    urgent = args.get("urgent") is True and not future_schedule
     if args.get("urgent") is True and not future_schedule and service_window is None:
         return (
             "urgent=true requires service_window_start and service_window_end. Preserve the "
             "resident's requested same-day timeframe and pass it as NYC-local 24-hour HH:MM."
         )
+    source_id = str(args.get("near_source_citation") or "")
+    source_place = str(args.get("near_source_place") or "")
     resident_origin = _resident_supplied_origin(near, ctx.query, ctx.user_turns)
+    source_expanded_origin = bool(
+        (source_id or source_place)
+        and resident_origin
+        and unicodedata.normalize("NFKC", resident_origin).casefold()
+        != unicodedata.normalize("NFKC", near).casefold()
+    )
+    source_origin, source_id = (
+        _source_origin(near, source_place, source_id, ctx)
+        if not resident_origin or source_expanded_origin
+        else ("", source_id)
+    )
+    if source_expanded_origin:
+        resident_origin = ""
+    if source_id and not resident_origin and not source_origin:
+        citation = ctx.citations.mapping().get(source_id, {})
+        if (citation.get("provenance") or {}).get("evidence_grade") == "authoritative":
+            return f"{SOURCE_LOCATION_NEEDS_CONFIRMATION} Source: {{cite:{source_id}}}."
+        return f"{SOURCE_LOCATION_NEEDS_FETCH} Source: {{cite:{source_id}}}."
+    resident_origin = resident_origin or source_origin
     if not resident_origin:
         return NO_LOCATION
     near = resident_origin
 
     origin = await geocode(near, client=ctx.http)
     if origin is None:
+        source_marker = f" The proposed address came from {{cite:{source_id}}}." if source_origin else ""
         return (
             f"I couldn't locate '{near}' in NYC, so I can't find a nearby {service_name}. Ask the "
             f"user for a specific NYC address or neighborhood, don't guess a {service_name}."
+            f"{source_marker}"
         )
     if origin.low_confidence:
         return _clarify_message(near)
@@ -567,6 +642,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             nearby=[],
             now=now,
         )
+        if urgent:
+            ctx.response_priority_citation_ids.add(cite)
         return (
             f"No open {result_label} came back from the city's FoodHelp data. Don't invent one, "
             f"point the user to {OFFICIAL}. {{cite:{cite}}}"
@@ -606,7 +683,6 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
         unique.sort(key=requested_day_rank)
     ranked = unique[:k]
-    urgent = args.get("urgent") is True and not future_schedule
     if service_window:
         def availability(pantry: FoodPantry) -> bool | None:
             return _scheduled_during(
@@ -625,10 +701,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     scheduled_open_count = len(scheduled_open)
     citywide_scheduled_open = len(citywide_open)
     citywide_unknown_hours = sum(availability(pantry) is None for pantry in unique)
-    availability_marker = (
-        f" {{cite:{_availability_citation(ctx, pantries=unique, nearby=ranked, now=now, requested=requested_day, service_window=service_window)}}}"
+    availability_citation = (
+        _availability_citation(
+            ctx,
+            pantries=unique,
+            nearby=ranked,
+            now=now,
+            requested=requested_day,
+            service_window=service_window,
+        )
         if urgent
         else ""
+    )
+    if availability_citation:
+        ctx.response_priority_citation_ids.add(availability_citation)
+    availability_marker = (
+        f" {{cite:{availability_citation}}}" if availability_citation else ""
     )
     displayed = (
         scheduled_open[:1]
@@ -649,6 +737,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                  "(finder.nyc.gov/foodhelp), report only these, cite each:"
         ),
     ]
+    if source_origin:
+        lines.insert(2, f"Origin address came from the official source {{cite:{source_id}}}.")
     if future_schedule:
         lines.append(
             f"Results are ranked for the weekly schedule on "
@@ -774,6 +864,22 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "near": {"type": "string",
                              "description": "The NYC address or neighborhood to search near."},
+                    "near_source_citation": {
+                        "type": "string",
+                        "pattern": r"^S\d+$",
+                        "description": (
+                            "An authoritative citation ID whose text contains the exact `near` "
+                            "address. Use only when an official source resolved a resident-named "
+                            "place that could not itself be geocoded."
+                        ),
+                    },
+                    "near_source_place": {
+                        "type": "string",
+                        "description": (
+                            "The resident's exact named place resolved by near_source_citation. "
+                            "The place and `near` address must occur together in that source."
+                        ),
+                    },
                     "k": {"type": "integer",
                           "description": "How many food-help sites to return (default 5).",
                           "default": 5},
