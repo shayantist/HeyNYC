@@ -521,6 +521,14 @@ def build_module_capabilities(
                             if hint.urls else ""
                         ),
                         (
+                            "Call `official_sources` with every Official pages URL "
+                            "before answering; do not omit a listed source."
+                            if hint.high_stakes
+                            and hint.urls
+                            and "official_sources" in hint.focus_tools
+                            else ""
+                        ),
+                        (
                             "Prioritize tools: " + ", ".join(hint.focus_tools)
                             if hint.focus_tools else ""
                         ),

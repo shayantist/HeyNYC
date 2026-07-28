@@ -73,7 +73,7 @@ def test_from_parks_maps_nested_link():
     assert ev.start_date == "2026-06-17"
     assert ev.start_time == "7:00 am"
     assert ev.venue == "Blood Root Valley"
-    assert ev.url == "http://www.nycgovparks.org/events/2026/06/17/x"
+    assert ev.url == "https://www.nycgovparks.org/events/2026/06/17/x"
     assert ev.source == "NYC Parks" and ev.tier == "authoritative"
 
 

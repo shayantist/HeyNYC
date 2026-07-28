@@ -94,7 +94,13 @@ async def _fetch_official(
     current = url
     for _ in range(4):
         response = await client.get(
-            current, follow_redirects=False, headers={"User-Agent": "HeyNYC/0.1"},
+            current,
+            follow_redirects=False,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; HeyNYC/0.1; +https://reach4help.org)"
+                ),
+            },
         )
         if getattr(response, "status_code", 200) in {301, 302, 303, 307, 308}:
             location = response.headers.get("location")
@@ -203,7 +209,11 @@ def official_source_tools() -> list[Tool]:
                 f"{title or 'Official source'} ({final_url})\n{evidence} {{cite:{cite}}}"
             )
         if not blocks:
-            return "The approved official pages could not be retrieved. Do not guess; route to 311."
+            return (
+                "The approved official pages could not be retrieved. Do not guess. Preserve other "
+                "verified results and state which requested claim could not be verified; route to "
+                "the relevant official service when no useful result remains."
+            )
         return "\n\n".join(blocks)
 
     return [

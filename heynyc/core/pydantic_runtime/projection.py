@@ -31,10 +31,15 @@ from heynyc.core.telemetry import priced_cost_usd
 
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
 _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
+_CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 NONFACTUAL_OUTCOME_TEXT = (
     "I can't know that yet. I can help with the practical NYC part instead."
 )
-_OUTPUT_TOOLS = {_GROUNDED_OUTPUT_TOOL, _NONFACTUAL_OUTPUT_TOOL}
+_OUTPUT_TOOLS = {
+    _GROUNDED_OUTPUT_TOOL,
+    _NONFACTUAL_OUTPUT_TOOL,
+    _CLARIFICATION_OUTPUT_TOOL,
+}
 _SEMANTIC_CITATION_CHARS = 1_200
 
 class GroundedBlock(BaseModel):
@@ -56,6 +61,12 @@ class GroundedAnswer(BaseModel):
         min_length=1,
         max_length=12,
     )
+
+
+class ClarificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=500)
 
 
 def _grounded_block_text(block: GroundedBlock) -> str:
@@ -105,7 +116,11 @@ def _accepted_grounded_outputs(
                 GroundedAnswer.model_validate(part.args_as_dict())
             )
             if part.tool_name == _GROUNDED_OUTPUT_TOOL
-            else NONFACTUAL_OUTCOME_TEXT
+            else (
+                ClarificationRequest.model_validate(part.args_as_dict()).question
+                if part.tool_name == _CLARIFICATION_OUTPUT_TOOL
+                else NONFACTUAL_OUTCOME_TEXT
+            )
         )
         for message in messages
         if isinstance(message, ModelResponse)

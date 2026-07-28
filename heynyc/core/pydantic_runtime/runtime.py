@@ -59,6 +59,7 @@ from heynyc.core.agent import (
     AgentResult,
     _delivered_notify_titles,
     _emergency_backstop,
+    _ground_emergency_backstop,
     _internal_config_backstop,
     _reply_script_feedback,
     _sensitive_identifier_backstop,
@@ -90,6 +91,7 @@ from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 
 from .projection import (
     NONFACTUAL_OUTCOME_TEXT,
+    ClarificationRequest,
     GroundedAnswer,
     _captured_usage,
     _complete_cost,
@@ -117,10 +119,12 @@ _DEFERRED_REQUESTS = TypeAdapter(DeferredToolRequests)
 _RESIDENT_FACTS = TypeAdapter(dict[str, ResidentFact])
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
 _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
+_CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 _INTERNAL_TEMPLATE_TOKEN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 _SEMANTIC_EVIDENCE_CHARS = 1_200
 _SEMANTIC_RETRY_ITEMS = 8
 _SEMANTIC_LABELS = {"supported", "partial", "unsupported", "contradicted"}
+_GROUNDED_HANDOFF_REQUIREMENT = "requires a grounded handoff"
 _STRUCTURED_GROUNDING_SYSTEM_PROMPT = (
     "For the final GroundedAnswer output, do not write inline citation markers. "
     "Put retrieved source IDs only in citation_ids. The runtime renders citation "
@@ -140,6 +144,18 @@ VERIFICATION_ABSTAIN_FALLBACK = (
 )
 class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"]
+
+
+def _output_language_mismatch(query: str, answer: str) -> bool:
+    query_letters = [character for character in query if character.isalpha()]
+    answer_letters = [character for character in answer if character.isalpha()]
+    if len(query_letters) < 30 or len(answer_letters) < 30:
+        return False
+    query_is_ascii = all(character.isascii() for character in query_letters)
+    non_ascii_answer_share = (
+        sum(not character.isascii() for character in answer_letters) / len(answer_letters)
+    )
+    return query_is_ascii and non_ascii_answer_share > 0.5
 
 
 def _caused_by(error: BaseException, expected: type[BaseException]) -> bool:
@@ -204,6 +220,18 @@ async def _authoritative_output_tools(
     return prepared
 
 
+def _loaded_capability_requires_grounded_handoff(ctx: RunContext[ToolContext]) -> bool:
+    for capability_id in ctx.loaded_capability_ids:
+        capability = ctx.capabilities.get(capability_id)
+        if capability is None:
+            continue
+        instructions = capability.get_instructions()
+        parts = [instructions] if isinstance(instructions, str) else instructions
+        if any(_GROUNDED_HANDOFF_REQUIREMENT in part.lower() for part in parts):
+            return True
+    return False
+
+
 def _safe_semantic_label(label: str) -> str:
     return label if label in _SEMANTIC_LABELS else "unsupported"
 
@@ -214,6 +242,53 @@ def _safe_semantic_error(error: str | None) -> str | None:
     if len(error) <= 64 and error.isidentifier() and error.endswith("Error"):
         return error
     return "SemanticVerifierError"
+
+
+def _misowned_proper_nouns(
+    output: GroundedAnswer,
+    citations: dict[str, dict],
+    query: str,
+) -> list[dict[str, Any]]:
+    """Find names supported by a registered source, but not the block's cited sources."""
+    findings: list[dict[str, Any]] = []
+    for index, block in enumerate(output.grounded_blocks):
+        verdict = check_grounding(
+            _render_grounded_answer(GroundedAnswer(grounded_blocks=[block])),
+            citations,
+            query,
+        )
+        if verdict is None:
+            continue
+        for mismatch in verdict.soft_failures:
+            if mismatch.kind != "proper_noun":
+                continue
+            for citation_id in citations.keys() - set(block.citation_ids):
+                if (
+                    citations[citation_id].get("provenance") or {}
+                ).get("evidence_grade") == "discovery":
+                    continue
+                alternative = block.model_copy(update={"citation_ids": [citation_id]})
+                alternative_verdict = check_grounding(
+                    _render_grounded_answer(
+                        GroundedAnswer(grounded_blocks=[alternative])
+                    ),
+                    {
+                        citation_id: {
+                            "title": citations[citation_id].get("title", ""),
+                            "snippet": "",
+                            "provenance": {},
+                        }
+                    },
+                    query,
+                )
+                if alternative_verdict is not None and any(
+                    location["kind"] == mismatch.kind
+                    and location["token"] == mismatch.text
+                    for location in alternative_verdict.locations
+                ):
+                    findings.append({"block": index, "kind": mismatch.kind})
+                    break
+    return findings
 
 
 def _notify_titles_from_result(result: AgentResult) -> frozenset:
@@ -549,10 +624,13 @@ class PydanticRuntimeAdapter:
                             "gives only general rules, plainly distinguish them from the "
                             "resident's individual outcome. A related source is not enough: "
                             "the cited evidence must explicitly support the whole procedure "
-                            "or condition in that block. When the resident asks "
+                            "or condition in that block. Do not transfer an attribute from one "
+                            "entity to another entity mentioned by the same source. When the "
+                            "resident asks "
                             "what will happen or how to protect or access a service, include "
                             "a concrete official next step explicitly supported by its cited "
-                            "evidence. Do not enumerate results you explicitly conclude do not "
+                            "evidence. Omit generic offers about what you can do next. "
+                            "Do not enumerate results you explicitly conclude do not "
                             "overlap the resident's requested time, place, audience, or topic; "
                             "summarize the relevant absence instead. Every resident-visible "
                             "sentence, including a clarification question or data-minimization "
@@ -565,6 +643,19 @@ class PydanticRuntimeAdapter:
                 ),
                 *(
                     [
+                        ToolOutput(
+                            ClarificationRequest,
+                            name=_CLARIFICATION_OUTPUT_TOOL,
+                            description=(
+                                "Use only when an appropriate tool cannot run because the resident "
+                                "has not supplied a required location or other input and no loaded "
+                                "capability requires a grounded handoff. If a loaded capability "
+                                "requires a grounded handoff, retrieve its required official "
+                                "evidence and use GroundedAnswer instead. Otherwise ask only for the "
+                                "missing input, in one concise question. Do not include factual "
+                                "claims, advice, links, phone numbers, or citations."
+                            ),
+                        ),
                         ToolOutput(
                             NonfactualOutcome,
                             name=_NONFACTUAL_OUTPUT_TOOL,
@@ -594,8 +685,20 @@ class PydanticRuntimeAdapter:
     async def _validate_grounding(
         self,
         ctx: RunContext[ToolContext],
-        output: str | GroundedAnswer | NonfactualOutcome | DeferredToolRequests,
-    ) -> str | GroundedAnswer | NonfactualOutcome | DeferredToolRequests:
+        output: (
+            str
+            | GroundedAnswer
+            | ClarificationRequest
+            | NonfactualOutcome
+            | DeferredToolRequests
+        ),
+    ) -> (
+        str
+        | GroundedAnswer
+        | ClarificationRequest
+        | NonfactualOutcome
+        | DeferredToolRequests
+    ):
         def reject(stage: str, message: str, **details: Any) -> None:
             ctx.deps.validation_rejections.append({
                 "attempt": len(ctx.deps.validation_rejections) + 1,
@@ -646,7 +749,28 @@ class PydanticRuntimeAdapter:
                     "Do not write citation markers. Put source IDs in citation_ids; "
                     "the runtime renders markers."
                 )
+            if misowned := _misowned_proper_nouns(output, mapping, ctx.deps.query):
+                reject(
+                    "citation_ownership",
+                    "A named program or organization is supported by a different "
+                    "retrieved source than the block declares. Split the claims or add "
+                    "every source that supports the whole block.",
+                    items=misowned[:_SEMANTIC_RETRY_ITEMS],
+                )
             rendered = _render_grounded_answer(output)
+        elif isinstance(output, ClarificationRequest):
+            rendered = output.question.strip()
+            if _loaded_capability_requires_grounded_handoff(ctx):
+                reject(
+                    "clarification_bypass",
+                    "The loaded capability requires a grounded handoff. Retrieve its required "
+                    "official evidence and use GroundedAnswer before asking for the missing input.",
+                )
+            if not rendered.endswith("?"):
+                reject(
+                    "clarification_shape",
+                    "Ask one concise question ending with a question mark.",
+                )
         elif isinstance(output, NonfactualOutcome):
             rendered = NONFACTUAL_OUTCOME_TEXT
         else:
@@ -655,6 +779,12 @@ class PydanticRuntimeAdapter:
             reject(
                 "internal_markup",
                 "Do not expose internal template markup. Write ordinary resident-facing text.",
+            )
+        if _output_language_mismatch(ctx.deps.query, rendered):
+            reject(
+                "response_language",
+                "Reply in the same language as the resident's current message. Keep official "
+                "names, addresses, phone numbers, and links unchanged.",
             )
         if _unknown_citation_ids(rendered, mapping):
             reject(
@@ -1004,6 +1134,7 @@ class PydanticRuntimeAdapter:
             or _internal_config_backstop(user_message)
         )
         if backstop is not None:
+            backstop = _ground_emergency_backstop(backstop, citations)
             new_messages: list[ModelMessage] = [
                 ModelRequest(parts=[UserPromptPart(user_message)]),
                 ModelResponse(parts=[TextPart(backstop)]),
@@ -1201,7 +1332,13 @@ class PydanticRuntimeAdapter:
         self,
         new_messages: Sequence[ModelMessage],
         usage: RunUsage,
-        output: str | GroundedAnswer | NonfactualOutcome | DeferredToolRequests,
+        output: (
+            str
+            | GroundedAnswer
+            | ClarificationRequest
+            | NonfactualOutcome
+            | DeferredToolRequests
+        ),
         citations: CitationRegistry,
         started: float,
         *,
@@ -1216,6 +1353,7 @@ class PydanticRuntimeAdapter:
             if isinstance(part, ToolCallPart)
             and part.tool_name not in {
                 _GROUNDED_OUTPUT_TOOL,
+                _CLARIFICATION_OUTPUT_TOOL,
                 _NONFACTUAL_OUTPUT_TOOL,
             }
         ]
@@ -1238,6 +1376,7 @@ class PydanticRuntimeAdapter:
             if isinstance(part, ToolReturnPart)
             and part.tool_name not in {
                 _GROUNDED_OUTPUT_TOOL,
+                _CLARIFICATION_OUTPUT_TOOL,
                 _NONFACTUAL_OUTPUT_TOOL,
             }
         ]
@@ -1250,6 +1389,8 @@ class PydanticRuntimeAdapter:
                 (
                     _render_grounded_answer(output)
                     if isinstance(output, GroundedAnswer)
+                    else output.question
+                    if isinstance(output, ClarificationRequest)
                     else NONFACTUAL_OUTCOME_TEXT
                     if isinstance(output, NonfactualOutcome)
                     else str(output)

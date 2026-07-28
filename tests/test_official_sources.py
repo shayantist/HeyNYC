@@ -114,6 +114,10 @@ async def test_official_sources_fetches_only_seeded_pages_and_returns_relevant_c
         cite["provenance"] == {"evidence_grade": "authoritative"}
         for cite in ctx.citations.mapping().values()
     )
+    assert all(
+        request["headers"]["User-Agent"].startswith("Mozilla/5.0 (compatible; HeyNYC/")
+        for _url, request in client.requests
+    )
 
 
 async def test_official_sources_rejects_access_wall_content():
@@ -392,6 +396,7 @@ async def test_failed_source_fetch_preserves_discovery_history():
     )
 
     assert "could not be retrieved" in out
+    assert "preserve other verified results" in out.lower()
     assert ctx.citations.mapping()["S1"]["provenance"] == {
         "evidence_grade": "discovery",
     }

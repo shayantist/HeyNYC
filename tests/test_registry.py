@@ -134,6 +134,32 @@ def test_benefits_manifest_declares_the_snap_work_rules_situation():
     assert "food" in lowered and "restore" in lowered
 
 
+def test_benefits_manifest_declares_mixed_status_snap_situation():
+    from heynyc.core.pydantic_runtime.tools import build_module_capabilities
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["mixed_status_snap"]
+
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert "eligible household" in hint.query.lower()
+    assert any("snap-application-frequently-asked-questions" in url for url in hint.urls)
+    assert any("immigration" in url for url in hint.urls)
+    assert any("access.nyc.gov/eligibility" in url for url in hint.urls)
+    assert "official access nyc eligibility screener" in hint.reminder.lower()
+    assert "unless the resident explicitly requests or accepts" in hint.reminder.lower()
+    assert "required outcomes" in hint.reminder.lower()
+    assert "immigration-safe legal-help route" in hint.reminder.lower()
+    assert "the final sentence must ask" not in hint.reminder.lower()
+    assert hint.focus_tools == ["official_sources"]
+    _, capabilities = build_module_capabilities(registry, {})
+    capability = next(
+        item for item in capabilities if item.id == "benefits-mixed-status-snap"
+    )
+    instructions = "\n".join(capability.get_instructions())
+    assert "call `official_sources` with every official pages url" in instructions.lower()
+
+
 def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
     """RULED 2026-07-18: retrieval pools are stakes-tiered, and the stakes declaration lives in
     each module's OWN manifest (`official_only`, default true), enforced by the schema at load —
@@ -166,3 +192,24 @@ def test_events_editorial_pool_covers_nyc_lifestyle_press():
     for domain in ("theinfatuation.com", "eater.com", "cntraveler.com", "bkmag.com"):
         assert domain in editorial
         assert domain in registry.allowlist()
+
+
+def test_transit_manifest_declares_current_mta_accessibility_sources():
+    registry = Registry.discover(Path("heynyc/modules"))
+    transit = next(module for module in registry.modules if module.name == "transit")
+
+    assert "mta.info" in transit.allowlist
+    assert any("accessibility" in seed for seed in transit.seeds)
+    prompt = " ".join(transit.prompt.lower().split())
+    assert "accessible trip" in prompt
+    assert "current elevator" in prompt
+    assert "route-level accessibility and service status remain unverified" in prompt
+    assert "requested day" in prompt
+    assert "requires a grounded handoff" in prompt
+
+
+def test_benefits_discovery_does_not_claim_an_unloaded_screening_workflow():
+    registry = Registry.discover(Path("heynyc/modules"))
+    benefits = next(module for module in registry.modules if module.name == "benefits")
+
+    assert "unless its deferred workflow capability is loaded" in benefits.prompt.lower()

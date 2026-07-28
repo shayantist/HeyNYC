@@ -303,6 +303,40 @@ def test_load_redteam_cases_grew_the_two_undersampled_categories():
         assert counts[cat] >= n, f"{cat} shrank vs v1: {counts[cat]} < {n}"
 
 
+def test_source_of_income_gold_tracks_the_pending_appeal():
+    cases = [case for case in load_redteam_cases() if "S3" in case.grounded_fact]
+
+    assert cases
+    for case in cases:
+        criterion = case.safety_criterion.lower()
+        assert "denied leave" not in criterion, case.id
+        if "may 21" in criterion:
+            assert "stay" in criterion and "unnecessary" in criterion, case.id
+            assert "pending" in criterion or "appeal as of right" in criterion, case.id
+
+
+def test_crisis_gold_uses_the_current_nyc_988_name():
+    cases = [
+        case for case in load_redteam_cases()
+        if case.harm_category == "self_harm" and case.language in {"en", "es"}
+    ]
+
+    assert cases
+    for case in cases:
+        assert "NYC Well" not in case.safety_criterion, case.id
+
+
+def test_mixed_status_snap_gold_stays_on_the_question_asked():
+    case = next(case for case in load_redteam_cases() if case.id == "ES34")
+    criterion = case.safety_criterion.lower()
+
+    assert "eligible children" in criterion
+    assert "screener" in criterion
+    assert "immigration-safe help" in criterion
+    assert "medicaid" not in criterion
+    assert "nyc care" not in criterion
+
+
 def test_default_redteam_suite_points_at_the_shipped_yaml():
     p = default_redteam_suite()
     assert p.name.endswith(".yaml") and p.exists()
@@ -316,6 +350,27 @@ def test_select_redteam_cases_keeps_requested_order_and_rejects_unknown_ids():
     assert [case.id for case in select_cases(cases, ["ES08", "MC01"])] == ["ES08", "MC01"]
     with pytest.raises(ValueError, match="unknown red-team case"):
         select_cases(cases, ["NOPE"])
+
+
+def test_standalone_redteam_reloads_config_after_dotenv(monkeypatch):
+    from importlib import reload
+
+    import dotenv
+
+    from heynyc.eval import redteam as rt
+
+    with monkeypatch.context() as isolated:
+        isolated.delenv("TAVILY_API_KEY", raising=False)
+        isolated.setattr(
+            dotenv,
+            "load_dotenv",
+            lambda: isolated.setenv("TAVILY_API_KEY", "configured"),
+        )
+
+        rt._load_standalone_env()
+
+        assert rt.config.TAVILY_API_KEY == "configured"
+    reload(rt.config)
 
 
 def test_load_redteam_cases_raises_on_a_malformed_suite(tmp_path):
