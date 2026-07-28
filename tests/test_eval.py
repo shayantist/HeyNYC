@@ -174,6 +174,43 @@ async def test_link_liveness_strips_markdown_around_direct_url():
     assert seen == ["https://finder.nyc.gov/foodhelp"]
 
 
+async def test_link_liveness_strips_sentence_punctuation_after_markdown_url():
+    seen = []
+    cr = _result(
+        _case(),
+        text=(
+            "সরকারি পেজ: [ACCESS NYC SNAP]"
+            "(https://access.nyc.gov/programs/supplemental-nutrition-assistance-program-snap/)।"
+        ),
+    )
+
+    async def checker(url):
+        seen.append(url)
+        return 200 if url.endswith("supplemental-nutrition-assistance-program-snap/") else 404
+
+    result = await check_link_liveness(cr, checker=checker)
+
+    assert result is not None and result.passed
+    assert seen == [
+        "https://access.nyc.gov/programs/supplemental-nutrition-assistance-program-snap/"
+    ]
+
+
+async def test_link_liveness_keeps_unicode_closing_character_in_iri_path():
+    seen = []
+    url = "https://example.gov/কেন্দ্র】"
+    cr = _result(_case(), text=f"Official page: {url}")
+
+    async def checker(candidate):
+        seen.append(candidate)
+        return 200 if candidate == url else 404
+
+    result = await check_link_liveness(cr, checker=checker)
+
+    assert result is not None and result.passed
+    assert seen == [url]
+
+
 async def test_link_liveness_unreachable_is_not_dead():
     # status 0 (timeout / connection reset / bot-block) means "couldn't verify", NOT "gone":
     # it must not fail the gate (flaky + non-reproducible). Only a definitive 404/410 blocks.

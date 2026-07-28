@@ -38,40 +38,41 @@ situations:
       hours to keep food benefits, they need an exemption from that requirement, or they are
       trying to get food benefits restored after losing them to a work-rule penalty, including
       through a conciliation conference or a fair hearing. This covers the person losing the
-      benefit and someone helping them recover it, in any language.
+      benefit and someone helping them recover it, in any language. Do not load for a generic
+      question about whether SNAP may end when the resident has not mentioned a work rule,
+      required hours, employment activity, an exemption, or a notice reason.
     high_stakes: true
     query: "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits fair hearing current"
     urls:
       - https://www.nyc.gov/main/services/snap-benefits/abawd
       - https://access.nyc.gov/snap-work-requirements/
-      - https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page
-      - https://otda.ny.gov/hearings/request/
+      - https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml
+      - https://otda.ny.gov/oah/
     reminder: >-
       This turn is about SNAP work-rule recovery. Use current official SNAP guidance and the
       human or fair-hearing path. When the resident says they lack food or cannot eat, in any
-      language, ALWAYS offer the nearest food pantry via the tool: immediate food help is part
-      of this situation, never an unrelated module. Beyond that, do not call or mention
-      unrelated service modules unless the user separately asked for them.
+      language, give the Food Help NYC or 311 route immediately. Ask for a neighborhood or
+      landmark before offering a nearest pantry, and call the pantry tool only after the resident
+      provides one. Immediate food help is part of this situation, never an unrelated module.
+      Beyond that, do not call or mention unrelated service modules unless the user separately
+      asked for them. Start with the listed official pages. If they answer the resident's
+      question, stop searching.
     focus_tools:
       - official_sources
       - web_search
-      - recent_developments
-      - benefits_search
       - nearest_food_pantry
-      - geocode
-      - nearest
-      - screen_eligibility
-      - prepare_snap_application
 seeds:
   - https://access.nyc.gov
   - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
   - https://www.nyc.gov/main/services/snap-benefits/abawd
   - https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page
+  - https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml
   - https://www.nyc.gov/site/hra/about/claims-collections.page
   - https://access.nyc.gov/snap-work-requirements/
   - https://otda.ny.gov/programs/snap/work-requirements.asp
   - https://otda.ny.gov/policy/directives/2017/
   - https://otda.ny.gov/hearings/request/
+  - https://otda.ny.gov/oah/
   - https://opendata.cityofnewyork.us/
 allowlist:
   - access.nyc.gov

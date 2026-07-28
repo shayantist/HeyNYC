@@ -22,6 +22,16 @@ def test_public_restrooms_module_loads_custom_lookup():
     assert "public_restroom_lookup" in tool_names
 
 
+def test_public_restrooms_scope_accessibility_and_311_claims():
+    registry = Registry.discover(config.MODULES_DIR)
+    module = next(item for item in registry.modules if item.name == "public_restrooms")
+    parameter = restrooms.get_tools()[0].parameters["properties"]["fully_accessible"]
+
+    assert "site accessibility field" in parameter["description"]
+    assert "does not prove restroom fixture accessibility" in parameter["description"]
+    assert "Only route an explicitly reported closure or maintenance problem" in module.prompt
+
+
 @pytest.mark.asyncio
 async def test_lookup_prefers_open_official_corroboration_and_respects_limit(monkeypatch):
     async def fake_geocode(text, **kwargs):
@@ -227,6 +237,8 @@ async def test_lookup_honors_requested_access_and_changing_station_filters(monke
 
     assert "Usable Restroom" in filtered
     assert "Nearest Restroom" not in filtered
+    assert "does not prove restroom fixture accessibility" in filtered
+    assert "311" not in filtered
     assert "1. Nearest Restroom" in unfiltered
 
 

@@ -116,6 +116,84 @@ async def test_official_sources_fetches_only_seeded_pages_and_returns_relevant_c
     )
 
 
+async def test_official_sources_rejects_access_wall_content():
+    url = "https://www.uscis.gov/current-guidance"
+    registry = Registry([ServiceModule(name="immigration", seeds=[url])])
+    client = _Client({
+        url: "<title>Access Denied</title><p>Access denied. Complete the security challenge.</p>",
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {"urls": [url], "query": "current guidance access"},
+        ctx,
+    )
+
+    assert "could not be retrieved" in out
+    assert ctx.citations.mapping() == {}
+
+
+async def test_official_sources_marks_archived_content_in_the_evidence():
+    url = "https://www.uscis.gov/archive/current-guidance"
+    registry = Registry([ServiceModule(name="immigration", seeds=[url])])
+    client = _Client({
+        url: (
+            "<title>Archived guidance</title>"
+            "<p>Archived Content. The information on this page is out of date.</p>"
+            "<p>Temporary Protected Status guidance for Haiti.</p>"
+        ),
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {"urls": [url], "query": "Temporary Protected Status Haiti"}, ctx,
+    )
+
+    assert "SOURCE STATUS: ARCHIVED" in out
+    assert "SOURCE STATUS: ARCHIVED" in ctx.citations.mapping()["S1"]["snippet"]
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "discovery",
+    }
+
+
+async def test_official_sources_marks_archive_urls_without_banner_wording():
+    url = "https://www.uscis.gov/archive/current-guidance"
+    registry = Registry([ServiceModule(name="immigration", seeds=[url])])
+    client = _Client({
+        url: (
+            "<title>Historical guidance</title>"
+            "<p>Temporary Protected Status guidance for Haiti.</p>"
+        ),
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {"urls": [url], "query": "Temporary Protected Status Haiti"}, ctx,
+    )
+
+    assert "SOURCE STATUS: ARCHIVED" in out
+
+
+async def test_official_sources_does_not_mark_current_page_from_unrelated_archive_footer():
+    url = "https://www.uscis.gov/current-guidance"
+    registry = Registry([ServiceModule(name="immigration", seeds=[url])])
+    client = _Client({
+        url: (
+            "<title>Current guidance</title>"
+            "<p>Temporary Protected Status guidance for Haiti is current.</p>"
+            "<p>Historical content is available elsewhere in our archive.</p>"
+        ),
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {"urls": [url], "query": "Temporary Protected Status Haiti current"},
+        ctx,
+    )
+
+    assert "SOURCE STATUS: ARCHIVED" not in out
+
+
 async def test_official_sources_rejects_a_url_not_declared_by_a_module():
     registry = Registry([ServiceModule(name="law", seeds=["https://www.nyc.gov/allowed"])])
     client = _Client({})

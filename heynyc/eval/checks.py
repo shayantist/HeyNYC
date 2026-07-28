@@ -8,6 +8,7 @@ groundedness on top; the free default Agent judge reads these traces directly.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
@@ -203,6 +204,18 @@ async def _default_link_checker(url: str) -> int:
 _CITE_REF_RE = re.compile(r"\{cite:([^{}]+)\}")
 
 
+def _strip_url_punctuation(url: str) -> str:
+    url = url.rstrip(".,;:!?)}\"]'*_~`")
+    while url and (
+        any(
+            marker in unicodedata.name(url[-1], "")
+            for marker in ("DANDA", "FULL STOP", "QUESTION MARK", "EXCLAMATION MARK")
+        )
+    ):
+        url = url[:-1].rstrip(".,;:!?)}\"]'*_~`")
+    return url
+
+
 async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = None) -> Optional[CheckResult]:
     # Only check links the agent actually surfaced to the user (cited inline in its answer).
     # A search tool may register many candidates as citations; the ones the user never sees
@@ -211,7 +224,7 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
     referenced = set(_CITE_REF_RE.findall(cr.text or ""))
     ids = referenced or set(cr.citations)
     urls = [c["url"] for cid, c in cr.citations.items() if cid in ids and c.get("url")]
-    urls.extend(url.rstrip(".,;:!?)\"]'*_~`") for url in _URL_RE.findall(cr.text or ""))
+    urls.extend(_strip_url_punctuation(url) for url in _URL_RE.findall(cr.text or ""))
     urls = list(dict.fromkeys(urls))
     if not urls:
         return None

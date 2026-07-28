@@ -2180,7 +2180,8 @@ async def test_snap_work_rule_query_forces_current_official_search():
     assert result.tool_calls_made == ["web_search"]
     assert all("housing_guidance" not in names for names in schemas_seen)
     prompt = "\n".join(str(message.get("content", "")) for message in first_messages)
-    assert "ALWAYS offer the nearest food pantry" in prompt
+    assert "give the Food Help NYC or 311 route immediately" in prompt
+    assert "Ask for a neighborhood or landmark" in prompt
 
 
 async def test_generic_snap_question_does_not_force_current_rule_search(empty_registry):
@@ -3181,7 +3182,8 @@ def test_snap_work_rule_focus_is_manifest_owned_and_excludes_unrelated_modules()
     from heynyc.core.registry import Registry
 
     focus = Registry.discover(Path("heynyc/modules")).situation_hints()["snap_work_rules"][1].focus_tools
-    assert "benefits_search" in focus
+    assert "official_sources" in focus
+    assert "benefits_search" not in focus
     assert "nearest_food_pantry" in focus
     assert "housing_guidance" not in focus
     assert "find_clinic" not in focus
@@ -3827,7 +3829,7 @@ async def test_checked_snap_work_rule_situation_forces_manifest_retrieval(monkey
     assert result.tool_calls_made == ["web_search"]
     assert calls[0][0] == "web_search"
     assert "SNAP" in seen["query"] and "fair hearing" in seen["query"]
-    assert "benefits_search" in calls[0][1]
+    assert calls[0][1] == ["web_search"]
     assert "housing_guidance" not in calls[0][1]  # single-module turn keeps the manifest focus
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
     assert "fair-hearing path" in prompt  # the manifest reminder fired

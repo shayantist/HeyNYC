@@ -191,20 +191,37 @@ async def test_fact_review_normalizes_confirmation_before_resident_approval() ->
             )
         ])
 
+    review_settings = []
+    review_thinking = []
+
+    async def review_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        review_settings.append(info.model_settings)
+        review_thinking.append(info.model_request_parameters.thinking)
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "profile": {
+                        "age": 35,
+                        "pregnant": False,
+                        "veteran": None,
+                    },
+                },
+            )
+        ])
+
     agent = Agent(
         FunctionModel(answer_model),
         deps_type=ToolContext,
         tools=[adapt_tool(confirmation)],
         capabilities=[
             ResidentFactReviewCapability(
-                TestModel(
-                    custom_output_args={
-                        "profile": {
-                            "age": 35,
-                            "pregnant": False,
-                            "veteran": None,
-                        },
-                    }
+                FunctionModel(
+                    review_model,
+                    profile={"supports_thinking": True},
                 ),
                 model_name="review-model",
                 governed={confirmation.name: source},
@@ -225,6 +242,8 @@ async def test_fact_review_normalizes_confirmation_before_resident_approval() ->
         "profile": {"age": 35, "pregnant": False},
         "goal": "food tonight",
     }
+    assert review_settings == [{"timeout": 30}]
+    assert review_thinking == ["low"]
 
 
 async def test_runtime_accounts_for_fact_review_model_call() -> None:

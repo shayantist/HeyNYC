@@ -244,6 +244,11 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         else ""
     )
     lines = [f"Public restrooms near {origin.label}{date_suffix}:"]
+    if fully_accessible:
+        lines.append(
+            "The accessibility filter uses the City listing's site accessibility field; "
+            "it does not prove restroom fixture accessibility."
+        )
     if future_schedule:
         lines.append(
             "Ranked by requested-day schedule evidence, then distance, not by longest hours "
@@ -364,7 +369,9 @@ def get_tools() -> list[Tool]:
                         "type": "boolean",
                         "default": False,
                         "description": (
-                            "Set true only when the resident requests a fully accessible restroom"
+                            "Set true when the resident requests accessibility. This filters the "
+                            "City listing's site accessibility field; it does not prove restroom "
+                            "fixture accessibility"
                         ),
                     },
                     "changing_station": {

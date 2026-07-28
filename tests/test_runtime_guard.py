@@ -454,9 +454,9 @@ async def test_answer_with_no_citations_is_not_guarded():
     assert complete.calls["i"] == 1
 
 
-async def test_soft_snippet_mismatch_does_not_trigger_guard():
-    # A number absent from a TRUNCATED web/doc snippet is a SOFT mismatch (it might be elsewhere on the
-    # page) — the guard must NOT block or rewrite it, or it would over-abstain on real answers.
+async def test_exact_fact_missing_from_snippet_triggers_guard_retry():
+    # A citation supports only its captured evidence. An exact number absent from that evidence is
+    # retried, even when the citation points to a longer page.
     async def handler(args, ctx):
         cid = ctx.citations.register("https://www.nyc.gov/notify", kind="WEB",
                                      snippet="A heat advisory is in effect today.",
@@ -465,13 +465,16 @@ async def test_soft_snippet_mismatch_does_not_trigger_guard():
 
     tool = Tool(name="weather", description="weather", parameters={"type": "object", "properties": {}},
                 handler=handler)
-    final = "There's a heat advisory with highs near 95°F {cite:S1}."
+    unsupported = "There's a heat advisory with highs near 95°F {cite:S1}."
+    corrected = "There's a heat advisory in effect today {cite:S1}."
     complete = _scripted(_assistant(tool_calls=[_tool_call("weather", {})]),
-                         _assistant(content=final))
+                         _assistant(content=unsupported),
+                         _assistant(content=corrected))
     agent = Agent(Registry([]), tools={"weather": tool}, complete_fn=complete)
     result = await agent.run("what's the weather advisory?")
-    assert result.text == final        # unchanged; the soft mismatch never fires the guard
-    assert complete.calls["i"] == 2
+    assert result.text == corrected
+    assert "95" not in result.text
+    assert complete.calls["i"] == 3
 
 
 async def test_guard_can_be_disabled():

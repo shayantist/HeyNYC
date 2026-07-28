@@ -12,6 +12,7 @@ from pypdf import PdfReader
 from ..citations import canonical_source_url
 from ..index.corpus import chunk_text, clean_html
 from .base import Tool, ToolContext
+from .web_search import archive_warning
 
 _STOPWORDS = {
     "and", "are", "can", "current", "for", "from", "how", "new", "nyc", "official",
@@ -168,10 +169,23 @@ def official_source_tools() -> list[Tool]:
             if isinstance(result, Exception):
                 continue
             final_url, title, text = result
+            source_text = f"{title}\n{text}".lower()
+            if any(
+                marker in source_text
+                for marker in (
+                    "access denied",
+                    "complete the security challenge",
+                    "enable javascript and cookies to continue",
+                )
+            ):
+                continue
             chunks = _relevant_chunks(text, args["query"])
             if not chunks:
                 continue
             evidence = "\n\n".join(chunks)
+            warning = archive_warning(final_url, title)
+            if warning:
+                evidence = f"{warning}\n\n{evidence}"
             block_key = (_approval_key(final_url), evidence)
             if block_key in emitted:
                 continue
@@ -181,7 +195,9 @@ def official_source_tools() -> list[Tool]:
                 snippet=evidence,
                 title=title or "Official source",
                 kind="WEB",
-                provenance={"evidence_grade": "authoritative"},
+                provenance={
+                    "evidence_grade": "discovery" if warning else "authoritative",
+                },
             )
             blocks.append(
                 f"{title or 'Official source'} ({final_url})\n{evidence} {{cite:{cite}}}"
