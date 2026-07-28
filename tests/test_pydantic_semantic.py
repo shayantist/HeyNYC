@@ -625,6 +625,72 @@ async def test_structured_answer_rejects_claim_owned_by_another_source() -> None
     }]
 
 
+async def test_structured_answer_rejects_hard_fact_with_wrong_citation() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        dated = ctx.citations.register(
+            "https://www.nyc.gov/dated",
+            title="Dated official notice",
+            kind="WEB",
+            snippet="The change took effect on July 16, 2026.",
+        )
+        guidance = ctx.citations.register(
+            "https://www.nyc.gov/guidance",
+            title="Official guidance",
+            kind="WEB",
+            snippet="Call 311 for help.",
+        )
+        return (
+            f"The change took effect on July 16, 2026. {{cite:{dated}}} "
+            f"Call 311 for help. {{cite:{guidance}}}"
+        )
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        citation_ids = ["S2"] if model_calls == 2 else ["S1", "S2"]
+        return ModelResponse([
+            ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "grounded_blocks": [{
+                        "text": (
+                            "The change took effect on July 16, 2026. "
+                            "Call 311 for help."
+                        ),
+                        "citation_ids": citation_ids,
+                    }]
+                },
+                f"final-{model_calls}",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get current official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("When did the change take effect and where can I get help?")
+
+    assert model_calls == 3
+    assert result.text.endswith("{cite:S1} {cite:S2}")
+    assert result.diagnostics["validation_rejections"] == [{
+        "attempt": 1,
+        "stage": "deterministic_grounding",
+        "mismatches": [{"kind": "date", "cited": ["S2"]}],
+    }]
+
+
 async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(

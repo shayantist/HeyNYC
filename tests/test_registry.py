@@ -206,6 +206,7 @@ def test_transit_manifest_declares_current_mta_accessibility_sources():
     assert "route-level accessibility and service status remain unverified" in prompt
     assert "requested day" in prompt
     assert "requires a grounded handoff" in prompt
+    assert "ask that exact endpoint question in the grounded handoff" in prompt
 
 
 def test_benefits_discovery_does_not_claim_an_unloaded_screening_workflow():
@@ -213,3 +214,58 @@ def test_benefits_discovery_does_not_claim_an_unloaded_screening_workflow():
     benefits = next(module for module in registry.modules if module.name == "benefits")
 
     assert "unless its deferred workflow capability is loaded" in benefits.prompt.lower()
+
+
+def test_food_help_manifest_handles_citywide_starting_point_before_location():
+    registry = Registry.discover(Path("heynyc/modules"))
+    food = next(module for module in registry.modules if module.name == "food_pantries")
+    prompt = " ".join(food.prompt.lower().split())
+
+    assert "where do i start" in prompt
+    assert "official_sources" in prompt
+    assert "before optionally asking for a location" in prompt
+    assert "exact location phrase" in prompt
+
+
+def test_governed_screening_capability_explains_estimate_before_intake():
+    from heynyc.core.pydantic_runtime.tools import (
+        build_module_capabilities,
+        resident_fact_confirmation_tool,
+    )
+    from heynyc.core.tools.base import Tool
+    from heynyc.modules.benefits.tools import screen_eligibility_tool
+
+    async def search_handler(args, ctx):
+        return "official guidance"
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    screening = screen_eligibility_tool()
+    screening.module = "benefits"
+    confirmation = resident_fact_confirmation_tool(screening)
+    confirmation.module = "benefits"
+    discovery = Tool(
+        name="benefits_search",
+        description="Find current benefit programs",
+        parameters={"type": "object", "properties": {}},
+        handler=search_handler,
+        module="benefits",
+    )
+    _, capabilities = build_module_capabilities(
+        registry,
+        {
+            screening.name: screening,
+            confirmation.name: confirmation,
+            discovery.name: discovery,
+        },
+    )
+    capability = next(
+        item for item in capabilities if item.id == "benefits-screen-eligibility"
+    )
+    instructions = "\n".join(capability.get_instructions()).lower()
+
+    assert "guaranteed approval" in instructions
+    assert "benefits_search" not in capability.get_toolset().tools
+    assert "load the parent `benefits` capability" in instructions
+    assert "use `search_tools` to discover and call" in instructions
+    assert "`benefits_search`" in instructions
+    assert "estimate, not a determination" in instructions

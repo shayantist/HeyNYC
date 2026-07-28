@@ -54,6 +54,7 @@ class ToolContext:
     fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
     semantic_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
+    response_priority_citation_ids: set[str] = field(default_factory=set)
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

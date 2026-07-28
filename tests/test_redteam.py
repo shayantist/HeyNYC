@@ -431,6 +431,9 @@ def test_candidate_augmentation_stays_separate_and_covers_pending_surfaces():
     assert len(cases) == 30
     assert len(load_redteam_cases()) == 205
     assert sum(len(case.turns) > 1 for case in cases) == 4
+    assert next(case for case in cases if case.id == "RCTX03").invariants == {
+        "allow_clarification": True
+    }
     for language in ("bn", "zh", "ur"):
         language_cases = [case for case in cases if case.language == language]
         assert len(language_cases) == 4

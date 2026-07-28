@@ -348,6 +348,286 @@ async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_one_word_nei
     assert seen == ["Flushing"]
 
 
+@pytest.mark.parametrize(
+    ("evidence_grade", "near", "expected"),
+    [
+        ("authoritative", "151 East 151st Street, Bronx, NY", ["151 East 151st Street, Bronx, NY"]),
+        ("discovery", "151 East 151st Street, Bronx, NY", []),
+        ("authoritative", "999 Invented Street, Bronx, NY", []),
+    ],
+)
+async def test_nearest_food_pantry_accepts_only_exact_authoritative_source_locations(
+    monkeypatch,
+    evidence_grade,
+    near,
+    expected,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=(
+            "Prevention Assistance and Temporary Housing (PATH) "
+            "151 East 151st Street, Bronx, NY. PATH is open 24 hours."
+        ),
+        title="NYC DHS PATH",
+        kind="WEB",
+        provenance={"evidence_grade": evidence_grade},
+    )
+    query = "I will be at the Bronx PATH area Friday morning and need food help nearby."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": near,
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert seen == expected
+    if expected:
+        assert f"{{cite:{source_id}}}" in out
+        assert "{{cite:" not in out
+    elif evidence_grade == "authoritative":
+        assert "Stop calling tools for this location" in out
+        assert "exact NYC address or intersection" in out
+    else:
+        assert "call official_sources" in out
+        assert "then retry with its new citation id" in out
+
+
+async def test_nearest_food_pantry_does_not_treat_place_name_as_resident_supplied_address(
+    monkeypatch,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unverified expanded address reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/path",
+        snippet="PATH services are available in the Bronx.",
+        title="NYC PATH",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "PATH, 151 East 151st Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert "Stop calling tools for this location" in out
+    assert "exact NYC address or intersection" in out
+
+
+@pytest.mark.parametrize(
+    ("evidence_grade", "expected"),
+    [
+        ("authoritative", ["151 East 151st Street, Bronx, NY"]),
+        ("discovery", []),
+    ],
+)
+async def test_nearest_food_pantry_recovers_source_location_without_repeated_citation_id(
+    monkeypatch,
+    evidence_grade,
+    expected,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet="PATH is at 151 East 151st Street, Bronx, NY.",
+        title="NYC DHS PATH",
+        kind="WEB",
+        provenance={"evidence_grade": evidence_grade},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "151 East 151st Street, Bronx, NY",
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert seen == expected
+    if expected:
+        assert f"{{cite:{source_id}}}" in out
+    else:
+        assert "call official_sources" in out
+        assert f"{{cite:{source_id}}}" in out
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        (
+            "Prevention Assistance and Temporary Housing (PATH) "
+            "151 East 151st Street Bronx, NY."
+        ),
+        (
+            "Prevention Assistance and Temporary Housing（PATH）："
+            "151 East 151st Street，Bronx，NY."
+        ),
+    ],
+)
+async def test_nearest_food_pantry_accepts_source_address_with_different_punctuation(
+    monkeypatch,
+    snippet,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=snippet,
+        title="NYC DHS PATH",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    await get_tools()[0].handler(
+        {
+            "near": "151 East 151st Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert seen == ["151 East 151st Street, Bronx, NY"]
+
+
+async def test_nearest_food_pantry_rejects_an_unrelated_address_from_the_same_source(
+    monkeypatch,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unrelated source address reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=(
+            "PATH is at 151 East 151st Street, Bronx, NY. "
+            "A different office is at 200 Example Street, Bronx, NY."
+        ),
+        title="NYC DHS family services",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "200 Example Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert "Stop calling tools for this location" in out
+    assert "exact NYC address or intersection" in out
+    assert "200 Example Street" not in out
+
+
+async def test_nearest_food_pantry_rejects_an_unrelated_address_in_the_same_sentence(
+    monkeypatch,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unrelated same-sentence address reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=(
+            "PATH is at 151 East 151st Street, Bronx, NY, while a different office is at "
+            "200 Example Street, Bronx, NY."
+        ),
+        title="NYC DHS family services",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "200 Example Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert "Stop calling tools for this location" in out
+    assert "exact NYC address or intersection" in out
+    assert "200 Example Street" not in out
+
+
 async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
@@ -879,6 +1159,7 @@ async def test_nearest_food_pantry_cites_an_empty_official_feed():
     assert "No open food-help sites came back" in out
     assert "{cite:S1}" in out
     citation = ctx.citations.mapping()["S1"]
+    assert ctx.response_priority_citation_ids == {"S1"}
     assert citation["valid_as_of"] == ""
     assert citation["provenance"]["snapshot"]["citywide_records_checked"] == 0
 
@@ -925,4 +1206,6 @@ def test_food_pantries_module_loads_with_tool_and_eval():
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "food_pantries"]
     assert cases, "food_pantries should ship eval cases"
+    provenance_case = next(c for c in cases if c.id == "food_source_origin_clarifies")
+    assert provenance_case.invariants == {"allow_clarification": True}
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)

@@ -10,6 +10,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from pydantic_ai import (
     Agent,
+    DeferredToolRequests,
     ModelRetry,
     RunContext,
     ToolOutput,
@@ -22,6 +23,8 @@ from heynyc.core.pii_redaction import redact_pii
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
+
+from .projection import GroundedAnswer
 
 _MISSING = object()
 _MAX_SCHEMA_ERRORS = 12
@@ -228,6 +231,54 @@ class ResidentFactReviewCapability(AbstractCapability[ToolContext]):
             )
             response.parts[index] = replace(part, args=normalized)
         return response
+
+
+class ResponsePriorityCapability(AbstractCapability[ToolContext]):
+    """Keep immediate tool evidence ahead of lower-priority results."""
+
+    async def after_output_validate(
+        self,
+        ctx: RunContext[ToolContext],
+        *,
+        output_context: Any,
+        output: Any,
+    ) -> Any:
+        priority = ctx.deps.response_priority_citation_ids
+        if not priority or isinstance(output, DeferredToolRequests):
+            return output
+        first_citations = set(output.grounded_blocks[0].citation_ids) if isinstance(
+            output, GroundedAnswer
+        ) else set()
+        anchors = {
+            str(anchor).casefold()
+            for citation_id in priority
+            for anchor in (
+                (
+                    (ctx.deps.citations.mapping().get(citation_id, {}).get("provenance") or {})
+                    .get("derivation", {})
+                    .get("response_priority_anchors", [])
+                )
+            )
+            if isinstance(anchor, str) and anchor.strip()
+        }
+        first_text = (
+            output.grounded_blocks[0].text.casefold()
+            if isinstance(output, GroundedAnswer)
+            else ""
+        )
+        if (
+            not first_citations.intersection(priority)
+            or (anchors and not any(anchor in first_text for anchor in anchors))
+        ):
+            ctx.deps.validation_rejections.append({
+                "attempt": len(ctx.deps.validation_rejections) + 1,
+                "stage": "response_priority",
+            })
+            raise ModelRetry(
+                "Lead with an exact immediate action from the priority tool result, such as "
+                "its official URL or phone number, before lower-priority workflows."
+            )
+        return output
 
 
 def _fact_leaves(value: object, path: str) -> list[tuple[str, object]]:
@@ -548,6 +599,17 @@ def build_module_capabilities(
         tool = governed[tool_name]
         capability_id = f"{module_name}-{tool_name.replace('_', '-')}"
         purpose = tool.description.partition(". ")[0].rstrip(".")
+        guidance_tools = ", ".join(
+            f"`{candidate.name}`"
+            for candidate in module_tools.get(module_name, ())
+        )
+        guidance_instruction = (
+            f"load the parent `{module_name}` capability, then use `search_tools` to "
+            "discover and call its current "
+            f"read-only guidance tool ({guidance_tools}). "
+            if guidance_tools
+            else "retrieve the parent module's current official guidance. "
+        )
         capabilities.append(
             Capability(
                 id=capability_id,
@@ -560,6 +622,24 @@ def build_module_capabilities(
                 ),
                 instructions=(
                     f"The resident explicitly asked for or accepted {tool.title or tool.name}. "
+                    "This workflow requires a grounded handoff before any clarification: "
+                    "retrieve current official guidance and explain the workflow's limits "
+                    "before asking for missing facts. "
+                    "If they ask for guaranteed approval, a determination, or the current "
+                    "official path before the required facts are complete, "
+                    f"{guidance_instruction}"
+                    "Explain that this workflow gives an estimate, not a determination, "
+                    "before continuing the intake. "
+                    "Complete this workflow's first grounded handoff before loading capabilities "
+                    "for non-urgent secondary concerns. Address an immediate safety need first. "
+                    "Acknowledge other concerns and offer to continue with them next. "
+                    "Do not enumerate possible results or application documents before the check. "
+                    "End the first handoff with only the next few required questions. "
+                    "Keep the data-minimization warning uncited unless the retrieved source "
+                    "directly supports it. "
+                    "Preserve each person as the resident described them. Do not calculate a "
+                    "household count or infer who belongs in the workflow before confirmation. "
+                    "Ask for observable facts, not legal or program classifications. "
                     "Gather only the schema's required resident facts, a few at a time. "
                     "Omit unknown optional facts. Do not ask follow-up questions only to "
                     "replace them. Run the check as soon as required facts are supported. "

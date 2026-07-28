@@ -110,6 +110,7 @@ from .projection import (
 )
 from .tools import (
     ResidentFactReviewCapability,
+    ResponsePriorityCapability,
     adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
@@ -588,6 +589,11 @@ class PydanticRuntimeAdapter:
                 _PreserveToolScopesCapability(set(self.tools)),
                 *(
                     [PrepareOutputTools(_authoritative_output_tools)]
+                    if structured_grounding and guard_grounding
+                    else []
+                ),
+                *(
+                    [ResponsePriorityCapability()]
                     if structured_grounding and guard_grounding
                     else []
                 ),
@@ -1114,6 +1120,7 @@ class PydanticRuntimeAdapter:
         event_sink: Callable[[events.Event], None] | None = None,
         citations: CitationRegistry | None = None,
         memory_capability: _BoundedMemoryCapability | None = None,
+        response_priority_citation_ids: set[str] | None = None,
     ) -> tuple[
         AgentResult,
         list[ModelMessage],
@@ -1185,6 +1192,11 @@ class PydanticRuntimeAdapter:
             drafts=drafts,
             delivered_notify_titles=delivered_notify_titles,
             resident_facts=resident_facts if resident_facts is not None else {},
+            response_priority_citation_ids=(
+                response_priority_citation_ids
+                if response_priority_citation_ids is not None
+                else set()
+            ),
         )
         instructions = list(reminders or ())
         if self._current_awareness is not None:
@@ -1438,6 +1450,7 @@ class _PydanticConversation:
         self._user_turns: tuple[str, ...] = ()
         self._pending: DeferredToolRequests | None = None
         self._resident_facts: dict[str, ResidentFact] = {}
+        self._response_priority_citation_ids: set[str] = set()
         self._citations = CitationRegistry()
         self._delivered_notify_titles: frozenset = frozenset()
         self.continuity: ContinuityRecord | None = None
@@ -1458,6 +1471,9 @@ class _PydanticConversation:
         conversation._user_turns = tuple(payload["user_turns"])
         conversation._resident_facts = _RESIDENT_FACTS.validate_python(
             payload.get("resident_facts", {})
+        )
+        conversation._response_priority_citation_ids = set(
+            payload.get("response_priority_citation_ids", ())
         )
         if continuity := payload.get("continuity"):
             conversation.continuity = ContinuityRecord.model_validate(continuity)
@@ -1526,6 +1542,9 @@ class _PydanticConversation:
                 "resident_facts": _RESIDENT_FACTS.dump_python(
                     self._resident_facts,
                     mode="json",
+                ),
+                "response_priority_citation_ids": sorted(
+                    self._response_priority_citation_ids
                 ),
                 "continuity": (
                     self.continuity.model_dump(mode="json")
@@ -1715,6 +1734,7 @@ class _PydanticConversation:
             raise ValueError("Cannot start a new turn while approval is pending")
         if resident_facts:
             self._resident_facts.update(resident_facts)
+        self._response_priority_citation_ids.clear()
         self._memory_usage.clear()
         memory_capability = (
             _BoundedMemoryCapability(self)
@@ -1742,6 +1762,9 @@ class _PydanticConversation:
                 memory_capability=memory_capability,
                 timing_capability=timing_capability,
                 event_sink=event_sink,
+                response_priority_citation_ids=(
+                    self._response_priority_citation_ids
+                ),
             )
             merge_memory_usage(
                 result.usage,
@@ -1753,6 +1776,8 @@ class _PydanticConversation:
         self._history.extend(new_messages)
         self._user_turns = (*self._user_turns, user_message)
         self._delivered_notify_titles |= _notify_titles_from_result(result)
+        if self._pending is None:
+            self._response_priority_citation_ids.clear()
         return result
 
     async def resume_approvals(
@@ -1784,6 +1809,7 @@ class _PydanticConversation:
             drafts=drafts,
             delivered_notify_titles=self._delivered_notify_titles,
             resident_facts=self._resident_facts,
+            response_priority_citation_ids=self._response_priority_citation_ids,
         )
         started = time.perf_counter()
         message_id = f"pydantic-{time.monotonic_ns()}"
@@ -1841,6 +1867,7 @@ class _PydanticConversation:
                 ) from exc
             self._history.extend(new_messages)
             self._pending = None
+            self._response_priority_citation_ids.clear()
             if isinstance(exc, UnexpectedModelBehavior):
                 _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(
@@ -1875,4 +1902,6 @@ class _PydanticConversation:
         self._pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
+        if self._pending is None:
+            self._response_priority_citation_ids.clear()
         return result
