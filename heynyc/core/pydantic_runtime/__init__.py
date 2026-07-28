@@ -76,7 +76,7 @@ def build_runtime(
     current_awareness: Callable[[], Awaitable[str]] | None = None,
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
-    structured_grounding: bool = False,
+    structured_grounding: bool = True,
     semantic_verifier: Any = None,
     fact_review_model: Any = None,
     fact_review_model_name: str = "",

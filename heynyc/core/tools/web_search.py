@@ -8,6 +8,7 @@ default uses Tavily (which supports include_domains) and degrades gracefully to
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Awaitable, Callable, Optional
 from urllib.parse import urlparse
@@ -114,10 +115,54 @@ async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")} for r in results]
 
 
+async def _duckduckgo(
+    query: str,
+    allowed_domains: list[str],
+    recency: Optional[str] = None,
+) -> list[dict]:
+    """Local search fallback for a Tavily plan-limit response; allowlisting remains downstream."""
+    from ddgs import DDGS
+
+    timelimit = {"day": "d", "week": "w", "month": "m", "year": "y"}.get(recency)
+    try:
+        results = await asyncio.to_thread(
+            DDGS().text,
+            query,
+            max_results=20,
+            timelimit=timelimit,
+        )
+    except Exception:
+        return []
+    return [
+        {
+            "title": result.get("title", ""),
+            "url": result.get("href", ""),
+            "snippet": result.get("body", ""),
+        }
+        for result in results
+        if result.get("href") and _domain_allowed(result["href"], allowed_domains)
+    ][:5]
+
+
+async def _search_with_fallback(
+    query: str,
+    allowed_domains: list[str],
+    *,
+    recency: Optional[str] = None,
+    **tavily_options,
+) -> list[dict]:
+    try:
+        return await _tavily(query, allowed_domains, **tavily_options)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 432:
+            raise
+        return await _duckduckgo(query, allowed_domains, recency=recency)
+
+
 async def tavily_search(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
     """Default backend, plain allowlisted search, no recency bias. IGNORES `recency` so the
     default web_search stays untimed and can serve general/historical/older-than-a-year queries."""
-    return await _tavily(query, allowed_domains)
+    return await _search_with_fallback(query, allowed_domains)
 
 
 async def tavily_search_recent(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
@@ -134,7 +179,12 @@ async def tavily_search_recent(query: str, allowed_domains: list[str], recency: 
     fast-moving current events, default to a full year for slow-moving rules/laws/rulings. Defaults
     to "year" when unset; defense in depth, any unexpected value also falls back to "year"."""
     window = recency if recency in _RECENCY_WINDOWS else "year"
-    return await _tavily(query, allowed_domains, time_range=window)
+    return await _search_with_fallback(
+        query,
+        allowed_domains,
+        recency=window,
+        time_range=window,
+    )
 
 
 _BASE_GOV = {"nyc.gov", "cityofnewyork.us", "mta.info"}

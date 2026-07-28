@@ -134,6 +134,42 @@ async def test_tavily_http_status_failure_is_not_reported_as_no_results(monkeypa
         await web_search_mod._tavily("query", ["nyc.gov"])
 
 
+async def test_search_falls_back_to_duckduckgo_when_tavily_plan_is_exhausted(monkeypatch):
+    async def exhausted(*_args, **_kwargs):
+        raise httpx.HTTPStatusError(
+            "plan limit exceeded",
+            request=httpx.Request("POST", "https://api.tavily.com/search"),
+            response=httpx.Response(432),
+        )
+
+    async def fallback(query, allowed_domains, recency=None):
+        assert query == "current NYC service"
+        assert allowed_domains == ["nyc.gov"]
+        assert recency == "week"
+        return [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
+
+    monkeypatch.setattr(web_search_mod, "_tavily", exhausted)
+    monkeypatch.setattr(web_search_mod, "_duckduckgo", fallback)
+
+    assert await web_search_mod.tavily_search_recent(
+        "current NYC service", ["nyc.gov"], recency="week"
+    ) == [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
+
+
+async def test_search_does_not_hide_non_plan_tavily_status_errors(monkeypatch):
+    async def rejected(*_args, **_kwargs):
+        raise httpx.HTTPStatusError(
+            "rate limited",
+            request=httpx.Request("POST", "https://api.tavily.com/search"),
+            response=httpx.Response(429),
+        )
+
+    monkeypatch.setattr(web_search_mod, "_tavily", rejected)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await web_search_mod.tavily_search("query", ["nyc.gov"])
+
+
 def _ctx():
     return ToolContext(citations=CitationRegistry(), registry=Registry([]))
 

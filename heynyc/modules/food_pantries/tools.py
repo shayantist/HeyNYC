@@ -631,7 +631,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         else ""
     )
     displayed = (
-        scheduled_open
+        scheduled_open[:1]
         if urgent and service_window
         else scheduled_open or citywide_open[:1] or unknown_hours
         if urgent
@@ -658,9 +658,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         lines.append(
             f"Immediate food need in the requested {window_start}-{window_end} service window: "
             "the listed weekly schedule overlaps that window but does not confirm food "
-            "availability. Lead with asking the resident to call the listed site before "
-            "traveling. If it cannot confirm service, tell them to call 311 or use "
-            f"https://finder.nyc.gov/foodhelp.{availability_marker}"
+            "availability. Lead with call 311 or https://finder.nyc.gov/foodhelp for immediate "
+            "help, then give the single nearest weekly-schedule lead and tell the resident to "
+            f"call the listed site before traveling.{availability_marker}"
         )
     elif urgent and service_window:
         lines.append(

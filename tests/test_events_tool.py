@@ -326,13 +326,58 @@ async def test_whats_on_events_merges_grounds_and_filters_future():
     citations = CitationRegistry()
     async with _routed_client() as client:
         ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-        out = await tool.handler({"keyword": "music"}, ctx)
+        out = await tool.handler({}, ctx)
 
     assert "Concert in the Park" in out
     assert "Future Fair" in out
     assert "Old Festival" not in out          # past event filtered (§12)
     assert "{cite:" in out                     # everything is grounded + cited
     assert citations.mapping()                 # at least one DATA citation registered
+
+
+async def test_whats_on_events_grounds_the_official_indexes_when_no_event_matches(
+    monkeypatch,
+):
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", no_city_rows)
+    citations = CitationRegistry()
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query="where could i watch the 2030 final in nyc",
+    )
+
+    output = await get_tools()[0].handler(
+        {"keyword": "2030 World Cup watch parties", "classification": "Sports"},
+        ctx,
+    )
+
+    assert f"NYC Parks {events.PARKS_SOURCE_URL}" in output
+    assert f"NYC Permitted Events {events.PERMITTED_SOURCE_URL}" in output
+    assert "Say that this lookup could not confirm a match" in output
+    assert "do not claim that no matching events exist" in output
+    assert output.count("{cite:") == 2
+    assert {citation["url"] for citation in citations.mapping().values()} == {
+        events.PARKS_SOURCE_URL,
+        events.PERMITTED_SOURCE_URL,
+    }
+
+
+def test_whats_on_events_borough_schema_keeps_citywide_requests_citywide():
+    [tool] = get_tools()
+
+    assert "only when the resident names one" in (
+        tool.parameters["properties"]["borough"]["description"]
+    )
+    assert "NYC means citywide" in (
+        tool.parameters["properties"]["borough"]["description"]
+    )
 
 
 async def test_whats_on_events_retries_only_failed_catalog_sources(monkeypatch):
@@ -1191,7 +1236,8 @@ async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypa
         ctx,
     )
 
-    assert output == events._NO_RESULTS
+    assert output.startswith(events._NO_RESULTS)
+    assert output.count("{cite:") == 2
     assert events.PARKS_SOURCE_URL in output
     assert events.PERMITTED_SOURCE_URL in output
     assert "Bronx Event" not in output
@@ -1333,6 +1379,59 @@ async def test_stuffed_keyword_zeroing_permitted_lane_falls_back_unkeyworded(mon
 
     assert "Inwood Greenmarket" in out
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
+
+
+async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def unrelated_when_unkeyworded(dataset_id, **kwargs):
+        if dataset_id == events.PARKS_DATASET_ID:
+            return [{
+                "title": "Central Park Movies Under the Stars",
+                "description": "A free outdoor film series.",
+                "startdate": "2099-07-25T18:00:00.000",
+                "parknames": "Central Park",
+                "parkids": "M010",
+            }]
+        if kwargs.get("q"):
+            return []
+        if dataset_id == events.PERMITTED_DATASET_ID:
+            return [{
+                "event_name": "Generic Fitness Class",
+                "start_date_time": "2099-07-25T10:00:00.000",
+                "event_agency": "Street Activity Permit Office",
+                "event_type": "Plaza Event",
+                "event_borough": "Manhattan",
+                "event_location": "Herald Square",
+            }]
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", unrelated_when_unkeyworded)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="where can I watch the world cup in NYC?",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "world cup",
+            "borough": "Manhattan",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert output.startswith(events._NO_RESULTS)
+    assert "Generic Fitness Class" not in output
+    assert {
+        citation["url"] for citation in ctx.citations.mapping().values()
+    } == {events.PARKS_SOURCE_URL, events.PERMITTED_SOURCE_URL}
 
 
 def test_whats_on_events_owns_listings_and_thread_followups():

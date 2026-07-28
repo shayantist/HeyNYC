@@ -385,9 +385,10 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page",
                 title="Heat and Hot Water Information, NYC HPD",
-                snippet=("Heat season October 1 through May 31: indoor at least 68 when below 55 outside "
-                         "between 6am and 10pm, at least 62 between 10pm and 6am; hot water year-round at "
-                         "120; file a complaint by calling 311; HPD inspects, a no-heat condition in "
+                snippet=("Heat season October 1 through May 31: indoor at least 68 degrees when below "
+                         "55 degrees outside between 6am and 10pm, at least 62 degrees between 10pm and "
+                         "6am; hot water year-round at 120 degrees; file a complaint by calling 311; "
+                         "HPD inspects, a no-heat condition in "
                          "season is an immediately hazardous class C violation, and HPD can take the "
                          "landlord to Housing Court"),
                 body=("Heat season runs October 1 through May 31. During heat season, when it is below 55 "
@@ -511,6 +512,12 @@ def _single_adult_men_intake(as_of: date | None = None) -> str:
     return "8 East 3rd Street, Manhattan, beginning August 1, 2026"
 
 
+def _heat_season_status(as_of: date) -> str:
+    active = as_of <= date(as_of.year, 5, 31) or as_of >= date(as_of.year, 10, 1)
+    state = "currently in effect" if active else "not currently in effect"
+    return f"CURRENT APPLICABILITY as of {as_of.isoformat()}: NYC heat season is {state}"
+
+
 def _shelter_facts(as_of: date | None = None) -> tuple[_Fact, ...]:
     men = _single_adult_men_intake(as_of)
     adult_family = ("Adult families, family units without minor children, apply at the Adult Family "
@@ -562,11 +569,18 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     if topic == "shelter":
         facts = _shelter_facts()
     lines = [intro]
+    cite_ids = []
     for fact in facts:
         cite = ctx.citations.register(
             fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of=VERIFIED_ON,
         )
+        cite_ids.append(cite)
         lines.append(f"- {fact.body} {{cite:{cite}}}")
+    if topic == "no_heat":
+        lines.append(
+            f"- {_heat_season_status(datetime.now(NYC_TZ).date())}. State this current applicability "
+            f"plainly before giving the seasonal temperature standard. {{cite:{cite_ids[0]}}}"
+        )
     lines.append("Report ONLY these grounded facts, each with its {cite:Sn}. Do not add or change an "
                  "address, phone number, temperature, date, or eligibility figure, if the user needs "
                  "more, send them to 311.")

@@ -213,9 +213,8 @@ def _requested_window(query: str, today: str) -> tuple[str, str | None]:
 _NO_RESULTS = (
     "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
     "NYC Permitted Events). "
-    "Don't invent events; say that nothing grounded matched. "
-    f"Official indexes the resident can check directly: NYC Parks {PARKS_SOURCE_URL} and "
-    f"NYC Permitted Events {PERMITTED_SOURCE_URL}."
+    "Don't invent events. Say that this lookup could not confirm a match; do not claim that "
+    "no matching events exist."
 )
 
 _SHORTLIST_SYNTHESIS_RULES = (
@@ -295,6 +294,20 @@ def _explicitly_free(events: list[Event], query: str) -> list[Event]:
         event for event in events
         if event.free_evidence or re.search(r"\bfree\b", event.name, re.IGNORECASE)
     ]
+
+
+def _matches_keyword(event: Event, keyword: str) -> bool:
+    raw_terms = {
+        term
+        for term in re.findall(r"[a-z0-9]+", keyword.lower())
+        if len(term) >= 3 and term not in {"event", "events", "nyc", "new", "york", "city"}
+    }
+    terms = {
+        term[:-1] if len(term) > 4 and term.endswith("s") else term
+        for term in raw_terms
+    }
+    blob = " ".join((event.name, event.venue, event.audience, event.free_evidence)).lower()
+    return not terms or any(term in blob for term in terms)
 
 
 def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
@@ -681,6 +694,16 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     events = [e for e in (_from_ticketmaster(r) for r in raw_tm) if e]
     events += [e for e in (_from_parks(r) for r in raw_parks) if e]
     events += [e for e in (_from_permitted(r) for r in raw_permitted) if e]
+    if keyword:
+        events = [
+            event for event in events
+            if event.source == "Ticketmaster"
+            or (
+                event.source == "NYC Permitted Events"
+                and "permitted" not in broadened_catalog
+            )
+            or _matches_keyword(event, keyword)
+        ]
 
     def _window_filter(rows: list[Event]) -> list[Event]:
         kept = _future_only(rows, window_start)
@@ -742,6 +765,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         retried += [] if isinstance(retry_permitted, BaseException) else [
             e for e in (_from_permitted(r) for r in retry_permitted) if e
         ]
+        retried = [event for event in retried if _matches_keyword(event, keyword)]
         events = _window_filter(retried)
         broadened = bool(events)
 
@@ -761,6 +785,26 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if coverage_note
         else _NO_RESULTS
     )
+    if not events:
+        parks_cite = ctx.citations.register(
+            PARKS_SOURCE_URL,
+            snippet="NYC Parks official events calendar",
+            title="NYC Parks events",
+            kind="WEB",
+            valid_as_of=today,
+        )
+        permitted_cite = ctx.citations.register(
+            PERMITTED_SOURCE_URL,
+            snippet="NYC Permitted Events official public dataset",
+            title="NYC Permitted Events",
+            kind="WEB",
+            valid_as_of=today,
+        )
+        no_results += (
+            f" Official indexes the resident can check directly: NYC Parks {PARKS_SOURCE_URL} "
+            f"{{cite:{parks_cite}}} and NYC Permitted Events {PERMITTED_SOURCE_URL} "
+            f"{{cite:{permitted_cite}}}."
+        )
     if not events and keyword:
         catalog_scope = (
             "available catalog sources"
@@ -910,7 +954,13 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "keyword": {"type": "string", "description": "Topic/keyword, e.g. 'world cup', 'jazz', 'free'."},
                     "classification": {"type": "string", "description": "Optional Ticketmaster segment: Music, Sports, Arts & Theatre, etc."},
-                    "borough": {"type": "string", "description": "Optional borough/city filter, e.g. 'Brooklyn'."},
+                    "borough": {
+                        "type": "string",
+                        "description": (
+                            "Optional NYC borough filter, e.g. 'Brooklyn'. Pass it only when "
+                            "the resident names one; NYC means citywide, so omit this field."
+                        ),
+                    },
                     "audience": {"type": "string", "enum": ["kids"], "description": "Optional evidence-backed audience filter. Use `kids` only when the resident asks for children's events; returned rows must carry a source audience label for kids."},
                     "window_start": {"type": "string", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
                     "window_end": {"type": "string", "description": "Optional ISO date the timeframe ends; omit for open-ended."},

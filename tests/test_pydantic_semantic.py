@@ -19,7 +19,10 @@ from heynyc.core.pydantic_runtime import (
     PydanticRuntimeAdapter,
     _semantic_citation_evidence,
 )
-from heynyc.core.pydantic_runtime.runtime import _authoritative_output_tools
+from heynyc.core.pydantic_runtime.runtime import (
+    VERIFICATION_ABSTAIN_FALLBACK,
+    _authoritative_output_tools,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.eval.cases import EvalCase
@@ -128,8 +131,12 @@ async def test_structured_answer_contract_requires_direct_useful_answer() -> Non
         )
         return ModelResponse([
             ToolCallPart(
-                info.output_tools[0].name,
-                {"grounded_blocks": []},
+                next(
+                    tool.name
+                    for tool in info.output_tools
+                    if tool.name == "nonfactual_outcome"
+                ),
+                {"kind": "unknowable"},
                 "final-1",
             )
         ])
@@ -155,13 +162,11 @@ async def test_structured_answer_contract_requires_direct_useful_answer() -> Non
     assert "state that limitation in the first grounded block" in normalized
     assert "a related source is not enough" in normalized
     assert "procedure or condition" in normalized
-    assert "data-minimization reminders belong only in follow_up_question" in normalized
-    follow_up_description = (
-        output_schema["properties"]["follow_up_question"]["description"].lower()
-    )
-    assert "neutral clarification question" in follow_up_description
-    assert "data-minimization reminder" in follow_up_description
+    assert "do not enumerate results you explicitly conclude do not overlap" in normalized
+    assert "every resident-visible sentence" in normalized
+    assert "follow_up_question" not in output_schema["properties"]
     assert output_schema["properties"]["grounded_blocks"]["maxItems"] == 12
+    assert output_schema["properties"]["grounded_blocks"]["minItems"] == 1
     block_schema = output_schema["$defs"]["GroundedBlock"]
     assert block_schema["properties"]["citation_ids"]["maxItems"] == 8
     assert any(
@@ -278,6 +283,58 @@ async def test_structured_answer_rejects_internal_url_markup() -> None:
 
     assert model_calls == 3
     assert "{URL:" not in result.text
+    assert result.diagnostics["validation_rejections"] == [
+        {"attempt": 1, "stage": "internal_markup"},
+    ]
+
+
+async def test_structured_answer_rejects_internal_template_placeholders() -> None:
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        text = (
+            "Use these sources: {cite_ids_placeholder}"
+            if model_calls == 1
+            else "What NYC service do you need help with?"
+        )
+        return ModelResponse([
+            ToolCallPart(
+                (
+                    info.output_tools[0].name
+                    if model_calls == 1
+                    else next(
+                        tool.name
+                        for tool in info.output_tools
+                        if tool.name == "nonfactual_outcome"
+                    )
+                ),
+                (
+                    {
+                        "grounded_blocks": [{
+                            "text": text,
+                            "citation_ids": ["S1"],
+                        }]
+                    }
+                    if model_calls == 1
+                    else {"kind": "unknowable"}
+                ),
+                f"final-{model_calls}",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+    ).run("Can you help?")
+
+    assert model_calls == 2
+    assert result.text == (
+        "I can't know that yet. I can help with the practical NYC part instead."
+    )
     assert result.diagnostics["validation_rejections"] == [
         {"attempt": 1, "stage": "internal_markup"},
     ]
@@ -551,7 +608,11 @@ async def test_structured_output_offers_only_authoritative_citation_ids() -> Non
             assert output is not None
             return ModelResponse([ToolCallPart("discovery", {}, "discovery-1")])
         if calls == 2:
-            assert output is None
+            assert output is not None
+            citation_schema = output.parameters_json_schema["$defs"][
+                "GroundedBlock"
+            ]["properties"]["citation_ids"]["items"]
+            assert citation_schema["enum"] == []
             return ModelResponse([ToolCallPart("official", {}, "official-1")])
         assert output is not None
         citation_schema = output.parameters_json_schema["$defs"]["GroundedBlock"][
@@ -779,7 +840,8 @@ async def test_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
         ),
     )
 
-    assert result.error == "Exceeded maximum output retries (2)"
+    assert result.error is None
+    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
     assert result.usage["retry_kinds"] == ["semantic_grounding"] * 2
     assert result.diagnostics["validation_rejections"] == [
         {
@@ -831,16 +893,19 @@ async def test_pydantic_semantic_validator_retries_unsupported_fields() -> None:
             ToolCallPart(
                 info.output_tools[0].name,
                 {
-                    "follow_up_question": (
-                        "Your benefits end tomorrow. What is your ZIP code?"
-                        if unsupported
-                        else "What is your ZIP code?"
-                    ),
                     "grounded_blocks": [
                         {
                             "text": "Benefits depend on household circumstances.",
                             "citation_ids": ["S1"],
-                        }
+                        },
+                        *(
+                            [{
+                                "text": "Your benefits end tomorrow.",
+                                "citation_ids": ["S1"],
+                            }]
+                            if unsupported
+                            else []
+                        ),
                     ],
                 },
                 f"final-{model_calls}",
@@ -868,13 +933,10 @@ async def test_pydantic_semantic_validator_retries_unsupported_fields() -> None:
     assert model_calls == 3
     assert [item.id for item in verifier.inputs[0]] == [
         "block-0",
-        "follow-up-question",
+        "block-1",
     ]
-    assert verifier.inputs[0][1].source == ""
-    assert result.text == (
-        "Benefits depend on household circumstances. {cite:S1}\n\n"
-        "What is your ZIP code?"
-    )
+    assert verifier.inputs[0][1].source
+    assert result.text == "Benefits depend on household circumstances. {cite:S1}"
 
 
 async def test_pydantic_semantic_validator_fails_safely_when_provider_is_down() -> None:

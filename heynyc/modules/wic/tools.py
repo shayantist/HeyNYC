@@ -88,6 +88,15 @@ def _website(record: dict) -> str:
     return ""
 
 
+def _phone(record: dict) -> str:
+    """Render the dataset's `base+extension` convention without inventing a second phone number."""
+    phone = _clean(record.get("phone_number"))
+    base, separator, extension = phone.rpartition("+")
+    if separator and len("".join(filter(str.isdigit, base))) == 10 and extension.isdigit():
+        return f"{base} ext. {extension}"
+    return phone
+
+
 def _valid_as_of(record: dict) -> str:
     """The row's Socrata `:updated_at` change signal, or blank when unavailable."""
     text = _clean(record.get(":updated_at"))
@@ -128,7 +137,7 @@ def _to_site(record: dict) -> WicSite | None:
         lat=lat,
         lon=lon,
         address=_address(record),
-        phone=_clean(record.get("phone_number")),
+        phone=_phone(record),
         website=_website(record),
         site_type=_clean(record.get("site_type")),
         site_number=_clean(record.get("site_number")),
@@ -145,7 +154,12 @@ def directions_link(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/dir/?api=1&destination={lat:.5f},{lon:.5f}"
 
 
-async def _query_wic(client: httpx.AsyncClient, *, where: str, limit: int = 500) -> list[dict]:
+async def _query_wic(
+    client: httpx.AsyncClient | None,
+    *,
+    where: str,
+    limit: int = 500,
+) -> list[dict]:
     """Fetch WIC site rows from the Health Data NY Socrata dataset (raises httpx.HTTPError on a bad
     status). Points at health.data.ny.gov, not the NYC SOCRATA_BASE, so we build the request here
     rather than reuse `datasets.query_dataset`; `$$exclude_system_fields=false` returns the `:id` /
@@ -154,9 +168,15 @@ async def _query_wic(client: httpx.AsyncClient, *, where: str, limit: int = 500)
     headers: dict = {}
     if config.SOCRATA_APP_TOKEN:
         headers["X-App-Token"] = config.SOCRATA_APP_TOKEN
-    response = await client.get(WIC_URL, params=params, headers=headers)
-    response.raise_for_status()
-    return response.json() or []
+    own_client = client is None
+    client = client or httpx.AsyncClient(timeout=20.0)
+    try:
+        response = await client.get(WIC_URL, params=params, headers=headers)
+        response.raise_for_status()
+        return response.json() or []
+    finally:
+        if own_client:
+            await client.aclose()
 
 
 # --- the tool --------------------------------------------------------------
