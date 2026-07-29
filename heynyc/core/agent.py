@@ -3023,6 +3023,17 @@ class Agent:
             result = AgentResult(
                 text=backstop_text, citations=citations.mapping(), tool_calls_made=tools_made,
                 iterations=0, status="success", messages=messages, usage=_usage(),
+                # The same diagnostics the Pydantic runtime records. Without these the rollback
+                # path has no crisis telemetry at all, and `inv_harm_routing` fails every
+                # self_harm case by construction however correct the response is.
+                diagnostics=(
+                    {
+                        "safety_risk": emergency.risk,
+                        "safety_response_source": "deterministic",
+                    }
+                    if emergency is not None and emergency.risk is not None
+                    else {}
+                ),
             )
             yield events.Done(
                 status="success", num_turns=0, citations=result.citations, result=result

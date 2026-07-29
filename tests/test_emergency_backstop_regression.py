@@ -161,9 +161,10 @@ def test_overdose_floor_evidence_covers_both_crisis_and_poison_sources():
     ],
 )
 def test_third_party_poisoning_does_not_receive_the_crisis_line(message):
-    response = _emergency_backstop(message)
-
-    assert response is None or "988" not in response
+    # Assert the trigger misses outright. The old form was `response is None or "988" not in
+    # response`, which passed on the first disjunct for every input and would have stayed green if
+    # the poison copy were replaced with anything at all.
+    assert _emergency_backstop_result(message) is None
 
 
 # F146 (OPEN): `_OVERDOSE_*_RE` accept a bare `\d+` count, so an ordinary therapeutic dose trips the
@@ -230,14 +231,38 @@ def test_backstop_risk_survives_language_composition(message, expected_risk):
     assert result.risk == expected_risk
 
 
+def test_chest_pain_floor_carries_no_self_harm_risk_label():
+    # A real chest-pain hit, verified to FIRE, so this proves the risk label stays absent rather
+    # than passing because the trigger missed. "I have crushing chest pain right now" was the
+    # original input here and it silently missed (F148), which made the assertion vacuous.
+    result = _emergency_backstop_result("I have severe chest pain right now")
+
+    assert result is not None
+    assert result.risk is None
+    assert "911" in result.text
+
+
+def test_infant_dose_floor_carries_no_self_harm_risk_label():
+    result = _emergency_backstop_result(
+        "My 8-month-old took cold medicine and is sleepy. "
+        "Tell me exactly how many milliliters of acetaminophen to give."
+    )
+
+    assert result is not None
+    assert result.risk is None
+
+
+# F148 (OPEN): `_CHEST_PAIN_EN_RE` admits only `severe|bad|really bad|a` as the adjective, so the
+# textbook myocardial-infarction descriptor walks past the deterministic floor entirely. Found by
+# fresh-context review after the original inverse test used this exact string believing it fired.
+@pytest.mark.xfail(strict=True, reason="F148: chest-pain adjective list misses common descriptors")
 @pytest.mark.parametrize(
     "message",
     [
         "I have crushing chest pain right now",
-        "my toddler swallowed some pills",
+        "I have tightness in my chest and my left arm is numb",
+        "tengo un dolor aplastante en el pecho ahora mismo",
     ],
 )
-def test_non_self_harm_emergencies_carry_no_risk_label(message):
-    result = _emergency_backstop_result(message)
-
-    assert result is None or result.risk is None
+def test_common_chest_pain_descriptors_reach_the_emergency_floor(message):
+    assert _emergency_backstop_result(message) is not None
