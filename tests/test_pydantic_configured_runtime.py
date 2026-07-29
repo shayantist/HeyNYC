@@ -8,6 +8,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
     monkeypatch,
 ):
     captured = {}
+    safety_screen = object()
 
     def build_runtime(_registry, **kwargs):
         captured.update(kwargs)
@@ -17,6 +18,14 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
         "heynyc.core.pydantic_runtime.build_runtime",
         build_runtime,
     )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_crisis_screen",
+        lambda _model, *, model_name: (
+            safety_screen
+            if model_name == "TestModel"
+            else AssertionError(model_name)
+        ),
+    )
     model = TestModel()
     build_configured_runtime(Registry([]), model=model)
 
@@ -25,6 +34,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
     assert captured.get("semantic_verifier") is None
     assert captured["model"] is model
     assert captured["fact_review_model"] is model
+    assert captured["crisis_screen"] is safety_screen
 
 
 def test_configured_model_delegates_non_openai_providers_to_pydantic(
@@ -39,3 +49,12 @@ def test_configured_model_delegates_non_openai_providers_to_pydantic(
 
     assert configured_model("openrouter/qwen/qwen3.6-35b-a3b") is sentinel
     assert observed == ["openrouter:qwen/qwen3.6-35b-a3b"]
+
+
+def test_configured_model_can_lower_reasoning_for_a_mechanical_classifier() -> None:
+    model = configured_model(
+        "openai/gpt-5.4-mini",
+        reasoning_effort="low",
+    )
+
+    assert model.settings["openai_reasoning_effort"] == "low"

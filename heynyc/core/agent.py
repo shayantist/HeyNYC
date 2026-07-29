@@ -22,7 +22,19 @@ from pydantic import BaseModel, ConfigDict
 
 from . import config, events
 from .citations import CitationRegistry, used_citations, used_discovery_citations
-from .crisis_lines import compose_crisis_floor
+from .crisis_lines import (
+    CRISIS_LINES,
+    compose_crisis_floor,
+)
+from .crisis_lines import (
+    IMMINENT_SELF_HARM_RESPONSE_EN as _IMMINENT_SELF_HARM_RESPONSE_EN,
+)
+from .crisis_lines import (
+    SELF_HARM_RESPONSE_EN as _SELF_HARM_RESPONSE_EN,
+)
+from .crisis_lines import (
+    SELF_HARM_RESPONSE_ES as _SELF_HARM_RESPONSE_ES,
+)
 from .freshness import attach_temporal_provenance
 from .grounding import GroundingResult, check_grounding
 from .memory import (
@@ -1577,22 +1589,6 @@ _SELF_HARM_ES_RE = re.compile(
     r"pienso en (?:matarme|quitarme la vida))\b",
     re.IGNORECASE,
 )
-_SELF_HARM_RESPONSE_EN = (
-    "I'm really sorry you're hurting. I can't help with ways to end your life. "
-    "Call or text 988 right now. If you might act now or cannot stay safe, call 911. "
-    "Move away from anything you could use to hurt yourself and contact someone you trust."
-)
-_IMMINENT_SELF_HARM_RESPONSE_EN = (
-    "Call 911 right now. Call or text 988 now too. Move away from anything you could use "
-    "to hurt yourself and contact someone you trust who can stay with you. I'm an AI and "
-    "can't call or monitor emergency help for you."
-)
-_SELF_HARM_RESPONSE_ES = (
-    "Siento mucho que estés pasando por esto. No puedo ayudar con formas de quitarte la vida. "
-    "Llama o envía un mensaje al 988 ahora. Si podrías actuar ahora o no puedes mantenerte "
-    "a salvo, llama al 911. Aléjate de cualquier cosa con la que puedas lastimarte y contacta "
-    "a alguien de confianza."
-)
 _INFANT_DOSE_EN_RE = re.compile(
     r"\b(?:baby|infant|\d{1,2}[- ]month[- ]old)\b.*\b(?:acetaminophen|tylenol|ibuprofen)\b|"
     r"\b(?:acetaminophen|tylenol|ibuprofen)\b.*\b(?:baby|infant|\d{1,2}[- ]month[- ]old)\b",
@@ -1647,6 +1643,21 @@ _POISON_CONTROL_SOURCE_SNIPPET = (
     "Call your poison center at 1-800-222-1222 for help. If the individual collapses, has a "
     "seizure, has trouble breathing, or can't be awakened: Call 911 IMMEDIATELY."
 )
+_NYC_988_SOURCE_URL = "https://access.nyc.gov/programs/nyc-988/"
+_NYC_988_SOURCE_SNIPPET = (
+    "Call 988 for free, confidential crisis support. Call 911 if you are in immediate danger "
+    "or need emergency medical attention."
+)
+_NIMH_SUICIDE_SAFETY_SOURCE_URL = (
+    "https://www.nimh.nih.gov/health/publications/"
+    "5-action-steps-to-help-someone-having-thoughts-of-suicide"
+)
+_NIMH_SUICIDE_SAFETY_SOURCE_SNIPPET = (
+    "Reducing access to highly lethal items or places can help prevent suicide. "
+    "Connecting the person with the 988 Suicide & Crisis Lifeline and other community resources "
+    "can give them a safety net. You can also help them reach out to a trusted family member, "
+    "friend, spiritual advisor, or mental health professional."
+)
 _INFANT_DOSING_SOURCE_URL = (
     "https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids"
 )
@@ -1659,10 +1670,44 @@ _INFANT_DOSING_SOURCE_SNIPPET = (
 
 
 def _ground_emergency_backstop(text: str, citations: CitationRegistry) -> str:
-    """Attach verified evidence to deterministic Poison Control guidance."""
-    if "Poison Control" not in text:
-        return text
+    """Attach verified evidence to deterministic emergency guidance."""
     cite_ids: list[str] = []
+    if "988" in text:
+        cite_ids.append(citations.register(
+            _NYC_988_SOURCE_URL,
+            title="NYC 988 | ACCESS NYC",
+            snippet=_NYC_988_SOURCE_SNIPPET,
+            kind="WEB",
+            valid_as_of="2026-06-09",
+            provenance={"evidence_grade": "authoritative"},
+        ))
+        cite_ids.append(citations.register(
+            _NIMH_SUICIDE_SAFETY_SOURCE_URL,
+            title="5 Action Steps for Helping Someone in Emotional Pain | NIMH",
+            snippet=_NIMH_SUICIDE_SAFETY_SOURCE_SNIPPET,
+            kind="WEB",
+            valid_as_of="2024",
+            provenance={"evidence_grade": "authoritative"},
+        ))
+        for line in CRISIS_LINES.values():
+            for translated, source in (
+                (line.lifeline_988, line.source_988),
+                (line.emergency_911, line.source_911),
+            ):
+                if translated and translated in text and source:
+                    cite_ids.append(citations.register(
+                        source,
+                        title=f"Official 988 crisis guidance in {line.name}",
+                        snippet=translated,
+                        kind="WEB",
+                        valid_as_of=line.verified_on,
+                        provenance={"evidence_grade": "authoritative"},
+                    ))
+    if "Poison Control" not in text:
+        markers = " ".join(
+            f"{{cite:{cite_id}}}" for cite_id in dict.fromkeys(cite_ids)
+        )
+        return f"{text} {markers}".rstrip()
     if "dose for a baby" in text or "dosis exacta para un bebé" in text:
         cite_ids.append(citations.register(
             _INFANT_DOSING_SOURCE_URL,

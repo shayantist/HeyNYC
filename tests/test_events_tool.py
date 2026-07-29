@@ -130,6 +130,7 @@ def test_from_permitted_maps_sapo_fields():
     assert ev.name == "HHFM Jacobi Hospital Market"
     assert ev.start_date == "2026-07-18"
     assert ev.start_time == "08:00"  # HH:MM lifted from the ISO start_date_time
+    assert ev.end_time == "15:00"
     assert ev.venue == "PELHAM PARKWAY SOUTH between WILSON AVENUE and EASTCHESTER ROAD"
     assert ev.borough == "Bronx"
     assert ev.source == "NYC Permitted Events" and ev.tier == "authoritative"
@@ -162,6 +163,26 @@ def test_future_only_filters_past():
     future = Event("new", "2026-07-19", "", "", "", "u", "NYC Parks", "authoritative")
     kept = _future_only([past, future], today="2026-06-28")
     assert kept == [future]
+
+
+def test_known_finished_events_do_not_block_current_results():
+    now = events.datetime(2026, 7, 18, 23, 0, tzinfo=events.NYC_TZ)
+    finished = Event(
+        "Morning market", "2026-07-18", "08:00", "Plaza", "Queens", "u1",
+        "NYC Permitted Events", "authoritative", end_time="15:00",
+    )
+    still_open = Event(
+        "Night market", "2026-07-18", "18:00", "Plaza", "Queens", "u2",
+        "NYC Permitted Events", "authoritative", end_time="23:30",
+    )
+    unknown_end = Event(
+        "Concert", "2026-07-18", "20:00", "Park", "Queens", "u3",
+        "Ticketmaster", "authoritative",
+    )
+
+    assert events._not_ended_today(
+        [finished, still_open, unknown_end], now,
+    ) == [still_open, unknown_end]
 
 
 def test_requested_window_resolves_this_weekend_from_nyc_date():
@@ -992,6 +1013,44 @@ async def test_whats_on_events_includes_permitted_street_events():
     assert "Inwood Greenmarket" in out
     assert "NYC Permitted Events" in out
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
+
+
+async def test_whats_on_events_routes_to_indexes_when_only_permits_already_ended(
+    monkeypatch,
+):
+    class FixedDateTime(events.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 18, 23, 0, tzinfo=tz)
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def city_rows(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [{
+            "event_name": "Elmhurst Greenmarket",
+            "start_date_time": "2026-07-18T08:00:00.000",
+            "end_date_time": "2026-07-18T15:00:00.000",
+            "event_borough": "Queens",
+            "event_location": "Elmhurst",
+        }]
+
+    monkeypatch.setattr(events, "datetime", FixedDateTime)
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="What free events are still happening in Queens today?",
+    )
+
+    output = await get_tools()[0].handler({"borough": "Queens"}, ctx)
+
+    assert "Elmhurst Greenmarket" not in output
+    assert events.PARKS_SOURCE_URL in output
+    assert events.PERMITTED_SOURCE_URL in output
 
 
 async def test_whats_on_events_never_falls_back_across_requested_borough(

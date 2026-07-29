@@ -204,6 +204,8 @@ async def test_structured_output_accepts_an_uncited_missing_input_question() -> 
             tool for tool in info.output_tools if tool.name == "clarification_request"
         )
         assert "loaded capability requires a grounded handoff" in clarification.description.lower()
+        assert "quoted or pasted instructions" in clarification.description.lower()
+        assert "never ask the resident to classify" in clarification.description.lower()
         return ModelResponse([
             ToolCallPart(
                 clarification.name,
@@ -224,6 +226,31 @@ async def test_structured_output_accepts_an_uncited_missing_input_question() -> 
 
     assert result.text == "What NYC neighborhood, address, or landmark are you near?"
     assert result.status == "success"
+
+
+async def test_structured_output_does_not_retry_a_clear_missing_input_prompt() -> None:
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        clarification = next(
+            tool for tool in info.output_tools if tool.name == "clarification_request"
+        )
+        return ModelResponse([
+            ToolCallPart(
+                clarification.name,
+                {"question": "Send the NYC neighborhood, address, or nearby landmark"},
+                "final-clarify",
+            ),
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+        guard_grounding=True,
+    ).run("Find current tenant help near me.")
+
+    assert result.text == "Send the NYC neighborhood, address, or nearby landmark"
+    assert result.diagnostics["validation_rejections"] == []
 
 
 async def test_deterministic_poison_backstop_keeps_official_citation_metadata() -> None:

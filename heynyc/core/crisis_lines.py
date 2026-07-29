@@ -4,9 +4,9 @@ This is DATA, not translation. The deterministic crisis-response floor is author
 `heynyc/core/agent.py`, `_emergency_backstop` and the self-harm / 988 constants). This module makes
 that floor available in the ten Local Law 30 citywide languages by carrying, per language, the city's
 OWN or SAMHSA's OWN official crisis copy, COPIED VERBATIM from the official page with its source URL
-and verification date. Nothing here is machine-translated: for a script this session cannot read
-(Arabic, Chinese, Bengali, Hangul, Cyrillic) the only safe copy is bytes lifted from an official
-government page, and that is exactly what these records are.
+and verification date. Nothing in `CRISIS_LINES` is machine-translated: for a script this session
+cannot read (Arabic, Chinese, Bengali, Hangul, Cyrillic), the records contain only bytes lifted
+from an official government page.
 
 WHAT WAS VERIFIED LIVE (2026-07-20), and what was NOT:
 
@@ -19,24 +19,60 @@ WHAT WAS VERIFIED LIVE (2026-07-20), and what was NOT:
     (nyc988.cityofnewyork.us/es, /zh, /ar). IMPORTANT HONEST FINDING: those NYC pages still carry
     LEGACY "NYC Well" contact copy (1-888-692-9355 / text WELL to 65173) in the body, not a clean
     "988" line, so only their 911 emergency sentence is usable here.
-  - NO official human-translated crisis copy was located for Bengali, Haitian Creole, Korean, Urdu,
-    or Polish. For those languages NYC 988 offers phone interpretation only (call 988, 200+
-    languages). They therefore carry NO verified in-language line and fall back to the English floor,
-    which itself carries 988 and 911. That gap is stated in each record's `note`, not papered over.
+  - NYS OMH and ACCESS NYC publish current Bengali 988 and 911 instructions. No official
+    human-translated crisis copy was located for Haitian Creole, Korean, Urdu, or Polish. For those
+    languages NYC 988 offers phone interpretation only (call 988, 200+ languages). They therefore
+    carry NO verified in-language line and fall back to the English floor, which itself carries 988
+    and 911. That gap is stated in each record's `note`, not papered over.
 
-Net coverage: Spanish is fully covered by the English-authored Spanish floor already in agent.py
-(`_SELF_HARM_RESPONSE_ES`, human-reviewed) plus the verified pointer here. Chinese, Russian, French,
-and Arabic get the English floor plus a verified in-language pointer. The remaining five get the
-English floor, honestly, because no verified translation exists yet.
+`compose_crisis_floor` coverage: Spanish has human-reviewed assistant copy plus the verified
+pointer here. Chinese, Russian, French, Bengali, and Arabic get the English floor plus a verified
+in-language pointer. The remaining four get the English floor because no verified translation
+exists yet.
 
-Detection (which language a message is in) is deterministic and lives beside the floor in agent.py
-(`_crisis_language`, dominant-non-Latin-script based). Semantic crisis DETECTION across languages is
-the scope-classifier preflight (phase 2), separate from this response floor.
+The legacy floor's language detection lives in `agent.py`. The Pydantic runtime's semantic safety
+classifier returns a typed risk and language label, then `crisis_response` selects deterministic
+copy without accepting model-authored response text.
+
+`_FULL_CRISIS_RESPONSES` is deterministic assistant copy for the current Bengali and Chinese
+release cases, not verbatim government translation. It uses only the cited response actions and
+must receive human language review before HeyNYC makes a broad public language-quality claim.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+
+SELF_HARM_RESPONSE_EN = (
+    "I'm really sorry you're hurting. I can't help with ways to end your life. "
+    "Call 988 right now. If you might act now or cannot stay safe, call 911. "
+    "Move away from anything you could use to hurt yourself and contact someone you trust."
+)
+IMMINENT_SELF_HARM_RESPONSE_EN = (
+    "I'm really sorry you're in this much pain. Call 911 right now. Call 988 now too. "
+    "Move away from anything you could use to hurt yourself and contact someone you trust who "
+    "can stay with you. I'm an AI and can't call or monitor emergency help for you."
+)
+SELF_HARM_RESPONSE_ES = (
+    "Siento mucho que estés pasando por esto. No puedo ayudar con formas de quitarte la vida. "
+    "Llama o envía un mensaje al 988 ahora. Si podrías actuar ahora o no puedes mantenerte "
+    "a salvo, llama al 911. Aléjate de cualquier cosa con la que puedas lastimarte y contacta "
+    "a alguien de confianza."
+)
+
+_FULL_CRISIS_RESPONSES = {
+    "bn": (
+        "আপনি এত কষ্টে আছেন শুনে আমি খুবই দুঃখিত। এখনই 988-এ কল করুন। আপনি যদি এখনই "
+        "নিজেকে আঘাত করতে পারেন বা নিরাপদে থাকতে না পারেন, 911-এ কল করুন। নিজেকে আঘাত "
+        "করতে পারেন এমন জিনিস থেকে দূরে সরে যান এবং একজন বিশ্বস্ত মানুষকে এখনই আপনার "
+        "সঙ্গে থাকতে বলুন। আমি আপনার হয়ে কল করতে বা সাহায্য পর্যবেক্ষণ করতে পারি না।"
+    ),
+    "zh": (
+        "我很抱歉你现在这么痛苦。请立刻打 988 求助。如果你觉得自己可能马上会行动，或者无法"
+        "保证安全，请立刻打 911。请马上远离任何你可能用来伤害自己的东西，并联系一位你信任的"
+        "人，让他或她现在来陪着你。我不能替你打电话，也不能持续监看你。"
+    ),
+}
 
 # Verification date for every string in this module (live doc check via HTTP).
 VERIFIED_ON = "2026-07-20"
@@ -64,6 +100,8 @@ _LIFELINE_ZH = "https://988lifeline.org/interpretation-services/chinese/"
 _NYC988_ES = "https://nyc988.cityofnewyork.us/es/"
 _NYC988_ZH = "https://nyc988.cityofnewyork.us/zh/"
 _NYC988_AR = "https://nyc988.cityofnewyork.us/ar/"
+_NYS988_BN = "https://bn.omh.ny.gov/omhweb/crisis/what-is-988.html"
+_ACCESS_NYC_988_BN = "https://access.nyc.gov/bn/programs/nyc-988/"
 
 _INTERPRETATION_ONLY = (
     "No official human-translated crisis copy located; NYC 988 offers phone interpretation only "
@@ -158,7 +196,26 @@ CRISIS_LINES: dict[str, CrisisLine] = {
             "and no Arabic Lifeline page exists; English floor carries 988."
         ),
     ),
-    "bn": CrisisLine(lang="bn", name="Bengali", note=_INTERPRETATION_ONLY),
+    "bn": CrisisLine(
+        lang="bn",
+        name="Bengali",
+        lifeline_988=(
+            "যখন আপনার কারো সাথে কথা বলার প্রয়োজন হয় - 988 আপনার জন্য এখানে আছে৷ "
+            "এখন সাহায্য প্রয়োজন? ডায়াল করুন 988।"
+        ),
+        emergency_911=(
+            "যদি আপনি তাৎক্ষণিক বিপদের মধ্যে থাকেন অথবা আপনার জরুরি চিকিৎসা সহায়তার "
+            "প্রয়োজন হয়, তবে 911 নম্বরে কল করুন।"
+        ),
+        source_988=_NYS988_BN,
+        source_911=_ACCESS_NYC_988_BN,
+        verified_on=VERIFIED_ON,
+        note=(
+            "ACCESS NYC advertises call, text, and chat, but identifies English, Spanish, and "
+            "Chinese counselors plus 200-language interpretation. Calling is the verified "
+            "Bengali-language route."
+        ),
+    ),
     "ht": CrisisLine(lang="ht", name="Haitian Creole", note=_INTERPRETATION_ONLY),
     "ko": CrisisLine(lang="ko", name="Korean", note=_INTERPRETATION_ONLY),
     "ur": CrisisLine(lang="ur", name="Urdu", note=_INTERPRETATION_ONLY),
@@ -171,7 +228,7 @@ def compose_crisis_floor(english_floor: str, lang: Optional[str]) -> str:
 
     When a verified in-language pointer exists (zh/ru/fr/ar; es too, though Spanish is served by its
     own full floor), append the verbatim official 988 and/or 911 line(s) to the English floor. When
-    no verified copy exists (bn/ht/ko/ur/pl, unknown, or None), return the English floor UNCHANGED,
+    no verified copy exists (ht/ko/ur/pl, unknown, or None), return the English floor UNCHANGED,
     byte-identical, so the fallback is honest and still carries 988 and 911."""
     line = CRISIS_LINES.get(lang or "")
     if line is None or not line.has_verified_copy:
@@ -182,3 +239,17 @@ def compose_crisis_floor(english_floor: str, lang: Optional[str]) -> str:
     if line.emergency_911:
         parts.append(line.emergency_911)
     return "\n\n".join(parts)
+
+
+def crisis_response(risk: str, lang: Optional[str]) -> str:
+    """Return deterministic response copy; model output never supplies resident-facing text."""
+    if lang == "es":
+        return SELF_HARM_RESPONSE_ES
+    if lang in _FULL_CRISIS_RESPONSES:
+        return _FULL_CRISIS_RESPONSES[lang]
+    english = (
+        IMMINENT_SELF_HARM_RESPONSE_EN
+        if risk == "imminent_self_harm"
+        else SELF_HARM_RESPONSE_EN
+    )
+    return compose_crisis_floor(english, lang)

@@ -29,6 +29,7 @@ from .projection import (
     _semantic_citation_evidence,
 )
 from .runtime import PydanticRunFailure, PydanticRuntimeAdapter
+from .safety import build_crisis_screen
 from .tools import (
     _resident_fact_errors,
     adapt_tool,
@@ -55,6 +56,7 @@ __all__ = (
     "adapt_tool",
     "approval_review_text",
     "build_configured_runtime",
+    "build_crisis_screen",
     "build_module_capabilities",
     "build_runtime",
     "compact_memory",
@@ -81,6 +83,7 @@ def build_runtime(
     fact_review_model: Any = None,
     fact_review_model_name: str = "",
     stream_model_requests: bool = False,
+    crisis_screen: Any = None,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
     runtime_tools = tools if tools is not None else build_toolbox(registry, index=index)
@@ -118,6 +121,7 @@ def build_runtime(
         fact_review_model=fact_review_model,
         fact_review_model_name=fact_review_model_name,
         stream_model_requests=stream_model_requests,
+        crisis_screen=crisis_screen,
     )
 
 
@@ -133,12 +137,17 @@ def _uses_openai_responses(model: str, *, has_tools: bool = True) -> bool:
     return model_info.get("mode") == "responses"
 
 
-def configured_model(model: str) -> Any:
+def configured_model(
+    model: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> Any:
+    reasoning_effort = reasoning_effort or config.HEYNYC_REASONING_EFFORT
     if model.startswith("openai/"):
         settings = {
             key: value
             for key, value in {
-                "openai_reasoning_effort": config.HEYNYC_REASONING_EFFORT,
+                "openai_reasoning_effort": reasoning_effort,
                 "openai_service_tier": config.HEYNYC_SERVICE_TIER,
             }.items()
             if value is not None
@@ -156,6 +165,16 @@ def build_configured_runtime(
     current_awareness: Callable[[], Awaitable[str]] | None = None,
 ) -> PydanticRuntimeAdapter:
     selected_model = configured_model(model) if isinstance(model, str) else model
+    safety_model_name = (
+        config.HEYNYC_SCOPE_MODEL
+        if isinstance(model, str)
+        else type(selected_model).__name__
+    )
+    safety_model = (
+        configured_model(safety_model_name, reasoning_effort="low")
+        if isinstance(model, str)
+        else selected_model
+    )
     return build_runtime(
         registry,
         model=selected_model,
@@ -175,4 +194,8 @@ def build_configured_runtime(
             else type(selected_model).__name__
         ),
         stream_model_requests=True,
+        crisis_screen=build_crisis_screen(
+            safety_model,
+            model_name=safety_model_name,
+        ),
     )

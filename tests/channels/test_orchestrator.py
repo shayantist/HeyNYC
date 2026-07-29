@@ -16,7 +16,11 @@ from heynyc.channels.orchestrator import (
 )
 from heynyc.channels.store import ChannelStore
 from heynyc.core import config
-from heynyc.core.agent import Agent, AgentResult
+from heynyc.core.agent import (
+    _IMMINENT_SELF_HARM_RESPONSE_EN,
+    Agent,
+    AgentResult,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool
 
@@ -248,11 +252,7 @@ async def test_media_with_imminent_self_harm_text_uses_emergency_backstop_first(
     await handle(msg, replier, deps)
 
     assert replier.typed == 0
-    assert replier.sent == [
-        "Call 911 right now. Call or text 988 now too. Move away from anything you could use "
-        "to hurt yourself and contact someone you trust who can stay with you. I'm an AI and "
-        "can't call or monitor emergency help for you."
-    ]
+    assert replier.sent == [_IMMINENT_SELF_HARM_RESPONSE_EN]
 
 
 async def test_spanish_crisis_short_circuits_before_media_and_model(tmp_path):

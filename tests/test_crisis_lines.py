@@ -18,17 +18,22 @@ from heynyc.core.crisis_lines import (
 
 # The English self-harm floors the composer wraps (byte-identical to agent.py's constants).
 _EN_IMMINENT = (
-    "Call 911 right now. Call or text 988 now too. Move away from anything you could use "
-    "to hurt yourself and contact someone you trust who can stay with you. I'm an AI and "
-    "can't call or monitor emergency help for you."
+    "I'm really sorry you're in this much pain. Call 911 right now. Call 988 now too. "
+    "Move away from anything you could use to hurt yourself and contact someone you trust who "
+    "can stay with you. I'm an AI and can't call or monitor emergency help for you."
 )
 _EN_IDEATION = (
     "I'm really sorry you're hurting. I can't help with ways to end your life. "
-    "Call or text 988 right now. If you might act now or cannot stay safe, call 911. "
+    "Call 988 right now. If you might act now or cannot stay safe, call 911. "
     "Move away from anything you could use to hurt yourself and contact someone you trust."
 )
 
-_OFFICIAL_HOSTS = ("nyc.gov", "cityofnewyork.us", "988lifeline.org")
+_OFFICIAL_HOSTS = (
+    "nyc.gov",
+    "cityofnewyork.us",
+    "988lifeline.org",
+    "omh.ny.gov",
+)
 
 
 def test_table_covers_all_ten_ll30_languages():
@@ -52,11 +57,27 @@ def test_verified_copy_carries_the_exact_numbers_and_official_sources():
 
 
 def test_no_verified_copy_language_has_an_honest_note():
-    # bn/ht/ko/ur/pl: no official human translation of crisis copy was located; that MUST be stated.
-    for code in ("bn", "ht", "ko", "ur", "pl"):
+    # ht/ko/ur/pl: no official human translation of crisis copy was located; that MUST be stated.
+    for code in ("ht", "ko", "ur", "pl"):
         line = CRISIS_LINES[code]
         assert not line.has_verified_copy
         assert line.note, f"{code} must honestly state that no verified translation exists"
+
+
+def test_bengali_uses_current_official_988_and_911_copy():
+    line = CRISIS_LINES["bn"]
+
+    assert line.lifeline_988
+    assert line.emergency_911
+    assert line.source_988 == "https://bn.omh.ny.gov/omhweb/crisis/what-is-988.html"
+    assert line.source_911 == "https://access.nyc.gov/bn/programs/nyc-988/"
+
+
+def test_bengali_floor_does_not_promise_in_language_text_support():
+    response = compose_crisis_floor(_EN_IMMINENT, "bn")
+
+    assert "text 988" not in response
+    assert "ডায়াল করুন 988" in response
 
 
 @pytest.mark.parametrize("english_floor", [_EN_IMMINENT, _EN_IDEATION])
@@ -87,7 +108,7 @@ def test_language_with_only_911_appends_only_that_line():
 
 
 def test_uncovered_language_falls_back_to_english_byte_identical():
-    for code in ("bn", "ht", "ko", "ur", "pl"):
+    for code in ("ht", "ko", "ur", "pl"):
         assert compose_crisis_floor(_EN_IDEATION, code) == _EN_IDEATION
     assert compose_crisis_floor(_EN_IDEATION, None) == _EN_IDEATION
     assert compose_crisis_floor(_EN_IDEATION, "de") == _EN_IDEATION  # unknown code

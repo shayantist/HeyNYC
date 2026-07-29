@@ -234,7 +234,8 @@ def test_system_prompt_stops_retrieval_once_requested_constraints_are_supported(
 def test_system_prompt_minimizes_missing_attachment_recovery():
     low = build_system_prompt(Registry([])).lower()
     assert "attachment was not received" in low
-    assert "redacted image or text summary" in low
+    assert "paste only the redacted text" in low
+    assert "redacted image or text summary" not in low
     assert "case or client numbers" in low
     assert "never ask for a full case number" in low
 

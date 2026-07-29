@@ -714,7 +714,8 @@ async def test_emergency_backstop_runs_before_scope_classifier(empty_registry):
 
     result = await agent.run("I'm going to kill myself")
 
-    assert result.text.startswith("Call 911 right now")
+    assert result.text.startswith("I'm really sorry")
+    assert "Call 911 right now" in result.text
     assert scope_calls == 0
 
 
@@ -798,9 +799,10 @@ async def test_live_path_serves_verified_zh_lines_for_codeswitched_crisis(empty_
     assert result.iterations == 0
     assert result.tool_calls_made == []
 
-    # English stays BYTE-IDENTICAL through the same live path.
+    # English keeps the shared deterministic floor and adds its official source.
     english = await agent.run("I'm going to kill myself")
-    assert english.text == _IMMINENT_SELF_HARM_RESPONSE_EN
+    assert english.text.startswith(_IMMINENT_SELF_HARM_RESPONSE_EN)
+    assert english.text.endswith("{cite:S1} {cite:S2}")
 
 
 async def test_empty_final_answer_falls_back_to_safe_refusal(empty_registry):

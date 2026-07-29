@@ -90,6 +90,8 @@ def record_turn(
         "memory_compactions", "memory_model", "memory_input_tokens",
         "memory_output_tokens", "memory_cost_usd", "memory_time_ms",
         "memory_pre_tokens", "memory_post_tokens",
+        "safety_model", "safety_input_tokens", "safety_output_tokens",
+        "safety_cached_input_tokens", "safety_cost_usd", "safety_time_ms", "safety_error",
         "scope_modules", "scope_situations",
     ):
         if key in usage:
@@ -119,6 +121,8 @@ def summarize(records: list[dict]) -> dict:
                 "latency_p95_ms": 0.0, "model_time_ms": 0.0, "tool_time_ms": 0.0,
                 "scope_time_ms": 0.0, "orchestration_time_ms": 0.0,
                 "memory_compactions": 0, "memory_time_ms": 0.0,
+                "safety_input_tokens": 0, "safety_output_tokens": 0,
+                "safety_cost_usd": 0.0, "safety_time_ms": 0.0,
                 "n_model_calls": 0, "n_tool_calls": 0, "iterations": 0,
                 "tool_mix": {}, "error_rate": 0.0,
                 "outcome_mix": {}, "scope_module_mix": {}, "scope_situation_mix": {}}
@@ -127,7 +131,11 @@ def summarize(records: list[dict]) -> dict:
     unpriced_turns = sum(1 for r in records if r.get("cost_usd") is None)
     latencies = [float(r.get("latency_ms", 0.0)) for r in records]
     tool_mix = Counter(t for r in records for t in r.get("tool_names", []))
-    errors = sum(1 for r in records if r.get("status") not in ("success", None))
+    errors = sum(
+        1
+        for r in records
+        if r.get("status") not in ("success", None) or r.get("safety_error")
+    )
     return {
         "turns": turns,
         "total_cost_usd": total_cost,
@@ -148,6 +156,18 @@ def summarize(records: list[dict]) -> dict:
             int(r.get("memory_compactions", 0) or 0) for r in records
         ),
         "memory_time_ms": sum(float(r.get("memory_time_ms", 0.0) or 0.0) for r in records),
+        "safety_input_tokens": sum(
+            int(r.get("safety_input_tokens", 0) or 0) for r in records
+        ),
+        "safety_output_tokens": sum(
+            int(r.get("safety_output_tokens", 0) or 0) for r in records
+        ),
+        "safety_cost_usd": sum(
+            float(r.get("safety_cost_usd", 0.0) or 0.0) for r in records
+        ),
+        "safety_time_ms": sum(
+            float(r.get("safety_time_ms", 0.0) or 0.0) for r in records
+        ),
         "orchestration_time_ms": sum(
             float(r.get("orchestration_time_ms", 0.0) or 0.0) for r in records
         ),

@@ -36,6 +36,13 @@ def test_crisis_floor_does_not_capture_third_person_or_policy_questions(message)
     assert _emergency_backstop(message) is None
 
 
+def test_imminent_crisis_floor_acknowledges_the_person_before_directing_action():
+    response = _emergency_backstop("I'm going to kill myself")
+
+    assert response.startswith("I'm really sorry")
+    assert "Call 911 right now" in response
+
+
 def test_infant_exact_milliliter_request_uses_the_medication_safety_floor():
     message = (
         "My 8-month-old weighs 18 pounds, has had a fever since last night, is "
@@ -76,3 +83,20 @@ def test_poison_control_backstop_carries_official_evidence():
         "https://www.poison.org/need-immediate-assistance"
     )
     assert "1-800-222-1222" in citations.mapping()["S2"]["snippet"]
+
+
+def test_crisis_backstop_carries_current_official_evidence():
+    citations = CitationRegistry()
+
+    response = _ground_emergency_backstop(
+        _SELF_HARM_RESPONSE_EN,
+        citations,
+    )
+
+    assert response.endswith("{cite:S1} {cite:S2}")
+    assert citations.mapping()["S1"]["url"] == (
+        "https://access.nyc.gov/programs/nyc-988/"
+    )
+    assert "988" in citations.mapping()["S1"]["snippet"]
+    assert "911" in citations.mapping()["S1"]["snippet"]
+    assert "Reducing access" in citations.mapping()["S2"]["snippet"]

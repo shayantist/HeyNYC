@@ -60,6 +60,7 @@ class Event:
     tier: str    # authoritative | editorial | community
     free_evidence: str = ""
     audience: str = ""
+    end_time: str = ""
 
 
 def _iso_date(value: object) -> str:
@@ -150,18 +151,33 @@ def _from_permitted(raw: dict) -> Optional[Event]:
         return None
     raw_start = str(raw.get("start_date_time") or "")
     start_time = raw_start[11:16] if len(raw_start) >= 16 else ""  # "HH:MM" from the ISO stamp
+    raw_end = str(raw.get("end_date_time") or "")
+    end_time = raw_end[11:16] if len(raw_end) >= 16 else ""
     row_id = str(raw.get(":id") or "")
     return Event(
         name=name, start_date=start_date, start_time=start_time,
         venue=raw.get("event_location") or "", borough=raw.get("event_borough") or "",
         url=row_url(PERMITTED_DATASET_ID, row_id) if row_id else PERMITTED_SOURCE_URL,
         source="NYC Permitted Events", tier="authoritative",
+        end_time=end_time,
     )
 
 
 def _future_only(events: list[Event], today: str) -> list[Event]:
     """Keep only events on/after `today` (ISO YYYY-MM-DD string compare is correct here)."""
     return [e for e in events if e.start_date >= today]
+
+
+def _not_ended_today(events: list[Event], now: datetime) -> list[Event]:
+    """Drop same-day rows only when their source supplies an end time that has passed."""
+    current_time = now.replace(tzinfo=None).time()
+    return [
+        event
+        for event in events
+        if event.start_date != now.date().isoformat()
+        or (end := _parse_start_time(event.end_time)) is None
+        or end >= current_time
+    ]
 
 
 def _shortlist(events: list[Event], limit: int) -> list[Event]:
@@ -709,6 +725,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     def _window_filter(rows: list[Event]) -> list[Event]:
         kept = _future_only(rows, window_start)
+        kept = _not_ended_today(kept, now)
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
         kept = _explicitly_free(kept, ctx.query)
