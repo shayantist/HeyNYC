@@ -51,10 +51,28 @@ def test_configured_model_delegates_non_openai_providers_to_pydantic(
     assert observed == ["openrouter:qwen/qwen3.6-35b-a3b"]
 
 
-def test_configured_model_can_lower_reasoning_for_a_mechanical_classifier() -> None:
-    model = configured_model(
+def test_configured_model_can_lower_reasoning_for_a_mechanical_classifier(
+    monkeypatch,
+) -> None:
+    captured = {}
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime._uses_openai_responses",
+        lambda _model: True,
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.OpenAIResponsesModel",
+        lambda model, *, settings: captured.update(
+            model=model,
+            settings=settings,
+        ),
+    )
+
+    configured_model(
         "openai/gpt-5.4-mini",
         reasoning_effort="low",
     )
 
-    assert model.settings["openai_reasoning_effort"] == "low"
+    assert captured["model"] == "gpt-5.4-mini"
+    assert captured["settings"]["openai_reasoning_effort"] == "low"
