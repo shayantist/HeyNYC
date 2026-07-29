@@ -41,7 +41,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
@@ -75,9 +75,7 @@ from heynyc.core.pydantic_runtime import (
     build_runtime,
     resident_fact_confirmation_tool,
 )
-from heynyc.core.pydantic_runtime.runtime import (
-    VERIFICATION_ABSTAIN_FALLBACK,
-)
+from heynyc.core.pydantic_runtime.runtime import VERIFICATION_ABSTAIN_FALLBACK
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
@@ -5082,6 +5080,146 @@ async def test_pydantic_event_sink_observes_tool_and_text_stream() -> None:
     assert any(isinstance(event, events.ToolCompleted) for event in seen_events)
     assert any(isinstance(event, events.TextDelta) for event in seen_events)
     assert isinstance(seen_events[-1], events.Done)
+
+
+async def test_structured_runtime_does_not_preview_unvalidated_model_text() -> None:
+    model_calls = 0
+
+    async def stream(_messages: list[ModelMessage], _info: AgentInfo):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            yield "Provisional answer"
+            return
+        if model_calls == 2:
+            yield {
+                0: DeltaToolCall(
+                    name="source",
+                    json_args="{}",
+                    tool_call_id="source-1",
+                )
+            }
+            return
+        yield {
+            0: DeltaToolCall(
+                name="grounded_answer",
+                json_args=json.dumps({
+                    "grounded_blocks": [{
+                        "text": "Verified answer",
+                        "citation_ids": ["S1"],
+                    }]
+                }),
+                tool_call_id="grounded-answer",
+            )
+        }
+
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/",
+            title="NYC source",
+            kind="WEB",
+            snippet="Verified answer",
+        )
+        return f"Verified answer {{cite:{citation_id}}}"
+
+    seen_events: list[events.Event] = []
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(stream_function=stream),
+        registry=Registry([]),
+        tools={
+            "source": Tool(
+                name="source",
+                description="Retrieve an official NYC source",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+        guard_grounding=False,
+    ).run(
+        "Help",
+        event_sink=seen_events.append,
+    )
+
+    assert result.text == "Verified answer {cite:S1}"
+    assert not any(isinstance(event, events.TextDelta) for event in seen_events)
+    assert [
+        event.text
+        for event in seen_events
+        if isinstance(event, events.MessageCompleted)
+    ] == ["Verified answer {cite:S1}"]
+    assert model_calls == 3
+
+
+async def test_structured_approval_resume_does_not_preview_unvalidated_text() -> None:
+    def initial_model(
+        _messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        return ModelResponse([ToolCallPart("act", {}, "act-1")])
+
+    resume_calls = 0
+
+    async def resume_stream(_messages: list[ModelMessage], _info: AgentInfo):
+        nonlocal resume_calls
+        resume_calls += 1
+        if resume_calls == 1:
+            yield "Provisional approval answer"
+            return
+        yield {
+            0: DeltaToolCall(
+                name="grounded_answer",
+                json_args=json.dumps({
+                    "grounded_blocks": [{
+                        "text": "Approved action finished",
+                        "citation_ids": ["S1"],
+                    }]
+                }),
+                tool_call_id="grounded-answer",
+            )
+        }
+
+    async def act(_args: dict, _ctx: ToolContext) -> str:
+        citation_id = _ctx.citations.register(
+            "https://www.nyc.gov/",
+            title="NYC action",
+            kind="WEB",
+            snippet="Approved action finished",
+        )
+        return f"Approved action finished {{cite:{citation_id}}}"
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(initial_model, stream_function=resume_stream),
+        registry=Registry([]),
+        tools={
+            "act": Tool(
+                name="act",
+                description="Complete an approved action",
+                parameters={"type": "object", "properties": {}},
+                handler=act,
+                requires_approval=True,
+            )
+        },
+        structured_grounding=True,
+        guard_grounding=False,
+    )
+    conversation = runtime.conversation()
+    pending = await conversation.send("Do it")
+    seen_events: list[events.Event] = []
+    result = await conversation.resume_approvals(
+        {"act-1": True},
+        event_sink=seen_events.append,
+    )
+
+    assert pending.status == "approval_required"
+    assert result.text == "Approved action finished {cite:S1}"
+    assert not any(isinstance(event, events.TextDelta) for event in seen_events)
+    assert [
+        event.text
+        for event in seen_events
+        if isinstance(event, events.MessageCompleted)
+    ] == ["Approved action finished {cite:S1}"]
+    assert resume_calls == 2
 
 
 async def test_pydantic_runtime_streams_without_an_event_sink() -> None:

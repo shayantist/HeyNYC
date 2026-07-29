@@ -373,6 +373,8 @@ async def _forward_events(
     sink: Callable[[events.Event], None] | None,
     message_id: str,
     stream: AsyncIterable[AgentStreamEvent],
+    *,
+    include_text: bool,
 ) -> None:
     async for event in stream:
         if isinstance(event, FunctionToolCallEvent):
@@ -404,14 +406,20 @@ async def _forward_events(
                         args=call.args_as_dict(),
                     ),
                 )
-        elif isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+        elif (
+            include_text
+            and isinstance(event, PartStartEvent)
+            and isinstance(event.part, TextPart)
+        ):
             if event.part.content:
                 _emit(
                     sink,
                     events.TextDelta(message_id=message_id, text=event.part.content),
                 )
-        elif isinstance(event, PartDeltaEvent) and isinstance(
-            event.delta, TextPartDelta
+        elif (
+            include_text
+            and isinstance(event, PartDeltaEvent)
+            and isinstance(event.delta, TextPartDelta)
         ):
             if event.delta.content_delta:
                 _emit(
@@ -1299,6 +1307,7 @@ class PydanticRuntimeAdapter:
                                     event_sink,
                                     message_id,
                                     stream,
+                                    include_text=not self._structured_grounding,
                                 )
                             )
                             if event_sink is not None or self._stream_model_requests
@@ -1923,6 +1932,7 @@ class _PydanticConversation:
                                     event_sink,
                                     message_id,
                                     stream,
+                                    include_text=not self.runtime._structured_grounding,
                                 )
                             )
                             if event_sink is not None
