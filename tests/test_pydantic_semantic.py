@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
     SystemPromptPart,
+    TextPart,
     ToolCallPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -251,6 +253,43 @@ async def test_structured_output_does_not_retry_a_clear_missing_input_prompt() -
 
     assert result.text == "Send the NYC neighborhood, address, or nearby landmark"
     assert result.diagnostics["validation_rejections"] == []
+
+
+# F145: the runtime recovered the risk label by comparing response text to the English and Spanish
+# constants, so a self-ingested overdose (and every composed non-Latin crisis floor) reported none.
+@pytest.mark.parametrize(
+    ("message", "expected_risk"),
+    [
+        ("I just took 15 ibuprofen pills all at once", "self_harm"),
+        ("I don't want to be alive anymore 我不想活了", "self_harm"),
+        ("I'm going to kill myself আমি বাঁচতে চাই না", "imminent_self_harm"),
+    ],
+)
+async def test_deterministic_crisis_floor_reports_its_risk(message, expected_risk) -> None:
+    async def unreachable(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        raise AssertionError("the deterministic safety floor must bypass the model")
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(unreachable), registry=Registry([]), tools={},
+    ).run(message)
+
+    assert result.diagnostics["safety_risk"] == expected_risk
+    assert result.diagnostics["safety_response_source"] == "deterministic"
+    assert result.usage["n_model_calls"] == 0
+
+
+async def test_third_party_poisoning_is_not_labelled_the_residents_crisis() -> None:
+    """Inverse: a caregiver report must not be recorded as this resident's self-harm risk."""
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("Call Poison Control at 1-800-222-1222.")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model), registry=Registry([]), tools={},
+    ).run("my toddler swallowed some pills")
+
+    assert result.diagnostics.get("safety_risk") != "self_harm"
+    assert "safety_response_source" not in result.diagnostics
 
 
 async def test_deterministic_poison_backstop_keeps_official_citation_metadata() -> None:

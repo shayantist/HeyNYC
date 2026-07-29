@@ -15,7 +15,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AsyncIterator, Awaitable, Callable, Literal, Optional
+from typing import AsyncIterator, Awaitable, Callable, Literal, NamedTuple, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -1564,12 +1564,20 @@ _OVERDOSE_OLD_RE = re.compile(
 )
 _EMERGENCY_RESPONSE_EN = "Call 911 right now. I'm an AI and can't diagnose this."
 _EMERGENCY_RESPONSE_ES = "Llama al 911 ahora mismo. Soy una IA y no puedo diagnosticar esto."
+# _OVERDOSE_*_RE match only first-person self-ingestion, so every message reaching these responses
+# is a possible suicide attempt as well as a poisoning. Poisoning care leads because it is what
+# keeps the person alive tonight; the crisis route is conditional so an accidental double dose is
+# not told it was a suicide attempt. A caregiver reporting someone else never reaches here.
 _POISON_RESPONSE_EN = (
     "Call 911 and Poison Control at 1-800-222-1222 right now. "
+    "If you took them to hurt yourself, call 988 too. "
+    "Move away from any pills you have left and ask someone you trust to stay with you. "
     "I'm an AI and can't diagnose this."
 )
 _POISON_RESPONSE_ES = (
     "Llama al 911 y a Poison Control al 1-800-222-1222 ahora mismo. "
+    "Si las tomaste para hacerte daño, llama también al 988. "
+    "Aléjate de las pastillas que te queden y pide a alguien de confianza que se quede contigo. "
     "Soy una IA y no puedo diagnosticar esto."
 )
 _SELF_HARM_EN_RE = re.compile(
@@ -1658,6 +1666,10 @@ _NIMH_SUICIDE_SAFETY_SOURCE_SNIPPET = (
     "can give them a safety net. You can also help them reach out to a trusted family member, "
     "friend, spiritual advisor, or mental health professional."
 )
+# Evidence keys a deterministic trigger can require. Names, not response phrases, so a translated
+# floor keeps its citations.
+_SOURCE_POISON_CONTROL = "poison_control"
+_SOURCE_INFANT_DOSING = "infant_dosing"
 _INFANT_DOSING_SOURCE_URL = (
     "https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids"
 )
@@ -1669,8 +1681,15 @@ _INFANT_DOSING_SOURCE_SNIPPET = (
 )
 
 
-def _ground_emergency_backstop(text: str, citations: CitationRegistry) -> str:
-    """Attach verified evidence to deterministic emergency guidance."""
+def _ground_emergency_backstop(
+    text: str, citations: CitationRegistry, sources: frozenset[str] = frozenset()
+) -> str:
+    """Attach verified evidence to deterministic emergency guidance.
+
+    `sources` names the evidence the TRIGGER requires, because response copy is translated and
+    English phrase matching cannot survive that. The 988 branch is the one exception: it keys off
+    a phone number, which is identical in every LL30 language's verified copy.
+    """
     cite_ids: list[str] = []
     if "988" in text:
         cite_ids.append(citations.register(
@@ -1703,12 +1722,7 @@ def _ground_emergency_backstop(text: str, citations: CitationRegistry) -> str:
                         valid_as_of=line.verified_on,
                         provenance={"evidence_grade": "authoritative"},
                     ))
-    if "Poison Control" not in text:
-        markers = " ".join(
-            f"{{cite:{cite_id}}}" for cite_id in dict.fromkeys(cite_ids)
-        )
-        return f"{text} {markers}".rstrip()
-    if "dose for a baby" in text or "dosis exacta para un bebé" in text:
+    if _SOURCE_INFANT_DOSING in sources:
         cite_ids.append(citations.register(
             _INFANT_DOSING_SOURCE_URL,
             title="Acetaminophen: Easier dosing | Poison Control",
@@ -1717,16 +1731,17 @@ def _ground_emergency_backstop(text: str, citations: CitationRegistry) -> str:
             valid_as_of="2026-07-28",
             provenance={"evidence_grade": "authoritative"},
         ))
-    cite_ids.append(citations.register(
-        _POISON_CONTROL_SOURCE_URL,
-        title="Need immediate assistance? | Poison Control",
-        snippet=_POISON_CONTROL_SOURCE_SNIPPET,
-        kind="WEB",
-        valid_as_of="2026-07-28",
-        provenance={"evidence_grade": "authoritative"},
-    ))
-    markers = " ".join(f"{{cite:{cite_id}}}" for cite_id in cite_ids)
-    return f"{text} {markers}"
+    if _SOURCE_POISON_CONTROL in sources:
+        cite_ids.append(citations.register(
+            _POISON_CONTROL_SOURCE_URL,
+            title="Need immediate assistance? | Poison Control",
+            snippet=_POISON_CONTROL_SOURCE_SNIPPET,
+            kind="WEB",
+            valid_as_of="2026-07-28",
+            provenance={"evidence_grade": "authoritative"},
+        ))
+    markers = " ".join(f"{{cite:{cite_id}}}" for cite_id in dict.fromkeys(cite_ids))
+    return f"{text} {markers}".rstrip()
 
 
 # Perso-Urdu letters absent from standard Arabic; their presence routes an Arabic-script message to
@@ -1756,29 +1771,55 @@ def _crisis_language(user_message: str) -> Optional[str]:
     return _SCRIPT_TO_CRISIS_LANG.get(script)
 
 
-def _emergency_backstop(user_message: str) -> Optional[str]:
+class Backstop(NamedTuple):
+    """A deterministic floor response plus what the TRIGGER carried.
+
+    `risk` and `sources` come from the matched trigger, never from the response text. Crisis copy
+    is composed and translated per language, so any caller that recovers meaning by searching the
+    response for English phrases silently reports nothing for every other language. Read the
+    fields; never re-derive them from `.text`.
+    """
+
+    text: str
+    risk: Optional[Literal["self_harm", "imminent_self_harm"]] = None
+    sources: frozenset[str] = frozenset()
+
+
+def _emergency_backstop_result(user_message: str) -> Optional[Backstop]:
     """Return a fixed, language-matched response for clear chest pain or an overdose."""
     user_message = _routing_text(user_message)
     if _IMMINENT_SELF_HARM_EN_RE.search(user_message):
-        return compose_crisis_floor(_IMMINENT_SELF_HARM_RESPONSE_EN, _crisis_language(user_message))
+        return Backstop(
+            compose_crisis_floor(
+                _IMMINENT_SELF_HARM_RESPONSE_EN, _crisis_language(user_message)
+            ),
+            "imminent_self_harm",
+        )
     if _SELF_HARM_ES_RE.search(user_message):
-        return _SELF_HARM_RESPONSE_ES
+        return Backstop(_SELF_HARM_RESPONSE_ES, "self_harm")
     if _SELF_HARM_EN_RE.search(user_message):
-        return compose_crisis_floor(_SELF_HARM_RESPONSE_EN, _crisis_language(user_message))
+        return Backstop(
+            compose_crisis_floor(_SELF_HARM_RESPONSE_EN, _crisis_language(user_message)),
+            "self_harm",
+        )
     if _EXACT_DOSE_RE.search(user_message):
+        # Caregiver asking about someone else: an emergency, but not this resident's crisis.
+        infant = frozenset({_SOURCE_INFANT_DOSING, _SOURCE_POISON_CONTROL})
         if _INFANT_DOSE_ES_RE.search(user_message):
             if _INFANT_MEDICATION_CONCERN_ES_RE.search(user_message):
-                return _INFANT_MEDICATION_CONCERN_RESPONSE_ES
-            return _INFANT_DOSE_RESPONSE_ES
+                return Backstop(_INFANT_MEDICATION_CONCERN_RESPONSE_ES, sources=infant)
+            return Backstop(_INFANT_DOSE_RESPONSE_ES, sources=infant)
         if _INFANT_DOSE_EN_RE.search(user_message):
             if _INFANT_MEDICATION_CONCERN_EN_RE.search(user_message):
-                return _INFANT_MEDICATION_CONCERN_RESPONSE_EN
-            return _INFANT_DOSE_RESPONSE_EN
+                return Backstop(_INFANT_MEDICATION_CONCERN_RESPONSE_EN, sources=infant)
+            return Backstop(_INFANT_DOSE_RESPONSE_EN, sources=infant)
     if not _OVERDOSE_OLD_RE.search(user_message):
+        # _OVERDOSE_*_RE match first-person self-ingestion only, so these are possible attempts.
+        poison = frozenset({_SOURCE_POISON_CONTROL})
         if _OVERDOSE_ES_RE.search(user_message):
-            return _POISON_RESPONSE_ES
+            return Backstop(_POISON_RESPONSE_ES, "self_harm", poison)
         if _OVERDOSE_EN_RE.search(user_message):
-            return _POISON_RESPONSE_EN
+            return Backstop(_POISON_RESPONSE_EN, "self_harm", poison)
     signals = [
         (match.start(), _EMERGENCY_RESPONSE_ES)
         for match in _CHEST_PAIN_ES_RE.finditer(user_message)
@@ -1801,7 +1842,13 @@ def _emergency_backstop(user_message: str) -> Optional[str]:
     past = list(_CHEST_PAIN_PAST_RE.finditer(user_message))
     if past and signal_pos < past[-1].end():
         return None
-    return response
+    return Backstop(response)
+
+
+def _emergency_backstop(user_message: str) -> Optional[str]:
+    """The response text alone, for callers that do not record risk."""
+    result = _emergency_backstop_result(user_message)
+    return result.text if result is not None else None
 
 
 def _grounding_feedback(result: GroundingResult) -> str:
@@ -2954,13 +3001,17 @@ class Agent:
         for reminder in effective_reminders:
             yield events.Reminder(summary=reminder)
 
-        backstop_text = (
-            _emergency_backstop(user_message)
-            or _sensitive_identifier_backstop(user_message)
+        emergency = _emergency_backstop_result(user_message)
+        backstop_text = (emergency.text if emergency is not None else None) or (
+            _sensitive_identifier_backstop(user_message)
             or _internal_config_backstop(user_message)
         )
         if backstop_text:
-            backstop_text = _ground_emergency_backstop(backstop_text, citations)
+            backstop_text = _ground_emergency_backstop(
+                backstop_text,
+                citations,
+                emergency.sources if emergency is not None else frozenset(),
+            )
             message_id = "m0"
             assistant = {"role": "assistant", "content": backstop_text, "tool_calls": None}
             messages.append(assistant)

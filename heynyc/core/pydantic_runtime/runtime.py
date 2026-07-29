@@ -58,7 +58,7 @@ from heynyc.core import config, events
 from heynyc.core.agent import (
     AgentResult,
     _delivered_notify_titles,
-    _emergency_backstop,
+    _emergency_backstop_result,
     _ground_emergency_backstop,
     _internal_config_backstop,
     _reply_script_feedback,
@@ -71,10 +71,7 @@ from heynyc.core.citations import (
     used_discovery_citations,
 )
 from heynyc.core.crisis_lines import (
-    IMMINENT_SELF_HARM_RESPONSE_EN,
     LL30_LANGUAGES,
-    SELF_HARM_RESPONSE_EN,
-    SELF_HARM_RESPONSE_ES,
     crisis_response,
 )
 from heynyc.core.freshness import attach_temporal_provenance
@@ -1180,18 +1177,15 @@ class PydanticRuntimeAdapter:
             events.SessionInit(session_id=message_id, model=self.model),
         )
         _emit(event_sink, events.MessageStart(message_id=message_id))
-        backstop = (
-            _emergency_backstop(user_message)
-            or _sensitive_identifier_backstop(user_message)
+        emergency = _emergency_backstop_result(user_message)
+        backstop = (emergency.text if emergency is not None else None) or (
+            _sensitive_identifier_backstop(user_message)
             or _internal_config_backstop(user_message)
         )
-        safety_risk = (
-            "imminent_self_harm"
-            if backstop == IMMINENT_SELF_HARM_RESPONSE_EN
-            else "self_harm"
-            if backstop in {SELF_HARM_RESPONSE_EN, SELF_HARM_RESPONSE_ES}
-            else None
-        )
+        # The trigger carries the risk label and the evidence it needs. Recovering either by
+        # searching the response for English phrases dropped both for every other language (F145).
+        safety_risk = emergency.risk if emergency is not None else None
+        backstop_sources = emergency.sources if emergency is not None else frozenset()
         safety_run = None
         safety_error = None
         if backstop is None and self._crisis_screen is not None:
@@ -1212,7 +1206,7 @@ class PydanticRuntimeAdapter:
                 elif safety_run.risk in {"self_harm", "imminent_self_harm"}:
                     backstop = crisis_response(safety_run.risk, language)
         if backstop is not None:
-            backstop = _ground_emergency_backstop(backstop, citations)
+            backstop = _ground_emergency_backstop(backstop, citations, backstop_sources)
             new_messages: list[ModelMessage] = [
                 ModelRequest(parts=[UserPromptPart(user_message)]),
                 ModelResponse(parts=[TextPart(backstop)]),
