@@ -620,6 +620,12 @@ class PydanticRuntimeAdapter:
         self._run_timeout_s = run_timeout_s
         self._crisis_screen = crisis_screen
         self._structured_grounding = structured_grounding
+        # F154: attaching an event handler is what makes PydanticAI stream the model request.
+        # A structured run already DISCARDS its text deltas (`include_text` below), so when
+        # nothing consumes events -- production SMS and eval both pass no sink -- streaming buys
+        # nothing and exposes the final answer request to mid-stream stalls, which is where every
+        # observed stall happened. The REPL passes a sink and still streams for tool progress.
+        self._streams_without_a_sink = stream_model_requests and not structured_grounding
         self._context_budget = (
             context_capacity(answer_model_route, None, True)
             if context_budget is None and answer_model_route is not None
@@ -1379,7 +1385,7 @@ class PydanticRuntimeAdapter:
                                     include_text=not self._structured_grounding,
                                 )
                             )
-                            if event_sink is not None or self._stream_model_requests
+                            if event_sink is not None or self._streams_without_a_sink
                             else None
                         ),
                         capabilities=(
@@ -2021,7 +2027,7 @@ class _PydanticConversation:
                                 )
                             )
                             if event_sink is not None
-                            or self.runtime._stream_model_requests
+                            or self.runtime._streams_without_a_sink
                             else None
                         ),
                     )
