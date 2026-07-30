@@ -56,12 +56,27 @@ def test_verified_copy_carries_the_exact_numbers_and_official_sources():
             assert line.verified_on
 
 
-def test_no_verified_copy_language_has_an_honest_note():
-    # ht/ko/ur/pl: no official human translation of crisis copy was located; that MUST be stated.
-    for code in ("ht", "ko", "ur", "pl"):
-        line = CRISIS_LINES[code]
-        assert not line.has_verified_copy
-        assert line.note, f"{code} must honestly state that no verified translation exists"
+# F149: ht/ko/ur/pl were recorded as having no official translation, and an Urdu resident got an
+# all-English crisis reply because of it. NYS OMH publishes this page in all four at
+# `<lang>.omh.ny.gov`, the same host the Bengali record already used.
+@pytest.mark.parametrize("code", ["ht", "ko", "ur", "pl"])
+def test_omh_harvested_language_carries_verbatim_official_copy(code):
+    line = CRISIS_LINES[code]
+
+    assert line.has_verified_copy
+    assert "988" in line.lifeline_988
+    assert line.source_988 == f"https://{code}.omh.ny.gov/omhweb/crisis/what-is-988.html"
+    assert line.verified_on == "2026-07-30"
+    # The page's 911 text is an explanatory comparison, not an instruction, so the English floor
+    # supplies 911; the note must say so rather than implying an in-language 911 route exists.
+    assert not line.emergency_911
+    assert "911" in line.note
+
+
+def test_every_ll30_language_now_carries_verified_copy():
+    missing = [code for code, line in CRISIS_LINES.items() if not line.has_verified_copy]
+
+    assert not missing, f"no verified crisis copy for {missing}"
 
 
 def test_bengali_uses_current_official_988_and_911_copy():
@@ -107,18 +122,23 @@ def test_language_with_only_911_appends_only_that_line():
     assert ar.lifeline_988 == ""
 
 
-# F149: an Urdu resident disclosing imminent self-harm got the bare English floor with no hint
-# that 988 could serve them in Urdu. No official crisis copy exists in ht/ko/ur/pl (both
-# 988lifeline.org and nyc988.cityofnewyork.us 404 for all four, checked 2026-07-30), and this
-# module never machine-translates, so the cited interpretation FACT is what these residents get.
-@pytest.mark.parametrize("code", ["ht", "ko", "ur", "pl"])
-def test_language_without_verified_copy_states_the_interpretation_fact(code):
-    out = compose_crisis_floor(_EN_IDEATION, code)
+# Arabic is the one LL30 language whose official page carries a clean 911 line but no clean 988
+# line, so it gets the cited interpretation fact rather than an in-language 988 pointer (F149).
+def test_language_without_a_988_pointer_states_the_interpretation_fact():
+    out = compose_crisis_floor(_EN_IDEATION, "ar")
 
     assert out.startswith(_EN_IDEATION)
     assert "240 languages" in out
     assert "no cost" in out
     assert "988" in out and "911" in out
+
+
+@pytest.mark.parametrize("code", ["ht", "ko", "ur", "pl"])
+def test_omh_language_gets_its_own_copy_not_the_english_interpreter_line(code):
+    out = compose_crisis_floor(_EN_IDEATION, code)
+
+    assert CRISIS_LINES[code].lifeline_988 in out
+    assert "240 languages" not in out
 
 
 def test_unknown_language_stays_byte_identical():

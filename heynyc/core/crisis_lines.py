@@ -19,16 +19,20 @@ WHAT WAS VERIFIED LIVE (2026-07-20), and what was NOT:
     (nyc988.cityofnewyork.us/es, /zh, /ar). IMPORTANT HONEST FINDING: those NYC pages still carry
     LEGACY "NYC Well" contact copy (1-888-692-9355 / text WELL to 65173) in the body, not a clean
     "988" line, so only their 911 emergency sentence is usable here.
-  - NYS OMH and ACCESS NYC publish current Bengali 988 and 911 instructions. No official
-    human-translated crisis copy was located for Haitian Creole, Korean, Urdu, or Polish. For those
-    languages NYC 988 offers phone interpretation only (call 988, 200+ languages). They therefore
-    carry NO verified in-language line and fall back to the English floor, which itself carries 988
-    and 911. That gap is stated in each record's `note`, not papered over.
+  - NYS OMH and ACCESS NYC publish current Bengali 988 and 911 instructions.
+  - CORRECTED 2026-07-30 (F149): an earlier version of this docstring said no official
+    human-translated crisis copy existed for Haitian Creole, Korean, Urdu, or Polish. That was
+    WRONG, and an Urdu resident disclosing imminent self-harm got an all-English reply because of
+    it. NYS OMH publishes this crisis page in ALL of them at `<lang>.omh.ny.gov`, the same host
+    the Bengali record already used; the original survey only tried that pattern for Bengali. All
+    four now carry verbatim official copy. Their 911 text is an explanatory "988 versus 911"
+    comparison rather than an instruction, so they carry no `emergency_911` and the English floor
+    supplies 911, matching the Russian and French records.
 
 `compose_crisis_floor` coverage: Spanish has human-reviewed assistant copy plus the verified
-pointer here. Chinese, Russian, French, Bengali, and Arabic get the English floor plus a verified
-in-language pointer. The remaining four get the English floor because no verified translation
-exists yet.
+pointer here. Every other LL30 language now gets the English floor plus a verified in-language
+988 pointer, except Arabic, whose official page carries a clean 911 line but no clean 988 line;
+Arabic and any unrecognized language get the cited interpretation fact instead.
 
 The legacy floor's language detection lives in `agent.py`. The Pydantic runtime's semantic safety
 classifier returns a typed risk and language label, then `crisis_response` selects deterministic
@@ -76,6 +80,8 @@ _FULL_CRISIS_RESPONSES = {
 
 # Verification date for every string in this module (live doc check via HTTP).
 VERIFIED_ON = "2026-07-20"
+# The four LL30 languages harvested from NYS OMH on this date (F149).
+VERIFIED_ON_OMH_LL30 = "2026-07-30"
 
 # The ten Local Law 30 designated citywide languages (NYC Charter, LL30 language access), as
 # ISO 639-1 code -> English name. This is the exact set the crisis screen must cover.
@@ -101,6 +107,10 @@ _NYC988_ES = "https://nyc988.cityofnewyork.us/es/"
 _NYC988_ZH = "https://nyc988.cityofnewyork.us/zh/"
 _NYC988_AR = "https://nyc988.cityofnewyork.us/ar/"
 _NYS988_BN = "https://bn.omh.ny.gov/omhweb/crisis/what-is-988.html"
+_NYS988_UR = "https://ur.omh.ny.gov/omhweb/crisis/what-is-988.html"
+_NYS988_KO = "https://ko.omh.ny.gov/omhweb/crisis/what-is-988.html"
+_NYS988_PL = "https://pl.omh.ny.gov/omhweb/crisis/what-is-988.html"
+_NYS988_HT = "https://ht.omh.ny.gov/omhweb/crisis/what-is-988.html"
 _ACCESS_NYC_988_BN = "https://access.nyc.gov/bn/programs/nyc-988/"
 
 _INTERPRETATION_ONLY = (
@@ -108,11 +118,10 @@ _INTERPRETATION_ONLY = (
     "(call 988, 200+ languages). Falls back to the English floor, which carries 988 and 911."
 )
 
-# SAMHSA's own 988 FAQ, verified live 2026-07-30 (no official crisis copy exists in Urdu, Korean,
-# Polish, or Haitian Creole; both 988lifeline.org/interpretation-services/<lang>/ and
-# nyc988.cityofnewyork.us/<lang>/ return 404 for all four). The interpretation FACT is the one
-# thing we can state and cite for those residents, so the floor now says it instead of leaving it
-# recorded only in a `note` a resident never sees.
+# SAMHSA's own 988 FAQ, verified live 2026-07-30. Serves the languages that still lack a clean
+# in-language 988 pointer (Arabic, and any language the router does not recognize): the module
+# recorded 988's interpreter availability in a `note` a resident never saw, so the floor now
+# states and cites it.
 SAMHSA_988_FAQ_URL = "https://www.samhsa.gov/mental-health/988/faqs"
 SAMHSA_988_INTERPRETATION_SNIPPET = (
     "988 call, chat, and text services are available in English and Spanish. Call services with "
@@ -121,10 +130,10 @@ SAMHSA_988_INTERPRETATION_SNIPPET = (
     "to callers in more than 240 additional languages. There is no cost to you for language "
     "interpretation."
 )
-# English, because it is the floor's language. This does NOT serve a monolingual reader of a
-# language with no verified copy; it serves a partial-English reader or whoever is helping them.
-# The complete fix is in-language crisis text, which needs a language-invariant output check
-# rather than another hand-authored translation table.
+# English, because it is the floor's language, so it does NOT serve a monolingual reader; it
+# serves a partial-English reader or whoever is helping them. Preferred order is always verified
+# official copy in the resident's own language (see the NYS OMH records below); this is the
+# fallback for a language that has none.
 _INTERPRETER_LINE_EN = (
     "988 has interpreters in more than 240 languages, at no cost to you."
 )
@@ -237,10 +246,54 @@ CRISIS_LINES: dict[str, CrisisLine] = {
             "Bengali-language route."
         ),
     ),
-    "ht": CrisisLine(lang="ht", name="Haitian Creole", note=_INTERPRETATION_ONLY),
-    "ko": CrisisLine(lang="ko", name="Korean", note=_INTERPRETATION_ONLY),
-    "ur": CrisisLine(lang="ur", name="Urdu", note=_INTERPRETATION_ONLY),
-    "pl": CrisisLine(lang="pl", name="Polish", note=_INTERPRETATION_ONLY),
+    "ht": CrisisLine(
+        lang="ht",
+        name="Haitian Creole",
+        lifeline_988=(
+            "Bezwen Èd Kounye a? Rele oswa voye tèks 988 oswa chat sou entènèt"
+        ),
+        source_988=_NYS988_HT,
+        verified_on=VERIFIED_ON_OMH_LL30,
+        note=(
+            "NYS OMH publishes this page in the language. Calling is the verified in-language route: the page advertises call, text, and chat, but 988 identifies English and Spanish responders plus phone interpretation, so text and chat may not be answered in this language. No clean in-language 911 directive on the page (its 911 text is an explanatory 988-versus-911 comparison, not an instruction); the English floor carries 911."
+        ),
+    ),
+    "ko": CrisisLine(
+        lang="ko",
+        name="Korean",
+        lifeline_988=(
+            "지금 도움이 필요하세요? 전화 또는 문자 988 또는 온라인 채팅"
+        ),
+        source_988=_NYS988_KO,
+        verified_on=VERIFIED_ON_OMH_LL30,
+        note=(
+            "NYS OMH publishes this page in the language. Calling is the verified in-language route: the page advertises call, text, and chat, but 988 identifies English and Spanish responders plus phone interpretation, so text and chat may not be answered in this language. No clean in-language 911 directive on the page (its 911 text is an explanatory 988-versus-911 comparison, not an instruction); the English floor carries 911."
+        ),
+    ),
+    "ur": CrisisLine(
+        lang="ur",
+        name="Urdu",
+        lifeline_988=(
+            "ابھی مدد کی ضرورت ہے؟ ڈائل کریں یا ٹیکسٹ کریں 988 یا آن لائن چیٹ کریں۔"
+        ),
+        source_988=_NYS988_UR,
+        verified_on=VERIFIED_ON_OMH_LL30,
+        note=(
+            "NYS OMH publishes this page in the language. Calling is the verified in-language route: the page advertises call, text, and chat, but 988 identifies English and Spanish responders plus phone interpretation, so text and chat may not be answered in this language. No clean in-language 911 directive on the page (its 911 text is an explanatory 988-versus-911 comparison, not an instruction); the English floor carries 911."
+        ),
+    ),
+    "pl": CrisisLine(
+        lang="pl",
+        name="Polish",
+        lifeline_988=(
+            "Potrzebujesz pomocy teraz? Wybierz numer lub wyślij SMS 988 lub porozmawiaj online"
+        ),
+        source_988=_NYS988_PL,
+        verified_on=VERIFIED_ON_OMH_LL30,
+        note=(
+            "NYS OMH publishes this page in the language. Calling is the verified in-language route: the page advertises call, text, and chat, but 988 identifies English and Spanish responders plus phone interpretation, so text and chat may not be answered in this language. No clean in-language 911 directive on the page (its 911 text is an explanatory 988-versus-911 comparison, not an instruction); the English floor carries 911."
+        ),
+    ),
 }
 
 
