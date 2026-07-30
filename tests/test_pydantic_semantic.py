@@ -1429,10 +1429,12 @@ async def test_pydantic_semantic_validator_fails_safely_when_provider_is_down() 
 
     result = await runtime.run("Will my benefits end?")
 
-    assert result.text == (
+    assert result.text.startswith(
         "I hit a temporary problem before I could verify an answer. "
         "Please try again in a moment."
     )
+    # F151: failing closed must still leave the resident a route.
+    assert "311" in result.text
     assert result.usage["semantic_verifier_error"] == "RuntimeError"
 
 

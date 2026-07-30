@@ -335,20 +335,30 @@ class _Fact:
 
 
 _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
+    # F152: the heading said "a FREE lawyer", which promises full courtroom representation. The
+    # official HRA page says free legal "representation or advice" (re-verified live 2026-07-30),
+    # and NYC RTC gives full representation to income-eligible households while others get brief
+    # assistance, a one-time consultation that is NOT representation in court. A tenant who reads
+    # "a free lawyer" and stops looking can arrive at Housing Court with no counsel. The page
+    # states no income threshold, so none is asserted here: the fix is to stop overclaiming, not
+    # to hand-author a figure the cited source does not carry.
     "right_to_counsel": (
-        "Right to Counsel, a FREE lawyer for an eviction case:",
+        "Right to Counsel, free legal help for an eviction case:",
         (
             _Fact(
                 url="https://www.nyc.gov/site/hra/help/legal-services-for-tenants.page",
                 title="Legal Services for Tenants Facing Eviction, NYC's Right to Counsel (HRA / Office of Civil Justice)",
-                snippet=("NYC Right to Counsel gives tenants free legal help for an eviction case, in "
-                         "every ZIP code, regardless of immigration status; call Housing Court Answers "
-                         "718-557-1379 or 311 and ask for the Tenant Helpline"),
-                body=("NYC's Right-to-Counsel (Universal Access) law gives tenants free legal help for "
-                      "an eviction case in Housing Court or a NYCHA proceeding, available in every ZIP "
-                      "code, regardless of immigration status. To connect: call Housing Court Answers at "
-                      "718-557-1379 (Monday to Friday, 9am to 5pm), or call 311 and ask for the Tenant "
-                      "Helpline."),
+                snippet=("tenants facing eviction in Housing Court or NYCHA administrative proceedings "
+                         "have access to free legal representation or advice, in every ZIP code, "
+                         "regardless of immigration status; call Housing Court Answers 718-557-1379 "
+                         "or 311 and ask for the Tenant Helpline"),
+                body=("NYC's Right-to-Counsel (Universal Access) law means tenants facing eviction in "
+                      "Housing Court or NYCHA administrative proceedings have access to free legal "
+                      "representation or advice, in every ZIP code, regardless of immigration status. "
+                      "Which one you get depends on your household, so go to your first court date and "
+                      "say 'I would like an attorney'. To reach help before then: call Housing Court "
+                      "Answers at 718-557-1379 or 212-962-4795 (Monday to Friday, 9am to 5pm), or call "
+                      "311 and ask for the Tenant Helpline."),
             ),
         ),
     ),

@@ -28,6 +28,7 @@ a name mismatch is only ever SOFT (informational).
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -296,8 +297,26 @@ def _unit_category(unit: str) -> str:
     return "percent" if unit.strip().lower() in {"%", "percent"} else "temperature"
 
 
+def _fold_digits(text: str) -> str:
+    """Rewrite any Unicode decimal digit as its ASCII form.
+
+    `\\d` is Unicode-aware, so the extractor already FINDS `২০২৪-০৯-২৫` and `29 جولائی 2026`;
+    `strptime` then rejects them, so a date written in Bengali or Arabic-Indic numerals could
+    never match its source and the claim failed grounding. Rule 11 makes non-English a
+    first-class safety surface, and a guard that only works in ASCII is not one.
+    """
+    if text.isascii():
+        return text
+    return "".join(
+        str(unicodedata.digit(ch)) if ch.isdigit() and not ch.isascii() else ch
+        for ch in text
+    )
+
+
 def _parsed_date(text: str) -> date | None:
-    normalized = re.sub(r"(\d)(?:st|nd|rd|th)\b", r"\1", text, flags=re.IGNORECASE)
+    normalized = re.sub(
+        r"(\d)(?:st|nd|rd|th)\b", r"\1", _fold_digits(text), flags=re.IGNORECASE
+    )
     for pattern in (
         "%Y-%m-%d",
         "%m/%d/%Y",

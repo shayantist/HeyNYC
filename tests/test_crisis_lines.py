@@ -107,11 +107,31 @@ def test_language_with_only_911_appends_only_that_line():
     assert ar.lifeline_988 == ""
 
 
-def test_uncovered_language_falls_back_to_english_byte_identical():
-    for code in ("ht", "ko", "ur", "pl"):
-        assert compose_crisis_floor(_EN_IDEATION, code) == _EN_IDEATION
+# F149: an Urdu resident disclosing imminent self-harm got the bare English floor with no hint
+# that 988 could serve them in Urdu. No official crisis copy exists in ht/ko/ur/pl (both
+# 988lifeline.org and nyc988.cityofnewyork.us 404 for all four, checked 2026-07-30), and this
+# module never machine-translates, so the cited interpretation FACT is what these residents get.
+@pytest.mark.parametrize("code", ["ht", "ko", "ur", "pl"])
+def test_language_without_verified_copy_states_the_interpretation_fact(code):
+    out = compose_crisis_floor(_EN_IDEATION, code)
+
+    assert out.startswith(_EN_IDEATION)
+    assert "240 languages" in out
+    assert "no cost" in out
+    assert "988" in out and "911" in out
+
+
+def test_unknown_language_stays_byte_identical():
+    # No established language means no interpretation promise to make.
     assert compose_crisis_floor(_EN_IDEATION, None) == _EN_IDEATION
     assert compose_crisis_floor(_EN_IDEATION, "de") == _EN_IDEATION  # unknown code
+
+
+@pytest.mark.parametrize("code", ["zh", "bn", "es", "ru", "fr"])
+def test_language_with_verified_copy_does_not_get_the_english_interpreter_line(code):
+    # Inverse: a resident whose language has verified official copy gets that, not an English
+    # sentence about interpreters.
+    assert "240 languages" not in compose_crisis_floor(_EN_IDEATION, code)
 
 
 def test_every_language_floor_carries_988_and_911_exactly():

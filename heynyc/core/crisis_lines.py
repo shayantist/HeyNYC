@@ -108,6 +108,27 @@ _INTERPRETATION_ONLY = (
     "(call 988, 200+ languages). Falls back to the English floor, which carries 988 and 911."
 )
 
+# SAMHSA's own 988 FAQ, verified live 2026-07-30 (no official crisis copy exists in Urdu, Korean,
+# Polish, or Haitian Creole; both 988lifeline.org/interpretation-services/<lang>/ and
+# nyc988.cityofnewyork.us/<lang>/ return 404 for all four). The interpretation FACT is the one
+# thing we can state and cite for those residents, so the floor now says it instead of leaving it
+# recorded only in a `note` a resident never sees.
+SAMHSA_988_FAQ_URL = "https://www.samhsa.gov/mental-health/988/faqs"
+SAMHSA_988_INTERPRETATION_SNIPPET = (
+    "988 call, chat, and text services are available in English and Spanish. Call services with "
+    "interpreters are available in more than 240 languages. If you speak a language other than "
+    "English or Spanish, the 988 Lifeline uses Language Line Solutions to provide interpretation "
+    "to callers in more than 240 additional languages. There is no cost to you for language "
+    "interpretation."
+)
+# English, because it is the floor's language. This does NOT serve a monolingual reader of a
+# language with no verified copy; it serves a partial-English reader or whoever is helping them.
+# The complete fix is in-language crisis text, which needs a language-invariant output check
+# rather than another hand-authored translation table.
+_INTERPRETER_LINE_EN = (
+    "988 has interpreters in more than 240 languages, at no cost to you."
+)
+
 
 @dataclass(frozen=True)
 class CrisisLine:
@@ -227,15 +248,24 @@ def compose_crisis_floor(english_floor: str, lang: Optional[str]) -> str:
     """Return the crisis floor to serve for a message detected in `lang`.
 
     When a verified in-language pointer exists (zh/ru/fr/ar; es too, though Spanish is served by its
-    own full floor), append the verbatim official 988 and/or 911 line(s) to the English floor. When
-    no verified copy exists (ht/ko/ur/pl, unknown, or None), return the English floor UNCHANGED,
-    byte-identical, so the fallback is honest and still carries 988 and 911."""
+    own full floor), append the verbatim official 988 and/or 911 line(s) to the English floor.
+
+    When the resident's language is a KNOWN LL30 language with no verified 988 pointer
+    (ht/ko/ur/pl, and ar which has only a 911 line), append the cited interpretation fact. F149:
+    an Urdu resident disclosing imminent self-harm previously received the English floor with no
+    indication that 988 can serve them in Urdu, a fact this module recorded in a `note` and never
+    told the resident.
+
+    When the language is unknown or None, return the English floor UNCHANGED, byte-identical:
+    there is no established language to promise interpretation for."""
     line = CRISIS_LINES.get(lang or "")
-    if line is None or not line.has_verified_copy:
+    if line is None:
         return english_floor
     parts = [english_floor]
     if line.lifeline_988:
         parts.append(line.lifeline_988)
+    elif "988" in english_floor:
+        parts.append(_INTERPRETER_LINE_EN)
     if line.emergency_911:
         parts.append(line.emergency_911)
     return "\n\n".join(parts)

@@ -101,13 +101,16 @@ def test_crisis_backstop_carries_current_official_evidence():
         citations,
     )
 
-    assert response.endswith("{cite:S1} {cite:S2}")
+    assert response.endswith("{cite:S1} {cite:S2} {cite:S3}")
     assert citations.mapping()["S1"]["url"] == (
         "https://access.nyc.gov/programs/nyc-988/"
     )
     assert "988" in citations.mapping()["S1"]["snippet"]
     assert "911" in citations.mapping()["S1"]["snippet"]
     assert "Reducing access" in citations.mapping()["S2"]["snippet"]
+    # F149: the interpretation fact a resident with no verified in-language copy is told.
+    assert citations.mapping()["S3"]["url"] == "https://www.samhsa.gov/mental-health/988/faqs"
+    assert "240" in citations.mapping()["S3"]["snippet"]
 
 
 # F145: the overdose floor only matches first-person self-ingestion, so it is also a possible

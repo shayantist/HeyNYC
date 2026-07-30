@@ -75,7 +75,12 @@ from heynyc.core.pydantic_runtime import (
     build_runtime,
     resident_fact_confirmation_tool,
 )
-from heynyc.core.pydantic_runtime.runtime import VERIFICATION_ABSTAIN_FALLBACK
+from heynyc.core.pydantic_runtime.runtime import (
+    TEMPORARY_FAILURE_FALLBACK,
+    VERIFICATION_ABSTAIN_FALLBACK,
+    _degraded_failure_text,
+    _ModelTimingCapability,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
@@ -4805,6 +4810,116 @@ async def test_candidate_bounds_the_complete_provider_run() -> None:
 
     assert caught.value.partial_result.status == "error"
     assert caught.value.partial_result.diagnostics["run_timeout_s"] == 0.01
+
+
+# F150: a single hung provider request used to consume the entire run wall. Observed live: three
+# of thirty cases spent 159s, 175s and 178s inside ONE request while the slowest healthy request
+# in the same suite took 15.1s. The model-level `{"timeout": 60}` cannot catch it, because with
+# `stream_model_requests=True` an httpx float timeout is per-READ, so a stream holding its socket
+# open without producing content never trips it.
+async def test_a_stalled_model_request_is_bounded_and_retried_once() -> None:
+    attempts = 0
+
+    async def handler(_request_context: object) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await asyncio.sleep(5)  # the stall the per-request bound must cut
+        return "recovered"
+
+    capability = _ModelTimingCapability(request_timeout_s=0.05)
+
+    result = await capability.wrap_model_request(
+        None, request_context=None, handler=handler
+    )
+
+    # The resident's turn survives one bad socket instead of losing the whole run to it.
+    assert result == "recovered"
+    assert attempts == 2
+    assert capability.stalled_requests == 1
+    assert capability.request_ms and capability.request_ms[0] < 1000
+
+
+async def test_a_persistently_stalled_request_gives_up_after_one_retry() -> None:
+    attempts = 0
+
+    async def handler(_request_context: object) -> str:
+        nonlocal attempts
+        attempts += 1
+        await asyncio.sleep(5)
+        return "never"
+
+    capability = _ModelTimingCapability(request_timeout_s=0.05)
+
+    with pytest.raises(TimeoutError):
+        await capability.wrap_model_request(None, request_context=None, handler=handler)
+
+    assert attempts == 2
+    assert capability.stalled_requests == 2
+
+
+# F151: a family at PATH intake with a stroller got a bare "temporary problem" apology after
+# twelve successful retrieval steps, and every source the runtime was holding was discarded.
+def test_failure_copy_routes_the_resident_somewhere() -> None:
+    assert "311" in TEMPORARY_FAILURE_FALLBACK
+    assert "911" in TEMPORARY_FAILURE_FALLBACK
+
+
+def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/path.page",
+        title="PATH family intake",
+        kind="WEB",
+        snippet="PATH is the intake center for families with children.",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    citations.register(
+        "https://www.google.com/search?q=pantry",
+        title="a search waypoint",
+        kind="WEB",
+        snippet="search results",
+        provenance={"evidence_grade": "discovery"},
+    )
+
+    text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+
+    assert "https://www.nyc.gov/site/dhs/shelter/families/path.page" in text
+    # A discovery hit is a search waypoint, not somewhere to send a family in crisis.
+    assert "google.com" not in text
+
+
+def test_failure_text_is_unchanged_when_nothing_authoritative_was_reached() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://example.org/whatever",
+        title="unverified",
+        kind="WEB",
+        snippet="nothing official",
+        provenance={"evidence_grade": "discovery"},
+    )
+
+    assert _degraded_failure_text(
+        TEMPORARY_FAILURE_FALLBACK, citations
+    ) == TEMPORARY_FAILURE_FALLBACK
+
+
+async def test_a_healthy_model_request_is_not_retried() -> None:
+    """Inverse: the bound must not double-bill a normal request."""
+    attempts = 0
+
+    async def handler(_request_context: object) -> str:
+        nonlocal attempts
+        attempts += 1
+        return "fine"
+
+    capability = _ModelTimingCapability(request_timeout_s=5)
+
+    assert await capability.wrap_model_request(
+        None, request_context=None, handler=handler
+    ) == "fine"
+    assert attempts == 1
+    assert capability.stalled_requests == 0
 
 
 def test_volatile_run_instructions_are_callable_for_cache_ordering() -> None:

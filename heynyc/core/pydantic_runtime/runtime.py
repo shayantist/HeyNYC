@@ -141,12 +141,38 @@ _MULTI_TOOL_SCOPE_REMINDER = (
 )
 TEMPORARY_FAILURE_FALLBACK = (
     "I hit a temporary problem before I could verify an answer. "
-    "Please try again in a moment."
+    "Please try again in a moment. If you need help now, call 311 and ask for the service you "
+    "need, or call 911 if anyone is in danger."
 )
 VERIFICATION_ABSTAIN_FALLBACK = (
     "I couldn't verify that against the reliable sources I found, so I don't "
     "want to guess. Try asking with a little more detail and I'll check again."
 )
+
+
+def _degraded_failure_text(text: str, citations: CitationRegistry) -> str:
+    """Hand back the official pages already retrieved instead of stranding the resident.
+
+    F151: a family at PATH intake with a stroller received a bare "temporary problem" apology
+    after twelve successful retrieval steps, and the runtime discarded every source it was
+    holding. Only AUTHORITATIVE citations are surfaced: a discovery-grade hit is a search
+    waypoint, not somewhere to send someone in a crisis. No claim is attached to these links,
+    so nothing here asserts a fact the guard did not check.
+    """
+    official = [
+        citation
+        for citation in citations.mapping().values()
+        if (citation.get("provenance") or {}).get("evidence_grade") == "authoritative"
+        and citation.get("url")
+    ]
+    if not official:
+        return text
+    seen: dict[str, str] = {}
+    for citation in official:
+        seen.setdefault(citation["url"], citation.get("title") or citation["url"])
+    lines = [text, "", "Official pages I did reach before the problem:"]
+    lines += [f"- {title}: {url}" for url, title in list(seen.items())[:3]]
+    return "\n".join(lines)
 class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"]
 
@@ -458,12 +484,23 @@ class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
         )
 
 
+# F150: one hung provider request used to consume the whole run wall. Observed live: three of
+# thirty cases spent 159s, 175s and 178s inside a SINGLE request while the slowest healthy request
+# in the same suite was 15.1s. The `{"timeout": 60}` model setting cannot catch this, because with
+# `stream_model_requests=True` an httpx float timeout is per-READ, so a stream that keeps the
+# socket alive without producing content never trips it. This is a wall-clock bound per request.
+# 45s is 3x the slowest healthy request observed.
+_MODEL_REQUEST_TIMEOUT_S = 45.0
+
+
 class _ModelTimingCapability(AbstractCapability[ToolContext]):
     """Measure only native provider requests, excluding tools and orchestration."""
 
-    def __init__(self) -> None:
+    def __init__(self, request_timeout_s: float = _MODEL_REQUEST_TIMEOUT_S) -> None:
         self.elapsed_ms = 0.0
         self.request_ms: list[float] = []
+        self.request_timeout_s = request_timeout_s
+        self.stalled_requests = 0
 
     async def wrap_model_request(
         self,
@@ -474,7 +511,18 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
     ) -> ModelResponse:
         started = time.perf_counter()
         try:
-            return await handler(request_context)
+            # One retry: a stalled stream usually succeeds on a fresh connection, and losing the
+            # resident's whole turn to a single bad socket is the worse outcome. Worst case is
+            # 2x the bound, still well inside the run wall.
+            for attempt in (1, 2):
+                try:
+                    async with asyncio.timeout(self.request_timeout_s):
+                        return await handler(request_context)
+                except TimeoutError:
+                    self.stalled_requests += 1
+                    if attempt == 2:
+                        raise
+            raise AssertionError("unreachable")
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.elapsed_ms += elapsed_ms
@@ -1084,13 +1132,15 @@ class PydanticRuntimeAdapter:
         result = self._project_result(
             messages,
             _captured_usage(messages),
-            text,
+            _degraded_failure_text(text, citations),
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
             status=status,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        if timing_capability.stalled_requests:
+            result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         result.usage["retry_kinds"] = _retry_kinds(messages)
         self._merge_fact_review_usage(result, fact_review_runs)
         self._merge_semantic_usage(result, semantic_verifier_runs)
@@ -1391,6 +1441,8 @@ class PydanticRuntimeAdapter:
             model_time_ms=timing_capability.elapsed_ms,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        if timing_capability.stalled_requests:
+            result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self._merge_fact_review_usage(result, deps.fact_review_runs)
         self._merge_semantic_usage(result, deps.semantic_verifier_runs)
         self._merge_safety_usage(result, safety_run)
@@ -1978,6 +2030,8 @@ class _PydanticConversation:
             model_time_ms=timing_capability.elapsed_ms,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
+        if timing_capability.stalled_requests:
+            result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self.runtime._merge_fact_review_usage(result, deps.fact_review_runs)
         self.runtime._merge_semantic_usage(result, deps.semantic_verifier_runs)
         result.diagnostics = {

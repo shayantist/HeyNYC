@@ -799,10 +799,11 @@ async def test_live_path_serves_verified_zh_lines_for_codeswitched_crisis(empty_
     assert result.iterations == 0
     assert result.tool_calls_made == []
 
-    # English keeps the shared deterministic floor and adds its official source.
+    # English keeps the shared deterministic floor and adds its official sources (F149 added the
+    # SAMHSA interpretation source alongside NYC 988 and NIMH).
     english = await agent.run("I'm going to kill myself")
     assert english.text.startswith(_IMMINENT_SELF_HARM_RESPONSE_EN)
-    assert english.text.endswith("{cite:S1} {cite:S2}")
+    assert english.text.endswith("{cite:S1} {cite:S2} {cite:S3}")
 
 
 async def test_empty_final_answer_falls_back_to_safe_refusal(empty_registry):

@@ -24,6 +24,8 @@ from . import config, events
 from .citations import CitationRegistry, used_citations, used_discovery_citations
 from .crisis_lines import (
     CRISIS_LINES,
+    SAMHSA_988_FAQ_URL,
+    SAMHSA_988_INTERPRETATION_SNIPPET,
     compose_crisis_floor,
 )
 from .crisis_lines import (
@@ -1706,6 +1708,17 @@ def _ground_emergency_backstop(
             snippet=_NIMH_SUICIDE_SAFETY_SOURCE_SNIPPET,
             kind="WEB",
             valid_as_of="2024",
+            provenance={"evidence_grade": "authoritative"},
+        ))
+        # Evidence for the interpretation fact the floor states to residents whose language has no
+        # verified crisis copy (F149). Registered wherever 988 appears, since the snippet supports
+        # both calling 988 and its interpreter availability.
+        cite_ids.append(citations.register(
+            SAMHSA_988_FAQ_URL,
+            title="988 Frequently Asked Questions | SAMHSA",
+            snippet=SAMHSA_988_INTERPRETATION_SNIPPET,
+            kind="WEB",
+            valid_as_of="2026-07-30",
             provenance={"evidence_grade": "authoritative"},
         ))
         for line in CRISIS_LINES.values():

@@ -90,6 +90,37 @@ def test_translated_full_date_matches_english_source_by_numeric_components():
         assert res.passed
 
 
+# A date written in Bengali or Arabic-Indic numerals was extracted (`\d` is Unicode-aware) and
+# then failed to parse, so it could never match its source and the claim failed grounding in
+# exactly the languages rule 11 calls a first-class safety surface.
+def test_localized_numeral_date_matches_its_ascii_source():
+    citation = _data_cite(
+        {},
+        snippet="The public charge rule changed on September 25, 2024.",
+    )
+
+    for answer in (
+        "নিয়মটি ২০২৪-০৯-২৫ তারিখে পরিবর্তিত হয়েছে। {cite:S1}",
+        "تبدل القانون في ٢٠٢٤-٠٩-٢٥. {cite:S1}",
+    ):
+        res = check_grounding(answer, {"S1": citation})
+        assert res is not None
+        assert res.passed
+
+
+def test_localized_numeral_date_still_fails_on_a_real_mismatch():
+    """Inverse: folding digits must not make a wrong date pass."""
+    citation = _data_cite(
+        {},
+        snippet="The public charge rule changed on September 25, 2024.",
+    )
+
+    res = check_grounding("নিয়মটি ২০২৪-০৯-১১ তারিখে পরিবর্তিত হয়েছে। {cite:S1}", {"S1": citation})
+
+    assert res is not None
+    assert not res.passed
+
+
 def test_unparsed_translated_full_date_mismatch_is_soft():
     citation = _data_cite(
         {},

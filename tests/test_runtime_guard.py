@@ -256,7 +256,7 @@ async def test_clear_chest_pain_short_circuits_before_any_model_text(query, expe
     # overdose now carries both the crisis and the poison sources (F145), so it gets all three.
     sources = 0
     if "988" in expected:
-        sources += 2  # NYC 988 + NIMH safety steps
+        sources += 3  # NYC 988 + NIMH safety steps + SAMHSA interpretation (F149)
     if "dose for a baby" in expected or "dosis exacta para un bebé" in expected:
         sources += 1  # infant dosing
     if "Poison Control" in expected:
