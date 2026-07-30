@@ -115,6 +115,35 @@ def test_output_language_mismatch_rejects_a_wrong_script() -> None:
     )
 
 
+# F155: caught in production. An English question got an entirely Bengali answer and the guard
+# passed it, because a GROUNDED reply is full of ASCII even when its prose is not English: the
+# addresses, organization names and boroughs stay exact. Measured 0.41 non-ASCII against the old
+# 0.5 threshold, so the more grounded the answer, the more it was protected from the check.
+def test_grounded_answer_in_the_wrong_language_is_rejected() -> None:
+    query = "where's the nearest food pantry to 82nd St and Roosevelt Ave in Queens?"
+    bengali_answer = (
+        'আমি "82nd St and Roosevelt Ave"-কে Elmhurst, NY 11372 হিসেবে ধরেছি। '
+        "সবচেয়ে কাছের City-listed food pantry হলো LOVE WINS NYC - ELMHURST, "
+        "3763 83RD STREET, JACKSON HEIGHTS, SUITE #1B, QN 11372, প্রায় 0.06 মাইল দূরে। "
+        "ফোন: (201) 701-1024। যাওয়ার আগে ফোন করুন। "
+        "আজ খাবার দরকার হলে 311-এ কল করে কাছের খোলা food pantry জিজ্ঞেস করুন।"
+    )
+
+    assert _output_language_mismatch(query, bengali_answer)
+
+
+def test_english_answer_may_quote_a_non_latin_official_name() -> None:
+    """Inverse: keeping an official name exact is required, not a language mismatch."""
+    query = "where's the nearest food pantry to 82nd St and Roosevelt Ave in Queens?"
+    answer = (
+        "The nearest food pantry is LOVE WINS NYC at 3763 83rd Street, Jackson Heights. "
+        "Another option is the Chinese-American Planning Council (華人策劃協會) at "
+        "165 Eldridge Street. Call 311 if you need food today and both are closed."
+    )
+
+    assert not _output_language_mismatch(query, answer)
+
+
 def test_semantic_evidence_never_falls_back_to_full_provenance() -> None:
     assert _semantic_citation_evidence({
         "provenance": {

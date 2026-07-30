@@ -177,6 +177,15 @@ class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"]
 
 
+# F155: the share must clear this, and 0.5 could not be reached by a real answer. A grounded reply
+# is FULL of ASCII even when its prose is not English, because addresses, organization names and
+# boroughs stay exact: an entirely Bengali answer to an English question measured 0.41, since
+# "LOVE WINS NYC - ELMHURST, 3763 83RD STREET, JACKSON HEIGHTS" is all ASCII. The more grounded the
+# answer, the more the old threshold protected it from the check. Calibrated against both sides:
+# 0.41 for that wrong-language answer, 0.04 for an English answer quoting a Chinese org name.
+_WRONG_SCRIPT_SHARE = 0.15
+
+
 def _output_language_mismatch(query: str, answer: str) -> bool:
     query_letters = [character for character in query if character.isalpha()]
     answer_letters = [character for character in answer if character.isalpha()]
@@ -186,7 +195,7 @@ def _output_language_mismatch(query: str, answer: str) -> bool:
     non_ascii_answer_share = (
         sum(not character.isascii() for character in answer_letters) / len(answer_letters)
     )
-    return query_is_ascii and non_ascii_answer_share > 0.5
+    return query_is_ascii and non_ascii_answer_share > _WRONG_SCRIPT_SHARE
 
 
 def _caused_by(error: BaseException, expected: type[BaseException]) -> bool:
