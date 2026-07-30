@@ -1228,9 +1228,12 @@ class PydanticRuntimeAdapter:
         )
         _emit(event_sink, events.MessageStart(message_id=message_id))
         emergency = _emergency_backstop_result(user_message)
-        backstop = (emergency.text if emergency is not None else None) or (
+        non_medical_backstop = (
             _sensitive_identifier_backstop(user_message)
             or _internal_config_backstop(user_message)
+        )
+        backstop = (
+            (emergency.text if emergency is not None else None) or non_medical_backstop
         )
         # The trigger carries the risk label and the evidence it needs. Recovering either by
         # searching the response for English phrases dropped both for every other language (F145).
@@ -1238,23 +1241,45 @@ class PydanticRuntimeAdapter:
         backstop_sources = emergency.sources if emergency is not None else frozenset()
         safety_run = None
         safety_error = None
-        if backstop is None and self._crisis_screen is not None:
+        # The screen reads context and every language; the regex reads English and Spanish
+        # phrases. Per the owner ruling the deterministic backstop is "a last-resort catch UNDER
+        # the semantic layer", so the screen runs on ALL traffic and the regex no longer
+        # short-circuits it. Previously a regex hit skipped the screen entirely, which is why
+        # "I just took 2 ibuprofen pills for my headache" reached a resident as a crisis response
+        # with no chance for the one component that can read "for my headache" to say otherwise
+        # (F146). Running it always costs nothing in aggregate: the regex fires on ~2% of turns.
+        if self._crisis_screen is not None and non_medical_backstop is None:
             try:
                 safety_run = await self._crisis_screen(user_turns)
             except Exception as exc:
                 safety_error = type(exc).__name__
-                backstop = TEMPORARY_FAILURE_FALLBACK
+                # Fail closed, unless the deterministic floor already caught it.
+                if backstop is None:
+                    backstop = TEMPORARY_FAILURE_FALLBACK
             if safety_run is not None:
-                safety_risk = safety_run.risk
                 language = getattr(safety_run, "language", None)
+                screened_risk = safety_run.risk
                 if language is None:
                     safety_error = "MissingCrisisLanguage"
-                    backstop = TEMPORARY_FAILURE_FALLBACK
+                    if backstop is None:
+                        backstop = TEMPORARY_FAILURE_FALLBACK
                 elif language not in {"en", *LL30_LANGUAGES}:
                     safety_error = "InvalidCrisisLanguage"
-                    backstop = TEMPORARY_FAILURE_FALLBACK
-                elif safety_run.risk in {"self_harm", "imminent_self_harm"}:
-                    backstop = crisis_response(safety_run.risk, language)
+                    if backstop is None:
+                        backstop = TEMPORARY_FAILURE_FALLBACK
+                elif screened_risk in {"self_harm", "imminent_self_harm"}:
+                    # The screen decides: it serves the resident's own language.
+                    safety_risk = screened_risk
+                    backstop = crisis_response(screened_risk, language)
+                    backstop_sources = frozenset()
+                elif safety_risk == "self_harm" and emergency is not None:
+                    # The screen read the whole message and found no crisis where the phrase
+                    # match did. It is the better classifier, so it clears the false positive.
+                    # An explicit `imminent_self_harm` phrase is NOT clearable: that is the
+                    # highest-confidence signal we have and it stays a hard floor.
+                    safety_risk = None
+                    backstop = None
+                    backstop_sources = frozenset()
         if backstop is not None:
             backstop = _ground_emergency_backstop(backstop, citations, backstop_sources)
             new_messages: list[ModelMessage] = [
@@ -1419,14 +1444,28 @@ class PydanticRuntimeAdapter:
                 _finish_events(event_sink, message_id, result)
                 return result, new_messages, None
             if isinstance(exc, (UnexpectedModelBehavior, TimeoutError)):
+                # A TimeoutError here is EITHER the run wall or the per-request bound giving up
+                # after its retry. Reporting both as "run exceeded <wall>" sent an operator
+                # looking at the wrong knob: the observed case spent 2 x 45s inside one stalled
+                # request, well under the 180s wall it was blamed on.
+                stalled = timing_capability.stalled_requests
                 if isinstance(exc, TimeoutError):
                     result.diagnostics["run_timeout_s"] = self._run_timeout_s
+                    if stalled:
+                        result.diagnostics["model_request_timeout_s"] = (
+                            timing_capability.request_timeout_s
+                        )
                 _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(
                     (
                         exc.message
                         if isinstance(exc, UnexpectedModelBehavior)
-                        else f"Provider run exceeded {self._run_timeout_s:g} seconds"
+                        else (
+                            f"Provider stalled: {stalled} model requests exceeded "
+                            f"{timing_capability.request_timeout_s:g} seconds"
+                            if stalled
+                            else f"Provider run exceeded {self._run_timeout_s:g} seconds"
+                        )
                     ),
                     result,
                     result.diagnostics,

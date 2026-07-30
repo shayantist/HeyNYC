@@ -358,3 +358,110 @@ async def test_runtime_marks_legacy_deterministic_crisis_floor_as_validated() ->
 
     assert result.diagnostics["safety_risk"] == "imminent_self_harm"
     assert result.diagnostics["safety_response_source"] == "deterministic"
+
+
+# F146: the deterministic regex used to short-circuit the screen entirely, so a phrase match was
+# a verdict no context-reader could review. Per the owner ruling the backstop is "a last-resort
+# catch UNDER the semantic layer", so the screen now runs on all traffic and adjudicates.
+def _screen_returning(risk: str, language: str = "en"):
+    calls: list[tuple[str, ...]] = []
+
+    async def screen(user_turns: tuple[str, ...]):
+        calls.append(user_turns)
+        return SimpleNamespace(
+            risk=risk, language=language, model="test/safety", input_tokens=1,
+            output_tokens=1, cached_input_tokens=0, requests=1, cost_usd=0.0, latency_ms=1.0,
+        )
+
+    return screen, calls
+
+
+def _unreachable_answer():
+    async def answer(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        raise AssertionError("the deterministic floor must bypass the answer model")
+
+    return answer
+
+
+async def test_screen_clears_a_therapeutic_dose_false_positive() -> None:
+    """The regex fires on any count; the screen read "for my headache" and found no crisis."""
+    answered = False
+
+    async def answer(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal answered
+        answered = True
+        return ModelResponse([TextPart("Ordinary answer.")])
+
+    screen, calls = _screen_returning("none")
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(answer), registry=Registry([]), tools={}, crisis_screen=screen,
+    )
+
+    result = await runtime.run("I just took 2 ibuprofen pills for my headache")
+
+    assert calls, "the screen must run even when the regex matched"
+    assert answered, "a cleared false positive proceeds to an ordinary answer"
+    assert "988" not in result.text
+    # The screen's own verdict is recorded, so a cleared match is auditable rather than silent.
+    assert result.diagnostics["safety_risk"] == "none"
+    assert "safety_response_source" not in result.diagnostics
+
+
+async def test_screen_cannot_clear_an_explicit_imminent_self_harm_phrase() -> None:
+    """The hard floor: the highest-confidence signal is not clearable by a screen miss."""
+    screen, calls = _screen_returning("none")
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(_unreachable_answer()), registry=Registry([]), tools={},
+        crisis_screen=screen,
+    )
+
+    result = await runtime.run("I'm going to kill myself")
+
+    assert calls
+    assert "988" in result.text and "911" in result.text
+    assert result.diagnostics["safety_risk"] == "imminent_self_harm"
+
+
+async def test_screen_finding_crisis_overrides_a_silent_regex() -> None:
+    """The screen serves the resident's own language where the regex has no pattern at all."""
+    screen, _ = _screen_returning("imminent_self_harm", language="ur")
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(_unreachable_answer()), registry=Registry([]), tools={},
+        crisis_screen=screen,
+    )
+
+    result = await runtime.run("میں آج رات خودکشی کرنے کا ارادہ رکھتا ہوں")
+
+    assert CRISIS_LINES["ur"].lifeline_988 in result.text
+    assert result.diagnostics["safety_risk"] == "imminent_self_harm"
+
+
+async def test_non_self_harm_medical_floor_survives_a_screen_finding_no_crisis() -> None:
+    """Chest pain is an emergency the screen does not classify; the floor still fires."""
+    screen, _ = _screen_returning("none")
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(_unreachable_answer()), registry=Registry([]), tools={},
+        crisis_screen=screen,
+    )
+
+    result = await runtime.run("I have severe chest pain right now")
+
+    assert "911" in result.text
+    assert result.diagnostics.get("safety_risk") is None
+
+
+async def test_screen_failure_keeps_the_deterministic_floor() -> None:
+    """Fail-safe: a screen outage must not delete a floor the regex already caught."""
+
+    async def screen(_user_turns: tuple[str, ...]):
+        raise RuntimeError("safety provider down")
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(_unreachable_answer()), registry=Registry([]), tools={},
+        crisis_screen=screen,
+    )
+
+    result = await runtime.run("I'm going to kill myself")
+
+    assert "988" in result.text
+    assert result.diagnostics["safety_error"] == "RuntimeError"
