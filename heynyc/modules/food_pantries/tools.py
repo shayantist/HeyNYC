@@ -89,10 +89,18 @@ def _clean(value) -> str:
 
 
 def _resident_supplied_origin(near: str, query: str, user_turns: tuple[str, ...]) -> str:
+    # F159: this took `user_turns` and passed `()`, so the guard could only ever see the CURRENT
+    # message. A resident who answered "yes, I'm still there" to the assistant's own question was
+    # asked for a full address again, because a confirmation carries no address and the location
+    # they typed one turn earlier was unreachable by construction. Widening to prior turns changes
+    # only WHERE a location may be found, never WHAT counts: it must still be resident-authored,
+    # so the anti-hallucination property and the negation and stale-phrase guards are untouched.
     current_turn = query or (user_turns[-1] if user_turns else "")
     if not current_turn:
         return near
-    return resident_supplied_location(near, current_turn, ())
+    return resident_supplied_location(
+        near, current_turn, tuple(user_turns), allow_prior=True
+    )
 
 
 def _source_span_supports_origin(sentence: str, place: str, address: str) -> bool:

@@ -224,20 +224,31 @@ async def test_nearest_food_pantry_rejects_partial_or_stale_origins(
     assert "proposed search origin was not supplied" in out
 
 
-async def test_nearest_food_pantry_rejects_location_from_prior_turn(monkeypatch):
-    async def should_not_geocode(*args, **kwargs):
-        raise AssertionError("stale location reached geocoder")
+# F159: this previously asserted the OPPOSITE, that a location from a prior turn must be rejected.
+# That conflated two independent properties. Anti-hallucination asks whether the RESIDENT authored
+# the location and is covered by `test_nearest_food_pantry_rejects_model_invented_origin`;
+# staleness asks whether it is still current and is covered by the past-location and negation
+# tests. "Current message only" was a crude proxy for both, and its side effect was amnesia: a
+# resident who answered the assistant's own "are you still near <X>?" with "yes" was asked for a
+# full address again, because a confirmation carries no address. Searching the resident's own
+# earlier turns cannot let the model invent anything, so the safety property is unchanged.
+async def test_nearest_food_pantry_uses_a_location_the_resident_gave_in_a_prior_turn(monkeypatch):
+    seen = []
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query="Which one is open now?",
         user_history="I am near Jackson Heights.\nWhich one is open now?",
         user_turns=("I am near Jackson Heights.", "Which one is open now?"),
     )
 
-    out = await get_tools()[0].handler({"near": "Jackson Heights"}, ctx)
+    await get_tools()[0].handler({"near": "Jackson Heights"}, ctx)
 
-    assert "proposed search origin was not supplied" in out
+    assert seen == ["Jackson Heights"]
 
 
 async def test_nearest_food_pantry_rejects_past_location_in_current_turn(monkeypatch):
@@ -1209,3 +1220,42 @@ def test_food_pantries_module_loads_with_tool_and_eval():
     provenance_case = next(c for c in cases if c.id == "food_source_origin_clarifies")
     assert provenance_case.invariants == {"allow_clarification": True}
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
+
+
+# F159: the resident named a location, the assistant asked "are you still near <that>?", the
+# resident said yes, and the assistant asked for a full address AGAIN. Not a model failure and not
+# a memory failure: the clarification IS carried in history, but `_resident_supplied_origin`
+# received `user_turns` and passed `()` to the guard, so the guard could only see the CURRENT
+# message. A confirmation contains no address, so a location the resident typed one turn earlier
+# was unreachable by construction.
+def test_origin_may_come_from_a_location_the_resident_gave_earlier():
+    turns = (
+        "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",
+        "yes I am right there",
+    )
+
+    assert fp._resident_supplied_origin(
+        "82nd St and Roosevelt Ave", "yes I am right there", turns
+    ) == "82nd St and Roosevelt Ave"
+
+
+def test_origin_the_resident_never_gave_is_still_rejected():
+    """The anti-hallucination property must survive: history widens WHERE we look, not WHAT counts."""
+    turns = (
+        "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",
+        "yes I am right there",
+    )
+
+    assert fp._resident_supplied_origin("350 Fifth Avenue", "yes I am right there", turns) == ""
+
+
+def test_a_newly_named_location_is_preferred_over_the_earlier_one():
+    """Inverse: the resident moving on must not be overridden by a stale prior location."""
+    turns = (
+        "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",
+        "what about a food pantry in the Bronx?",
+    )
+
+    assert fp._resident_supplied_origin(
+        "the Bronx", "what about a food pantry in the Bronx?", turns
+    ) == "the Bronx"
