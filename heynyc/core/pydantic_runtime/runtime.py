@@ -177,20 +177,15 @@ class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"]
 
 
-# F155: the share must clear this, and 0.5 could not be reached by a real answer. A grounded reply
-# is FULL of ASCII even when its prose is not English, because addresses, organization names and
-# boroughs stay exact: an entirely Bengali answer to an English question measured 0.41, since
-# "LOVE WINS NYC - ELMHURST, 3763 83RD STREET, JACKSON HEIGHTS" is all ASCII. The more grounded the
-# answer, the more the old threshold protected it from the check. Calibrated against both sides:
-# 0.41 for that wrong-language answer, 0.04 for an English answer quoting a Chinese org name.
+# F155: 0.5 was unreachable for a grounded answer
+# Addresses and org names stay ASCII, so an all-Bengali reply measured 0.41
+# Calibrated both ways: 0.41 wrong-language, 0.04 English quoting a Chinese name
 _WRONG_SCRIPT_SHARE = 0.15
 
 
-# F158: the query gate was 30 letters, so the guard never even evaluated a follow-up. "is it open
-# on Saturday?" is 18 letters, and it drew a 67 percent non-ASCII answer that would have failed the
-# share test easily. Follow-ups are SHORT and they are precisely where language drifts, because
-# that is when accumulated history outweighs the current message. 12 letters is still enough to
-# read a script confidently while skipping "ok" and "yes", where language is genuinely ambiguous.
+# F158: a 30-letter gate skipped follow-ups entirely
+# "is it open on Saturday?" is 18 letters, and drew a 67% non-ASCII answer
+# 12 still reads a script, while skipping "ok" and "yes"
 _MIN_QUERY_LETTERS = 12
 
 
@@ -501,12 +496,10 @@ class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
         )
 
 
-# F150: one hung provider request used to consume the whole run wall. Observed live: three of
-# thirty cases spent 159s, 175s and 178s inside a SINGLE request while the slowest healthy request
-# in the same suite was 15.1s. The `{"timeout": 60}` model setting cannot catch this, because with
-# `stream_model_requests=True` an httpx float timeout is per-READ, so a stream that keeps the
-# socket alive without producing content never trips it. This is a wall-clock bound per request.
-# 45s is 3x the slowest healthy request observed.
+# F150: one hung request burned the whole run wall
+# Observed 159s, 175s, 178s against a 15.1s slowest healthy request
+# `{"timeout": 60}` is per-READ, so a live-but-silent stream never trips it
+# 45s is 3x the slowest healthy request
 _MODEL_REQUEST_TIMEOUT_S = 45.0
 
 
@@ -530,7 +523,7 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
         try:
             # One retry: a stalled stream usually succeeds on a fresh connection, and losing the
             # resident's whole turn to a single bad socket is the worse outcome. Worst case is
-            # 2x the bound, still well inside the run wall.
+            # 2x the bound, still well inside the run wall
             for attempt in (1, 2):
                 try:
                     async with asyncio.timeout(self.request_timeout_s):
@@ -637,11 +630,11 @@ class PydanticRuntimeAdapter:
         self._run_timeout_s = run_timeout_s
         self._crisis_screen = crisis_screen
         self._structured_grounding = structured_grounding
-        # F154: attaching an event handler is what makes PydanticAI stream the model request.
+        # F154: attaching an event handler is what makes PydanticAI stream the model request
         # A structured run already DISCARDS its text deltas (`include_text` below), so when
         # nothing consumes events -- production SMS and eval both pass no sink -- streaming buys
         # nothing and exposes the final answer request to mid-stream stalls, which is where every
-        # observed stall happened. The REPL passes a sink and still streams for tool progress.
+        # observed stall happened. The REPL passes a sink and still streams for tool progress
         self._streams_without_a_sink = stream_model_requests and not structured_grounding
         self._context_budget = (
             context_capacity(answer_model_route, None, True)
@@ -889,11 +882,8 @@ class PydanticRuntimeAdapter:
         verdict = check_grounding(
             rendered,
             mapping,
-            # F160: the guard's own #1 rule is "never false-fail a grounded answer", and it counts
-            # the resident's own words as a legitimate source so that restating the origin they
-            # gave is not a hallucination. It only ever saw the CURRENT message, so once F159 let
-            # an origin come from an earlier turn, the answer restating it was flagged against the
-            # dataset it obviously does not appear in. `user_history` is resident-authored turns.
+            # F160: the guard counts resident words as a source, but only saw the current turn
+            # Once F159 allowed an earlier-turn origin, restating it false-failed
             ctx.deps.user_history or ctx.deps.query,
         )
         if verdict is not None and verdict.blocking:
@@ -1264,24 +1254,20 @@ class PydanticRuntimeAdapter:
             (emergency.text if emergency is not None else None) or non_medical_backstop
         )
         # The trigger carries the risk label and the evidence it needs. Recovering either by
-        # searching the response for English phrases dropped both for every other language (F145).
+        # searching the response for English phrases dropped both for every other language (F145)
         safety_risk = emergency.risk if emergency is not None else None
         backstop_sources = emergency.sources if emergency is not None else frozenset()
         safety_run = None
         safety_error = None
-        # The screen reads context and every language; the regex reads English and Spanish
-        # phrases. Per the owner ruling the deterministic backstop is "a last-resort catch UNDER
-        # the semantic layer", so the screen runs on ALL traffic and the regex no longer
-        # short-circuits it. Previously a regex hit skipped the screen entirely, which is why
-        # "I just took 2 ibuprofen pills for my headache" reached a resident as a crisis response
-        # with no chance for the one component that can read "for my headache" to say otherwise
-        # (F146). Running it always costs nothing in aggregate: the regex fires on ~2% of turns.
+        # F146: screen runs on ALL traffic; the regex no longer short-circuits it
+        # Owner ruling: the backstop is a last-resort catch UNDER the semantic layer
+        # Negligible cost, the regex fires on ~2% of turns
         if self._crisis_screen is not None and non_medical_backstop is None:
             try:
                 safety_run = await self._crisis_screen(user_turns)
             except Exception as exc:
                 safety_error = type(exc).__name__
-                # Fail closed, unless the deterministic floor already caught it.
+                # Fail closed, unless the deterministic floor already caught it
                 if backstop is None:
                     backstop = TEMPORARY_FAILURE_FALLBACK
             if safety_run is not None:
@@ -1296,15 +1282,15 @@ class PydanticRuntimeAdapter:
                     if backstop is None:
                         backstop = TEMPORARY_FAILURE_FALLBACK
                 elif screened_risk in {"self_harm", "imminent_self_harm"}:
-                    # The screen decides: it serves the resident's own language.
+                    # The screen decides: it serves the resident's own language
                     safety_risk = screened_risk
                     backstop = crisis_response(screened_risk, language)
                     backstop_sources = frozenset()
                 elif safety_risk == "self_harm" and emergency is not None:
                     # The screen read the whole message and found no crisis where the phrase
-                    # match did. It is the better classifier, so it clears the false positive.
+                    # match did. It is the better classifier, so it clears the false positive
                     # An explicit `imminent_self_harm` phrase is NOT clearable: that is the
-                    # highest-confidence signal we have and it stays a hard floor.
+                    # highest-confidence signal we have and it stays a hard floor
                     safety_risk = None
                     backstop = None
                     backstop_sources = frozenset()
@@ -1475,7 +1461,7 @@ class PydanticRuntimeAdapter:
                 # A TimeoutError here is EITHER the run wall or the per-request bound giving up
                 # after its retry. Reporting both as "run exceeded <wall>" sent an operator
                 # looking at the wrong knob: the observed case spent 2 x 45s inside one stalled
-                # request, well under the 180s wall it was blamed on.
+                # request, well under the 180s wall it was blamed on
                 stalled = timing_capability.stalled_requests
                 if isinstance(exc, TimeoutError):
                     result.diagnostics["run_timeout_s"] = self._run_timeout_s

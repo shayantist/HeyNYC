@@ -58,7 +58,7 @@ def test_verified_copy_carries_the_exact_numbers_and_official_sources():
 
 # F149: ht/ko/ur/pl were recorded as having no official translation, and an Urdu resident got an
 # all-English crisis reply because of it. NYS OMH publishes this page in all four at
-# `<lang>.omh.ny.gov`, the same host the Bengali record already used.
+# `<lang>.omh.ny.gov`, the same host the Bengali record already used
 @pytest.mark.parametrize("code", ["ht", "ko", "ur", "pl"])
 def test_omh_harvested_language_carries_verbatim_official_copy(code):
     line = CRISIS_LINES[code]
@@ -68,7 +68,7 @@ def test_omh_harvested_language_carries_verbatim_official_copy(code):
     assert line.source_988 == f"https://{code}.omh.ny.gov/omhweb/crisis/what-is-988.html"
     assert line.verified_on == "2026-07-30"
     # The page's 911 text is an explanatory comparison, not an instruction, so the English floor
-    # supplies 911; the note must say so rather than implying an in-language 911 route exists.
+    # supplies 911; the note must say so rather than implying an in-language 911 route exists
     assert not line.emergency_911
     assert "911" in line.note
 
@@ -123,7 +123,7 @@ def test_language_with_only_911_appends_only_that_line():
 
 
 # Arabic is the one LL30 language whose official page carries a clean 911 line but no clean 988
-# line, so it gets the cited interpretation fact rather than an in-language 988 pointer (F149).
+# line, so it gets the cited interpretation fact rather than an in-language 988 pointer (F149)
 def test_language_without_a_988_pointer_states_the_interpretation_fact():
     out = compose_crisis_floor(_EN_IDEATION, "ar")
 
@@ -142,7 +142,7 @@ def test_omh_language_gets_its_own_copy_not_the_english_interpreter_line(code):
 
 
 def test_unknown_language_stays_byte_identical():
-    # No established language means no interpretation promise to make.
+    # No established language means no interpretation promise to make
     assert compose_crisis_floor(_EN_IDEATION, None) == _EN_IDEATION
     assert compose_crisis_floor(_EN_IDEATION, "de") == _EN_IDEATION  # unknown code
 
@@ -150,7 +150,7 @@ def test_unknown_language_stays_byte_identical():
 @pytest.mark.parametrize("code", ["zh", "bn", "es", "ru", "fr"])
 def test_language_with_verified_copy_does_not_get_the_english_interpreter_line(code):
     # Inverse: a resident whose language has verified official copy gets that, not an English
-    # sentence about interpreters.
+    # sentence about interpreters
     assert "240 languages" not in compose_crisis_floor(_EN_IDEATION, code)
 
 

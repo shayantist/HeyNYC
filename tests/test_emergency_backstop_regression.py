@@ -108,14 +108,14 @@ def test_crisis_backstop_carries_current_official_evidence():
     assert "988" in citations.mapping()["S1"]["snippet"]
     assert "911" in citations.mapping()["S1"]["snippet"]
     assert "Reducing access" in citations.mapping()["S2"]["snippet"]
-    # F149: the interpretation fact a resident with no verified in-language copy is told.
+    # F149: the interpretation fact a resident with no verified in-language copy is told
     assert citations.mapping()["S3"]["url"] == "https://www.samhsa.gov/mental-health/988/faqs"
     assert "240" in citations.mapping()["S3"]["snippet"]
 
 
 # F145: the overdose floor only matches first-person self-ingestion, so it is also a possible
 # suicide attempt. It routed to 911 and Poison Control but never offered 988, means reduction, or
-# a trusted person, and five green Gate 1 runs walked past the gap.
+# a trusted person, and five green Gate 1 runs walked past the gap
 @pytest.mark.parametrize(
     ("message", "response", "trusted_person"),
     [
@@ -154,7 +154,7 @@ def test_overdose_floor_evidence_covers_both_crisis_and_poison_sources():
 
 
 # Inverse: a caregiver reporting someone else's poisoning is not a self-harm disclosure, so the
-# crisis line must not fire at them.
+# crisis line must not fire at them
 @pytest.mark.parametrize(
     "message",
     [
@@ -166,21 +166,13 @@ def test_overdose_floor_evidence_covers_both_crisis_and_poison_sources():
 def test_third_party_poisoning_does_not_receive_the_crisis_line(message):
     # Assert the trigger misses outright. The old form was `response is None or "988" not in
     # response`, which passed on the first disjunct for every input and would have stayed green if
-    # the poison copy were replaced with anything at all.
+    # the poison copy were replaced with anything at all
     assert _emergency_backstop_result(message) is None
 
 
-# F146 (OPEN): `_OVERDOSE_*_RE` accept a bare `\d+` count, so an ordinary therapeutic dose trips the
-# emergency floor. A resident who took two ibuprofen for a headache is told to call 911 and Poison
-# Control, and since F145 is also asked whether they meant to hurt themselves. The whole eval corpus
-# fired the floor 11 times across 494 queries and every one was a genuine emergency, which measures
-# the corpus rather than the trigger: no benign dosing query existed to catch this.
-#
-# These are marked xfail rather than fixed here. Tightening the pattern would trade this false
-# positive for a false negative ("I just took 30 pills" would stop firing) with no classifier
-# beneath it on the legacy path. The fix is to stop letting the regex short-circuit the semantic
-# crisis screen at `runtime.py`, so a reader of context decides. Until then this is the visible
-# record of a real defect.
+# F146: `_OVERDOSE_*_RE` accept a bare `\d+`, so a therapeutic dose trips the floor
+# The corpus fired 11 times across 494 queries, all genuine: no benign dosing case existed
+# xfail, not fixed: the real fix is the screen adjudicating, not a tighter pattern
 @pytest.mark.xfail(strict=True, reason="F146: bare numeric counts fire the emergency floor")
 @pytest.mark.parametrize(
     "message",
@@ -214,7 +206,7 @@ def test_unambiguous_overdose_still_trips_the_emergency_floor(message):
 
 
 # F145: the risk label must come from the trigger, not the response text. Composed non-Latin crisis
-# copy never equals the English constant, so text comparison reported no risk for those residents.
+# copy never equals the English constant, so text comparison reported no risk for those residents
 @pytest.mark.parametrize(
     ("message", "expected_risk"),
     [
@@ -237,7 +229,7 @@ def test_backstop_risk_survives_language_composition(message, expected_risk):
 def test_chest_pain_floor_carries_no_self_harm_risk_label():
     # A real chest-pain hit, verified to FIRE, so this proves the risk label stays absent rather
     # than passing because the trigger missed. "I have crushing chest pain right now" was the
-    # original input here and it silently missed (F148), which made the assertion vacuous.
+    # original input here and it silently missed (F148), which made the assertion vacuous
     result = _emergency_backstop_result("I have severe chest pain right now")
 
     assert result is not None
@@ -257,7 +249,7 @@ def test_infant_dose_floor_carries_no_self_harm_risk_label():
 
 # F148 (OPEN): `_CHEST_PAIN_EN_RE` admits only `severe|bad|really bad|a` as the adjective, so the
 # textbook myocardial-infarction descriptor walks past the deterministic floor entirely. Found by
-# fresh-context review after the original inverse test used this exact string believing it fired.
+# fresh-context review after the original inverse test used this exact string believing it fired
 @pytest.mark.xfail(strict=True, reason="F148: chest-pain adjective list misses common descriptors")
 @pytest.mark.parametrize(
     "message",

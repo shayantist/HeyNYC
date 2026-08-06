@@ -362,7 +362,7 @@ async def test_runtime_marks_legacy_deterministic_crisis_floor_as_validated() ->
 
 # F146: the deterministic regex used to short-circuit the screen entirely, so a phrase match was
 # a verdict no context-reader could review. Per the owner ruling the backstop is "a last-resort
-# catch UNDER the semantic layer", so the screen now runs on all traffic and adjudicates.
+# catch UNDER the semantic layer", so the screen now runs on all traffic and adjudicates
 def _screen_returning(risk: str, language: str = "en"):
     calls: list[tuple[str, ...]] = []
 
@@ -402,7 +402,7 @@ async def test_screen_clears_a_therapeutic_dose_false_positive() -> None:
     assert calls, "the screen must run even when the regex matched"
     assert answered, "a cleared false positive proceeds to an ordinary answer"
     assert "988" not in result.text
-    # The screen's own verdict is recorded, so a cleared match is auditable rather than silent.
+    # The screen's own verdict is recorded, so a cleared match is auditable rather than silent
     assert result.diagnostics["safety_risk"] == "none"
     assert "safety_response_source" not in result.diagnostics
 

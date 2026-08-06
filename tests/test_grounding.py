@@ -92,7 +92,7 @@ def test_translated_full_date_matches_english_source_by_numeric_components():
 
 # A date written in Bengali or Arabic-Indic numerals was extracted (`\d` is Unicode-aware) and
 # then failed to parse, so it could never match its source and the claim failed grounding in
-# exactly the languages rule 11 calls a first-class safety surface.
+# exactly the languages rule 11 calls a first-class safety surface
 def test_localized_numeral_date_matches_its_ascii_source():
     citation = _data_cite(
         {},

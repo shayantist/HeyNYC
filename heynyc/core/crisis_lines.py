@@ -80,7 +80,7 @@ _FULL_CRISIS_RESPONSES = {
 
 # Verification date for every string in this module (live doc check via HTTP).
 VERIFIED_ON = "2026-07-20"
-# The four LL30 languages harvested from NYS OMH on this date (F149).
+# The four LL30 languages harvested from NYS OMH on this date (F149)
 VERIFIED_ON_OMH_LL30 = "2026-07-30"
 
 # The ten Local Law 30 designated citywide languages (NYC Charter, LL30 language access), as
@@ -121,7 +121,7 @@ _INTERPRETATION_ONLY = (
 # SAMHSA's own 988 FAQ, verified live 2026-07-30. Serves the languages that still lack a clean
 # in-language 988 pointer (Arabic, and any language the router does not recognize): the module
 # recorded 988's interpreter availability in a `note` a resident never saw, so the floor now
-# states and cites it.
+# states and cites it
 SAMHSA_988_FAQ_URL = "https://www.samhsa.gov/mental-health/988/faqs"
 SAMHSA_988_INTERPRETATION_SNIPPET = (
     "988 call, chat, and text services are available in English and Spanish. Call services with "
@@ -133,7 +133,7 @@ SAMHSA_988_INTERPRETATION_SNIPPET = (
 # English, because it is the floor's language, so it does NOT serve a monolingual reader; it
 # serves a partial-English reader or whoever is helping them. Preferred order is always verified
 # official copy in the resident's own language (see the NYS OMH records below); this is the
-# fallback for a language that has none.
+# fallback for a language that has none
 _INTERPRETER_LINE_EN = (
     "988 has interpreters in more than 240 languages, at no cost to you."
 )

@@ -224,14 +224,10 @@ async def test_nearest_food_pantry_rejects_partial_or_stale_origins(
     assert "proposed search origin was not supplied" in out
 
 
-# F159: this previously asserted the OPPOSITE, that a location from a prior turn must be rejected.
-# That conflated two independent properties. Anti-hallucination asks whether the RESIDENT authored
-# the location and is covered by `test_nearest_food_pantry_rejects_model_invented_origin`;
-# staleness asks whether it is still current and is covered by the past-location and negation
-# tests. "Current message only" was a crude proxy for both, and its side effect was amnesia: a
-# resident who answered the assistant's own "are you still near <X>?" with "yes" was asked for a
-# full address again, because a confirmation carries no address. Searching the resident's own
-# earlier turns cannot let the model invent anything, so the safety property is unchanged.
+# F159: previously asserted the opposite, conflating two independent properties
+# Anti-hallucination (did the RESIDENT author it) is covered by rejects_model_invented_origin
+# Staleness is covered by the past-location and negation tests
+# "Current message only" proxied both, and the side effect was amnesia
 async def test_nearest_food_pantry_uses_a_location_the_resident_gave_in_a_prior_turn(monkeypatch):
     seen = []
 
@@ -1222,12 +1218,9 @@ def test_food_pantries_module_loads_with_tool_and_eval():
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
 
 
-# F159: the resident named a location, the assistant asked "are you still near <that>?", the
-# resident said yes, and the assistant asked for a full address AGAIN. Not a model failure and not
-# a memory failure: the clarification IS carried in history, but `_resident_supplied_origin`
-# received `user_turns` and passed `()` to the guard, so the guard could only see the CURRENT
-# message. A confirmation contains no address, so a location the resident typed one turn earlier
-# was unreachable by construction.
+# F159: assistant proposed a location, resident confirmed, assistant re-asked
+# Not a model or memory failure; the clarification IS in history
+# The origin guard was handed `user_turns` and passed `()`
 def test_origin_may_come_from_a_location_the_resident_gave_earlier():
     turns = (
         "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",

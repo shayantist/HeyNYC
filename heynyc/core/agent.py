@@ -1569,7 +1569,7 @@ _EMERGENCY_RESPONSE_ES = "Llama al 911 ahora mismo. Soy una IA y no puedo diagno
 # _OVERDOSE_*_RE match only first-person self-ingestion, so every message reaching these responses
 # is a possible suicide attempt as well as a poisoning. Poisoning care leads because it is what
 # keeps the person alive tonight; the crisis route is conditional so an accidental double dose is
-# not told it was a suicide attempt. A caregiver reporting someone else never reaches here.
+# not told it was a suicide attempt. A caregiver reporting someone else never reaches here
 _POISON_RESPONSE_EN = (
     "Call 911 and Poison Control at 1-800-222-1222 right now. "
     "If you took them to hurt yourself, call 988 too. "
@@ -1669,7 +1669,7 @@ _NIMH_SUICIDE_SAFETY_SOURCE_SNIPPET = (
     "friend, spiritual advisor, or mental health professional."
 )
 # Evidence keys a deterministic trigger can require. Names, not response phrases, so a translated
-# floor keeps its citations.
+# floor keeps its citations
 _SOURCE_POISON_CONTROL = "poison_control"
 _SOURCE_INFANT_DOSING = "infant_dosing"
 _INFANT_DOSING_SOURCE_URL = (
@@ -1712,7 +1712,7 @@ def _ground_emergency_backstop(
         ))
         # Evidence for the interpretation fact the floor states to residents whose language has no
         # verified crisis copy (F149). Registered wherever 988 appears, since the snippet supports
-        # both calling 988 and its interpreter availability.
+        # both calling 988 and its interpreter availability
         cite_ids.append(citations.register(
             SAMHSA_988_FAQ_URL,
             title="988 Frequently Asked Questions | SAMHSA",
@@ -1816,7 +1816,7 @@ def _emergency_backstop_result(user_message: str) -> Optional[Backstop]:
             "self_harm",
         )
     if _EXACT_DOSE_RE.search(user_message):
-        # Caregiver asking about someone else: an emergency, but not this resident's crisis.
+        # Caregiver asking about someone else: an emergency, but not this resident's crisis
         infant = frozenset({_SOURCE_INFANT_DOSING, _SOURCE_POISON_CONTROL})
         if _INFANT_DOSE_ES_RE.search(user_message):
             if _INFANT_MEDICATION_CONCERN_ES_RE.search(user_message):
@@ -1827,7 +1827,7 @@ def _emergency_backstop_result(user_message: str) -> Optional[Backstop]:
                 return Backstop(_INFANT_MEDICATION_CONCERN_RESPONSE_EN, sources=infant)
             return Backstop(_INFANT_DOSE_RESPONSE_EN, sources=infant)
     if not _OVERDOSE_OLD_RE.search(user_message):
-        # _OVERDOSE_*_RE match first-person self-ingestion only, so these are possible attempts.
+        # _OVERDOSE_*_RE match first-person self-ingestion only, so these are possible attempts
         poison = frozenset({_SOURCE_POISON_CONTROL})
         if _OVERDOSE_ES_RE.search(user_message):
             return Backstop(_POISON_RESPONSE_ES, "self_harm", poison)
@@ -3038,7 +3038,7 @@ class Agent:
                 iterations=0, status="success", messages=messages, usage=_usage(),
                 # The same diagnostics the Pydantic runtime records. Without these the rollback
                 # path has no crisis telemetry at all, and `inv_harm_routing` fails every
-                # self_harm case by construction however correct the response is.
+                # self_harm case by construction however correct the response is
                 diagnostics=(
                     {
                         "safety_risk": emergency.risk,

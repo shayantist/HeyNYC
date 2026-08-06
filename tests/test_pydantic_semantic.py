@@ -118,7 +118,7 @@ def test_output_language_mismatch_rejects_a_wrong_script() -> None:
 # F155: caught in production. An English question got an entirely Bengali answer and the guard
 # passed it, because a GROUNDED reply is full of ASCII even when its prose is not English: the
 # addresses, organization names and boroughs stay exact. Measured 0.41 non-ASCII against the old
-# 0.5 threshold, so the more grounded the answer, the more it was protected from the check.
+# 0.5 threshold, so the more grounded the answer, the more it was protected from the check
 def test_grounded_answer_in_the_wrong_language_is_rejected() -> None:
     query = "where's the nearest food pantry to 82nd St and Roosevelt Ave in Queens?"
     bengali_answer = (
@@ -285,7 +285,7 @@ async def test_structured_output_does_not_retry_a_clear_missing_input_prompt() -
 
 
 # F145: the runtime recovered the risk label by comparing response text to the English and Spanish
-# constants, so a self-ingested overdose (and every composed non-Latin crisis floor) reported none.
+# constants, so a self-ingested overdose (and every composed non-Latin crisis floor) reported none
 @pytest.mark.parametrize(
     ("message", "expected_risk"),
     [
@@ -1462,7 +1462,7 @@ async def test_pydantic_semantic_validator_fails_safely_when_provider_is_down() 
         "I hit a temporary problem before I could verify an answer. "
         "Please try again in a moment."
     )
-    # F151: failing closed must still leave the resident a route.
+    # F151: failing closed must still leave the resident a route
     assert "311" in result.text
     assert result.usage["semantic_verifier_error"] == "RuntimeError"
 
@@ -1563,7 +1563,7 @@ def test_ab_cli_passes_semantic_verifier_only_to_candidate(
 # F158: caught in the live canary. The guard required a 30-letter QUERY before it evaluated
 # anything, so it never ran on a follow-up. "is it open on Saturday?" is 18 letters and drew a 67
 # percent non-ASCII answer that would have failed the share test easily. Follow-ups are short and
-# are exactly where language drifts, because that is when history outweighs the current message.
+# are exactly where language drifts, because that is when history outweighs the current message
 def test_short_follow_up_still_gets_a_language_check() -> None:
     query = "is it open on Saturday?"
     bengali_answer = (

@@ -253,7 +253,7 @@ async def test_clear_chest_pain_short_circuits_before_any_model_text(query, expe
     agent = Agent(Registry([]), tools={}, complete_fn=unsafe_model)
     seen = [event async for event in agent.stream(query)]
     # Marker count mirrors _ground_emergency_backstop's registration order. A self-ingested
-    # overdose now carries both the crisis and the poison sources (F145), so it gets all three.
+    # overdose now carries both the crisis and the poison sources (F145), so it gets all three
     sources = 0
     if "988" in expected:
         sources += 3  # NYC 988 + NIMH safety steps + SAMHSA interpretation (F149)
@@ -288,7 +288,7 @@ async def test_clear_chest_pain_short_circuits_before_any_model_text(query, expe
 
 
 # F145: the legacy runtime is the documented rollback path, but it recorded no crisis diagnostics
-# at all, so `inv_harm_routing` failed every self_harm case there by construction.
+# at all, so `inv_harm_routing` failed every self_harm case there by construction
 @pytest.mark.parametrize(
     ("query", "expected_risk"),
     [

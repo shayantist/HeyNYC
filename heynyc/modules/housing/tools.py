@@ -341,7 +341,7 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
     # assistance, a one-time consultation that is NOT representation in court. A tenant who reads
     # "a free lawyer" and stops looking can arrive at Housing Court with no counsel. The page
     # states no income threshold, so none is asserted here: the fix is to stop overclaiming, not
-    # to hand-author a figure the cited source does not carry.
+    # to hand-author a figure the cited source does not carry
     "right_to_counsel": (
         "Right to Counsel, free legal help for an eviction case:",
         (

@@ -4816,7 +4816,7 @@ async def test_candidate_bounds_the_complete_provider_run() -> None:
 # of thirty cases spent 159s, 175s and 178s inside ONE request while the slowest healthy request
 # in the same suite took 15.1s. The model-level `{"timeout": 60}` cannot catch it, because with
 # `stream_model_requests=True` an httpx float timeout is per-READ, so a stream holding its socket
-# open without producing content never trips it.
+# open without producing content never trips it
 async def test_a_stalled_model_request_is_bounded_and_retried_once() -> None:
     attempts = 0
 
@@ -4833,7 +4833,7 @@ async def test_a_stalled_model_request_is_bounded_and_retried_once() -> None:
         None, request_context=None, handler=handler
     )
 
-    # The resident's turn survives one bad socket instead of losing the whole run to it.
+    # The resident's turn survives one bad socket instead of losing the whole run to it
     assert result == "recovered"
     assert attempts == 2
     assert capability.stalled_requests == 1
@@ -4859,7 +4859,7 @@ async def test_a_persistently_stalled_request_gives_up_after_one_retry() -> None
 
 
 # F151: a family at PATH intake with a stroller got a bare "temporary problem" apology after
-# twelve successful retrieval steps, and every source the runtime was holding was discarded.
+# twelve successful retrieval steps, and every source the runtime was holding was discarded
 def test_failure_copy_routes_the_resident_somewhere() -> None:
     assert "311" in TEMPORARY_FAILURE_FALLBACK
     assert "911" in TEMPORARY_FAILURE_FALLBACK
@@ -4885,7 +4885,7 @@ def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
     text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
 
     assert "https://www.nyc.gov/site/dhs/shelter/families/path.page" in text
-    # A discovery hit is a search waypoint, not somewhere to send a family in crisis.
+    # A discovery hit is a search waypoint, not somewhere to send a family in crisis
     assert "google.com" not in text
 
 

@@ -107,6 +107,44 @@
     address. The inverse lives in convo_new_location_replaces_old, which must keep passing, since
     a newly named location still overrides the earlier one.
 
+- id: convo_language_returns_to_english_after_bengali
+  turns:
+    - "where's the nearest food pantry to 82nd st and roosevelt ave in queens?"
+    - "আমার কাছাকাছি ফুড প্যান্ট্রি কোথায়?"
+    - "is it open on saturday?"
+  abstain: false
+  capability: conversation
+  test_type: DIR
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F156, conversation, multilingual, must-win]
+  utility_criterion: >-
+    Each reply matches the language of THAT turn's message. Turn 2 is Bengali and must be answered
+    in Bengali; turn 3 returns to English and must be answered in English. A resident who writes
+    one message in another language must not be locked into it.
+  notes: >-
+    F156, observed live in the WhatsApp canary. Prior Bengali turns made the model answer a plain
+    English question entirely in Bengali. The prompt already says to use the language of the
+    latest message, so this pins behavior rather than wording.
+
+- id: convo_language_returns_to_english_after_spanish
+  turns:
+    - "where's the nearest food pantry to 82nd st and roosevelt ave in queens?"
+    - "¿hay alguna despensa de alimentos abierta ahora cerca de ahí?"
+    - "is it open on saturday?"
+  abstain: false
+  capability: conversation
+  test_type: DIR
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F156, conversation, multilingual, must-win]
+  utility_criterion: >-
+    Turn 2 is Spanish and must be answered in Spanish; turn 3 returns to English and must be
+    answered in English. Spanish is the Latin-script case no output-side script check can catch,
+    so this is the one that must be verified by reading the answers.
+  notes: >-
+    Spanish is NYC's second language and the likeliest real wrong-language failure. The interim
+    non-ASCII guard is blind to it by construction, so this case is the only detection we have
+    until issue 3 lands.
+
 - id: convo_language_switch_repeats_in_spanish
   turns:
     - "what benefits can i get as a new parent"
