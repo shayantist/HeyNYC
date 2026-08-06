@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -12,6 +13,7 @@ from pydantic_ai.usage import RequestUsage
 
 from heynyc.core.crisis_lines import CRISIS_LINES, crisis_response
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
+from heynyc.core.pydantic_runtime.runtime import _reply_language
 from heynyc.core.pydantic_runtime.safety import build_crisis_screen
 from heynyc.core.registry import Registry
 
@@ -465,3 +467,27 @@ async def test_screen_failure_keeps_the_deterministic_floor() -> None:
 
     assert "988" in result.text
     assert result.diagnostics["safety_error"] == "RuntimeError"
+
+
+# F156: per-turn language from the screen, the standard multilingual-chat pattern
+# Detection is on the INPUT; the output-side script check could never see Spanish
+@pytest.mark.parametrize(
+    ("language", "message", "expected"),
+    [
+        ("en", "is it open on saturday?", "en"),
+        ("es", "¿hay alguna despensa de alimentos abierta ahora?", "es"),
+        ("bn", "আমার কাছাকাছি ফুড প্যান্ট্রি কোথায়?", "bn"),
+    ],
+)
+def test_reply_language_follows_the_current_turn(language, message, expected):
+    assert _reply_language(SimpleNamespace(language=language), (message,)) == expected
+
+
+@pytest.mark.parametrize("message", ["ok gracias", "yes", "ok", "si"])
+def test_a_message_too_short_to_read_does_not_switch_language(message):
+    """The classic misfire: "ok gracias" must not flip a whole conversation"""
+    assert _reply_language(SimpleNamespace(language="es"), (message,)) == ""
+
+
+def test_no_screen_result_means_no_language_instruction():
+    assert _reply_language(None, ("where is the nearest food pantry",)) == ""

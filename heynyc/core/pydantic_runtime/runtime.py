@@ -177,6 +177,27 @@ class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"]
 
 
+# F156: per-turn language, the standard multilingual-chat pattern (Agentforce, Fin)
+# The crisis screen already labels every turn, so detection is on the INPUT, never the output
+# Below the length gate we KEEP the previous language: "ok gracias" is the classic misfire
+_MIN_LETTERS_TO_SWITCH_LANGUAGE = 12
+_REPLY_LANGUAGE_INSTRUCTION = (
+    "Reply in {language}. The resident's latest message is in that language, detected per turn. "
+    "Keep official names, addresses, phone numbers, and links exact and untranslated."
+)
+
+
+def _reply_language(safety_run: Any, user_turns: Sequence[str]) -> str:
+    """Language for THIS turn, sticky when the message is too short to read."""
+    language = getattr(safety_run, "language", None)
+    if not language:
+        return ""
+    latest = user_turns[-1] if user_turns else ""
+    if len([character for character in latest if character.isalpha()]) >= _MIN_LETTERS_TO_SWITCH_LANGUAGE:
+        return language
+    return ""
+
+
 # F155: 0.5 was unreachable for a grounded answer
 # Addresses and org names stay ASCII, so an all-Bengali reply measured 0.41
 # Calibrated both ways: 0.41 wrong-language, 0.04 English quoting a Chinese name
@@ -1369,6 +1390,9 @@ class PydanticRuntimeAdapter:
             ),
         )
         instructions = list(reminders or ())
+        reply_language = _reply_language(safety_run, user_turns)
+        if reply_language:
+            instructions.append(_REPLY_LANGUAGE_INSTRUCTION.format(language=reply_language))
         if self._current_awareness is not None:
             awareness = await self._current_awareness()
             if awareness:

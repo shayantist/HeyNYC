@@ -208,12 +208,23 @@ async def run_repeated(
     return [await run_case(agent_factory(), case, reminders=reminders) for _ in range(k)]
 
 
-async def run_all(agent_factory, cases: list[EvalCase], reminders: Optional[list[str]] = None) -> list[CaseResult]:
+async def run_all(
+    agent_factory,
+    cases: list[EvalCase],
+    reminders: Optional[list[str]] = None,
+    on_case=None,
+) -> list[CaseResult]:
     """Run each case with a fresh agent (so state never leaks between cases).
 
     `agent_factory` is a zero-arg callable returning an Agent, keeps cases isolated.
+    `on_case` fires after each case so a caller can persist incrementally. A long paid run that
+    stalled or was killed used to lose every completed case, because the report was assembled and
+    written only at the end.
     """
     results = []
     for case in cases:
-        results.append(await run_case(agent_factory(), case, reminders=reminders))
+        result = await run_case(agent_factory(), case, reminders=reminders)
+        results.append(result)
+        if on_case is not None:
+            on_case(result)
     return results
