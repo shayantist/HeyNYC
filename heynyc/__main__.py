@@ -678,6 +678,7 @@ async def _cmd_eval(
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
     from heynyc.eval.bench import build_eval_agent
     from heynyc.eval.cases import select_cases
+    from heynyc.eval.report import progress_writer
 
     if repeat < 1:
         raise ValueError("repeat must be at least 1")
@@ -707,7 +708,15 @@ async def _cmd_eval(
     def factory():
         return build_eval_agent(registry, selected_model, retriever)
 
-    results = await run_all(factory, cases, reminders=_default_reminders())
+    run_dir = Path(out) if out else (
+        config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
+    )
+    results = await run_all(
+        factory,
+        cases,
+        reminders=_default_reminders(),
+        on_case=progress_writer(run_dir),
+    )
     judge = None
     if use_api_judge:
         # The PAID, opt-in API judge. Thread today's date through so it treats live/future-dated
@@ -778,9 +787,6 @@ async def _cmd_eval(
                 f"cases reliable across {repeat} runs"
             )
 
-    run_dir = Path(out) if out else (
-        config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
-    )
     for case_id, runs, reports in repeated_artifacts:
         for index, (run, run_report) in enumerate(zip(runs, reports), start=1):
             write_run(

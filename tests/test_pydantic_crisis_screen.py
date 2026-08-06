@@ -474,9 +474,11 @@ async def test_screen_failure_keeps_the_deterministic_floor() -> None:
 @pytest.mark.parametrize(
     ("language", "message", "expected"),
     [
-        ("en", "is it open on saturday?", "en"),
-        ("es", "¿hay alguna despensa de alimentos abierta ahora?", "es"),
-        ("bn", "আমার কাছাকাছি ফুড প্যান্ট্রি কোথায়?", "bn"),
+        ("en", "is it open on saturday?", "English"),
+        ("es", "¿hay alguna despensa de alimentos abierta ahora?", "Spanish"),
+        ("bn", "আমার কাছাকাছি ফুড প্যান্ট্রি কোথায়?", "Bengali"),
+        # the code that drifted: "Reply in ht" asks the model to decode an abbreviation
+        ("ht", "ou te pale de yon red card pi bone, kisa sa ye", "Haitian Creole"),
     ],
 )
 def test_reply_language_follows_the_current_turn(language, message, expected):

@@ -188,14 +188,18 @@ _REPLY_LANGUAGE_INSTRUCTION = (
 
 
 def _reply_language(safety_run: Any, user_turns: Sequence[str]) -> str:
-    """Language for THIS turn, sticky when the message is too short to read."""
-    language = getattr(safety_run, "language", None)
-    if not language:
+    """Language NAME for this turn, sticky when the message is too short to read.
+
+    The screen returns an ISO code. "Reply in ht" asks the model to decode an abbreviation;
+    "Reply in Haitian Creole" does not, and Creole was the language it drifted out of.
+    """
+    code = getattr(safety_run, "language", None)
+    if not code:
         return ""
     latest = user_turns[-1] if user_turns else ""
-    if len([character for character in latest if character.isalpha()]) >= _MIN_LETTERS_TO_SWITCH_LANGUAGE:
-        return language
-    return ""
+    if len([c for c in latest if c.isalpha()]) < _MIN_LETTERS_TO_SWITCH_LANGUAGE:
+        return ""
+    return LL30_LANGUAGES.get(code, "English" if code == "en" else code)
 
 
 # F155: 0.5 was unreachable for a grounded answer

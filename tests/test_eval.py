@@ -550,7 +550,7 @@ async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, m
             "n_tool_calls": 1,
         }
 
-    async def fake_run_all(factory, cases, reminders=None):
+    async def fake_run_all(factory, cases, reminders=None, on_case=None):
         return [initial]
 
     async def fake_run_repeated(factory, target, k, reminders=None):
@@ -615,7 +615,7 @@ async def test_eval_repeat_failure_blocks_the_run_and_report(tmp_path, monkeypat
     initial = _result(case, text="initial", tools=["needed"])
     failed_repeat = _result(case, text="missed tool")
 
-    async def fake_run_all(factory, cases, reminders=None):
+    async def fake_run_all(factory, cases, reminders=None, on_case=None):
         return [initial]
 
     async def fake_run_repeated(factory, target, k, reminders=None):

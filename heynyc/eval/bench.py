@@ -6,14 +6,13 @@ exact same case set, runner, and gate as `heynyc eval`, the only new axis is "wh
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from ..core.agent import Agent
 from ..core.telemetry import priced_cost_usd
-from .report import GateReport, evaluate, write_run
+from .report import GateReport, evaluate, progress_writer, write_run
 from .runner import PydanticEvalAgent, run_all
 
 
@@ -55,32 +54,6 @@ class BenchRow:
     scope_input_tokens: int = 0
     scope_output_tokens: int = 0
     scope_time_ms: float = 0.0
-
-
-def _progress_writer(directory: Path):
-    """Append one JSONL line per finished case, so a killed run keeps what it already paid for.
-
-    Deliberately metadata plus the answer, not a second report format: `write_run` still owns the
-    gate output. This is a crash log, so it is flushed per line and never buffered.
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "progress.jsonl"
-
-    def on_case(result) -> None:
-        usage = getattr(result, "usage", {}) or {}
-        row = {
-            "case_id": getattr(result.case, "id", "?"),
-            "outcome": getattr(result, "outcome", ""),
-            "error": str(getattr(result, "error", "") or ""),
-            "cost_usd": usage.get("cost_usd"),
-            "latency_ms": usage.get("latency_ms"),
-            "stalled_model_requests": usage.get("stalled_model_requests"),
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-            handle.flush()
-
-    return on_case
 
 
 def _candidate_cost(model: str, results) -> tuple[Optional[float], int, int]:
@@ -232,7 +205,7 @@ async def run_bench(
 
             # Persist each case as it lands. A stall or a kill on a long paid run used to lose
             # every completed case, since the report was only assembled at the end
-            progress = _progress_writer(Path(out_dir) / model) if out_dir is not None else None
+            progress = progress_writer(Path(out_dir) / model) if out_dir is not None else None
             results = await run_all(factory, cases, reminders=reminders, on_case=progress)
             report = await evaluate(results, judge=judge)
             if out_dir is not None:

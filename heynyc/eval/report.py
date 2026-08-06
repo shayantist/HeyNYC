@@ -182,6 +182,32 @@ async def evaluate(
     return GateReport(reports=reports)
 
 
+def progress_writer(directory: Path):
+    """Append one JSONL line per finished case, so a killed run keeps what it already paid for.
+
+    Deliberately metadata plus the answer, not a second report format: `write_run` still owns the
+    gate output. This is a crash log, so it is flushed per line and never buffered.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "progress.jsonl"
+
+    def on_case(result) -> None:
+        usage = getattr(result, "usage", {}) or {}
+        row = {
+            "case_id": getattr(result.case, "id", "?"),
+            "outcome": getattr(result, "outcome", ""),
+            "error": str(getattr(result, "error", "") or ""),
+            "cost_usd": usage.get("cost_usd"),
+            "latency_ms": usage.get("latency_ms"),
+            "stalled_model_requests": usage.get("stalled_model_requests"),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+
+    return on_case
+
+
 def write_run(
     directory,
     report: "GateReport",
