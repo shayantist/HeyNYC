@@ -455,9 +455,14 @@ async def test_guidance_cold_water_freetext_does_not_return_hot_water_standard()
 
 async def test_guidance_shelter_grounds_both_intakes_and_cites_each():
     out, citations = await _run_guidance("shelter")
-    # families → PATH, single adults → the 30th Street / Franklin intake sites
+    # families → PATH, single adults → the current men's site / Franklin intake sites.
+    # The men's single-adult intake officially relocated on 2026-08-01, so this asserts whichever
+    # site is current for the run date. It previously hardcoded the pre-transition address and
+    # began failing at midnight on the transition day, while `_single_adult_men_intake` and its own
+    # transition test stayed correct throughout: a dated fact that changes on schedule must not be
+    # pinned a second time by a test that expires.
     assert "PATH" in out and "151 East 151st Street" in out and "718-503-6400" in out
-    assert "30th Street Intake Center" in out and "Franklin Shelter" in out
+    assert _single_adult_men_intake() in out and "Franklin Shelter" in out
     assert "Help Women's Center" in out and "114 Snediker Avenue" in out
     assert "333 Bowery" in out
     # three DOC citations, one per household/intake type, each cited inline

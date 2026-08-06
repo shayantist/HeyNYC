@@ -85,6 +85,28 @@
   notes: Restored conversational context must never mean stale-location reuse; this is the
     F042 class exercised through a real correction turn.
 
+- id: convo_confirmed_location_is_not_re_asked
+  turns:
+    - "where's the nearest food pantry to 82nd st and roosevelt ave in queens?"
+    - "is there one open later today?"
+    - "yes im still right there"
+  abstain: false
+  capability: conversation
+  test_type: DIR
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F159, conversation, memory, must-win]
+  utility_criterion: >-
+    The resident named the location once, in the first turn. Neither later turn may ask for a
+    full address or landmark again: the confirmation carries no address, so the origin must come
+    from the earlier resident turn. The final answer must be computed for 82nd St and Roosevelt
+    Ave with grounded citations and a directions link.
+  notes: >-
+    F159 was found in the live WhatsApp canary. The assistant asked whether the resident was still
+    near 82nd St and Roosevelt Ave, the resident said yes, and it asked for a full address again,
+    because the origin guard could only see the CURRENT message and a confirmation carries no
+    address. The inverse lives in convo_new_location_replaces_old, which must keep passing, since
+    a newly named location still overrides the earlier one.
+
 - id: convo_language_switch_repeats_in_spanish
   turns:
     - "what benefits can i get as a new parent"

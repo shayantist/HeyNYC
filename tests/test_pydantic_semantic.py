@@ -1558,3 +1558,29 @@ def test_ab_cli_passes_semantic_verifier_only_to_candidate(
     )
     candidate = factories["pydantic_ai"]()
     assert candidate.runtime._semantic_verifier is verifier
+
+
+# F158: caught in the live canary. The guard required a 30-letter QUERY before it evaluated
+# anything, so it never ran on a follow-up. "is it open on Saturday?" is 18 letters and drew a 67
+# percent non-ASCII answer that would have failed the share test easily. Follow-ups are short and
+# are exactly where language drifts, because that is when history outweighs the current message.
+def test_short_follow_up_still_gets_a_language_check() -> None:
+    query = "is it open on Saturday?"
+    bengali_answer = (
+        "এই নির্দিষ্ট *MUNA SOCIAL SERVICES - JACKSON HEIGHTS COMMUNITY*, 35-35 71st St-এর "
+        "শনিবারের সময় আমি নিশ্চিত করতে পারিনি। NYC-এর বর্তমান ডিরেক্টরিতে শনিবারের সময়সহ অন্য "
+        "MUNA সাইট আছে, কিন্তু এই ঠিকানাটি শনিবারের তালিকায় নেই।"
+    )
+
+    assert _output_language_mismatch(query, bengali_answer)
+
+
+@pytest.mark.parametrize("query", ["ok", "yes", "thanks!", "হে"])
+def test_a_query_too_short_to_read_is_not_judged(query: str) -> None:
+    """Inverse: below the floor the resident's language is genuinely ambiguous, so do not guess."""
+    answer = (
+        "এই নির্দিষ্ট MUNA SOCIAL SERVICES - JACKSON HEIGHTS COMMUNITY, 35-35 71st St-এর "
+        "শনিবারের সময় আমি নিশ্চিত করতে পারিনি। যাওয়ার আগে ফোন করে সময় নিশ্চিত করুন।"
+    )
+
+    assert not _output_language_mismatch(query, answer)

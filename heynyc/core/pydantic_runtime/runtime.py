@@ -186,10 +186,18 @@ class NonfactualOutcome(BaseModel):
 _WRONG_SCRIPT_SHARE = 0.15
 
 
+# F158: the query gate was 30 letters, so the guard never even evaluated a follow-up. "is it open
+# on Saturday?" is 18 letters, and it drew a 67 percent non-ASCII answer that would have failed the
+# share test easily. Follow-ups are SHORT and they are precisely where language drifts, because
+# that is when accumulated history outweighs the current message. 12 letters is still enough to
+# read a script confidently while skipping "ok" and "yes", where language is genuinely ambiguous.
+_MIN_QUERY_LETTERS = 12
+
+
 def _output_language_mismatch(query: str, answer: str) -> bool:
     query_letters = [character for character in query if character.isalpha()]
     answer_letters = [character for character in answer if character.isalpha()]
-    if len(query_letters) < 30 or len(answer_letters) < 30:
+    if len(query_letters) < _MIN_QUERY_LETTERS or len(answer_letters) < 30:
         return False
     query_is_ascii = all(character.isascii() for character in query_letters)
     non_ascii_answer_share = (
@@ -881,7 +889,12 @@ class PydanticRuntimeAdapter:
         verdict = check_grounding(
             rendered,
             mapping,
-            ctx.deps.query,
+            # F160: the guard's own #1 rule is "never false-fail a grounded answer", and it counts
+            # the resident's own words as a legitimate source so that restating the origin they
+            # gave is not a hallucination. It only ever saw the CURRENT message, so once F159 let
+            # an origin come from an earlier turn, the answer restating it was flagged against the
+            # dataset it obviously does not appear in. `user_history` is resident-authored turns.
+            ctx.deps.user_history or ctx.deps.query,
         )
         if verdict is not None and verdict.blocking:
             details = {
