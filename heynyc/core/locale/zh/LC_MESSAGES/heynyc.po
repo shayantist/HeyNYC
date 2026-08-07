@@ -1,0 +1,10 @@
+msgid ""
+msgstr ""
+"Language: zh_CN\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "I hit a temporary problem before I could verify an answer. Please try again in a moment. If you need help now, call 311 and ask for the service you need."
+msgstr "我在核实答案之前遇到了暂时性问题。请稍后再试。如果您现在需要帮助，请拨打 311，并说明您需要的服务。"
+
+msgid "I couldn't verify that against the reliable sources I found, so I don't want to guess. Try asking with a little more detail and I'll check again."
+msgstr "我无法根据找到的可靠来源核实这一点，所以不想猜测。请尝试提供更多细节，我会再帮您查询。"

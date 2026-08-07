@@ -76,6 +76,7 @@ from heynyc.core.crisis_lines import (
 )
 from heynyc.core.freshness import attach_temporal_provenance
 from heynyc.core.grounding import check_grounding
+from heynyc.core.localization import localize
 from heynyc.core.memory import (
     CompactFn,
     ContextCapacityError,
@@ -1182,11 +1183,12 @@ class PydanticRuntimeAdapter:
         validation_rejections: list[dict[str, Any]],
         status: str,
         text: str = TEMPORARY_FAILURE_FALLBACK,
+        language: str | None = None,
     ) -> AgentResult:
         result = self._project_result(
             messages,
             _captured_usage(messages),
-            _degraded_failure_text(text, citations),
+            _degraded_failure_text(localize(text, language), citations),
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
@@ -1295,6 +1297,7 @@ class PydanticRuntimeAdapter:
         backstop_sources = emergency.sources if emergency is not None else frozenset()
         safety_run = None
         safety_error = None
+        language = None
         # F146: screen runs on ALL traffic; the regex no longer short-circuits it
         # Owner ruling: the backstop is a last-resort catch UNDER the semantic layer
         # Negligible cost, the regex fires on ~2% of turns
@@ -1496,6 +1499,7 @@ class PydanticRuntimeAdapter:
                     if verification_exhausted
                     else TEMPORARY_FAILURE_FALLBACK
                 ),
+                language=language,
             )
             self._merge_safety_usage(result, safety_run)
             if safety_error:
@@ -2125,6 +2129,7 @@ class _PydanticConversation:
                     if isinstance(exc, UsageLimitExceeded)
                     else "error"
                 ),
+                language=self._safety_language,
             )
             if self._safety_language is not None:
                 result.diagnostics["safety_language"] = self._safety_language

@@ -36,6 +36,19 @@ def _locale(language: str | None) -> str | None:
         return None
 
 
+def localize(message: str, language: str | None) -> str:
+    locale = _locale(language)
+    if locale is None:
+        return message
+    translation = gettext.translation(
+        _DOMAIN,
+        localedir=str(_LOCALE_DIR),
+        languages=[locale, locale.split("_", 1)[0]],
+        fallback=True,
+    )
+    return translation.gettext(message)
+
+
 def welcome_footer(categories: Iterable[str], language: str | None = None) -> str | None:
     locale = _locale(language)
     if locale is None:
@@ -52,4 +65,7 @@ def welcome_footer(categories: Iterable[str], language: str | None = None) -> st
         fallback=True,
     )
     listed = format_list(tuple(categories) or ("NYC services",), locale=locale)
-    return translation.gettext(_WELCOME_FOOTER).format(categories=listed)
+    translated = translation.gettext(_WELCOME_FOOTER)
+    if base_language != "en" and translated == _WELCOME_FOOTER:
+        return None
+    return translated.format(categories=listed)
