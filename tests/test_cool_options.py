@@ -42,6 +42,12 @@ def _site_rows() -> list[dict]:
     ]
 
 
+_KNOWN_WEDNESDAY_HOURS = {
+    "cc_wed_open1": "09:00 AM",
+    "cc_wed_close1": "05:00 PM",
+}
+
+
 def _context(turn: str, facts: dict | None = None) -> ToolContext:
     return ToolContext(
         citations=CitationRegistry(),
@@ -60,12 +66,18 @@ def _patch_lookup(monkeypatch, rows: list[dict]):
 
     monkeypatch.setattr(cooling, "geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 13, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
     return cooling.get_tools()[0].handler
 
 
 @pytest.fixture
 def lookup(monkeypatch):
-    return _patch_lookup(monkeypatch, _site_rows())
+    rows = [{**row, **_KNOWN_WEDNESDAY_HOURS} for row in _site_rows()]
+    return _patch_lookup(monkeypatch, rows)
 
 
 @pytest.mark.asyncio
@@ -87,7 +99,18 @@ async def test_origin_only_tokens_do_not_select_a_facility(monkeypatch, near):
 async def test_exact_full_generic_leading_facility_name_is_selectable(monkeypatch, name):
     lookup = _patch_lookup(
         monkeypatch,
-        [_site_row("chosen", name), _site_row("other", "Other Center", 2, 40.7581)],
+        [
+            {
+                **_site_row("chosen", name),
+                "cc_wed_open1": "09:00 AM",
+                "cc_wed_close1": "05:00 PM",
+            },
+            {
+                **_site_row("other", "Other Center", 2, 40.7581),
+                "cc_wed_open1": "09:00 AM",
+                "cc_wed_close1": "05:00 PM",
+            },
+        ],
     )
     ctx = _context(f"Please take me to {name}")
 
@@ -195,11 +218,15 @@ async def test_same_origin_scope_change_replaces_offered_and_selected_state(
             **_site_row("old", "Old Cooling Center"),
             "Location_type": "Outdoor",
             "Age_restriction": "Yes",
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "05:00 PM",
         },
         {
             **_site_row("new", "New Filtered Option", 2, 40.7581),
             "Location_type": "Indoor",
             "Age_restriction": "No",
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "05:00 PM",
         },
     ]
     lookup = _patch_lookup(monkeypatch, rows)
@@ -402,11 +429,18 @@ async def test_lookup_can_return_only_activated_cooling_centers(monkeypatch):
                 "lon": -73.9780,
                 "Finder_status": "OPEN",
                 "Space_type": "Cooling Center",
+                "cc_wed_open1": "12:00 AM",
+                "cc_wed_close1": "11:59 PM",
             }
         ]
 
     monkeypatch.setattr(cooling, "geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 13, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
     )
@@ -438,6 +472,225 @@ async def test_lookup_reports_when_no_cooling_centers_are_activated(monkeypatch)
     )
 
     assert "No activated cooling centers" in output
+    assert "Other indoor Cool Options can be checked." in output
+    assert "Try kind=" not in output
+
+
+@pytest.mark.asyncio
+async def test_current_cooling_lookup_fails_closed_when_all_rows_are_closed(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        return [
+            {
+                "OBJECTID": 1,
+                "NYCEM_ID": "CC_CLOSED",
+                "Facility_name": "Flushing Library",
+                "lat": 40.7581,
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "Space_type": "Cooling Center",
+                "cc_wed_open1": "09:00 AM",
+                "cc_wed_close1": "05:00 PM",
+            }
+        ]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 18, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = _context("Where can I cool down?")
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"}, ctx
+    )
+
+    assert output == (
+        "No activated cooling center is confirmed open now. "
+        "Other indoor Cool Options can be checked."
+    )
+    assert "Flushing Library" not in output
+
+
+@pytest.mark.asyncio
+async def test_current_cooling_lookup_fails_closed_when_hours_are_unknown(monkeypatch):
+    handler = _patch_lookup(monkeypatch, [_site_row("unknown", "Unknown Hours Center")])
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        _context("Where can I cool down?"),
+    )
+
+    assert "No activated cooling center is confirmed open now" in output
+    assert "Unknown Hours Center" not in output
+
+
+@pytest.mark.asyncio
+async def test_current_cooling_lookup_keeps_a_confirmed_open_row(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        return [
+            {
+                "OBJECTID": 1,
+                "NYCEM_ID": "CC_OPEN",
+                "Facility_name": "Open Cooling Center",
+                "lat": 40.7581,
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "Space_type": "Cooling Center",
+                "cc_wed_open1": "09:00 AM",
+                "cc_wed_close1": "05:00 PM",
+            },
+            {
+                "OBJECTID": 2,
+                "NYCEM_ID": "CC_CLOSED",
+                "Facility_name": "Closed Cooling Center",
+                "lat": 40.7591,
+                "lon": -73.9780,
+                "Finder_status": "OPEN",
+                "Space_type": "Cooling Center",
+                "cc_wed_open1": "09:00 AM",
+                "cc_wed_close1": "12:00 PM",
+            },
+        ]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 13, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = _context("Where can I cool down?")
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"}, ctx
+    )
+
+    assert "Open Cooling Center" in output
+    assert "scheduled open now" in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status_fields", [{}, {"cc_wed_open1": "09:00 AM", "cc_wed_close1": "12:00 PM"}]
+)
+async def test_selected_site_not_confirmed_open_does_not_replace_selection(
+    monkeypatch, status_fields
+):
+    selected = {
+        **_site_row("selected", "Selected Center"),
+        **status_fields,
+    }
+    other = {
+        **_site_row("other", "Other Open Center", 2, 40.7581),
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "05:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [selected, other])
+    facts = {
+        "/cooling/offered": ResidentFact(
+            value={
+                "keys": ["selected", "other"],
+                "origin": [40.7580, -73.9780],
+                "scope": {"kind": "cooling_center", "audience": "any"},
+            },
+            source_turn_id="1",
+            status="captured",
+        ),
+        "/cooling/site": ResidentFact(
+            value={"key": "selected", "origin": [40.7580, -73.9780]},
+            source_turn_id="1",
+            status="captured",
+        ),
+    }
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        _context("Is it open now?", facts),
+    )
+
+    assert "selected cooling center is not confirmed open now" in output.lower()
+    assert "other current cooling center options can be checked" in output.lower()
+    assert "Other Open Center" not in output
+    assert facts["/cooling/site"].value["key"] == "selected"
+
+
+@pytest.mark.asyncio
+async def test_negated_open_alternative_does_not_claim_current_options_exist(monkeypatch):
+    selected = {
+        **_site_row("selected", "Selected Center"),
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "12:00 PM",
+    }
+    other = {
+        **_site_row("other", "Other Open Center", 2, 40.7581),
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "05:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [selected, other])
+    facts = {
+        "/cooling/offered": ResidentFact(
+            value={
+                "keys": ["selected", "other"],
+                "origin": [40.7580, -73.9780],
+                "scope": {"kind": "cooling_center", "audience": "any"},
+            },
+            source_turn_id="1",
+            status="captured",
+        ),
+        "/cooling/site": ResidentFact(
+            value={"key": "selected", "origin": [40.7580, -73.9780]},
+            source_turn_id="1",
+            status="captured",
+        ),
+    }
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        _context("Is Selected Center open now? Not Other Open Center.", facts),
+    )
+
+    assert "other current cooling center options can be checked" not in output.lower()
+    assert "other indoor cool options can be checked" in output.lower()
+    assert facts["/cooling/site"].value["key"] == "selected"
+
+
+@pytest.mark.asyncio
+async def test_selected_site_unknown_and_no_open_alternative_fails_closed(monkeypatch):
+    handler = _patch_lookup(monkeypatch, [_site_row("selected", "Selected Center")])
+    facts = {
+        "/cooling/offered": ResidentFact(
+            value={
+                "keys": ["selected"],
+                "origin": [40.7580, -73.9780],
+                "scope": {"kind": "cooling_center", "audience": "any"},
+            },
+            source_turn_id="1",
+            status="captured",
+        ),
+        "/cooling/site": ResidentFact(
+            value={"key": "selected", "origin": [40.7580, -73.9780]},
+            source_turn_id="1",
+            status="captured",
+        ),
+    }
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        _context("Is it open now?", facts),
+    )
+
+    assert "selected cooling center is not confirmed open now" in output.lower()
+    assert "other indoor cool options can be checked" in output.lower()
+    assert "Selected Center" not in output
+    assert facts["/cooling/site"].value["key"] == "selected"
 
 
 @pytest.mark.asyncio

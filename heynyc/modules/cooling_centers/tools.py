@@ -29,6 +29,7 @@ _KINDS = ("all", "indoor", "cooling_center")
 _AUDIENCES = ("any", "not_age_restricted")
 _SELECTED_SITE_FACT = "/cooling/site"
 _OFFERED_SITE_FACT = "/cooling/offered"
+_INDOOR_NEXT_STEP = "Other indoor Cool Options can be checked."
 
 
 def _nyc_now() -> datetime:
@@ -307,7 +308,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         if kind == "cooling_center":
             return (
                 "No activated cooling centers were returned by the NYC finder. "
-                "Try kind='indoor' for other indoor Cool Options."
+                + _INDOOR_NEXT_STEP
             )
         return "No matching NYC Cool Options were found near that location."
 
@@ -345,7 +346,9 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         str(args.get("site") or "").strip(),
         near,
     )
+    selected_item = None
     if selected:
+        selected_item = selected
         unique = [selected]
         ctx.resident_facts[_SELECTED_SITE_FACT] = ResidentFact(
             value={"key": _site_key(selected), "origin": origin_value},
@@ -361,6 +364,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
                 None,
             )
             if stored_item and _site_key(stored_item) in offered_keys:
+                selected_item = stored_item
                 unique = [stored_item]
             else:
                 return "I couldn't re-confirm the cooling site you selected in the current City finder."
@@ -368,6 +372,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             ctx.resident_facts.pop(_SELECTED_SITE_FACT, None)
     if excluded:
         unique = [item for item in unique if _site_key(item) not in excluded]
+    candidate_items = [item for item in offered_items if _site_key(item) not in excluded]
 
     now = _nyc_now()
     requested_on = str(args.get("on") or "").strip()
@@ -382,6 +387,20 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         item["target_hours"] = _scheduled_hours(item["record"], target_date.weekday())
         item["target_open"] = _scheduled_open(item["record"], target_date.weekday())
         item["distance_m"] = haversine_m(origin.lat, origin.lon, item["lat"], item["lon"])
+    if kind == "cooling_center" and not planning_ahead:
+        if selected_item and selected_item["open_now"] is not True:
+            if any(
+                _open_now(item["record"], now) is True
+                and _site_key(item) != _site_key(selected_item)
+                for item in candidate_items
+            ):
+                return (
+                    "The selected cooling center is not confirmed open now. "
+                    "Other current cooling center options can be checked."
+                )
+            return f"The selected cooling center is not confirmed open now. {_INDOOR_NEXT_STEP}"
+        if not any(item["open_now"] is True for item in unique):
+            return f"No activated cooling center is confirmed open now. {_INDOOR_NEXT_STEP}"
     if planning_ahead:
         unique.sort(
             key=lambda item: (

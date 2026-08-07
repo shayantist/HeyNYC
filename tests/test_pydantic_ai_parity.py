@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -690,6 +692,8 @@ def _cooling_rows() -> list[dict]:
             "lon": -73.9780,
             "Finder_status": "OPEN",
             "Space_type": "Cooling Center",
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "05:00 PM",
         },
         {
             "OBJECTID": 2,
@@ -700,6 +704,8 @@ def _cooling_rows() -> list[dict]:
             "lon": -73.9780,
             "Finder_status": "OPEN",
             "Space_type": "Cooling Center",
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "05:00 PM",
         },
     ]
 
@@ -707,6 +713,11 @@ def _cooling_rows() -> list[dict]:
 async def test_cooling_followup_reuses_resident_accepted_site_when_model_omits_it(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        cooling,
+        "_nyc_now",
+        lambda: datetime(2026, 7, 15, 13, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.7580, -73.9780, "Flushing, Queens")
 
