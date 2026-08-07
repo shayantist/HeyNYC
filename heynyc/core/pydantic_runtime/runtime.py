@@ -532,6 +532,11 @@ class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
 # `{"timeout": 60}` is per-READ, so a live-but-silent stream never trips it
 # 45s is 3x the slowest healthy request
 _MODEL_REQUEST_TIMEOUT_S = 45.0
+_VALID_SAFETY_LANGUAGES = frozenset(("en", *LL30_LANGUAGES))
+
+
+def _validated_safety_language(language: Any) -> str | None:
+    return language if isinstance(language, str) and language in _VALID_SAFETY_LANGUAGES else None
 
 
 class _ModelTimingCapability(AbstractCapability[ToolContext]):
@@ -1302,13 +1307,14 @@ class PydanticRuntimeAdapter:
                 if backstop is None:
                     backstop = UNSCREENED_FAILURE_FALLBACK
             if safety_run is not None:
-                language = getattr(safety_run, "language", None)
+                raw_language = getattr(safety_run, "language", None)
+                language = _validated_safety_language(raw_language)
                 screened_risk = safety_run.risk
-                if language is None:
+                if raw_language is None:
                     safety_error = "MissingCrisisLanguage"
                     if backstop is None:
                         backstop = UNSCREENED_FAILURE_FALLBACK
-                elif language not in {"en", *LL30_LANGUAGES}:
+                elif language is None:
                     safety_error = "InvalidCrisisLanguage"
                     if backstop is None:
                         backstop = UNSCREENED_FAILURE_FALLBACK
@@ -1364,6 +1370,12 @@ class PydanticRuntimeAdapter:
             if safety_error:
                 result.usage["safety_error"] = safety_error
             result.diagnostics = {
+                **(
+                    {"safety_language": language}
+                    if safety_run is not None
+                    and language in _VALID_SAFETY_LANGUAGES
+                    else {}
+                ),
                 **({"safety_error": safety_error} if safety_error else {}),
                 **(
                     {"safety_risk": safety_risk}
@@ -1488,6 +1500,11 @@ class PydanticRuntimeAdapter:
             self._merge_safety_usage(result, safety_run)
             if safety_error:
                 result.diagnostics["safety_error"] = safety_error
+            if (
+                safety_run is not None
+                and language is not None
+            ):
+                result.diagnostics["safety_language"] = language
             if verification_exhausted:
                 _finish_events(event_sink, message_id, result)
                 return result, new_messages, None
@@ -1541,6 +1558,12 @@ class PydanticRuntimeAdapter:
             ),
             "semantic_verifier_runs": deps.semantic_verifier_runs,
             "validation_rejections": deps.validation_rejections,
+            **(
+                {"safety_language": language}
+                if safety_run is not None
+                and language is not None
+                else {}
+            ),
             **({"safety_error": safety_error} if safety_error else {}),
             **(
                 {"safety_risk": safety_run.risk}
@@ -1684,6 +1707,7 @@ class _PydanticConversation:
         self._response_priority_citation_ids: set[str] = set()
         self._citations = CitationRegistry()
         self._delivered_notify_titles: frozenset = frozenset()
+        self._safety_language: str | None = None
         self.continuity: ContinuityRecord | None = None
         self._memory_usage: dict = {}
         self._memory_spend = SpendGuard(config.HEYNYC_SPEND_CAP)
@@ -1712,6 +1736,9 @@ class _PydanticConversation:
             conversation._citations = CitationRegistry.from_state(citations)
         conversation._delivered_notify_titles = frozenset(
             payload.get("delivered_notify_titles", ())
+        )
+        conversation._safety_language = _validated_safety_language(
+            payload.get("safety_language")
         )
         if payload["pending"] is not None:
             conversation._pending = _DEFERRED_REQUESTS.validate_python(
@@ -1789,6 +1816,7 @@ class _PydanticConversation:
                 ),
                 "citations": self._citations.dump_state(),
                 "delivered_notify_titles": sorted(self._delivered_notify_titles),
+                "safety_language": self._safety_language,
             },
             separators=(",", ":"),
         ).encode()
@@ -1980,22 +2008,31 @@ class _PydanticConversation:
         )
         timing_capability = _ModelTimingCapability()
         try:
-            result, new_messages, self._pending = await self.runtime._run(
-                user_message,
-                message_history=_native_history(_resident_history(self._history)),
-                prior_user_turns=self._user_turns,
-                reminders=reminders,
-                output_dir=output_dir,
-                drafts=drafts,
-                resident_facts=self._resident_facts,
-                delivered_notify_titles=self._delivered_notify_titles,
-                citations=self._citations,
-                memory_capability=memory_capability,
-                timing_capability=timing_capability,
-                event_sink=event_sink,
-                response_priority_citation_ids=(
-                    self._response_priority_citation_ids
-                ),
+            try:
+                result, new_messages, self._pending = await self.runtime._run(
+                    user_message,
+                    message_history=_native_history(_resident_history(self._history)),
+                    prior_user_turns=self._user_turns,
+                    reminders=reminders,
+                    output_dir=output_dir,
+                    drafts=drafts,
+                    resident_facts=self._resident_facts,
+                    delivered_notify_titles=self._delivered_notify_titles,
+                    citations=self._citations,
+                    memory_capability=memory_capability,
+                    timing_capability=timing_capability,
+                    event_sink=event_sink,
+                    response_priority_citation_ids=(
+                        self._response_priority_citation_ids
+                    ),
+                )
+            except PydanticRunFailure as exc:
+                self._safety_language = _validated_safety_language(
+                    exc.partial_result.diagnostics.get("safety_language")
+                )
+                raise
+            self._safety_language = _validated_safety_language(
+                result.diagnostics.get("safety_language")
             )
             merge_memory_usage(
                 result.usage,
@@ -2089,6 +2126,8 @@ class _PydanticConversation:
                     else "error"
                 ),
             )
+            if self._safety_language is not None:
+                result.diagnostics["safety_language"] = self._safety_language
             if isinstance(exc, TimeoutError):
                 result.diagnostics["run_timeout_s"] = self.runtime._run_timeout_s
                 _finish_events(event_sink, message_id, result)
@@ -2129,6 +2168,11 @@ class _PydanticConversation:
             ),
             "semantic_verifier_runs": deps.semantic_verifier_runs,
             "validation_rejections": deps.validation_rejections,
+            **(
+                {"safety_language": self._safety_language}
+                if self._safety_language is not None
+                else {}
+            ),
         }
         _finish_events(event_sink, message_id, result)
         self._history.extend(native.new_messages())

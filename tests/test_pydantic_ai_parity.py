@@ -656,6 +656,28 @@ async def test_resident_fact_ledger_survives_conversation_state_round_trip() -> 
     assert calls == [{"profile": {"age": 35}}, {"profile": {"age": 35}}]
 
 
+@pytest.mark.parametrize("persisted_language", [None, "xx", ["en"]])
+def test_conversation_state_normalizes_persisted_safety_language(
+    persisted_language: object,
+) -> None:
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda _messages, _info: ModelResponse([TextPart("Done")])),
+        registry=Registry([]),
+        tools={},
+        guard_grounding=False,
+    )
+    payload = json.loads(runtime.conversation().dump_state())
+    if persisted_language is None:
+        payload.pop("safety_language", None)
+    else:
+        payload["safety_language"] = persisted_language
+
+    restored = runtime.conversation_from_state(json.dumps(payload).encode())
+
+    assert restored._safety_language is None
+    assert json.loads(restored.dump_state())["safety_language"] is None
+
+
 async def test_structured_fact_confirmation_unlocks_read_only_screening() -> None:
     screened: list[dict] = []
 
@@ -1883,16 +1905,31 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         assert returns[-1].tool_call_id == "approval-call"
         return ModelResponse([TextPart("Prepared" if approved else "Cancelled")])
 
+    async def crisis_screen(user_turns: tuple[str, ...]):
+        return SimpleNamespace(
+            risk="none",
+            language="es" if len(user_turns) == 1 else "en",
+            model="test/safety",
+            input_tokens=1,
+            output_tokens=1,
+            cached_input_tokens=0,
+            requests=1,
+            cost_usd=0.0,
+            latency_ms=1.0,
+        )
+
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
         registry=Registry([]),
         tools={"prepare_application": source},
         guard_grounding=False,
+        crisis_screen=crisis_screen,
     )
     conversation = runtime.conversation()
 
     pending = await conversation.send("Prepare my application")
 
+    assert pending.diagnostics["safety_language"] == "es"
     assert pending.status == "approval_required"
     assert conversation.pending_approvals == {
         "approval-call": {
@@ -1905,6 +1942,7 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         await conversation.send("Start another turn")
 
     state = conversation.dump_state()
+    assert json.loads(state)["safety_language"] == "es"
     tampered = json.loads(state)
     tampered["pending"]["approvals"][0]["args"]["draft_id"] = "different-draft"
     with pytest.raises(ValueError, match="does not match message history"):
@@ -1958,8 +1996,14 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
     result = await restored.resume_approvals({"approval-call": approved})
 
     assert result.text == ("Prepared" if approved else "Cancelled")
+    assert result.diagnostics["safety_language"] == "es"
     assert executed == ([{"draft_id": "draft-123"}] if approved else [])
     assert restored.pending_approvals == {}
+
+    fresh = await restored.send("Start another turn")
+
+    assert fresh.diagnostics["safety_language"] == "en"
+    assert json.loads(restored.dump_state())["safety_language"] == "en"
 
 
 @pytest.mark.parametrize("approved", [True, False])

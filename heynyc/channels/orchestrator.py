@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 from heynyc.core import config, outcomes, pii_crypto
 from heynyc.core.agent import _emergency_backstop
 from heynyc.core.drafts import DraftStore
+from heynyc.core.localization import welcome_footer as _localized_welcome_footer
 from heynyc.core.memory import ContextCapacityError
 from heynyc.core.session import PendingTurn, Session
 
@@ -78,18 +79,12 @@ _DELETE_DONE_MSG = (
     "for abuse control, neither of which identifies you. This conversation starts fresh now."
 )
 # First-contact welcome footer: one line on what HeyNYC is, one naming the controls. Sent once ever.
-def _welcome_footer(registry) -> str:
+def _welcome_footer(registry, language: str | None = None) -> str:
     """First-contact greeting. The capability line derives from the installed manifests at send
     time (the same zero-drift pattern as HELP and the README table), so new modules appear here
     automatically and this copy can never lie about what is installed."""
     categories = sorted({m.category for m in registry.modules if m.category})
-    listed = ", ".join(categories[:-1]) + f", and {categories[-1]}" if len(categories) > 1 else (categories[0] if categories else "NYC services")
-    return (
-        f"First time here? I'm HeyNYC. I help with {listed} across NYC, grounded in real city "
-        "data, and I cite my sources.\n"
-        "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
-        "flag a bad answer, or DELETE MY DATA to erase everything I keep."
-    )
+    return _localized_welcome_footer(categories, language)
 _NEW_MESSAGE = (
     "Started a new conversation. I won't use the earlier chat as context. "
     "This does not delete stored records."
@@ -366,7 +361,11 @@ async def handle(
                 # that is a command isn't spent on it. The console banner merely lists commands;
                 # this explains them, so the console gets it too.
                 if deps.store.first_contact(key):
-                    await replier.send_text(_welcome_footer(deps.agent.registry) + "\n\nNow, about your message:")
+                    language = (result.diagnostics or {}).get("safety_language")
+                    await replier.send_text(
+                        _welcome_footer(deps.agent.registry, language)
+                        + "\n\nNow, about your message:"
+                    )
                 for chunk in render(result, msg.channel):
                     await replier.send_text(chunk)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir

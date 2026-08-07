@@ -1,11 +1,14 @@
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
+from babel.messages.extract import extract_from_file
 
 from heynyc.channels.base import InboundMessage, KeyedLocks
 from heynyc.channels.orchestrator import (
     Deps,
+    _welcome_footer,
     handle,
     is_delete,
     is_flag,
@@ -15,12 +18,13 @@ from heynyc.channels.orchestrator import (
     is_screen,
 )
 from heynyc.channels.store import ChannelStore
-from heynyc.core import config
+from heynyc.core import config, localization
 from heynyc.core.agent import (
     _IMMINENT_SELF_HARM_RESPONSE_EN,
     Agent,
     AgentResult,
 )
+from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool
 
@@ -465,6 +469,72 @@ async def test_first_contact_appends_a_welcome_footer_exactly_once(tmp_path):
     r2 = FakeReplier()
     await handle(_msg(text="what about SNAP?", mid="w2"), r2, deps)
     assert "DELETE MY DATA" not in " ".join(r2.sent)           # never welcomed twice
+
+
+async def test_first_contact_passes_native_safety_language_to_welcome(tmp_path, monkeypatch):
+    captured = []
+
+    def localized_footer(categories, language):
+        captured.append((categories, language))
+        return "Localized welcome"
+
+    monkeypatch.setattr(
+        "heynyc.channels.orchestrator._localized_welcome_footer",
+        localized_footer,
+    )
+
+    class NativeConversation:
+        async def send(self, message, **kwargs):
+            return AgentResult(
+                text="Answer",
+                citations={},
+                tool_calls_made=[],
+                iterations=1,
+                status="success",
+                messages=[],
+                usage={"cost_usd": 0.0},
+                diagnostics={"safety_language": "es"},
+            )
+
+        def dump_state(self):
+            return b"{}"
+
+    class NativeAgent:
+        model = "fake-native"
+        registry = Registry([])
+
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+    deps = _deps(tmp_path)
+    deps.agent = NativeAgent()
+    replier = FakeReplier()
+
+    await handle(_msg(text="where can I find food?", mid="native-welcome"), replier, deps)
+
+    assert captured == [([], "es")]
+    assert replier.sent == ["Localized welcome\n\nNow, about your message:", "Answer"]
+
+
+@pytest.mark.parametrize("language", [None, "", "es", "xx"])
+def test_welcome_footer_uses_english_fallback_and_babel_list_format(language):
+    registry = Registry([
+        ServiceModule(name="food", category="Food"),
+        ServiceModule(name="transit", category="Transit"),
+    ])
+
+    footer = _welcome_footer(registry, language)
+
+    assert "I help with Food and Transit across NYC" in footer
+
+
+def test_babel_extracts_welcome_msgid_from_localization_module():
+    messages = extract_from_file("python", Path(localization.__file__))
+
+    assert any(message == localization._WELCOME_FOOTER for _, message, *_ in messages)
 
 
 def test_store_stages_confirms_and_lists_flag_pointers(tmp_path):

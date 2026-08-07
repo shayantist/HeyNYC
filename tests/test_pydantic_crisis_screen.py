@@ -104,6 +104,7 @@ async def test_semantic_crisis_screen_bypasses_the_answer_model_and_counts_usage
     assert result.usage["n_model_calls"] == 1
     assert result.usage["cost_usd"] == 0.001
     assert result.diagnostics["safety_response_source"] == "deterministic"
+    assert result.diagnostics["safety_language"] == "bn"
 
 
 async def test_semantic_crisis_screen_does_not_capture_third_person_help() -> None:
@@ -324,6 +325,46 @@ async def test_runtime_fails_closed_on_invalid_language_for_no_risk() -> None:
     assert answer_calls == 0
 
 
+async def test_runtime_fails_closed_on_unhashable_language() -> None:
+    answer_calls = 0
+
+    async def answer(
+        _messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal answer_calls
+        answer_calls += 1
+        return ModelResponse([TextPart("This must not run.")])
+
+    async def malformed(_user_turns: tuple[str, ...]):
+        return SimpleNamespace(
+            risk="none",
+            language=["en"],
+            model="test/safety",
+            input_tokens=10,
+            output_tokens=2,
+            cached_input_tokens=0,
+            requests=1,
+            cost_usd=0.0005,
+            latency_ms=2.0,
+        )
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(answer),
+        registry=Registry([]),
+        tools={},
+        crisis_screen=malformed,
+    )
+
+    result = await runtime.run("Where can I get food?")
+
+    assert "temporary problem" in result.text
+    assert "911" in result.text
+    assert result.diagnostics["safety_error"] == "InvalidCrisisLanguage"
+    assert result.usage["safety_error"] == "InvalidCrisisLanguage"
+    assert answer_calls == 0
+
+
 async def test_screened_downstream_failure_does_not_add_911() -> None:
     async def answer(
         _messages: list[ModelMessage],
@@ -346,6 +387,7 @@ async def test_screened_downstream_failure_does_not_add_911() -> None:
     assert "temporary problem" in result.text
     assert "311" in result.text
     assert "911" not in result.text
+    assert result.diagnostics["safety_language"] == "en"
 
 
 async def test_runtime_ignores_injected_model_authored_crisis_text() -> None:
@@ -464,6 +506,7 @@ async def test_screen_finding_crisis_overrides_a_silent_regex() -> None:
 
     assert CRISIS_LINES["ur"].lifeline_988 in result.text
     assert result.diagnostics["safety_risk"] == "imminent_self_harm"
+    assert result.diagnostics["safety_language"] == "ur"
 
 
 async def test_non_self_harm_medical_floor_survives_a_screen_finding_no_crisis() -> None:
