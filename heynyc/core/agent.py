@@ -752,6 +752,41 @@ _SPANISH_CASHLESS_DIRECT_RE = re.compile(
 )
 
 
+def _hot_water_section_feedback(
+    hot_water_section_turn: bool,
+    final_text: str,
+    citations: dict[str, dict],
+) -> Optional[str]:
+    """Require the retrieved hot-water code section when the resident asks for it."""
+    if not hot_water_section_turn:
+        return None
+    source_ids = {
+        citation_id
+        for citation_id, citation in citations.items()
+        if "27-2031" in " ".join(
+            str(citation.get(field) or "")
+            for field in ("url", "title", "snippet")
+        )
+    }
+    if not source_ids:
+        return (
+            "The resident explicitly asked which code section covers the hot-water outage. "
+            "Retrieve `housing_guidance(topic=\"no_heat\")` before answering. If the "
+            "section source remains unavailable, do not guess: say you could not verify the "
+            "section and preserve only grounded 311 or HPD next steps."
+        )
+    for claim in re.split(r"[\n\r]+|(?<=[.!?।])\s+(?!\{cite:)", final_text or ""):
+        if "27-2031" in claim and source_ids.intersection(
+            _CITE_MARKER_RE.findall(claim)
+        ):
+            return None
+    return (
+        "The resident explicitly asked which code section covers the hot-water outage. "
+        "State section 27-2031 and cite the retrieved 27-2031 source beside that claim. "
+        "Keep the supported 311 and HPD next steps."
+    )
+
+
 def _dominant_non_latin_script(text: str, *, require_majority: bool = True) -> Optional[str]:
     # require_majority=True (reply-language feedback): the non-Latin script must be MOST of the
     # letters. require_majority=False (crisis routing): the most-frequent non-Latin script wins even
@@ -795,11 +830,16 @@ def _reply_script_feedback(user_message: str, final_text: str) -> Optional[str]:
 def _required_scope_feedback(
     user_message: str, final_text: str, civic_law_search: Optional[str],
     *, immigrant_benefits_turn: bool = False, benefits_recovery_turn: bool = False,
-    lockout_turn: bool = False,
+    lockout_turn: bool = False, hot_water_section_turn: bool = False,
+    citations: Optional[dict[str, dict]] = None,
 ) -> Optional[str]:
     routed_query = _routing_text(user_message)
     low_query = routed_query.lower()
     low_answer = (final_text or "").lower()
+    if feedback := _hot_water_section_feedback(
+        hot_water_section_turn, final_text, citations or {},
+    ):
+        return feedback
     if (
         re.search(r"definitive legal ruling|answer with (?:just|only) yes or no|only yes or no", low_query)
         and re.match(r"\s*(?:yes|no)\b", final_text or "", re.I)
@@ -3387,6 +3427,8 @@ class Agent:
                     immigrant_benefits_turn=immigrant_benefits_turn,
                     benefits_recovery_turn=benefits_recovery_turn,
                     lockout_turn=lockout_turn,
+                    hot_water_section_turn="hot_water_code_section" in scope_situations,
+                    citations=citations.mapping(),
                 )
                 if scope_feedback:
                     backstop = _scope_grounded_backstop(
@@ -3400,7 +3442,7 @@ class Agent:
                     if backstop is not None:
                         text = backstop
                         assistant["content"] = text
-                    elif guard_retries < self.guard_max_retries:
+                    elif guard_retries < self.guard_max_retries and i + 1 < max_iters:
                         guard_retries += 1
                         yield events.MessageCompleted(
                             message_id=message_id, text="", citations=citations.mapping()

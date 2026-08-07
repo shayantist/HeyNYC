@@ -54,6 +54,20 @@ datasets:
 tools: tools.py
 eval: eval.yaml
 situations:
+  - name: hot_water_code_section
+    definition: >-
+      The resident explicitly asks which NYC code, law, statute, or section covers a hot-water
+      outage or requirement. Read the full conversation so a short follow-up asking only which
+      section still matches, in any language.
+    high_stakes: false
+    query: ""
+    urls: []
+    reminder: >-
+      The resident asked for the hot-water code section. Use housing_guidance for the section and
+      its source, preserve grounded 311 and HPD next steps, and do not substitute the heat-only
+      section.
+    focus_tools:
+      - housing_guidance
   - name: active_lockout
     definition: >-
       The resident is locked out of their home right now, their landlord or building changed
