@@ -4,11 +4,12 @@ import gettext
 from collections.abc import Iterable
 from pathlib import Path
 
+from babel import Locale
+from babel.core import UnknownLocaleError
 from babel.lists import format_list
 
 _DOMAIN = "heynyc"
 _LOCALE_DIR = Path(__file__).with_name("locale")
-_SUPPORTED_LOCALES = frozenset({"en"})
 
 
 def _(message: str) -> str:
@@ -23,13 +24,27 @@ _WELCOME_FOOTER = _(
 )
 
 
-def _locale(language: str | None) -> str:
-    value = language.strip().lower() if isinstance(language, str) else ""
-    return value if value in _SUPPORTED_LOCALES else "en"
+def _locale(language: str | None) -> str | None:
+    if not isinstance(language, str):
+        return "en" if language is None else None
+    value = language.strip()
+    if not value:
+        return "en"
+    try:
+        return str(Locale.parse(value, sep="-"))
+    except (UnknownLocaleError, ValueError):
+        return None
 
 
-def welcome_footer(categories: Iterable[str], language: str | None = None) -> str:
+def welcome_footer(categories: Iterable[str], language: str | None = None) -> str | None:
     locale = _locale(language)
+    if locale is None:
+        return None
+    base_language = locale.split("_", 1)[0]
+    if base_language != "en" and gettext.find(
+        _DOMAIN, localedir=str(_LOCALE_DIR), languages=[locale]
+    ) is None:
+        return None
     translation = gettext.translation(
         _DOMAIN,
         localedir=str(_LOCALE_DIR),

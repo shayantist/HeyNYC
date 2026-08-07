@@ -519,7 +519,70 @@ async def test_first_contact_passes_native_safety_language_to_welcome(tmp_path, 
     assert replier.sent == ["Localized welcome\n\nNow, about your message:", "Answer"]
 
 
-@pytest.mark.parametrize("language", [None, "", "es", "xx"])
+def _welcome_test_agent(language):
+    class Conversation:
+        async def send(self, message, **kwargs):
+            return AgentResult(
+                text="Grounded answer",
+                citations={},
+                tool_calls_made=[],
+                iterations=1,
+                status="success",
+                messages=[],
+                usage={"cost_usd": 0.0},
+                diagnostics={"safety_language": language},
+            )
+
+        def dump_state(self):
+            return b"{}"
+
+    class WelcomeAgent:
+        model = "fake-native"
+        registry = Registry([])
+
+        def conversation(self):
+            return Conversation()
+
+        def conversation_from_state(self, state):
+            return Conversation()
+
+    return WelcomeAgent()
+
+
+async def test_first_contact_accepts_regional_english_language_once(tmp_path):
+
+    deps = _deps(tmp_path)
+    deps.agent = _welcome_test_agent("en-US")
+    replier = FakeReplier()
+
+    await handle(_msg(text="where can I find food?", mid="regional-english"), replier, deps)
+
+    assert replier.sent == [
+        "First time here? I'm HeyNYC. I help with NYC services across NYC, grounded in real city "
+        "data, and I cite my sources.\n"
+        "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
+        "flag a bad answer, or DELETE MY DATA to erase everything I keep.\n\n"
+        "Now, about your message:",
+        "Grounded answer",
+    ]
+
+    second = FakeReplier()
+    await handle(_msg(text="where can I find food?", mid="regional-english-2"), second, deps)
+    assert second.sent == ["Grounded answer"]
+
+
+@pytest.mark.parametrize("language", ["es", 123, "not-a-language"])
+async def test_first_contact_suppresses_untranslated_non_english_welcome(tmp_path, language):
+    deps = _deps(tmp_path)
+    deps.agent = _welcome_test_agent(language)
+    replier = FakeReplier()
+
+    await handle(_msg(text="where can I find food?", mid="missing-catalog"), replier, deps)
+
+    assert replier.sent == ["Grounded answer"]
+
+
+@pytest.mark.parametrize("language", [None, "", "en", "en-GB"])
 def test_welcome_footer_uses_english_fallback_and_babel_list_format(language):
     registry = Registry([
         ServiceModule(name="food", category="Food"),
@@ -529,6 +592,11 @@ def test_welcome_footer_uses_english_fallback_and_babel_list_format(language):
     footer = _welcome_footer(registry, language)
 
     assert "I help with Food and Transit across NYC" in footer
+
+
+@pytest.mark.parametrize("language", ["es", 123, "not-a-language"])
+def test_welcome_footer_fails_closed_without_a_usable_catalog(language):
+    assert _welcome_footer(Registry([]), language) is None
 
 
 def test_babel_extracts_welcome_msgid_from_localization_module():

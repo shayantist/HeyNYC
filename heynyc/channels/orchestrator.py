@@ -79,7 +79,7 @@ _DELETE_DONE_MSG = (
     "for abuse control, neither of which identifies you. This conversation starts fresh now."
 )
 # First-contact welcome footer: one line on what HeyNYC is, one naming the controls. Sent once ever.
-def _welcome_footer(registry, language: str | None = None) -> str:
+def _welcome_footer(registry, language: str | None = None) -> str | None:
     """First-contact greeting. The capability line derives from the installed manifests at send
     time (the same zero-drift pattern as HELP and the README table), so new modules appear here
     automatically and this copy can never lie about what is installed."""
@@ -362,10 +362,9 @@ async def handle(
                 # this explains them, so the console gets it too.
                 if deps.store.first_contact(key):
                     language = (result.diagnostics or {}).get("safety_language")
-                    await replier.send_text(
-                        _welcome_footer(deps.agent.registry, language)
-                        + "\n\nNow, about your message:"
-                    )
+                    welcome = _welcome_footer(deps.agent.registry, language)
+                    if welcome is not None:
+                        await replier.send_text(welcome + "\n\nNow, about your message:")
                 for chunk in render(result, msg.channel):
                     await replier.send_text(chunk)
                 artifacts = _artifacts_in(art_dir)    # only files the tool wrote into OUR dir
