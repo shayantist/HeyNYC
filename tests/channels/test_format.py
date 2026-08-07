@@ -259,6 +259,54 @@ def test_body_debraces_stray_brace_wrapped_link():
     assert "Details: https://data.cityofnewyork.us/d/tvpp-9vvx" in answer
 
 
+def test_body_repairs_citation_marker_used_as_a_markdown_link_target():
+    event_url = "https://www.nycgovparks.org/events/2026/07/26/open-run"
+    map_url = "https://www.google.com/maps/search/?api=1&query=40.7,-73.8"
+    source_url = "https://services.example.gov/FeatureServer/0/query?where=OBJECTID%3D1"
+    r = FakeResult(
+        "Event: [Details]({cite:S1}\n"
+        f"  Details: {event_url})\n"
+        "Place: [Map]({cite:S2}\n"
+        f"  Directions: {map_url}\n"
+        f"  Details: {source_url})",
+        {
+            "S1": {"url": event_url, "title": "Open Run", "kind": "WEB"},
+            "S2": {"url": source_url, "title": "Cooling center", "kind": "DATA"},
+        },
+    )
+
+    for channel in ("sms_twilio", "whatsapp_twilio"):
+        answer = "\n".join(render(r, channel)).split("Sources:")[0]
+        assert f"Details: {event_url}" in answer
+        assert f"Map: {map_url}" in answer
+        assert f"Details: {source_url}" in answer
+        assert "{cite:" not in answer
+        assert "](" not in answer
+
+    console = "\n".join(render(r, "console"))
+    assert f"[Details]({event_url})" in console
+    assert f"[Map]({map_url})" in console
+    assert source_url in console
+
+
+def test_body_does_not_repair_unknown_or_mismatched_citation_target_links():
+    safe_url = "https://www.nycgovparks.org/events/safe"
+    attacker_url = "https://attacker.example/phish"
+    r = FakeResult(
+        "[Details]({cite:S1}\n"
+        f"  Details: {attacker_url})\n"
+        "[Map]({cite:S9}\n"
+        f"  Directions: {attacker_url})",
+        {"S1": {"url": safe_url, "title": "Safe event", "kind": "WEB"}},
+    )
+
+    answer = "\n".join(render(r, "sms_twilio")).split("Sources:")[0]
+
+    assert "Details: https://attacker.example/phish" in answer
+    assert "[Details](" in answer
+    assert "[Map](" in answer
+
+
 def test_render_is_presentation_only_and_preserves_the_audit_record():
     permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json"
     r = FakeResult(

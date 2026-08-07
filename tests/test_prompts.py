@@ -91,6 +91,13 @@ def test_system_prompt_forbids_uncited_authority_on_substantive_facts():
     assert "emtali" in low or "emtala" in low       # names the find_clinic grounding route
 
 
+def test_system_prompt_requires_citations_on_the_supported_sentence_or_bullet():
+    low = build_system_prompt(Registry([])).lower()
+    assert "same sentence or bullet" in low
+    assert "elsewhere in a paragraph or list does not count" in low
+    assert "never put braces around a url" in low
+
+
 def test_system_prompt_describes_data_practices_accurately():
     # Privacy-accuracy fix: the prompt must NOT let the agent claim it "stores nothing"; it should
     # describe the in-progress application draft honestly and match the PIA.
@@ -166,6 +173,13 @@ def test_system_prompt_same_discipline_in_every_language():
     assert "local law 34" in low or "20-840" in low
 
 
+def test_system_prompt_translates_resident_facing_source_language():
+    low = build_system_prompt(Registry([])).lower()
+    assert "translate resident-facing labels and suggested phrases" in low
+    assert "required official keyword" in low
+    assert "keep official names, addresses, and links exact" in low
+
+
 def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
     # RULED (2026-07-21): the equal-dignity values baseline is ambient in the standing prompt,
     # carried into every generated reply, not trapped in a canned denial template. Owner constraint:
@@ -202,6 +216,28 @@ def test_system_prompt_teaches_per_turn_composition_in_stable_tier():
     assert "official guidance first, in any language" in low
     # Stable, not volatile.
     assert "cooling centers near their route" not in volatile.lower()
+
+
+def test_system_prompt_sequences_dependent_tool_calls():
+    low = build_system_prompt(Registry([])).lower()
+    assert "parallelize only independent tool calls" in low
+    assert "wait for that result" in low
+
+
+def test_system_prompt_stops_retrieval_once_requested_constraints_are_supported():
+    low = build_system_prompt(Registry([])).lower()
+    assert "once the tool results support every requested constraint" in low
+    assert "compose the answer instead of searching for a better result" in low
+    assert "one required fact is still missing" in low
+
+
+def test_system_prompt_minimizes_missing_attachment_recovery():
+    low = build_system_prompt(Registry([])).lower()
+    assert "attachment was not received" in low
+    assert "paste only the redacted text" in low
+    assert "redacted image or text summary" not in low
+    assert "case or client numbers" in low
+    assert "never ask for a full case number" in low
 
 
 # --- Change 1: progressive disclosure of the per-module detailed blurbs ---------------------------
@@ -325,6 +361,21 @@ def test_static_conversation_and_language_rules_live_in_the_stable_prefix():
     assert "nearest_food_pantry(near=" in volatile
     assert "Current date & time" not in stable
     assert "nearest_food_pantry(near=" not in stable
+
+
+def test_conversation_rules_preserve_transform_only_followups_without_retrieval():
+    from heynyc.core.prompts import build_system_prompt_tiers
+
+    stable, _ = build_system_prompt_tiers(_real_registry())
+    low = stable.lower()
+    assert "translate, repeat, shorten, or reformat" in low
+    assert "do not call a discovery or retrieval tool" in low
+    assert "preserve the same items" in low
+    assert "inclusive or exclusive boundary" in low
+    assert "negation, quantity, date, and eligibility condition" in low
+    assert "retrieve again only when the resident asks for updated or new facts" in low
+    assert "earlier answer lacks the evidence" in low
+    assert "when a new or current factual answer is needed" in low
 
 
 def test_capability_blurbs_only_filters_to_named_modules():

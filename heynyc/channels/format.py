@@ -6,6 +6,7 @@ raw generation or the citation record that the session and telemetry persist."""
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from heynyc.core.citations import used_citations
 
@@ -19,6 +20,15 @@ _HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MU
 # A URL the model wrapped in braces, e.g. `[Details]({https://...})` seen live. Presentation-only
 # cleanup: the braces are never part of the address, so strip them before any link handling.
 _BRACED_URL = re.compile(r"\{(https?://[^\s{}]+)\}")
+# A model may put the citation marker where a Markdown link target belongs, then copy the real
+# direct URL on the following Details or Directions line. Recover that already-generated URL at
+# the presentation boundary without changing the stored answer or citation record.
+_CITE_TARGET_LINK = re.compile(
+    r"\[(Details|Map|Directions)\]\(\s*(\{cite:(S\d+)\})\s*\n\s*"
+    r"(Details|Directions):\s*(https?://[^\s)]+)"
+    r"((?:\s*\n\s*(?:Details|Directions):\s*https?://[^\s)]+)*)\s*\)",
+    re.IGNORECASE,
+)
 # A Socrata single-row API permalink: /resource/{4x4}/{:id}.json (see core.tools.datasets.row_url).
 # Its resident-facing equivalent is the dataset's human landing page /d/{4x4}.
 _SOCRATA_ROW = re.compile(r"(https?://[^/]+)/resource/([a-z0-9]{4}-[a-z0-9]{4})/[^/?#\s]+\.json", re.I)
@@ -44,6 +54,31 @@ def _clean_body_links(text: str, citations: dict) -> str:
         if page != url:
             text = text.replace(url, page)
     return text
+
+
+def _repair_citation_target_links(text: str, citations: dict) -> str:
+    def repair(match: re.Match) -> str:
+        label, marker, citation_id, kind, url, extra = match.groups()
+        citation_url = (citations.get(citation_id) or {}).get("url", "")
+        parsed = urlparse(url)
+        trusted_map = (
+            label.lower() in {"map", "directions"}
+            and kind.lower() == "directions"
+            and parsed.scheme == "https"
+            and parsed.netloc in {"www.google.com", "maps.google.com"}
+            and parsed.path.startswith("/maps/")
+        )
+        trusted_detail = (
+            label.lower() == "details"
+            and kind.lower() == "details"
+            and citation_url
+            and _canonical_url(url) == _canonical_url(citation_url)
+        )
+        if not (trusted_map or trusted_detail):
+            return match.group()
+        return f"[{label}]({url}) {marker}{extra}"
+
+    return _apply_outside_code(text, lambda part: _CITE_TARGET_LINK.sub(repair, part))
 
 
 def _apply_outside_code(text: str, convert) -> str:
@@ -182,13 +217,17 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     session and telemetry persist. This layer never adds, drops, or alters a factual claim, it only
     formats: SMS gets plain text, WhatsApp gets its native dialect, and both share one link policy.
     """
-    if channel == "console":
+    if getattr(result, "status", None) == "approval_required":
+        body = result.text
+    elif channel == "console":
         # The REPL is the rich surface: inline {cite:Sn} markers STAY visible (texters lose
         # them only because SMS/WhatsApp can't render them usefully), markdown stays raw for
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
-        body = _link_markers(_clean_body_links(result.text, result.citations), result.citations)
+        repaired = _repair_citation_target_links(result.text, result.citations)
+        body = _link_markers(_clean_body_links(repaired, result.citations), result.citations)
     else:
-        text = _clean_body_links(_strip_markers(result.text), result.citations)
+        repaired = _repair_citation_target_links(result.text, result.citations)
+        text = _clean_body_links(_strip_markers(repaired), result.citations)
         body = _plain_markup(text) if channel.startswith("sms") else _whatsapp_markup(text)
     inline_urls = {_canonical_url(match.group()) for match in _URL.finditer(body)}
     # Sources footer is unchanged per channel: it keeps every cited source (row-addressed permalinks
@@ -201,9 +240,6 @@ def render(result, channel: str = "whatsapp") -> list[str]:
             # into spaces (observed live as one wrapped blob), list items render one per line.
             f"- [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
             for cid, c in cited.items()
-            # or True is LOAD-BEARING post-linkification: the citation URL now appears inline
-            # (inside the link destination), so inline_urls would drop every cited source here.
-            if _canonical_url(c.get("url", "")) not in inline_urls or True
         ]
         footer = "Sources:\n" + "\n".join(rows) if rows else ""
     else:

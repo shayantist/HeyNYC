@@ -180,13 +180,16 @@ def _as_of(record: dict) -> str:
 
 
 def _apply_url(record: dict) -> str:
+    for field in ("how_to_apply_or_enroll_online", "how_to_apply_summary"):
+        if url := _first_href(record.get(field)):
+            return url
     return _clean(record.get("url_of_online_application")) or _clean(
         record.get("url_of_pdf_application_forms")
     )
 
 
-_HELP_FIELDS = ("get_help_online", "get_help_summary", "how_to_apply_summary",
-                "how_to_apply_or_enroll_online")
+_HELP_FIELDS = ("how_to_apply_or_enroll_online", "how_to_apply_summary",
+                "get_help_online", "get_help_summary")
 
 
 def _help_url(record: dict) -> str:
@@ -209,12 +212,13 @@ def _citation_snippet(record: dict) -> str:
     """Put the facts most likely to be cited where the evaluator and footer can see them."""
     fields = (
         "program_name",
+        "government_agency",
         "plain_language_program_name",
+        "plain_language_eligibility",
+        "heads_up",
         "how_to_apply_summary",
         "get_help_summary",
         "get_help_online",
-        "plain_language_eligibility",
-        "heads_up",
     )
     return " | ".join(filter(None, (_clean(record.get(field)) for field in fields)))[:1000]
 
@@ -222,6 +226,9 @@ def _citation_snippet(record: dict) -> str:
 def _block(record: dict, cite: str, as_of: str, today: str) -> str:
     name = _clean(record.get("program_name"))
     parts = [f"- {name} ({_clean(record.get('program_category'))}) {{cite:{cite}}}"]
+    agency = _clean(record.get("government_agency"))
+    if agency:
+        parts.append(f"  Responsible agency: {agency}")
     plain = _clean(record.get("plain_language_program_name"))
     if plain:
         parts.append(f"  What it is: {plain}")
@@ -287,8 +294,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     today = date.today().isoformat()
     blocks = []
+    source_dates = []
     for record in records:
         as_of = _as_of(record)
+        if as_of:
+            source_dates.append(as_of)
         name = _clean(record.get("program_name"))
         record_id = _clean(record.get(":id")) or _clean(record.get("program_code")) or _program_key(record)
         cite = ctx.citations.register(
@@ -305,10 +315,28 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "NYC benefit programs from the city's Benefits & Programs dataset. Eligibility text is "
         "general guidance with an 'as of' date, NOT a personalized determination. An 'as of' "
         "date records the dataset update; it does not prove a rule or limit is current today. "
-        "Confirm exact current amounts and rules on the official program page. Route any "
-        f"'do I qualify' to {OFFICIAL}:\n"
+        "Keep each date with its program. Do not compress different source dates into a range, "
+        "which can hide the oldest record. If summarizing freshness across records, state the "
+        "oldest exact date. Confirm exact current amounts and rules on the official program page. "
+        "Describe each record as an official program listing, not as City information when its "
+        "cited source is a state agency. Do not call another tool only to refresh this broad "
+        "discovery list; use a current-source lookup when the resident asks about a specific "
+        "current rule, amount, or deadline. "
     )
-    return header + "\n".join(blocks)
+    next_step = (
+        "After presenting the results, offer to check likely eligibility together. Do not add "
+        "access.nyc.gov, 311, or intake fields unless the resident accepts that offer. Do not "
+        "list screening questions or fields yet. Never claim a short starter list is everything "
+        "the screener needs."
+        if "screen_eligibility" in (ctx.toolbox or {})
+        else f"Route personalized eligibility questions to {OFFICIAL}."
+    )
+    oldest = (
+        f"Oldest returned source date: {min(source_dates)}. "
+        if source_dates
+        else "Oldest returned source date: unknown. "
+    )
+    return f"{header}\n" + "\n".join(blocks) + f"\n{oldest}{next_step}"
 
 
 _ESTIMATE = ("an estimate from NYC's official screener (ACCESS NYC), not a determination; "
@@ -413,7 +441,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             return (
                 f"The official screener returned {len(eligible)} likely matches {_ESTIMATE} "
                 f"{{cite:{verdict}}}. Which need matters most right now? Tell me in your own words, "
-                "then reply `/screen` again. Reply `/screen all` if you want every match."
+                "or ask me to show every match."
             )
         eligible_rows = [by_code[program.get("code", "")] for program in eligible
                          if program.get("code", "") in by_code]
@@ -424,7 +452,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             return (
                 f"The official screener returned {len(eligible)} likely matches {_ESTIMATE} "
                 f"{{cite:{verdict}}}, but I couldn't reliably match them to '{goal}'. Tell me a "
-                "different need, then reply `/screen` again, or reply `/screen all`."
+                "different need, or ask me to show every match."
             )
     else:
         displayed = eligible
@@ -452,7 +480,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     remaining = len(eligible) - len(displayed)
     if remaining:
         lines.append(f"There {'is' if remaining == 1 else 'are'} {remaining} other "
-                     f"match{'es' if remaining != 1 else ''}. Reply `/screen all` to see them.")
+                     f"match{'es' if remaining != 1 else ''}. Ask me to show them.")
     lines.append("A program not listed here doesn't mean you're ineligible. Want help applying?")
     return "\n".join(lines)
 
@@ -464,7 +492,8 @@ def screen_eligibility_tool() -> Tool:
             "Estimate which NYC benefit programs a household is LIKELY eligible for, via the city's "
             "official Benefits Screening API (the ACCESS NYC rules engine). Pass a PII-FREE profile "
             "gathered from the user: household flags + a list of persons (age + householdMemberType "
-            "required; optional income/flags). Pass goal only when the resident stated a need and "
+            "required; optional income/flags). Include every explicitly supplied boolean as true or "
+            "false and omit only unknown facts. Pass goal only when the resident stated a need and "
             "show_all only when they explicitly requested every match. NEVER pass names, DOB, SSN, "
             "or address. Returns a "
             "likely-eligible estimate (NOT a determination); a program's absence is never proof of "
@@ -472,6 +501,7 @@ def screen_eligibility_tool() -> Tool:
         parameters=screening.request_schema(),
         handler=_screen_handler,
         open_world=True,
+        resident_fact_scope=("/household", "/persons"),
     )
 
 

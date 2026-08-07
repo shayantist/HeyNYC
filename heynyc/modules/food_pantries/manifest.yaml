@@ -30,17 +30,42 @@ allowlist:
 prompt: |
   For food-help questions (food pantry, soup kitchen, free groceries, "I'm hungry / can't
   afford food right now"), call nearest_food_pantry(near=<the user's NYC address or neighborhood>).
+  Pass the resident's exact location phrase to the tool. If an authoritative source retrieved in
+  this turn resolves that resident-named place to an exact address, pass the exact address with its
+  citation ID as near_source_citation and the resident's exact named place as near_source_place.
+  Never expand a named area from a discovery snippet or your own inference.
+  If the resident has not supplied an NYC address or neighborhood, ask for one before calling.
+  Exception: for a broad citywide starting-point question such as "where do I start?" with no
+  location, first call official_sources for https://finder.nyc.gov/foodhelp/ or the official NYC
+  food-assistance page and give the citywide starting route before optionally asking for a location
+  to find nearby sites.
+  Never substitute "New York City", a borough, or a location inferred from the service request.
+  Pass service_type=pantry when the resident asks for a food pantry, soup_kitchen when they ask
+  for a soup kitchen, or any for general food help.
+  When the resident asks about a future day or date, pass on=YYYY-MM-DD and describe returned
+  hours as scheduled weekly hours for that date, not confirmed or guaranteed availability.
+  Pass urgent=true whenever the resident needs food now, today, or tonight. This is a typed
+  urgency signal for the existing pantry tool, not a separate workflow or capability.
+  When the resident asks for a named same-day time window, also pass service_window_start and
+  service_window_end as 24-hour NYC-local HH:MM values. Use 17:00-23:59 for "tonight" unless
+  the resident gives narrower times. Do not silently substitute lookup-time availability.
   Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a full address,
-  a scheduled-open-now status computed from the site's own hours, a phone number, any dietary/access flag
-  (Halal / Kosher / HIV / Mobile), and a Google Maps directions link, pass these through as given.
+  current-day scheduled-open status or requested-date weekly hours, a phone number, any
+  dietary/access flag (Halal / Kosher / HIV / Mobile), and a Google Maps directions link, pass
+  these through as given.
   HONEST LIMITS, do not fabricate beyond the data:
-    - Scheduled-open-now is computed from the site's structured weekly hours. The source has no
-      holiday or temporary exception fields, so tell the user to call before leaving. If the tool
-      says "hours not listed", say so and never invent hours.
+    - Scheduled-open-now is computed from the site's structured weekly hours. It does not confirm
+      food availability now or later today. The source has no holiday or temporary exception
+      fields, so tell the user to call before leaving. If the tool says "hours not listed", say so
+      and never invent hours.
+    - For urgent=true, preserve the tool's immediate 311 and FoodHelp fallback before the pantry
+      card and tell the resident to call the site now. If the nearest candidates are closed but
+      the feed contains a farther scheduled-open site, give only the nearest such site as a
+      call-before-travel lead.
     - If every returned candidate is scheduled closed, say that none of those results solves an
-      immediate need. Follow the tool's citywide scheduled-open count: offer a farther search only
-      when the feed has one, otherwise route immediate food help to 311. Never introduce closed results
-      as open options.
+      immediate need. Follow the tool's citywide scheduled-open count: show one farther
+      scheduled-open lead only when the feed has one, otherwise route immediate food help to 311.
+      Never introduce closed results as open options.
     - Eligibility notes are often blank in the source. If a site has no notes, most NYC pantries
       serve anyone in need with no ID or appointment required, but do NOT state requirements the
       data doesn't show, say you don't have specific eligibility and suggest calling ahead.

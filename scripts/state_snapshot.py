@@ -193,6 +193,17 @@ def _verify_application_state(data_dir: Path) -> None:
                 json.loads(pii_crypto.decrypt(payload))
             if outbox is not None:
                 json.loads(pii_crypto.decrypt(outbox))
+        for user_key, state, aad_bound in db.execute(
+            "SELECT user_key, state, aad_bound FROM approval_pending"
+        ):
+            json.loads(
+                pii_crypto.decrypt(
+                    state,
+                    associated_data=(
+                        user_key.encode("utf-8") if int(aad_bound) else None
+                    ),
+                )
+            )
     for path in (data_dir / "sessions").glob("*.jsonl"):
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():

@@ -26,11 +26,13 @@ prompt: |
   - "What's happening with 311 complaints about <thing> near <place>?" pass about=<the problem, in
     the resident's words, e.g. noise, heat, illegal parking> and/or near=<one NYC address or
     landmark>.
-  Preserve the tool's statuses, dates, resolution text, citations, and its "updates about once a
-  day" caveat. Report the status verbatim (Open, In Progress, Assigned, Started, Pending, Closed)
-  and never upgrade "Open" or "In Progress" into a promise that the problem is fixed. Do not invent
+  Preserve the tool's statuses, dates, resolution text, and citations. Report the status verbatim
+  (Open, In Progress, Assigned, Started, Pending, Closed) and never upgrade "Open" or "In Progress"
+  into a promise that the problem is fixed. Do not invent
   a service request number, a status, a resolution, or a closing date. If no matching request is
   found, say so plainly and point the resident to portal.311.nyc.gov or 311. This lane is
   READ-ONLY: it cannot file, update, or close a 311 request. To report a NEW problem, route the
-  resident to 311, do not claim to have filed anything.
+  resident to 311, do not claim to have filed anything. When a closed request remains unresolved,
+  preserve the tool's cited refile guidance. Do not say the old request can be reopened or that
+  feedback will resolve it.
 eval: eval.yaml

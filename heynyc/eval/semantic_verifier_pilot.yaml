@@ -1,0 +1,196 @@
+version: 1
+date: "2026-07-24"
+purpose: >
+  Calibrate a claim-to-evidence checker before it can influence a resident answer.
+  Source text preserves the evidence available to the answer, including truncated web
+  snippets. This file is not a runtime prompt or production gate.
+
+labels:
+  - supported
+  - partial
+  - unsupported
+  - contradicted
+
+sources:
+  snap_eligibility:
+    title: Supplemental Nutrition Assistance Program
+    url: https://a069-access.nyc.gov/ACCESSNYC/application.do
+    capture: selected_snapshot_field
+    truncated: false
+    valid_as_of: "2024-09-25"
+    text: >
+      This program looks at several things to decide if you are eligible. They include:
+      how much money you earn, how much money you receive from benefits, and how many
+      people are in your household.
+  snap_application:
+    title: Supplemental Nutrition Assistance Program
+    url: https://a069-access.nyc.gov/ACCESSNYC/application.do
+    capture: selected_snapshot_field
+    truncated: false
+    text: >
+      There are many ways you can apply for SNAP. Apply online using ACCESS HRA. You can
+      apply for Cash Assistance, SNAP, and Medicaid all at the same time.
+  abawd_rules:
+    title: SNAP Work Requirements
+    url: https://otda.ny.gov/programs/snap/work-requirements.asp
+    capture: trace_web_snippet
+    truncated: true
+    text: >
+      The ABAWD rules for SNAP participants are in effect for all counties beginning
+      March 1, 2026. These rules limit SNAP benefits to three months. ABAWDs must work.
+  work_requirements_faq:
+    title: "Frequently Asked Questions: SNAP work requirements"
+    url: https://access.nyc.gov/snap-work-requirements
+    capture: trace_web_snippet
+    truncated: true
+    text: >
+      For more information, visit the work requirement pages from the Human Resources
+      Administration and the Office of Temporary and Disability Assistance. Need help unde
+  shutdown_recertification:
+    title: SNAP Benefits Shutdown
+    url: https://otda.ny.gov/snap-benefits-shutdown-faq.asp
+    capture: trace_web_snippet
+    truncated: true
+    text: >
+      SNAP participants must continue to meet program requirements to remain eligible for
+      benefits. You can submit your recertification online at myBenefits, in
+
+items:
+  - id: f115_real_recertification
+    kind: saved
+    language: bn
+    severity: high
+    claim: >
+      SNAP চালু রাখতে প্রোগ্রামের নিয়ম মেনে চলতে হয় এবং নির্ধারিত সময়ে recertification
+      জমা দিতে হয়। নিউ ইয়র্কের OTDA বলছে, recertification অনলাইনে myBenefits-এ জমা
+      দেওয়া যায়।
+    evidence_ids: [shutdown_recertification]
+    reference_label: partial
+    reference_reason: >
+      The evidence supports continued compliance and online recertification through
+      myBenefits, but not a required submission schedule.
+
+  - id: f115_real_work_rules
+    kind: saved
+    language: bn
+    severity: high
+    claim: >
+      ১ মার্চ ২০২৬ থেকে SNAP-এর ABAWD কাজের নিয়ম সব কাউন্টিতে কার্যকর হয়েছে। এই নিয়মে
+      কিছু প্রাপ্তবয়স্কের জন্য কাজ, স্বেচ্ছাসেবা বা job training-এর নির্দিষ্ট শর্ত থাকতে
+      পারে, এবং নিয়ম প্রযোজ্য হলে শর্ত না মানলে সুবিধা সীমিত হতে পারে। আপনার ক্ষেত্রে
+      নিয়মটি প্রযোজ্য কি না, তা বয়স, প্রতিবন্ধকতা বা ছাড় এবং অন্যান্য পরিস্থিতির ওপর
+      নির্ভর করে।
+    evidence_ids: [abawd_rules, work_requirements_faq]
+    reference_label: partial
+    reference_reason: >
+      The evidence supports the date, all-county scope, and three-month limit, but not
+      volunteering, job training, exemptions, or individual applicability.
+
+  - id: f115_real_eligibility
+    kind: saved
+    language: bn
+    severity: high
+    claim: >
+      NYC-এর SNAP তথ্য অনুযায়ী, যোগ্যতা নির্ধারণে আয়, অন্যান্য benefit এবং পরিবারের
+      সদস্যসংখ্যাসহ একাধিক বিষয় দেখা হয়। এই তথ্য ২৫ সেপ্টেম্বর ২০২৪-এ আপডেট হয়েছিল,
+      তাই বর্তমান নিয়ম ও আপনার কেসের সিদ্ধান্ত HRA বা ACCESS HRA থেকে নিশ্চিত করুন।
+    evidence_ids: [snap_eligibility]
+    reference_label: partial
+    reference_reason: >
+      The evidence supports the eligibility factors, but not the claim that the page was
+      updated on that date or the instruction to confirm through HRA or ACCESS HRA.
+
+  - id: f115_real_appeal
+    kind: saved
+    language: bn
+    severity: high
+    claim: >
+      আপনি যদি SNAP বন্ধ, কমানো বা না নবায়নের নোটিশ পান, 311 বা HRA SNAP হটলাইনে
+      718-762-7669 যোগাযোগ করুন এবং সিদ্ধান্ত চ্যালেঞ্জ করতে Fair Hearing চাওয়ার অধিকার
+      সম্পর্কে জিজ্ঞেস করুন।
+    evidence_ids: [work_requirements_faq]
+    reference_label: unsupported
+    reference_reason: >
+      The excerpt does not establish 311, the phone number, or Fair Hearing rights.
+
+  - id: supported_recertification
+    kind: control
+    language: en
+    severity: high
+    claim: You can submit a SNAP recertification online through myBenefits.
+    evidence_ids: [shutdown_recertification]
+    reference_label: supported
+    reference_reason: The evidence explicitly supports online recertification through myBenefits.
+
+  - id: supported_abawd_date
+    kind: control
+    language: bn
+    severity: high
+    claim: ১ মার্চ ২০২৬ থেকে সব কাউন্টিতে SNAP-এর ABAWD নিয়ম কার্যকর হয়েছে।
+    evidence_ids: [abawd_rules]
+    reference_label: supported
+    reference_reason: The evidence explicitly supports the date and all-county scope.
+
+  - id: supported_eligibility_factors
+    kind: control
+    language: es
+    severity: high
+    claim: >
+      Para decidir la elegibilidad de SNAP, el programa considera cuánto dinero gana,
+      cuánto dinero recibe de otros beneficios y cuántas personas hay en el hogar.
+    evidence_ids: [snap_eligibility]
+    reference_label: supported
+    reference_reason: The translated claim preserves the three listed eligibility factors.
+
+  - id: supported_online_application
+    kind: control
+    language: en
+    severity: medium
+    claim: You can apply for SNAP online using ACCESS HRA.
+    evidence_ids: [snap_application]
+    reference_label: supported
+    reference_reason: The evidence explicitly supports applying online through ACCESS HRA.
+
+  - id: unsupported_guaranteed_continuation
+    kind: control
+    language: en
+    severity: high
+    claim: >
+      Submitting your recertification through myBenefits guarantees that SNAP continues
+      without an interview.
+    evidence_ids: [shutdown_recertification]
+    reference_label: unsupported
+    reference_reason: >
+      The evidence does not establish guaranteed continuation or the absence of an interview.
+
+  - id: unsupported_every_unemployed_adult
+    kind: control
+    language: en
+    severity: high
+    claim: Every unemployed adult loses SNAP after three months.
+    evidence_ids: [abawd_rules]
+    reference_label: unsupported
+    reference_reason: >
+      The evidence applies to ABAWDs, not every unemployed adult, and does not establish
+      the universal loss claim.
+
+  - id: unsupported_only_three_factors
+    kind: control
+    language: en
+    severity: high
+    claim: HRA decides SNAP eligibility using only income, benefits, and household size.
+    evidence_ids: [snap_eligibility]
+    reference_label: contradicted
+    reference_reason: >
+      The evidence says the program considers several things and presents three examples,
+      conflicting with the word only.
+
+  - id: unsupported_fair_hearing_deadline
+    kind: control
+    language: en
+    severity: high
+    claim: Call 311 to request a Fair Hearing within 10 days of a SNAP work-rule notice.
+    evidence_ids: [work_requirements_faq]
+    reference_label: unsupported
+    reference_reason: >
+      The excerpt does not establish 311, a Fair Hearing request, or a 10-day deadline.

@@ -20,11 +20,20 @@ https://www.anthropic.com/engineering/writing-tools-for-agents
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from ..citations import CitationRegistry
 from ..registry import Registry
+
+
+@dataclass(frozen=True)
+class ResidentFact:
+    """A typed resident value captured by application code, never by the model."""
+
+    value: Any
+    source_turn_id: str
+    status: Literal["captured", "confirmed"]
 
 
 @dataclass
@@ -41,6 +50,11 @@ class ToolContext:
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
     event_turn: Optional[str] = None  # semantic scope-preflight tri-state: none|discovery|preparation (None → tool falls back to its regexes)
     delivered_notify_titles: frozenset = frozenset()  # F080: normalized Notify titles already cited earlier in THIS conversation; a repeat advisories call answers with a marker, not a re-brief
+    resident_facts: dict[str, ResidentFact] = field(default_factory=dict)
+    fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
+    semantic_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
+    validation_rejections: list[dict[str, Any]] = field(default_factory=list)
+    response_priority_citation_ids: set[str] = field(default_factory=set)
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]
@@ -62,6 +76,11 @@ class Tool:
     strict: bool = False         # emit `strict: true` (all params required) for constrained decoding
     title: str = ""              # human-readable label
     module: str = ""             # owning service module; "" = core, always exposed (diet block 4)
+    resident_fact_scope: tuple[str, ...] = ()  # JSON-pointer roots that must match trusted resident facts
+
+    def __post_init__(self) -> None:
+        if (not self.read_only or self.destructive) and not self.requires_approval:
+            raise ValueError("Side-effecting tools must set requires_approval=True")
 
     def _input_schema(self) -> dict:
         """Parameter schema with `additionalProperties: false` (strict-schema best practice)."""

@@ -64,6 +64,57 @@ def test_record_turn_preserves_memory_compaction_accounting(tmp_path: Path):
     assert rec["memory_post_tokens"] == 700
 
 
+def test_record_turn_and_summary_expose_safety_screen_overhead(tmp_path: Path):
+    rec = telemetry.record_turn(
+        tmp_path / "telemetry.jsonl",
+        session_id="s1",
+        model="answer/model",
+        usage={
+            "input_tokens": 110,
+            "output_tokens": 22,
+            "safety_model": "openai/gpt-5.4-mini",
+            "safety_input_tokens": 10,
+            "safety_output_tokens": 2,
+            "safety_cached_input_tokens": 4,
+            "safety_cost_usd": 0.0005,
+            "safety_time_ms": 12.0,
+        },
+        n_tool_calls=0,
+        tool_names=[],
+        status="success",
+    )
+
+    assert rec["safety_model"] == "openai/gpt-5.4-mini"
+    assert rec["safety_cost_usd"] == 0.0005
+    summary = telemetry.summarize([rec])
+    assert summary["safety_input_tokens"] == 10
+    assert summary["safety_output_tokens"] == 2
+    assert summary["safety_cost_usd"] == 0.0005
+    assert summary["safety_time_ms"] == 12.0
+
+
+def test_safety_screen_failure_is_persisted_and_counts_as_an_operational_error(
+    tmp_path: Path,
+):
+    rec = telemetry.record_turn(
+        tmp_path / "telemetry.jsonl",
+        session_id="s1",
+        model="answer/model",
+        usage={
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "safety_error": "TimeoutError",
+        },
+        n_tool_calls=0,
+        tool_names=[],
+        status="success",
+    )
+
+    assert rec["status"] == "success"
+    assert rec["safety_error"] == "TimeoutError"
+    assert telemetry.summarize([rec])["error_rate"] == 1.0
+
+
 def test_record_turn_passes_through_cached_input_tokens(tmp_path: Path):
     # The agent already computes prompt-cache reads (usage["cached_input_tokens"]); telemetry must
     # not drop them, so `heynyc stats` can show cache effectiveness.

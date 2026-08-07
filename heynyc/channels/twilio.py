@@ -5,6 +5,7 @@ NOTE: no `from __future__ import annotations` here on purpose, the FastAPI route
 annotates `request: Request`, and FastAPI must see the real class (not a deferred string)
 to inject it rather than treat it as a query parameter."""
 import asyncio
+import base64
 import json
 import logging
 
@@ -14,7 +15,7 @@ from .base import InboundMessage
 from .format import _split
 from .identity import user_key
 from .orchestrator import Deps, handle
-from .store import InboxPayloadError
+from .store import PENDING_APPROVAL_OUTBOX_KEY, InboxPayloadError
 
 _TYPING_URL = "https://messaging.twilio.com/v3/Indicators/Typing.json"
 _TEXT_LIMIT = 1600
@@ -121,6 +122,17 @@ class TwilioOutboxReplier:
             self.store.stage_outbox(self._message_id, self.parts)
             self._finalized = True
 
+    def stage_pending_approval(self, user_key: str, state: bytes, *, ttl_s: float) -> None:
+        """Keep approval inert inside the encrypted outbox until every review part is delivered."""
+        if not self.parts:
+            raise RuntimeError("cannot stage approval without a review")
+        self.parts[-1][PENDING_APPROVAL_OUTBOX_KEY] = {
+            "user_key": user_key,
+            "state": base64.b64encode(state).decode("ascii"),
+            "ttl_s": ttl_s,
+        }
+        self.store.stage_outbox(self._message_id, self.parts)
+
 
 class TwilioInboxWorker:
     """Process Twilio envelopes already durably accepted by the webhook."""
@@ -209,8 +221,22 @@ class TwilioInboxWorker:
             on_sent=lambda sid: self.deps.store.record_outbound(message.message_id, sid),
         )
         try:
+            pending_approval = (
+                parts[-1].get(PENDING_APPROVAL_OUTBOX_KEY) if parts else None
+            )
+            if (
+                pending_approval is not None
+                and pending_approval.get("user_key") != item["user_key"]
+            ):
+                raise ValueError("approval outbox resident mismatch")
             for part in parts[delivered_parts:]:
                 await replier.send_part(part)
+            if pending_approval is not None:
+                self.deps.store.set_pending_approval(
+                    item["user_key"],
+                    base64.b64decode(pending_approval["state"], validate=True),
+                    ttl_s=float(pending_approval["ttl_s"]),
+                )
         except Exception:
             retry_after_s = self.retry_after_s if item["attempts"] < self.max_attempts else None
             self.deps.store.fail(message.message_id, retry_after_s=retry_after_s)

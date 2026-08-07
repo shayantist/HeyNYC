@@ -8,11 +8,15 @@ that a genuinely fabricated phone / address / number / name still FAILS.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from heynyc.core.citations import content_hash
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.checks import (
     _CITED_CLAIM_GROUNDING_BLOCKING,
     check_cited_claim_grounding,
+    check_link_liveness,
+    check_turn_completion,
 )
 from heynyc.eval.runner import CaseResult
 
@@ -39,8 +43,52 @@ def _doc_cite(snippet: str, *, title="How to apply for SNAP", kind="DOC", url="h
 
 # --- no-op / skip conditions ----------------------------------------------
 
+def test_incomplete_approval_turn_blocks_the_eval_gate():
+    result = _result("")
+    result.turn_results = [
+        SimpleNamespace(text="First answer", status="success"),
+        SimpleNamespace(text="", status="approval_required"),
+    ]
+
+    check = check_turn_completion(result)
+
+    assert check is not None and not check.passed
+    assert check.blocking
+    assert "turn 2" in check.detail
+    assert "approval_required" in check.detail
+
+
+def test_turn_completion_requires_explicit_success_and_accepts_normal_turns():
+    missing_status = _result("Answer")
+    missing_status.turn_results = [SimpleNamespace(text="Answer")]
+    successful = _result("Answer")
+    successful.turn_results = [
+        SimpleNamespace(text="First answer", status="success"),
+        SimpleNamespace(text="Second answer", status="success"),
+    ]
+
+    assert not check_turn_completion(missing_status).passed
+    assert check_turn_completion(successful).passed
+
+
 def test_no_citation_markers_returns_none():
     assert check_cited_claim_grounding(_result("The nearest center is close by.")) is None
+
+
+async def test_link_liveness_strips_internal_url_marker_brace():
+    checked = []
+
+    async def checker(url: str) -> int:
+        checked.append(url)
+        return 200
+
+    result = await check_link_liveness(
+        _result("Official page {URL:https://www.nyc.gov/help}"),
+        checker,
+    )
+
+    assert result is not None and result.passed
+    assert checked == ["https://www.nyc.gov/help"]
 
 
 def test_no_salient_tokens_returns_none():
@@ -166,6 +214,51 @@ def test_fabricated_dollar_amount_fails_and_blocks():
     assert res.blocking is _CITED_CLAIM_GROUNDING_BLOCKING
 
 
+def test_dollar_amount_does_not_match_an_unrelated_bare_year():
+    cr = _result(
+        "The benefit is $2,026 {cite:S1}.",
+        citations={"S1": _doc_cite("Updated January 2026.", kind="WEB")},
+    )
+
+    res = check_cited_claim_grounding(cr)
+
+    assert res is not None and not res.passed and res.blocking
+
+
+def test_dollar_amount_does_not_match_a_bare_day_in_page_prose():
+    cr = _result(
+        "The fee is $27 {cite:S1}.",
+        citations={"S1": _doc_cite("Updated July 27, 2026.", kind="WEB")},
+    )
+
+    res = check_cited_claim_grounding(cr)
+
+    assert res is not None and not res.passed and res.blocking
+
+
+def test_dollar_amount_matches_a_bare_structured_value():
+    cr = _result(
+        "The benefit is $291 {cite:S1}.",
+        citations={"S1": _data_cite({"monthly_benefit": 291})},
+    )
+
+    res = check_cited_claim_grounding(cr)
+
+    assert res is not None and res.passed
+
+
+def test_phone_repeated_from_query_still_needs_citation_evidence():
+    cr = _result(
+        "Call (212) 555-0100 {cite:S1}.",
+        citations={"S1": _doc_cite("Call the official helpline.", kind="WEB")},
+        query="Is (212) 555-0100 the right number?",
+    )
+
+    res = check_cited_claim_grounding(cr)
+
+    assert res is not None and not res.passed and res.blocking
+
+
 # --- DOC / WEB: snippet grounding -----------------------------------------
 
 def test_doc_snippet_grounded_passes():
@@ -180,28 +273,27 @@ def test_doc_snippet_grounded_passes():
     assert res.passed, res.detail
 
 
-def test_web_snippet_fabricated_number_is_flagged_but_soft():
-    # A WEB/DOC snippet is a TRUNCATED excerpt — a fact absent from it might be elsewhere on the page,
-    # so we can't prove fabrication. The mismatch is still recorded (passed=False) but is NON-blocking.
+def test_web_snippet_fabricated_number_blocks():
+    # A citation supports only the evidence captured for it. An exact fact absent from that evidence
+    # must not ship on the theory that it might appear elsewhere on the page.
     snippet = "The heat advisory is in effect with a high near 68 degrees today."
     cr = _result("There's a heat advisory with highs near 95°F {cite:S1}.",
                  citations={"S1": _doc_cite(snippet, kind="WEB", title="Notify NYC")})
     res = check_cited_claim_grounding(cr)
     assert not res.passed and "unit_number" in res.detail
-    assert res.blocking is False  # excerpt source → informational, never blocks
+    assert res.blocking is _CITED_CLAIM_GROUNDING_BLOCKING
 
 
-def test_label_only_data_citation_does_not_hard_block():
-    # benefits regression: a program-catalog citation is kind=DATA but has NO snapshot — just a name +
-    # description label. The HRA Infoline number the agent adds is correct but not inside that label,
-    # so it must NOT hard-block (the label is an excerpt, not a complete capture).
+def test_label_only_data_citation_does_not_support_an_exact_phone():
+    # A correct phone cited to the wrong evidence is still unsupported. The model must retrieve and
+    # cite the source that actually contains the number.
     catalog = {"url": "https://a.gov", "kind": "DATA",
                "snippet": "Supplemental Nutrition Assistance Program — Money to buy food",
                "title": "Supplemental Nutrition Assistance Program", "provenance": {}}
     cr = _result("Apply for SNAP; call the HRA Infoline at 718-557-1399 {cite:S1}.",
                  citations={"S1": catalog})
     res = check_cited_claim_grounding(cr)
-    assert res.blocking is False
+    assert res.blocking is _CITED_CLAIM_GROUNDING_BLOCKING
 
 
 def test_temperature_unit_normalization_passes():
@@ -292,6 +384,24 @@ def test_date_abbreviation_is_not_a_salient_fact():
     assert res is None or res.passed, (res.detail if res else "")
 
 
+def test_citation_valid_as_of_supports_the_rendered_source_date():
+    cr = _result(
+        "The listing is dated 2026-04-11 {cite:S1}.",
+        citations={
+            "S1": {
+                "url": "https://example.gov/row",
+                "kind": "DATA",
+                "snippet": "City-listed food pantry",
+                "valid_as_of": "2026-04-11",
+            }
+        },
+    )
+
+    result = check_cited_claim_grounding(cr)
+
+    assert result is not None and result.passed, result.detail
+
+
 def test_plural_singular_drift_passes():
     # Answer "Picnic Performances" vs source title "…Picnic Performance" (singular) → grounded.
     cr = _result("Catch the Bryant Park Picnic Performances series {cite:S1}.",
@@ -336,15 +446,15 @@ def test_fact_matched_across_union_of_cited_sources():
     assert res.passed, res.detail
 
 
-def test_mixed_verifiable_and_unverifiable_source_does_not_block():
-    # One cited source has content, the other is empty. A fact absent from the content-bearing source
-    # could still be backed by the empty one → not ALL complete → must NOT hard-block.
+def test_empty_citation_does_not_rescue_an_unsupported_exact_fact():
+    # An empty citation contains no evidence and cannot rescue an exact fact absent from the other
+    # cited source.
     s1 = {"url": "https://a.gov", "kind": "DATA"}  # no snapshot/snippet
     s2 = _data_cite({"name": "Marconi Park", "borough": "Bronx"})
     cr = _result("Reach the site at (646) 999-1234 {cite:S1}{cite:S2}.",
                  citations={"S1": s1, "S2": s2})
     res = check_cited_claim_grounding(cr)
-    assert res is None or not res.blocking, (res.detail if res else "")
+    assert res is not None and res.blocking, res.detail
 
 
 def test_api_provenance_response_is_used_as_source_content():

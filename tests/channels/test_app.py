@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -6,11 +8,61 @@ from fastapi.testclient import TestClient
 from heynyc.core import pii_crypto
 
 
+def _store_with_pending_approval(tmp_path, monkeypatch):
+    from heynyc.channels import app as appmod
+    from heynyc.channels.store import ChannelStore
+
+    monkeypatch.setattr(appmod.config, "HEYNYC_DATA_DIR", tmp_path)
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    store.set_pending_approval("resident", b'{"pending":true}', ttl_s=60)
+    return appmod, store
+
+
+def test_build_agent_can_select_pydantic_runtime(monkeypatch):
+    from heynyc.channels import app as appmod
+
+    built = SimpleNamespace()
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+    monkeypatch.setattr(appmod, "_load_retriever", lambda: "index")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_configured_runtime",
+        lambda registry, **kwargs: built,
+    )
+
+    assert appmod.build_agent() is built
+
+
+def test_legacy_startup_invalidates_pending_native_approvals(monkeypatch, tmp_path):
+    appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "legacy")
+
+    appmod.build_deps(SimpleNamespace())
+
+    assert store.has_pending_approval("resident") is False
+
+
+def test_native_startup_preserves_pending_native_approvals(monkeypatch, tmp_path):
+    appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+    native = SimpleNamespace(conversation_from_state=lambda state: None)
+
+    appmod.build_deps(native)
+
+    assert store.has_pending_approval("resident") is True
+
+
 def test_health_and_twilio_route_mounted(monkeypatch, tmp_path):
     monkeypatch.setattr("heynyc.core.config.HEYNYC_PII_SALT", "x")
     monkeypatch.setattr("heynyc.core.config.HEYNYC_DATA_DIR", tmp_path)
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     from heynyc.channels import app as appmod
+    monkeypatch.setattr(appmod, "build_agent", lambda: SimpleNamespace())
     api = appmod.create_app(provider="twilio")
     with TestClient(api) as client:
         assert client.get("/health").json() == {"status": "ok"}
@@ -42,6 +94,7 @@ def test_lifespan_runs_private_data_purge(monkeypatch, tmp_path):
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     calls = []
     from heynyc.channels import app as appmod
+    monkeypatch.setattr(appmod, "build_agent", lambda: SimpleNamespace())
     monkeypatch.setattr(appmod, "purge_private_data", lambda data: calls.append(data))
     monkeypatch.setattr(appmod, "purge_channel_data", lambda store: calls.append(store))
     api = appmod.create_app(provider="twilio")
@@ -57,6 +110,7 @@ def test_lifespan_migrates_legacy_private_data_before_purge(monkeypatch, tmp_pat
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     calls = []
     from heynyc.channels import app as appmod
+    monkeypatch.setattr(appmod, "build_agent", lambda: SimpleNamespace())
     monkeypatch.setattr(appmod, "migrate_private_data", lambda data: calls.append(("migrate", data)))
     monkeypatch.setattr(appmod, "purge_private_data", lambda data: calls.append(("purge", data)))
     with TestClient(appmod.create_app(provider="twilio")):

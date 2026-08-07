@@ -85,7 +85,7 @@ _REVIEW = "REVIEW-REQUIRED"
 # --------------------------------------------------------------------------- #
 # Redaction rules (each independently unit-tested, positive + negative)
 # --------------------------------------------------------------------------- #
-_PATH_RE = re.compile(r"(?:\.data|/private/tmp|/tmp)/[A-Za-z0-9._/\-]+")
+_PATH_RE = re.compile(r"(?:\.data|\.agents/tmp|/private/tmp|/tmp)/[A-Za-z0-9._/\-]+")
 
 
 def redact_internal_paths(text: str) -> str:
@@ -184,10 +184,27 @@ def normalize_em_dashes(text: str) -> str:
     return text.replace("—", "-")
 
 
+# Verbatim crisis trigger phrases quoted as evidence in internal register rows. The public
+# export paraphrases them (owner-ruled 2026-07-23): the rows carry the mechanism, the public
+# doc does not need the words. Exact strings, matched case-insensitively, never a regex sweep.
+_CRISIS_QUOTE_PARAPHRASES = (
+    ("`I'm going to kill myself`", "an explicit imminent self-harm statement"),
+    ("`I want to end my life...`", "a first-person crisis message"),
+    ("`I want to end my life", "a first-person crisis message ("),
+)
+
+
+def paraphrase_crisis_quotes(text: str) -> str:
+    for verbatim, paraphrase in _CRISIS_QUOTE_PARAPHRASES:
+        text = text.replace(verbatim, paraphrase)
+    return text
+
+
 def redact_all(text: str) -> str:
     """Compose the redactions. Link rewrite runs first so path/money passes never
     corrupt a URL that is about to be kept or de-linked."""
     text = rewrite_internal_doc_links(text)
+    text = paraphrase_crisis_quotes(text)
     text = redact_internal_paths(text)
     text = redact_money(text)
     text = redact_phones(text)
@@ -357,7 +374,7 @@ def _placeholder(heading: str, crisis: bool) -> str:
     note = (
         "This section of the internal red-team contains verbatim adversarial prompts "
         "and/or model responses. The public export publishes per-category counts and "
-        "outcomes only; verbatim exchanges are withheld pending owner review."
+        "outcomes only; verbatim exchanges are withheld by policy (owner-ruled 2026-07-23)."
     )
     if crisis:
         note += (

@@ -1,6 +1,6 @@
 # HeyNYC channels, the messaging on-ramp
 
-This package puts the grounded agent in front of people on the platforms they already use. A New Yorker texts our number; the existing `Agent` answers, cited, multilingual, abstaining when it should, and the reply comes back as platform-native messages.
+This package puts the grounded agent in front of people on the platforms they already use. A New Yorker texts our number; the selected runtime answers, cited, multilingual, abstaining when it should, and the reply comes back as platform-native messages.
 
 ## How it's shaped
 
@@ -15,7 +15,7 @@ orchestrator.py  handle(msg, replier, deps), dedup → rate → lock → run age
 analytics.py     pseudonymous interaction log + user-flag feedback log
 meta.py          Meta WhatsApp Cloud API adapter (pywa)
 twilio.py        Twilio adapter + restart-safe inbox worker (WhatsApp + SMS)
-app.py           FastAPI factory: build the Agent once, mount providers, start/stop workers
+app.py           FastAPI factory: build the selected runtime once, mount providers, start/stop workers
 ```
 
 The orchestrator is universal; only the adapters know a provider. Adding Instagram DMs or a web channel is another adapter, the core doesn't change. The Twilio webhook verifies, encrypts and persists the inbound envelope by `MessageSid`, then returns 200. A bounded worker resumes unfinished work after restart. Meta still uses the in-memory dispatch seam. Per-user ordering keeps one person's messages sequential while the global concurrency limit lets different residents proceed together and bounds LLM spend.
@@ -54,17 +54,43 @@ For the configured HeyNYC production WhatsApp sender and assigned ngrok developm
 
 Install the deps with `uv sync --extra whatsapp` (the messaging deps live in their own extra; the base `--extra dev` install does not pull them).
 
+## Agent runtime selection
+
+[`HEYNYC_AGENT_RUNTIME`](../core/config.py) selects one runtime for the entire process. `pydantic`
+is the default and requires
+`uv sync --extra pydantic-ai`. Both use the same channel orchestrator, encrypted transcript and
+channel store, tools, grounding policy, and SMS and WhatsApp renderers. Exact native snapshots are
+runtime-specific; the shared transcript preserves model-visible turns across a rollback. This is
+an operator switch, not per-resident traffic splitting.
+
+Set `HEYNYC_AGENT_RUNTIME=legacy` for the retained rollback path. Do not change the runtime during
+an ordinary unattended restart. A production switch needs a
+supervised health check, real SMS and WhatsApp smoke, continuity and approval-resume checks, and
+an immediate rollback path to `legacy`. Starting the [`legacy` runtime](app.py) cancels
+[pending Pydantic tool proposals](store.py) so an old approval cannot reappear after intervening
+conversation. The resident must request and review that action again. The internal WSL runbook
+owns the full procedure.
+
+An approval becomes actionable only after the complete review is accepted for delivery and its
+proposal turn is committed. Twilio keeps the encrypted native approval state inert with the
+durable outbox until every review part is provider-accepted; a partial or failed review cannot be
+approved.
+
 ## Single-host deployment and recovery
 
 The WSL pilot keeps `.env` and resident state outside versioned release directories. Each release links the shared `.env`, and `HEYNYC_DATA_DIR` points at the shared data directory. This keeps one encryption identity and one resident-data store across exact-SHA releases.
 
-[`scripts/deploy_wsl.sh`](../../scripts/deploy_wsl.sh) is the one manual deployment path. It accepts only a full commit contained in `origin/main`, takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then stops writes for a resident-state snapshot and temporary restore proof. It rejects modified or extra tracked release content, atomically switches the `current` release pointer, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
+[`scripts/deploy_wsl.sh`](../../scripts/deploy_wsl.sh) is the one manual deployment path. It accepts only a full commit contained in the pushed `origin/main` ref by default; a supervised candidate can name another pushed `origin/*` ref through `HEYNYC_DEPLOY_REF`. It takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then stops writes for a resident-state snapshot and temporary restore proof. It rejects modified or extra tracked release content, atomically switches the `current` release pointer, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
 
 Run it only after CI passes for the exact pushed SHA:
 
 ```bash
 sudo -v
 ./scripts/deploy_wsl.sh <40-character-sha>
+
+# Supervised candidate:
+HEYNYC_DEPLOY_REF=origin/codex/pydantic-ai-refactor \
+  ./scripts/deploy_wsl.sh <40-character-sha>
 ```
 
 [`scripts/state_snapshot.py`](../../scripts/state_snapshot.py) copies SQLite through Python's [online backup API](https://docs.python.org/3.11/library/sqlite3.html#sqlite3.Connection.backup), copies the rest of the data directory while writes are stopped, and records file sizes, SHA-256 hashes, the application commit, and SQLite schema version. Its restore proof also opens the schema through the current channel store and authenticates encrypted inbox, session, draft, and feedback records with the configured key without printing their content. `restore` refuses a nonempty destination. Recovery therefore restores into a new directory, verifies it, and uses an operator-controlled directory switch instead of overwriting live state:
@@ -88,7 +114,7 @@ FROM inbox WHERE state = 'failed' ORDER BY updated_at;
 
 ## Flagging a bad answer
 
-A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, or 👎 to flag the previous reply. Nothing is shared until they confirm: the command stages a pointer and replies with consent copy naming exactly what a human will see (that one exchange, nothing else); only YES writes the flag, anything else cancels and is handled as a normal message. Confirmed flags are pointers only (no message content) joined to the encrypted session by `heynyc feedback` for local triage; the redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error view.
+A user can reply with `wrong`, `report`, `incorrect`, `bad answer`, 👎, or Apple's SMS `Disliked` tapback to flag the previous reply. Nothing is shared until they confirm: the command stages a pointer and replies with consent copy naming exactly what a human will see (that one exchange, nothing else); only YES writes the flag, anything else cancels and is handled as a normal message. Confirmed flags are pointers only (no message content) joined to the encrypted session by `heynyc feedback` for local triage; the redacted aggregate in `.data/feedback.jsonl` still feeds the systematic-error view.
 
 ## v1 scope
 

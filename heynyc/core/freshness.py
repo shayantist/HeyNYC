@@ -10,8 +10,11 @@ real-time status in hours/days, events are handled by future-dating instead.
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Optional
+
+_CITE_RE = re.compile(r"\{cite:(S\d+)\}")
 
 
 def days_old(as_of: str, today: str) -> Optional[int]:
@@ -38,3 +41,22 @@ def staleness_caveat(as_of: str, today: str, max_days: int) -> str:
         f"⚠️ this is {span} old (as of {as_of[:10]}), figures like income limits and "
         "deadlines change, so confirm the current details at the official source before relying on it"
     )
+
+
+def attach_temporal_provenance(text: str, citations: dict[str, dict]) -> str:
+    """Put a schedule source date beside each cited schedule-backed claim."""
+    for citation_id in dict.fromkeys(_CITE_RE.findall(text)):
+        citation = citations.get(citation_id, {})
+        derivation = (citation.get("provenance") or {}).get("derivation") or {}
+        as_of = str(citation.get("valid_as_of") or "")[:10]
+        if (
+            citation.get("kind") != "DATA"
+            or not derivation.get("temporal_basis")
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of)
+        ):
+            continue
+        marker = f"{{cite:{citation_id}}}"
+        if f"{marker} (🗓 {as_of})" in text:
+            continue
+        text = text.replace(marker, f"{marker} (🗓 {as_of})", 1)
+    return text

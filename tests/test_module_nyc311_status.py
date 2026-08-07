@@ -97,10 +97,13 @@ async def test_sr_lookup_reports_status_resolution_and_cites_full_row(monkeypatc
     assert "Closed" in out
     assert "no violation existed" in out
     assert "{cite:S1}" in out
-    assert "once a day" in out.lower()  # honest daily-cadence caveat
+    assert "refile" in out.lower()
+    assert "feedback" in out.lower()
+    assert "{cite:S2}" in out
+    assert "once a day" not in out.lower()
 
     cites = ctx.citations.mapping()
-    assert len(cites) == 1
+    assert len(cites) == 2
     cite = cites["S1"]
     assert cite["kind"] == "DATA"
     assert cite["valid_as_of"] == "2026-07-17T02:04:22.000"
@@ -108,6 +111,8 @@ async def test_sr_lookup_reports_status_resolution_and_cites_full_row(monkeypatc
     # full-row snapshot, not a hand-picked subset
     assert cite["provenance"]["snapshot"]["complaint_type"] == "Noise - Residential"
     assert cite["provenance"]["snapshot"]["status"] == "Closed"
+    assert cites["S2"]["url"] == "https://portal.311.nyc.gov/article/?kanumber=KA-02419"
+    assert cites["S2"]["kind"] == "DOC"
 
 
 @pytest.mark.asyncio
@@ -200,7 +205,7 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
     assert "Closed" in out
     assert "{cite:S1}" in out
     assert "{cite:S2}" in out
-    assert "once a day" in out.lower()
+    assert "once a day" not in out.lower()
     assert len(ctx.citations.mapping()) == 2
 
 

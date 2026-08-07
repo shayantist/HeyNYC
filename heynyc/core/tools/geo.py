@@ -58,6 +58,15 @@ _COUNT_VALUES = {
         ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
     )
 }
+_LOCATION_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_LOCATION_NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|without|don['’]?t|do\s+not)\b", re.IGNORECASE,
+)
+_LOCATION_STALE_RE = re.compile(r"\b(?:used to|formerly|previously)\b", re.IGNORECASE)
+_LOCATION_TOKEN_ALIASES = {
+    "st": "street", "ave": "avenue", "rd": "road", "blvd": "boulevard",
+    "ln": "lane", "dr": "drive", "pkwy": "parkway",
+}
 
 
 def _looks_like_intersection(text: str) -> bool:
@@ -113,6 +122,86 @@ def _requested_result_limit(value: object, query: str, *, default: int = 3) -> i
         count = _COUNT_VALUES.get(raw_count, int(raw_count) if raw_count.isdigit() else default)
         return min(max(count, 1), 10)
     return default
+
+
+def resident_supplied_location(
+    proposed: str,
+    query: str,
+    user_turns: tuple[str, ...],
+    *,
+    allow_prior: bool = False,
+    semantic_location: str = "",
+) -> str:
+    """Return a resident-authored location span.
+
+    Non-ASCII spans require semantic confirmation.
+    """
+    semantic_norm = semantic_location.strip().casefold()
+
+    def semantically_confirmed(candidate: str, turn: str) -> bool:
+        if candidate.isascii():
+            return True
+        candidate_norm = candidate.strip().casefold()
+        return bool(
+            semantic_norm
+            and (
+                candidate_norm in semantic_norm
+                or semantic_norm in candidate_norm
+            )
+        )
+
+    source_turns = [query]
+    if allow_prior:
+        source_turns.extend(reversed(user_turns))
+    turns = list(dict.fromkeys(
+        turn for turn in source_turns if turn
+    ))
+    if not turns:
+        return ""
+    parts = [part.strip() for part in proposed.split(",") if part.strip()]
+    candidates = [", ".join(parts[:end]) for end in range(len(parts), 0, -1)]
+    for turn in turns:
+        for candidate in candidates:
+            raw_start = turn.casefold().find(candidate.casefold())
+            if raw_start < 0:
+                continue
+            raw_end = raw_start + len(candidate)
+            clause_start = max(turn.rfind(mark, 0, raw_start) for mark in ".!?;,") + 1
+            clause_ends = [turn.find(mark, raw_end) for mark in ".!?;,"]
+            clause_end = min((end for end in clause_ends if end >= 0), default=len(turn))
+            clause = turn[clause_start:clause_end]
+            if _LOCATION_NEGATION_RE.search(clause) or _LOCATION_STALE_RE.search(clause):
+                return ""
+            if not semantically_confirmed(candidate, turn):
+                continue
+            return turn[raw_start:raw_end]
+        turn_matches = list(_LOCATION_TOKEN_RE.finditer(turn))
+        turn_tokens = [
+            _LOCATION_TOKEN_ALIASES.get(match.group().lower(), match.group().lower())
+            for match in turn_matches
+        ]
+        for candidate in candidates:
+            tokens = [
+                _LOCATION_TOKEN_ALIASES.get(token.lower(), token.lower())
+                for token in _LOCATION_TOKEN_RE.findall(candidate)
+            ]
+            if not tokens:
+                continue
+            for start in range(len(turn_tokens) - len(tokens) + 1):
+                if tokens != turn_tokens[start:start + len(tokens)]:
+                    continue
+                raw_start = turn_matches[start].start()
+                raw_end = turn_matches[start + len(tokens) - 1].end()
+                clause_start = max(turn.rfind(mark, 0, raw_start) for mark in ".!?;,") + 1
+                clause_ends = [turn.find(mark, raw_end) for mark in ".!?;,"]
+                clause_end = min((end for end in clause_ends if end >= 0), default=len(turn))
+                clause = turn[clause_start:clause_end]
+                if _LOCATION_NEGATION_RE.search(clause) or _LOCATION_STALE_RE.search(clause):
+                    return ""
+                if not semantically_confirmed(candidate, turn):
+                    continue
+                return turn[raw_start:raw_end]
+    return ""
 
 
 EARTH_RADIUS_M = 6_371_000.0
@@ -385,6 +474,23 @@ def _geosearch_params(text: str, rect: Optional[tuple[float, float, float, float
     }
 
 
+def _fallback_landmark_identity_matches(text: str, label: str) -> bool:
+    """Reject a fuzzy named-place substitution such as "Civic Plaza" → "Civic Yard"."""
+    if _looks_like_intersection(text):
+        return True
+    ignored = {"a", "an", "the"}
+    query_tokens = {
+        _LOCATION_TOKEN_ALIASES.get(token, token)
+        for token in _LOCATION_TOKEN_RE.findall(text.casefold())
+        if token not in ignored
+    }
+    label_tokens = {
+        _LOCATION_TOKEN_ALIASES.get(token, token)
+        for token in _LOCATION_TOKEN_RE.findall(label.casefold())
+    }
+    return not query_tokens or query_tokens.issubset(label_tokens)
+
+
 async def _geosearch_geocode(
     text: str, client: httpx.AsyncClient, *, rect: Optional[tuple[float, float, float, float]] = None
 ) -> Optional[GeoPoint]:
@@ -397,6 +503,11 @@ async def _geosearch_geocode(
     feature = features[0]
     lon, lat = feature["geometry"]["coordinates"]
     props = feature.get("properties", {})
+    if (
+        props.get("match_type") == "fallback"
+        and not _fallback_landmark_identity_matches(text, props.get("label", ""))
+    ):
+        return None
     # Belt-and-suspenders: if GeoSearch parsed a 5-digit ZIP that appears in the
     # input as its "house number" (the BUG-1 misparse), reject rather than return
     # a confidently-wrong street. Narrow enough to never reject a real address.
@@ -445,6 +556,8 @@ async def geocode(
     geopy backend (see `geocoder.py`); `forgiving` is injectable for tests.
     Ambiguous intersection results are flagged `low_confidence` so the agent clarifies.
     """
+    if text.strip().casefold() in {"here", "near me", "my location", "my current location", "current location"}:
+        return None
     if forgiving is None:
         from .geocoder import forgiving_geocode
         forgiving = forgiving_geocode
@@ -561,7 +674,13 @@ def _resolution_note(query: str, point: GeoPoint) -> str:
         zip5 = z.group() if z else point.label
         return (f"(Resolved '{query}' to the center of ZIP {zip5}; "
                 f"for a precise spot, give a street address.)")
-    source = "NYC GeoSearch" if point.match_type == "geosearch" else "map search"
+    source = (
+        "NYC GeoSearch"
+        if point.match_type == "geosearch"
+        else "official NYC neighborhood data"
+        if point.match_type == "nta"
+        else "map search"
+    )
     note = f"(Resolved '{query}' to '{point.label}' via {source}."
     if _looks_like_intersection(query) and point.match_type == "geosearch":
         # Fell back to the strict geocoder for an intersection, least reliable case.
@@ -634,6 +753,8 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     if binding is None:
         available = list(ctx.registry.dataset_bindings())
         return f"No dataset for category '{category}'. Available categories: {available}"
+    if args["near"].strip().casefold() in {"new york", "new york city", "nyc", "the city"}:
+        return "Ask the user for a NYC neighborhood, address, or landmark before ranking nearby sites."
 
     origin = await geocode(args["near"], client=ctx.http)
     if origin is None:

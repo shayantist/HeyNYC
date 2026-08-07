@@ -180,6 +180,26 @@ async def test_nearest_food_pantry_rejects_model_invented_origin(monkeypatch):
     assert "finder.nyc.gov/foodhelp" in out
 
 
+async def test_urgent_food_requires_the_residents_service_window(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("incomplete urgent request reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="I need food tonight near Union Square.",
+        user_turns=("I need food tonight near Union Square.",),
+    )
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "urgent": True},
+        ctx,
+    )
+
+    assert "requires service_window_start and service_window_end" in out
+
+
 @pytest.mark.parametrize(
     ("near", "query", "history"),
     [
@@ -204,20 +224,27 @@ async def test_nearest_food_pantry_rejects_partial_or_stale_origins(
     assert "proposed search origin was not supplied" in out
 
 
-async def test_nearest_food_pantry_rejects_location_from_prior_turn(monkeypatch):
-    async def should_not_geocode(*args, **kwargs):
-        raise AssertionError("stale location reached geocoder")
+# F159: previously asserted the opposite, conflating two independent properties
+# Anti-hallucination (did the RESIDENT author it) is covered by rejects_model_invented_origin
+# Staleness is covered by the past-location and negation tests
+# "Current message only" proxied both, and the side effect was amnesia
+async def test_nearest_food_pantry_uses_a_location_the_resident_gave_in_a_prior_turn(monkeypatch):
+    seen = []
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query="Which one is open now?",
         user_history="I am near Jackson Heights.\nWhich one is open now?",
         user_turns=("I am near Jackson Heights.", "Which one is open now?"),
     )
 
-    out = await get_tools()[0].handler({"near": "Jackson Heights"}, ctx)
+    await get_tools()[0].handler({"near": "Jackson Heights"}, ctx)
 
-    assert "proposed search origin was not supplied" in out
+    assert seen == ["Jackson Heights"]
 
 
 async def test_nearest_food_pantry_rejects_past_location_in_current_turn(monkeypatch):
@@ -306,6 +333,308 @@ async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_resident_lan
     assert seen == ["Union Square"]
 
 
+async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_one_word_neighborhood(
+    monkeypatch,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="Is there a food pantry near Flushing?",
+        user_turns=("Is there a food pantry near Flushing?",),
+    )
+
+    await get_tools()[0].handler({"near": "Flushing, Queens, NYC"}, ctx)
+
+    assert seen == ["Flushing"]
+
+
+@pytest.mark.parametrize(
+    ("evidence_grade", "near", "expected"),
+    [
+        ("authoritative", "151 East 151st Street, Bronx, NY", ["151 East 151st Street, Bronx, NY"]),
+        ("discovery", "151 East 151st Street, Bronx, NY", []),
+        ("authoritative", "999 Invented Street, Bronx, NY", []),
+    ],
+)
+async def test_nearest_food_pantry_accepts_only_exact_authoritative_source_locations(
+    monkeypatch,
+    evidence_grade,
+    near,
+    expected,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=(
+            "Prevention Assistance and Temporary Housing (PATH) "
+            "151 East 151st Street, Bronx, NY. PATH is open 24 hours."
+        ),
+        title="NYC DHS PATH",
+        kind="WEB",
+        provenance={"evidence_grade": evidence_grade},
+    )
+    query = "I will be at the Bronx PATH area Friday morning and need food help nearby."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": near,
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert seen == expected
+    if expected:
+        assert f"{{cite:{source_id}}}" in out
+        assert "{{cite:" not in out
+    elif evidence_grade == "authoritative":
+        assert "Stop calling tools for this location" in out
+        assert "exact NYC address or intersection" in out
+    else:
+        assert "call official_sources" in out
+        assert "then retry with its new citation id" in out
+
+
+async def test_nearest_food_pantry_does_not_treat_place_name_as_resident_supplied_address(
+    monkeypatch,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unverified expanded address reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/path",
+        snippet="PATH services are available in the Bronx.",
+        title="NYC PATH",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "PATH, 151 East 151st Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert "Stop calling tools for this location" in out
+    assert "exact NYC address or intersection" in out
+
+
+@pytest.mark.parametrize(
+    ("evidence_grade", "expected"),
+    [
+        ("authoritative", ["151 East 151st Street, Bronx, NY"]),
+        ("discovery", []),
+    ],
+)
+async def test_nearest_food_pantry_recovers_source_location_without_repeated_citation_id(
+    monkeypatch,
+    evidence_grade,
+    expected,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet="PATH is at 151 East 151st Street, Bronx, NY.",
+        title="NYC DHS PATH",
+        kind="WEB",
+        provenance={"evidence_grade": evidence_grade},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "151 East 151st Street, Bronx, NY",
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert seen == expected
+    if expected:
+        assert f"{{cite:{source_id}}}" in out
+    else:
+        assert "call official_sources" in out
+        assert f"{{cite:{source_id}}}" in out
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        (
+            "Prevention Assistance and Temporary Housing (PATH) "
+            "151 East 151st Street Bronx, NY."
+        ),
+        (
+            "Prevention Assistance and Temporary Housing（PATH）："
+            "151 East 151st Street，Bronx，NY."
+        ),
+    ],
+)
+async def test_nearest_food_pantry_accepts_source_address_with_different_punctuation(
+    monkeypatch,
+    snippet,
+):
+    seen = []
+
+    async def geocode_then_stop(text, **kwargs):
+        seen.append(text)
+        return None
+
+    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=snippet,
+        title="NYC DHS PATH",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    await get_tools()[0].handler(
+        {
+            "near": "151 East 151st Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert seen == ["151 East 151st Street, Bronx, NY"]
+
+
+async def test_nearest_food_pantry_rejects_an_unrelated_address_from_the_same_source(
+    monkeypatch,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unrelated source address reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=(
+            "PATH is at 151 East 151st Street, Bronx, NY. "
+            "A different office is at 200 Example Street, Bronx, NY."
+        ),
+        title="NYC DHS family services",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "200 Example Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert "Stop calling tools for this location" in out
+    assert "exact NYC address or intersection" in out
+    assert "200 Example Street" not in out
+
+
+async def test_nearest_food_pantry_rejects_an_unrelated_address_in_the_same_sentence(
+    monkeypatch,
+):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("unrelated same-sentence address reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    source_id = citations.register(
+        "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
+        snippet=(
+            "PATH is at 151 East 151st Street, Bronx, NY, while a different office is at "
+            "200 Example Street, Bronx, NY."
+        ),
+        title="NYC DHS family services",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative"},
+    )
+    query = "I will be at the Bronx PATH area Friday morning."
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=(query,),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "200 Example Street, Bronx, NY",
+            "near_source_citation": source_id,
+            "near_source_place": "PATH",
+        },
+        ctx,
+    )
+
+    assert "Stop calling tools for this location" in out
+    assert "exact NYC address or intersection" in out
+    assert "200 Example Street" not in out
+
+
 async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
@@ -332,6 +661,8 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert "Far Pantry" in site_lines[1]
     assert "Halal" in site_lines[0]                    # dietary/access flag surfaced
     assert "open now" in site_lines[0].lower()         # open-now computed from structured hours
+    assert "Immediate food need" not in out             # ordinary lookup keeps the normal ordering
+    assert "Nearest City-listed food-help site candidates" in out
     assert "212-555-0002" in out                       # phone surfaced
     assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
     assert "{cite:S1}" in out                          # grounded, cited
@@ -342,6 +673,142 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
     assert citations.mapping()["S1"]["valid_as_of"] == ""
     assert "Source date unavailable" in out
+
+
+async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Pantry",
+            distadd="2 Near Ave",
+            distboro="Manhattan",
+            distzip="10001",
+            org_phone="212-555-0002",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="urgent-near",
+            EditDate="2025-11-04",
+            **{
+                f"fp_{now_day}_open1": "9:00 AM",
+                f"fp_{now_day}_close1": "5:00 PM",
+            },
+        ),
+        _pantry_feature(
+            -73.9400,
+            40.8000,
+            program="Farther Open Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="urgent-far",
+            **{
+                f"fp_{now_day}_open1": "9:00 AM",
+                f"fp_{now_day}_close1": "5:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "k": 1,
+            "urgent": True,
+            "service_window_start": "12:00",
+            "service_window_end": "12:01",
+        },
+        ctx,
+    )
+    await client.aclose()
+
+    assert out.index("Immediate food need") < out.index("Nearby Pantry")
+    assert "does not confirm food availability" in out
+    assert "call the listed site before traveling" in out
+    assert "call 311" in out
+    assert "https://finder.nyc.gov/foodhelp" in out
+    assert "Farther Open Pantry" not in out
+    assert "Today's listed weekly hours: 9:00 AM-5:00 PM" in out
+    assert "As of: 2025-11-04" in out
+    assert (
+        ctx.citations.mapping()["S1"]["provenance"]["derivation"]["temporal_basis"]
+        == "weekly_schedule"
+    )
+
+    schema = get_tools()[0].parameters
+    assert schema["properties"]["urgent"]["type"] == "boolean"
+    assert schema["properties"]["on"]["format"] == "date"
+    assert "urgent" not in schema["required"]
+
+
+async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Morning Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="morning-only",
+            **{
+                f"fp_{now_day}_open1": "9:00 AM",
+                f"fp_{now_day}_close1": "2:00 PM",
+            },
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Evening Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="evening",
+            **{
+                f"fp_{now_day}_open1": "5:30 PM",
+                f"fp_{now_day}_close1": "8:00 PM",
+            },
+        ),
+        _pantry_feature(
+            -73.9700,
+            40.7700,
+            program="Second Evening Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="evening-second",
+            **{
+                f"fp_{now_day}_open1": "6:00 PM",
+                f"fp_{now_day}_close1": "9:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "k": 3,
+            "urgent": True,
+            "service_window_start": "17:00",
+            "service_window_end": "23:59",
+        },
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Evening Pantry" in out
+    assert "Second Evening Pantry" not in out
+    assert "Nearby Morning Pantry" not in out
+    assert "requested 17:00-23:59 service window" in out
+    assert "weekly schedule overlaps that window" in out
+    assert "does not confirm food availability" in out
+    assert "Lead with call 311 or https://finder.nyc.gov/foodhelp" in out
+    schema = get_tools()[0].parameters["properties"]
+    assert schema["service_window_start"]["pattern"] == r"^\d{2}:\d{2}$"
+    assert schema["service_window_end"]["pattern"] == r"^\d{2}:\d{2}$"
 
 
 async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_now(monkeypatch):
@@ -357,14 +824,25 @@ async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_no
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "urgent": True,
+            "service_window_start": "12:00",
+            "service_window_end": "12:01",
+        },
+        ctx,
+    )
     await client.aclose()
 
-    assert "None of these nearest candidates is scheduled open now" in out
-    assert "Do not present them as food available now" in out
-    assert "No City-listed site in this feed is scheduled open now" in out
-    assert "do not offer to search farther" in out
-    assert "Open food pantries from NYC FoodHelp" not in out
+    assert "no City-listed site in this feed has weekly hours establishing service" in out
+    assert "call 311" in out
+    assert "Do not present another time of day as an option for that window" in out
+    assert "Closed Pantry" not in out
+    citations = ctx.citations.mapping()
+    assert "{cite:S1}" in out
+    assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_citywide"] == 0
+    assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_nearby"] == 0
 
 
 async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
@@ -377,15 +855,25 @@ async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "urgent": True,
+            "service_window_start": "12:00",
+            "service_window_end": "12:01",
+        },
+        ctx,
+    )
     await client.aclose()
 
-    assert "hours are unavailable" in out.lower()
-    assert "may still be open" in out
-    assert "No City-listed site in this feed is scheduled open now" not in out
+    assert "no City-listed site in this feed has weekly hours establishing service" in out
+    assert "call 311" in out
+    assert "Unknown Hours Pantry" not in out
 
 
-async def test_nearest_food_pantry_returns_nearest_farther_open_site(monkeypatch):
+async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fallback(
+    monkeypatch,
+):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
     features = [
@@ -401,15 +889,286 @@ async def test_nearest_food_pantry_returns_nearest_farther_open_site(monkeypatch
             GlobalID="open-far",
             **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"},
         ),
+        _pantry_feature(
+            -73.9300, 40.8100, program="Second Farther Open Pantry", distadd="10 Far Ave",
+            distboro="Manhattan", distzip="10027", type_fp="FP", program_type="FP",
+            GlobalID="open-far-2",
+            **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"},
+        ),
     ]
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 1}, ctx)
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "k": 1,
+            "urgent": True,
+            "service_window_start": "12:00",
+            "service_window_end": "12:01",
+        },
+        ctx,
+    )
     await client.aclose()
 
-    assert "Nearby Closed Pantry" in out
-    assert "Nearest farther site scheduled open now" in out
+    assert "Nearby Closed Pantry" not in out
+    assert "call 311" in out
+    assert "finder.nyc.gov/foodhelp" in out
     assert "Farther Open Pantry" in out
+    assert "Second Farther Open Pantry" not in out
+    assert "call the listed site before traveling" in out
+    assert "{cite:S1}" in out
+    assert "{cite:S2}" in out
+    assert len(ctx.citations.mapping()) == 2
+
+
+async def test_nearest_food_pantry_uses_the_residents_requested_date(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    friday = _DAYS[_Noon.now().weekday()]
+    saturday = _DAYS[(_Noon.now().weekday() + 1) % 7]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Friday Only Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="friday-only",
+            **{
+                f"fp_{friday}_open1": "9:00 AM",
+                f"fp_{friday}_close1": "5:00 PM",
+            },
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Saturday Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="saturday",
+            **{
+                f"fp_{saturday}_open1": "10:00 AM",
+                f"fp_{saturday}_close1": "2:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "k": 1, "on": "2026-07-18"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Saturday Pantry" in out
+    assert "Friday Only Pantry" not in out
+    assert "Saturday, 2026-07-18" in out
+    assert "scheduled open now" not in out
+    assert "10:00 AM-2:00 PM" in out
+
+
+async def test_nearest_food_pantry_filters_source_service_type():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Soup Kitchen",
+            type_sk="SK",
+            program_type="SK",
+            GlobalID="soup-kitchen",
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Food Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="food-pantry",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "pantry"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Food Pantry" in out
+    assert "Nearby Soup Kitchen" not in out
+    assert get_tools()[0].parameters["properties"]["service_type"]["enum"] == [
+        "pantry",
+        "soup_kitchen",
+        "any",
+    ]
+
+
+async def test_nearest_food_pantry_labels_soup_kitchen_results_as_soup_kitchens():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Nearby Soup Kitchen",
+            type_sk="SK",
+            program_type="SK",
+            GlobalID="soup-kitchen",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "soup_kitchen"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Nearest City-listed soup kitchen candidates" in out
+    assert "food pantry candidates" not in out
+
+
+async def test_future_same_weekday_is_not_labeled_today(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    friday = _DAYS[_Noon.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Friday Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="friday-pantry",
+            **{
+                f"fp_{friday}_open1": "9:00 AM",
+                f"fp_{friday}_close1": "5:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "pantry", "on": "2026-07-24"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Friday's listed weekly hours" in out
+    assert "Today's listed weekly hours" not in out
+
+
+async def test_nearest_food_pantry_excludes_unknown_source_types_from_typed_request():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Unknown Program",
+            type_fp="FP",
+            program_type="",
+            GlobalID="unknown",
+        ),
+        _pantry_feature(
+            -73.9900,
+            40.7520,
+            program="Malformed Program",
+            type_fp="FP",
+            program_type="OTHER",
+            GlobalID="malformed",
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Verified Food Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="food-pantry",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "service_type": "pantry"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Verified Food Pantry" in out
+    assert "Unknown Program" not in out
+    assert "Malformed Program" not in out
+
+
+async def test_nearest_food_pantry_rejects_past_service_date_before_lookup(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("past date reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "on": "2026-07-16"},
+        ctx,
+    )
+
+    assert "cannot verify a past service date" in out
+
+
+async def test_nearest_food_pantry_flags_conflicting_schedule_fields(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    saturday = _DAYS[(_Noon.now().weekday() + 1) % 7]
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Conflicting Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="conflicting",
+            fp_days_orig="SAT(2ND,4TH)",
+            fp_notes="ONLY OPEN 1ST & 3RD SATURDAY",
+            **{
+                f"fp_{saturday}_open1": "10:00 AM",
+                f"fp_{saturday}_close1": "2:00 PM",
+            },
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "k": 1, "on": "2026-07-18"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "source fields conflict about the Saturday schedule" in out
+    assert "does not confirm service that day" in out
+
+
+async def test_nearest_food_pantry_cites_an_empty_official_feed():
+    client = _routed_client([])
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "urgent": True,
+            "service_window_start": "12:00",
+            "service_window_end": "12:01",
+        },
+        ctx,
+    )
+    await client.aclose()
+
+    assert "No open food-help sites came back" in out
+    assert "{cite:S1}" in out
+    citation = ctx.citations.mapping()["S1"]
+    assert ctx.response_priority_citation_ids == {"S1"}
+    assert citation["valid_as_of"] == ""
+    assert citation["provenance"]["snapshot"]["citywide_records_checked"] == 0
 
 
 async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):
@@ -454,4 +1213,42 @@ def test_food_pantries_module_loads_with_tool_and_eval():
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "food_pantries"]
     assert cases, "food_pantries should ship eval cases"
+    provenance_case = next(c for c in cases if c.id == "food_source_origin_clarifies")
+    assert provenance_case.invariants == {"allow_clarification": True}
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
+
+
+# F159: assistant proposed a location, resident confirmed, assistant re-asked
+# Not a model or memory failure; the clarification IS in history
+# The origin guard was handed `user_turns` and passed `()`
+def test_origin_may_come_from_a_location_the_resident_gave_earlier():
+    turns = (
+        "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",
+        "yes I am right there",
+    )
+
+    assert fp._resident_supplied_origin(
+        "82nd St and Roosevelt Ave", "yes I am right there", turns
+    ) == "82nd St and Roosevelt Ave"
+
+
+def test_origin_the_resident_never_gave_is_still_rejected():
+    """The anti-hallucination property must survive: history widens WHERE we look, not WHAT counts."""
+    turns = (
+        "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",
+        "yes I am right there",
+    )
+
+    assert fp._resident_supplied_origin("350 Fifth Avenue", "yes I am right there", turns) == ""
+
+
+def test_a_newly_named_location_is_preferred_over_the_earlier_one():
+    """Inverse: the resident moving on must not be overridden by a stale prior location."""
+    turns = (
+        "where is the nearest food pantry to 82nd St and Roosevelt Ave in Queens?",
+        "what about a food pantry in the Bronx?",
+    )
+
+    assert fp._resident_supplied_origin(
+        "the Bronx", "what about a food pantry in the Bronx?", turns
+    ) == "the Bronx"

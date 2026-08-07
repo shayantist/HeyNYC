@@ -34,6 +34,7 @@ def _write_state(data_dir: Path) -> None:
         data_dir / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600
     )
     store.enqueue("SM123", "resident", json.dumps({"text": "encrypted inbound"}))
+    store.set_pending_approval("resident", b'{"pending":"approval"}', ttl_s=3600)
     store._db.close()
     (data_dir / "sessions").mkdir()
     session = base64.b64encode(
@@ -66,7 +67,7 @@ def test_snapshot_verify_and_restore_round_trip(tmp_path: Path) -> None:
 
     assert manifest["format_version"] == 1
     assert manifest["app_sha"] == "a" * 40
-    assert manifest["sqlite_user_version"] == 2
+    assert manifest["sqlite_user_version"] == 4
     assert {entry["path"] for entry in manifest["files"]} == {
         "channels.sqlite3",
         "drafts/resident.json",
@@ -80,6 +81,10 @@ def test_snapshot_verify_and_restore_round_trip(tmp_path: Path) -> None:
         assert db.execute("SELECT message_id, state FROM inbox").fetchall() == [
             ("SM123", "received")
         ]
+    restored_store = ChannelStore(
+        restored / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600
+    )
+    assert restored_store.pop_pending_approval("resident") == b'{"pending":"approval"}'
     restored_line = (restored / "sessions" / "resident.jsonl").read_text().strip()
     assert json.loads(pii_crypto.decrypt(base64.b64decode(restored_line)))["content"] == "hello"
 
@@ -178,6 +183,29 @@ def test_restore_fails_when_the_existing_key_cannot_decrypt_state(
     source = tmp_path / "source"
     _write_state(source)
     bundle = snapshot.create_snapshot(source, tmp_path / "snapshot", "1" * 40, quiesced=True)
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+
+    with pytest.raises(pii_crypto.PiiCryptoError):
+        target = tmp_path / "restored"
+        snapshot.restore_snapshot(bundle, target)
+
+    assert not target.exists()
+
+
+def test_restore_rejects_wrong_key_for_pending_approval_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = _module()
+    source = tmp_path / "source"
+    source.mkdir()
+    store = ChannelStore(
+        source / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600
+    )
+    store.set_pending_approval("resident", b'{"pending":"approval"}', ttl_s=3600)
+    store._db.close()
+    bundle = snapshot.create_snapshot(
+        source, tmp_path / "snapshot", "3" * 40, quiesced=True
+    )
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
 
     with pytest.raises(pii_crypto.PiiCryptoError):

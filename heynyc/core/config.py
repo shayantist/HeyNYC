@@ -17,6 +17,9 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 # silently run at ~3.3x the production price. Production sets HEYNYC_MODEL in .env (the pilot pins
 # gpt-5.6-luna at medium effort); this default only governs an unset environment.
 HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "openai/gpt-5.4-mini")
+# The Pydantic runtime is the default after the focused live promotion gate. Operators can set
+# `HEYNYC_AGENT_RUNTIME=legacy` for the retained rollback path.
+HEYNYC_AGENT_RUNTIME = os.getenv("HEYNYC_AGENT_RUNTIME", "pydantic").strip().lower()
 # Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
 # the resident-answer model; deployments can override it independently.
 # RULED 2026-07-20 (the F058 tier decision): mini, not nano. Nano's ceiling was measured, not
@@ -35,6 +38,11 @@ HEYNYC_REASONING_EFFORT = os.getenv("HEYNYC_REASONING_EFFORT") or None
 HEYNYC_SERVICE_TIER = os.getenv("HEYNYC_SERVICE_TIER") or None
 # Structured continuity compaction runs only when measured context pressure requires it.
 HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
+# Governed PII-free workflow profiles get one schema-bound review before resident approval.
+HEYNYC_FACT_REVIEW_MODEL = os.getenv(
+    "HEYNYC_FACT_REVIEW_MODEL",
+    "openai/gpt-5.6-sol",
+)
 # Context window for self-hosted Ollama models. Ollama defaults to ~2-4K tokens, which silently
 # truncates HeyNYC's ~7.5K-token system prompt and breaks tool-calling; size it to fit the prompt.
 OLLAMA_NUM_CTX = int(os.getenv("HEYNYC_OLLAMA_NUM_CTX", "16384"))
@@ -183,6 +191,7 @@ CHANNEL_RATE_LIMIT = int(os.getenv("HEYNYC_CHANNEL_RATE_LIMIT", "20"))          
 CHANNEL_RATE_WINDOW_S = int(os.getenv("HEYNYC_CHANNEL_RATE_WINDOW_S", "60"))
 CHANNEL_MAX_CONCURRENCY = int(os.getenv("HEYNYC_CHANNEL_MAX_CONCURRENCY", "8"))
 CHANNEL_DEDUP_TTL_S = int(os.getenv("HEYNYC_CHANNEL_DEDUP_TTL_S", str(7 * 24 * 3600)))
+CHANNEL_APPROVAL_TTL_S = int(os.getenv("HEYNYC_CHANNEL_APPROVAL_TTL_S", "900"))
 
 # --- NYC Benefits Screening API (Module B) ---
 SCREENING_ENV = os.getenv("SCREENING_ENV", "sandbox")  # sandbox | prod

@@ -126,12 +126,38 @@ def test_benefits_manifest_declares_the_snap_work_rules_situation():
         for host in ("nyc.gov", "access.nyc.gov", "otda.ny.gov")
     )
     assert "fair-hearing" in hint.reminder
-    assert "benefits_search" in hint.focus_tools
+    assert "official_sources" in hint.focus_tools
     # Meaning-based, never a keyword list (the Bengali acid test): the definition must read as a
     # description of the situation, not as SNAP/work terms.
     assert len(hint.definition.split()) >= 8
     lowered = hint.definition.lower()
     assert "food" in lowered and "restore" in lowered
+
+
+def test_benefits_manifest_declares_mixed_status_snap_situation():
+    from heynyc.core.pydantic_runtime.tools import build_module_capabilities
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["mixed_status_snap"]
+
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert "eligible household" in hint.query.lower()
+    assert any("snap-application-frequently-asked-questions" in url for url in hint.urls)
+    assert any("immigration" in url for url in hint.urls)
+    assert any("access.nyc.gov/eligibility" in url for url in hint.urls)
+    assert "official access nyc eligibility screener" in hint.reminder.lower()
+    assert "unless the resident explicitly requests or accepts" in hint.reminder.lower()
+    assert "required outcomes" in hint.reminder.lower()
+    assert "immigration-safe legal-help route" in hint.reminder.lower()
+    assert "the final sentence must ask" not in hint.reminder.lower()
+    assert hint.focus_tools == ["official_sources"]
+    _, capabilities = build_module_capabilities(registry, {})
+    capability = next(
+        item for item in capabilities if item.id == "benefits-mixed-status-snap"
+    )
+    instructions = "\n".join(capability.get_instructions())
+    assert "call `official_sources` with every official pages url" in instructions.lower()
 
 
 def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
@@ -166,3 +192,80 @@ def test_events_editorial_pool_covers_nyc_lifestyle_press():
     for domain in ("theinfatuation.com", "eater.com", "cntraveler.com", "bkmag.com"):
         assert domain in editorial
         assert domain in registry.allowlist()
+
+
+def test_transit_manifest_declares_current_mta_accessibility_sources():
+    registry = Registry.discover(Path("heynyc/modules"))
+    transit = next(module for module in registry.modules if module.name == "transit")
+
+    assert "mta.info" in transit.allowlist
+    assert any("accessibility" in seed for seed in transit.seeds)
+    prompt = " ".join(transit.prompt.lower().split())
+    assert "accessible trip" in prompt
+    assert "current elevator" in prompt
+    assert "route-level accessibility and service status remain unverified" in prompt
+    assert "requested day" in prompt
+    assert "requires a grounded handoff" in prompt
+    assert "ask that exact endpoint question in the grounded handoff" in prompt
+
+
+def test_benefits_discovery_does_not_claim_an_unloaded_screening_workflow():
+    registry = Registry.discover(Path("heynyc/modules"))
+    benefits = next(module for module in registry.modules if module.name == "benefits")
+
+    assert "unless its deferred workflow capability is loaded" in benefits.prompt.lower()
+
+
+def test_food_help_manifest_handles_citywide_starting_point_before_location():
+    registry = Registry.discover(Path("heynyc/modules"))
+    food = next(module for module in registry.modules if module.name == "food_pantries")
+    prompt = " ".join(food.prompt.lower().split())
+
+    assert "where do i start" in prompt
+    assert "official_sources" in prompt
+    assert "before optionally asking for a location" in prompt
+    assert "exact location phrase" in prompt
+
+
+def test_governed_screening_capability_explains_estimate_before_intake():
+    from heynyc.core.pydantic_runtime.tools import (
+        build_module_capabilities,
+        resident_fact_confirmation_tool,
+    )
+    from heynyc.core.tools.base import Tool
+    from heynyc.modules.benefits.tools import screen_eligibility_tool
+
+    async def search_handler(args, ctx):
+        return "official guidance"
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    screening = screen_eligibility_tool()
+    screening.module = "benefits"
+    confirmation = resident_fact_confirmation_tool(screening)
+    confirmation.module = "benefits"
+    discovery = Tool(
+        name="benefits_search",
+        description="Find current benefit programs",
+        parameters={"type": "object", "properties": {}},
+        handler=search_handler,
+        module="benefits",
+    )
+    _, capabilities = build_module_capabilities(
+        registry,
+        {
+            screening.name: screening,
+            confirmation.name: confirmation,
+            discovery.name: discovery,
+        },
+    )
+    capability = next(
+        item for item in capabilities if item.id == "benefits-screen-eligibility"
+    )
+    instructions = "\n".join(capability.get_instructions()).lower()
+
+    assert "guaranteed approval" in instructions
+    assert "benefits_search" not in capability.get_toolset().tools
+    assert "load the parent `benefits` capability" in instructions
+    assert "use `search_tools` to discover and call" in instructions
+    assert "`benefits_search`" in instructions
+    assert "estimate, not a determination" in instructions

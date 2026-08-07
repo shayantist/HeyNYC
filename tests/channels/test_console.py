@@ -6,6 +6,8 @@ from __future__ import annotations
 import shutil
 from io import StringIO
 
+from pydantic_ai.models.test import TestModel
+
 from heynyc.channels.base import InboundMessage
 from heynyc.channels.identity import user_key
 from heynyc.channels.orchestrator import handle
@@ -111,13 +113,18 @@ def test_console_sink_ignores_reminder_and_approval_events():
 
 def _console_deps(tmp_path, *, model=None):
     from heynyc.channels.console import build_console_deps
+    from heynyc.core import config
 
+    if model is None and config.HEYNYC_AGENT_RUNTIME == "pydantic":
+        model = TestModel()
     return build_console_deps(console=_recording_console(), model=model, data_dir=tmp_path)
 
 
-def test_build_console_deps_populates_every_dep_and_wires_the_approver(tmp_path):
+def test_build_console_deps_populates_every_dep_and_wires_the_approver(tmp_path, monkeypatch):
     from heynyc.channels.console import ConsoleSink
+    from heynyc.core import config
 
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
     deps = _console_deps(tmp_path)
     assert deps.agent is not None
     assert deps.store is not None
@@ -130,9 +137,54 @@ def test_build_console_deps_populates_every_dep_and_wires_the_approver(tmp_path)
     assert deps.agent._approver is not None             # forms would auto-deny without it
 
 
-def test_console_model_flag_reaches_the_console_agent(tmp_path):
+def test_console_model_flag_reaches_the_console_agent(tmp_path, monkeypatch):
+    from heynyc.core import config
+
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
     deps = _console_deps(tmp_path, model="openai/some-other-model")
     assert deps.agent.model == "openai/some-other-model"
+
+
+def test_console_uses_the_configured_pydantic_runtime(tmp_path, monkeypatch):
+    from heynyc.core import config
+
+    sentinel = object()
+    seen = {}
+
+    def build(registry, **kwargs):
+        seen.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "pydantic")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_configured_runtime",
+        build,
+    )
+
+    deps = _console_deps(tmp_path, model="openai/test-model")
+
+    assert deps.agent is sentinel
+    assert seen["model"] == "openai/test-model"
+    assert seen["current_awareness"] is not None
+
+
+def test_legacy_console_startup_invalidates_pydantic_approvals(tmp_path, monkeypatch):
+    from heynyc.channels.store import ChannelStore
+    from heynyc.core import config, pii_crypto
+
+    monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
+    store = ChannelStore(
+        tmp_path / "channels.sqlite3",
+        rate_limit=20,
+        window_s=60,
+        dedup_ttl_s=3600,
+    )
+    store.set_pending_approval("resident", b'{"pending":true}', ttl_s=60)
+    monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "legacy")
+
+    deps = _console_deps(tmp_path)
+
+    assert deps.store.has_pending_approval("resident") is False
 
 
 async def test_console_greeting_gets_the_help_menu(tmp_path):

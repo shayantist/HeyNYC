@@ -18,6 +18,7 @@ _EMBEDDER = HashEmbedder()
 _FAKE_ROW = {
     "program_code": "S2R007",
     "program_name": "Supplemental Nutrition Assistance Program",
+    "government_agency": "NYC Human Resources Administration (HRA)",
     "plain_language_program_name": "Help buying food (SNAP / food stamps)",
     "program_category": "Food",
     "plain_language_eligibility": "You may qualify based on household size and income.",
@@ -62,9 +63,30 @@ async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
     assert "Supplemental Nutrition Assistance Program" in out  # 'food'/'stamps' matched the row
     assert "{cite:S1}" in out
     assert "2026-03-21" in out  # valid_as_of surfaced in the tool output
+    assert "Responsible agency: NYC Human Resources Administration (HRA)" in out
     cite = ctx.citations.mapping()["S1"]
     assert cite["kind"] == "DATA"
     assert cite["valid_as_of"] == "2026-03-21"
+
+
+async def test_benefits_search_offers_conversational_screening_without_uncited_intake():
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([_FAKE_ROW])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+        toolbox={"screen_eligibility": btools.screen_eligibility_tool()},
+    )
+
+    out = await tool.handler({"query": "benefits for a new parent"}, ctx)
+    await client.aclose()
+
+    assert "offer to check likely eligibility together" in out
+    assert "Do not add access.nyc.gov, 311, or intake fields" in out
+    assert "Do not list screening questions or fields yet" in out
+    assert "Never claim a short starter list is everything the screener needs" in out
 
 
 async def test_benefits_search_citation_preserves_row_evidence():
@@ -91,6 +113,34 @@ async def test_benefits_search_citation_preserves_row_evidence():
     assert len(cite["provenance"]["content_hash"]) == 64
 
 
+async def test_benefits_search_citation_preview_keeps_eligibility_before_long_application_copy():
+    row = dict(
+        _FAKE_ROW,
+        **{
+            "plain_language_eligibility": (
+                "Household size and income are considered for this program."
+            ),
+            "how_to_apply_summary": "Apply using these detailed steps: " + ("step " * 300),
+        },
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    citations = CitationRegistry()
+    ctx = ToolContext(
+        citations=citations,
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+    )
+
+    await tool.handler({"query": "could I qualify for SNAP"}, ctx)
+    await client.aclose()
+
+    snippet = citations.mapping()["S1"]["snippet"]
+    assert "Household size and income are considered" in snippet
+    assert snippet.index("Household size") < snippet.index("Apply using")
+
+
 async def test_benefits_search_does_not_treat_dataset_date_as_current_verification():
     tool, registry = _benefits_tool()
     client, _ = _client_returning([_FAKE_ROW])
@@ -102,6 +152,39 @@ async def test_benefits_search_does_not_treat_dataset_date_as_current_verificati
     assert "does not prove" in out.lower()
     assert "current today" in out.lower()
     assert "official program page" in out.lower()
+    assert "do not compress different source dates into a range" in out.lower()
+    assert "oldest exact date" in out.lower()
+    assert "do not call another tool only to refresh this broad discovery list" in out.lower()
+
+
+async def test_benefits_search_states_oldest_returned_date_and_ends_with_next_step():
+    newer = dict(
+        _FAKE_ROW,
+        program_code="newer",
+        program_name="Newer Program",
+        updated_at="2026-06-02T11:01:01.000",
+    )
+    older = dict(
+        _FAKE_ROW,
+        program_code="older",
+        program_name="Older Program",
+        updated_at="2024-09-25T11:01:01.000",
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([newer, older])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+        toolbox={"screen_eligibility": btools.screen_eligibility_tool()},
+    )
+
+    out = await tool.handler({"query": "program"}, ctx)
+    await client.aclose()
+
+    assert "Oldest returned source date: 2024-09-25" in out
+    assert out.index("Older Program") < out.index("After presenting the results")
 
 
 async def test_benefits_search_surfaces_requested_language_variant():
@@ -196,6 +279,54 @@ async def test_benefits_search_strips_html_and_normalizes_null():
     assert url.startswith("https://data.cityofnewyork.us")  # fell back to the dataset source
 
 
+async def test_benefits_search_prefers_application_link_over_help_link():
+    row = dict(_FAKE_ROW)
+    row["url_of_online_application"] = "NULL"
+    row["get_help_online"] = (
+        '<a href="https://www.nyc.gov/old-help-page">Enrollment help</a>'
+    )
+    row["how_to_apply_or_enroll_online"] = (
+        '<a href="https://nystateofhealth.ny.gov/">Apply through NY State of Health</a>'
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+    )
+
+    await tool.handler({"query": "health insurance"}, ctx)
+    await client.aclose()
+
+    assert ctx.citations.mapping()["S1"]["url"] == "https://nystateofhealth.ny.gov/"
+
+
+async def test_benefits_search_prefers_official_how_to_link_over_brittle_direct_login():
+    row = dict(_FAKE_ROW)
+    row["url_of_online_application"] = "https://unemployment.labor.ny.gov/en-US/login"
+    row["how_to_apply_or_enroll_online"] = (
+        '<a href="https://dol.ny.gov/unemployment/unemployment-insurance-assistance">'
+        "How to apply for unemployment insurance</a>"
+    )
+    tool, registry = _benefits_tool()
+    client, _ = _client_returning([row])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        http=client,
+        embedder=_EMBEDDER,
+    )
+
+    out = await tool.handler({"query": "unemployment insurance"}, ctx)
+    await client.aclose()
+
+    expected = "https://dol.ny.gov/unemployment/unemployment-insurance-assistance"
+    assert f"Apply: {expected}" in out
+    assert ctx.citations.mapping()["S1"]["url"] == expected
+
+
 def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     # For a denial/problem with a benefit, the benefits blurb must surface the human/appeal
     # path — call the agency / 311 and the right to a fair hearing.
@@ -204,12 +335,14 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     low = benefits.prompt.lower()
     assert "fair hearing" in low
     assert "311" in benefits.prompt
+    assert (
+        "When the resident already requested the eligibility screening workflow"
+        in benefits.prompt
+    )
 
 
 def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence():
-    from heynyc.core.agent import _BENEFITS_RECOVERY_URLS
-
-    hra_faq = "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page"
+    hra_faq = "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
     reg = Registry.discover(config.MODULES_DIR)
     benefits = next(module for module in reg.modules if module.name == "benefits")
 
@@ -217,16 +350,7 @@ def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence(
     # SNAP work-rule retrieval URLs are now manifest-owned (`situations: snap_work_rules`).
     snap_urls = reg.situation_hints()["snap_work_rules"][1].urls
     assert hra_faq in snap_urls
-    assert hra_faq in _BENEFITS_RECOVERY_URLS
-
-
-def test_benefits_prompt_keeps_screening_results_actionable_on_a_phone():
-    reg = Registry.discover(config.MODULES_DIR)
-    prompt = " ".join(next(m.prompt for m in reg.modules if m.name == "benefits").lower().split())
-    assert "up to three" in prompt
-    assert "offer to show the rest" in prompt
-    assert "official ranking" in prompt
-    assert "only legal name and home address are required" in prompt
+    assert "https://otda.ny.gov/oah/" in snap_urls
 
 
 def test_fairness_metamorphic_cases_present_and_well_formed():
@@ -331,6 +455,7 @@ async def test_screen_eligibility_asks_for_a_goal_instead_of_dumping_matches(mon
 
     assert "4 likely" in out.lower()
     assert "which need matters most" in out.lower()
+    assert "/screen" not in out
     assert not any(program["name"] in out for program in programs)
     assert len(reg.mapping()) == 1
 
@@ -384,6 +509,7 @@ async def test_screen_eligibility_uses_goal_to_show_three_grounded_matches(monke
     assert rows[3]["program_name"] not in out
     assert "phone-friendly shortlist, not an official ranking" in out.lower()
     assert "1 other" in out.lower()
+    assert "/screen" not in out
     assert len(reg.mapping()) == 4
 
 
@@ -591,7 +717,8 @@ def test_get_tools_gates_screener_on_creds(monkeypatch):
 
 
 def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
-    schema = btools.screen_eligibility_tool().parameters
+    tool = btools.screen_eligibility_tool()
+    schema = tool.parameters
     household = schema["properties"]["household"]
     assert household["properties"]["cashOnHand"]["type"] == "string"
     assert household["additionalProperties"] is False
@@ -606,6 +733,24 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert schema["properties"]["persons"]["minContains"] == 1
     assert {"studentFulltime", "blind", "benefitsMedicaid", "livingRentalOnLease"} <= set(person)
     assert "HeadOfHousehold" in person["householdMemberType"]["enum"]
+    assert "Whether the person is pregnant" in person["pregnant"]["description"]
+    assert "Whether the person is a student" in person["student"]["description"]
+    assert "not specifically a college student" in person["student"]["description"]
+    boolean_fields = [
+        *(
+            household["properties"][name]
+            for name in screening.HOUSEHOLD_BOOLEAN_DESCRIPTIONS
+        ),
+        *(person[name] for name in screening.PERSON_BOOLEAN_DESCRIPTIONS),
+    ]
+    assert all(
+        "Treat this boolean independently" in field["description"]
+        and "Do not infer it from another field, age, role, or silence"
+        in field["description"]
+        for field in boolean_fields
+    )
+    assert person["incomes"]["minItems"] == 1
+    assert "zero placeholder" in person["incomes"]["description"]
     income = person["incomes"]["items"]
     assert set(income["properties"]) == set(screening.MONEY_ITEM_FIELDS)
     assert income["required"] == ["amount", "frequency", "type"]
@@ -616,6 +761,7 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     assert schema["properties"]["interested_programs"]["items"]["pattern"] == r"^S2R\d{3}$"
     assert schema["properties"]["goal"]["type"] == "string"
     assert schema["properties"]["show_all"]["type"] == "boolean"
+    assert "explicitly supplied boolean as true or false" in tool.description
 
 
 def test_get_tools_gates_forms_on_flag(monkeypatch):

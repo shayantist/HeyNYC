@@ -73,8 +73,30 @@ def test_from_parks_maps_nested_link():
     assert ev.start_date == "2026-06-17"
     assert ev.start_time == "7:00 am"
     assert ev.venue == "Blood Root Valley"
-    assert ev.url == "http://www.nycgovparks.org/events/2026/06/17/x"
+    assert ev.url == "https://www.nycgovparks.org/events/2026/06/17/x"
     assert ev.source == "NYC Parks" and ev.tier == "authoritative"
+
+
+def test_from_parks_preserves_source_free_audience_and_borough_fields():
+    ev = _from_parks({
+        "title": "NYRR Open Run: Cunningham Park",
+        "description": "The program is free and open to runners and walkers of all ages.",
+        "categories": "Best for Kids | Running/Jogging",
+        "parkids": "Q021",
+        "parknames": "Cunningham Park",
+        "startdate": "2026-07-26T00:00:00.000",
+        "starttime": "2026-07-20 15:00:00",
+    })
+
+    assert ev is not None
+    assert ev.borough == "Queens"
+    assert ev.start_time == "3:00 PM"
+    assert "free" in ev.free_evidence.lower()
+    assert ev.audience == "Best for Kids"
+    assert _explicitly_free([ev], "free events in Queens") == [ev]
+    block = _event_block(ev, "S1")
+    assert "free" in block.lower()
+    assert "Best for Kids" in block
 
 
 def test_from_parks_drops_cancelled_titles():
@@ -108,6 +130,7 @@ def test_from_permitted_maps_sapo_fields():
     assert ev.name == "HHFM Jacobi Hospital Market"
     assert ev.start_date == "2026-07-18"
     assert ev.start_time == "08:00"  # HH:MM lifted from the ISO start_date_time
+    assert ev.end_time == "15:00"
     assert ev.venue == "PELHAM PARKWAY SOUTH between WILSON AVENUE and EASTCHESTER ROAD"
     assert ev.borough == "Bronx"
     assert ev.source == "NYC Permitted Events" and ev.tier == "authoritative"
@@ -140,6 +163,26 @@ def test_future_only_filters_past():
     future = Event("new", "2026-07-19", "", "", "", "u", "NYC Parks", "authoritative")
     kept = _future_only([past, future], today="2026-06-28")
     assert kept == [future]
+
+
+def test_known_finished_events_do_not_block_current_results():
+    now = events.datetime(2026, 7, 18, 23, 0, tzinfo=events.NYC_TZ)
+    finished = Event(
+        "Morning market", "2026-07-18", "08:00", "Plaza", "Queens", "u1",
+        "NYC Permitted Events", "authoritative", end_time="15:00",
+    )
+    still_open = Event(
+        "Night market", "2026-07-18", "18:00", "Plaza", "Queens", "u2",
+        "NYC Permitted Events", "authoritative", end_time="23:30",
+    )
+    unknown_end = Event(
+        "Concert", "2026-07-18", "20:00", "Park", "Queens", "u3",
+        "Ticketmaster", "authoritative",
+    )
+
+    assert events._not_ended_today(
+        [finished, still_open, unknown_end], now,
+    ) == [still_open, unknown_end]
 
 
 def test_requested_window_resolves_this_weekend_from_nyc_date():
@@ -252,8 +295,13 @@ def test_event_block_flags_a_today_event_whose_start_time_already_passed():
     assert "already started or ended" not in events._event_block(upcoming, "S2", now)
     assert "already started or ended" not in events._event_block(tomorrow, "S3", now)
     assert "already started or ended" not in events._event_block(undated, "S4", now)
+    assert "starts later today" in events._event_block(upcoming, "S2", now)
+    assert "starts later today" not in events._event_block(started, "S1", now)
+    assert "starts later today" not in events._event_block(tomorrow, "S3", now)
+    assert "starts later today" not in events._event_block(undated, "S4", now)
     # Back-compat: without a `now` reference there is no annotation (existing callers/tests).
     assert "already started or ended" not in events._event_block(started, "S1")
+    assert "starts later today" not in events._event_block(upcoming, "S2")
 
 
 def test_tonight_filter_keeps_only_parseable_future_evening_events():
@@ -299,13 +347,256 @@ async def test_whats_on_events_merges_grounds_and_filters_future():
     citations = CitationRegistry()
     async with _routed_client() as client:
         ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-        out = await tool.handler({"keyword": "music"}, ctx)
+        out = await tool.handler({}, ctx)
 
     assert "Concert in the Park" in out
     assert "Future Fair" in out
     assert "Old Festival" not in out          # past event filtered (§12)
     assert "{cite:" in out                     # everything is grounded + cited
     assert citations.mapping()                 # at least one DATA citation registered
+
+
+async def test_whats_on_events_grounds_the_official_indexes_when_no_event_matches(
+    monkeypatch,
+):
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", no_city_rows)
+    citations = CitationRegistry()
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query="where could i watch the 2030 final in nyc",
+    )
+
+    output = await get_tools()[0].handler(
+        {"keyword": "2030 World Cup watch parties", "classification": "Sports"},
+        ctx,
+    )
+
+    assert f"NYC Parks {events.PARKS_SOURCE_URL}" in output
+    assert f"NYC Permitted Events {events.PERMITTED_SOURCE_URL}" in output
+    assert "Say that this lookup could not confirm a match" in output
+    assert "do not claim that no matching events exist" in output
+    assert output.count("{cite:") == 2
+    assert {citation["url"] for citation in citations.mapping().values()} == {
+        events.PARKS_SOURCE_URL,
+        events.PERMITTED_SOURCE_URL,
+    }
+
+
+def test_whats_on_events_borough_schema_keeps_citywide_requests_citywide():
+    [tool] = get_tools()
+
+    assert "only when the resident names one" in (
+        tool.parameters["properties"]["borough"]["description"]
+    )
+    assert "NYC means citywide" in (
+        tool.parameters["properties"]["borough"]["description"]
+    )
+
+
+async def test_whats_on_events_retries_only_failed_catalog_sources(monkeypatch):
+    attempts = 0
+
+    async def flaky_ticketmaster(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("transient")
+        return [{
+            "name": "Mets vs. Braves",
+            "url": "https://www.ticketmaster.com/event/game",
+            "dates": {"start": {"localDate": "2099-07-19", "localTime": "19:10:00"}},
+        }]
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", flaky_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {"window_start": "2099-07-19", "window_end": "2099-07-19"}, ctx,
+    )
+
+    assert attempts == 2
+    assert "Mets vs. Braves" in output
+    assert "Results are partial" not in output
+
+
+async def test_whats_on_events_discloses_a_catalog_source_that_stays_unavailable(monkeypatch):
+    attempts = 0
+
+    async def broken_ticketmaster(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("still unavailable")
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", broken_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "game",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert attempts == 2
+    assert "Sources unavailable for part of this lookup: Ticketmaster" in output
+    assert "do not claim complete coverage or that no matching event exists" in output
+    assert "No matching events were confirmed from the sources that responded" in output
+    assert "No upcoming NYC events matched" not in output
+
+
+async def test_whats_on_events_does_not_call_recovered_source_a_third_time(monkeypatch):
+    attempts = 0
+
+    async def recovered_ticketmaster(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("transient")
+        return []
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", recovered_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "game",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert attempts == 2
+    assert "available catalog sources" in output
+    assert "complete catalog" not in output
+
+
+async def test_whats_on_events_does_not_broaden_permitted_source_twice(monkeypatch):
+    permitted_attempts = 0
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def count_permitted(dataset_id, *args, **kwargs):
+        nonlocal permitted_attempts
+        if dataset_id == events.PERMITTED_DATASET_ID:
+            permitted_attempts += 1
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", count_permitted)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="free fairs today",
+    )
+
+    await get_tools()[0].handler(
+        {
+            "keyword": "fairs",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert permitted_attempts == 2
+
+
+async def test_whats_on_events_discloses_broadening_source_failure(monkeypatch):
+    attempts = 0
+
+    async def ticketmaster_fails_only_when_broadened(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if kwargs["keyword"] is None:
+            raise httpx.ReadTimeout("broadening unavailable")
+        return []
+
+    async def other_sources(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", ticketmaster_fails_only_when_broadened)
+    monkeypatch.setattr(events, "query_dataset", other_sources)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what game happened today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "game",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert attempts == 2
+    assert "Ticketmaster" in output
+    assert "Results are partial" in output
+    assert "No upcoming NYC events matched" not in output
+
+
+async def test_whats_on_events_discloses_permitted_internal_broadening_failure(monkeypatch):
+    permitted_attempts = 0
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def permitted_fails_when_broadened(dataset_id, *args, **kwargs):
+        nonlocal permitted_attempts
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        permitted_attempts += 1
+        if kwargs.get("q") is None:
+            raise httpx.ReadTimeout("broadening unavailable")
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", permitted_fails_when_broadened)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="free fairs today",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "fairs",
+            "window_start": "2099-07-19",
+            "window_end": "2099-07-19",
+        },
+        ctx,
+    )
+
+    assert permitted_attempts == 2
+    assert "NYC Permitted Events" in output
+    assert "Results are partial" in output
+    assert "No upcoming NYC events matched" not in output
 
 
 async def test_broad_temporal_events_gather_current_city_context_concurrently(monkeypatch):
@@ -724,6 +1015,294 @@ async def test_whats_on_events_includes_permitted_street_events():
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
 
 
+async def test_whats_on_events_routes_to_indexes_when_only_permits_already_ended(
+    monkeypatch,
+):
+    class FixedDateTime(events.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 18, 23, 0, tzinfo=tz)
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def city_rows(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [{
+            "event_name": "Elmhurst Greenmarket",
+            "start_date_time": "2026-07-18T08:00:00.000",
+            "end_date_time": "2026-07-18T15:00:00.000",
+            "event_borough": "Queens",
+            "event_location": "Elmhurst",
+        }]
+
+    monkeypatch.setattr(events, "datetime", FixedDateTime)
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="What free events are still happening in Queens today?",
+    )
+
+    output = await get_tools()[0].handler({"borough": "Queens"}, ctx)
+
+    assert "Elmhurst Greenmarket" not in output
+    assert events.PARKS_SOURCE_URL in output
+    assert events.PERMITTED_SOURCE_URL in output
+
+
+async def test_whats_on_events_never_falls_back_across_requested_borough(
+    monkeypatch,
+):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [{
+            "event_name": "Bronx Event",
+            "start_date_time": "2099-07-25T10:00:00.000",
+            "event_agency": "Street Activity Permit Office",
+            "event_type": "Block Party",
+            "event_borough": "Bronx",
+            "event_location": "Grand Concourse",
+        }]
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="events",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "kids",
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert output.startswith(events._NO_RESULTS)
+    assert "already retried the complete catalog without the keyword" in output
+    assert "Bronx Event" not in output
+
+
+async def test_whats_on_events_keeps_a_matching_requested_borough(monkeypatch):
+    web_calls = 0
+
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [{
+            "event_name": "Queens Event",
+            "start_date_time": "2099-07-25T10:00:00.000",
+            "event_agency": "Street Activity Permit Office",
+            "event_type": "Block Party",
+            "event_borough": "Queens",
+            "event_location": "Flushing",
+        }]
+
+    async def web_handler(args, ctx):
+        nonlocal web_calls
+        web_calls += 1
+        return "Bronx Event from web search"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(
+        events,
+        "_context_tools",
+        lambda ctx: (Tool("web_search", "", {}, web_handler),),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="events on Saturday",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "kids",
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert "Queens Event" in output
+    assert "Bronx Event" not in output
+    assert web_calls == 0
+
+
+async def test_whats_on_events_keeps_free_parks_rows_in_the_requested_borough(monkeypatch):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        return [
+            {
+                "title": "Queens Open Run",
+                "description": "This program is free and open to all ages.",
+                "categories": "Best for Kids | Running/Jogging",
+                "parkids": "Q021",
+                "parknames": "Cunningham Park",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+            {
+                "title": "Brooklyn Open Run",
+                "description": "This program is free and open to all ages.",
+                "parkids": "B057",
+                "parknames": "Marine Park",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+            {
+                "title": "Queens General Concert",
+                "description": "This concert is free.",
+                "categories": "Concerts",
+                "parkids": "Q021",
+                "parknames": "Cunningham Park",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+        ]
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]),
+        query="free events for kids in Queens",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "free events",
+            "borough": "Queens",
+            "audience": "kids",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert "Queens Open Run" in output
+    assert "Best for Kids" in output
+    assert "Queens General Concert" not in output
+    assert "Brooklyn Open Run" not in output
+    assert get_tools()[0].parameters["properties"]["audience"]["enum"] == ["kids"]
+
+
+async def test_whats_on_events_does_not_mix_unfiltered_context_into_audience_results(
+    monkeypatch,
+):
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        return [
+            {
+                "title": "Kids In Motion",
+                "description": "This program is free.",
+                "categories": "Best for Kids",
+                "parkids": "Q021",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+            {
+                "title": "General Concert",
+                "description": "This concert is free.",
+                "categories": "Concerts",
+                "parkids": "Q021",
+                "startdate": "2099-07-25T00:00:00.000",
+            },
+        ]
+
+    async def editorial(*args, **kwargs):
+        return "Unfiltered adult event"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_editorial_context", editorial)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="free kids events citywide",
+        event_turn="discovery",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported audience"):
+        await get_tools()[0].handler({"audience": "families"}, ctx)
+
+    output = await get_tools()[0].handler(
+        {
+            "audience": "kids",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert "Kids In Motion" in output
+    assert "General Concert" not in output
+    assert "Unfiltered adult event" not in output
+
+
+async def test_whats_on_events_suppresses_unverified_editorial_boroughs(monkeypatch):
+    editorial_calls = 0
+
+    async def fake_ticketmaster(**kwargs):
+        return []
+
+    async def fake_query(*args, **kwargs):
+        return []
+
+    async def editorial(*args, **kwargs):
+        nonlocal editorial_calls
+        editorial_calls += 1
+        return "Bronx Event from an editorial guide"
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_editorial_context", editorial)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="events on Saturday",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "borough": "Queens",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert output.startswith(events._NO_RESULTS)
+    assert output.count("{cite:") == 2
+    assert events.PARKS_SOURCE_URL in output
+    assert events.PERMITTED_SOURCE_URL in output
+    assert "Bronx Event" not in output
+    assert editorial_calls == 0
+
+
 async def test_permitted_lane_filters_sport_noise_by_agency_field_not_event_name(monkeypatch):
     """Hard rule: cut the ~6.5k/week sport-reservation noise by the dataset's own agency/type
     fields, never by keyword-matching event names."""
@@ -859,6 +1438,59 @@ async def test_stuffed_keyword_zeroing_permitted_lane_falls_back_unkeyworded(mon
 
     assert "Inwood Greenmarket" in out
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
+
+
+async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def unrelated_when_unkeyworded(dataset_id, **kwargs):
+        if dataset_id == events.PARKS_DATASET_ID:
+            return [{
+                "title": "Central Park Movies Under the Stars",
+                "description": "A free outdoor film series.",
+                "startdate": "2099-07-25T18:00:00.000",
+                "parknames": "Central Park",
+                "parkids": "M010",
+            }]
+        if kwargs.get("q"):
+            return []
+        if dataset_id == events.PERMITTED_DATASET_ID:
+            return [{
+                "event_name": "Generic Fitness Class",
+                "start_date_time": "2099-07-25T10:00:00.000",
+                "event_agency": "Street Activity Permit Office",
+                "event_type": "Plaza Event",
+                "event_borough": "Manhattan",
+                "event_location": "Herald Square",
+            }]
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", unrelated_when_unkeyworded)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="where can I watch the world cup in NYC?",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "world cup",
+            "borough": "Manhattan",
+            "window_start": "2099-07-25",
+            "window_end": "2099-07-25",
+        },
+        ctx,
+    )
+
+    assert output.startswith(events._NO_RESULTS)
+    assert "Generic Fitness Class" not in output
+    assert {
+        citation["url"] for citation in ctx.citations.mapping().values()
+    } == {events.PARKS_SOURCE_URL, events.PERMITTED_SOURCE_URL}
 
 
 def test_whats_on_events_owns_listings_and_thread_followups():

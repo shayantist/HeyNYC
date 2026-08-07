@@ -95,31 +95,36 @@ def _load_key() -> bytes:
     return key
 
 
-def encrypt(plaintext: str) -> bytes:
+def encrypt(plaintext: str, *, associated_data: bytes | None = None) -> bytes:
     """AES-256-GCM encrypt ``plaintext`` -> ``nonce(12) || ciphertext || tag``.
 
-    A fresh random 96-bit nonce is drawn per call (never reused). Fails closed
-    (raises ``PiiCryptoError``) if the key is absent or malformed.
+    A fresh random 96-bit nonce is drawn per call (never reused). Optional
+    associated data authenticates unencrypted row identity. Fails closed if
+    the key is absent or malformed.
     """
     key = _load_key()
     nonce = os.urandom(NONCE_BYTES)
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    ciphertext = AESGCM(key).encrypt(
+        nonce,
+        plaintext.encode("utf-8"),
+        associated_data,
+    )
     return nonce + ciphertext
 
 
-def decrypt(token: bytes) -> str:
+def decrypt(token: bytes, *, associated_data: bytes | None = None) -> str:
     """Reverse of :func:`encrypt`.
 
     Raises ``PiiCryptoError`` if the key is absent/malformed, the token is too
     short to carry a nonce, or authentication fails (tampering / wrong key /
-    wrong nonce -> the library's ``InvalidTag``).
+    wrong nonce / wrong associated data -> the library's ``InvalidTag``).
     """
     key = _load_key()
     if len(token) <= NONCE_BYTES:
         raise PiiCryptoError("ciphertext token is too short to contain a nonce")
     nonce, ciphertext = token[:NONCE_BYTES], token[NONCE_BYTES:]
     try:
-        plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, associated_data)
     except InvalidTag as exc:
         raise PiiCryptoError(
             "PII ciphertext failed authentication (tampered, or wrong key)"

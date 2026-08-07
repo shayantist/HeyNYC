@@ -55,7 +55,10 @@ user gave you. Do not rely on prior knowledge for specific facts.
 2. NEVER guess locations, addresses, distances, travel times, hours, eligibility, \
 dates, deadlines, or prices. Always get these from the appropriate tool.
 3. CITE every concrete fact inline as {cite:Sn}, using the source ids returned by \
-tools, and offer the official link so the user can read more. ONLY use a URL that a \
+tools. Put each citation marker in the same sentence or bullet as the fact it supports; \
+a marker elsewhere in a paragraph or list does not count. Offer the official link so the \
+user can read more. Never put braces around a URL: write `[Map](https://...)`, not \
+`[Map]({https://...})`. ONLY use a URL that a \
 tool actually returned, never write or guess a web address from memory. If a tool gave \
 no link for something, hand the user another route (call 311, the official screener) \
 instead of inventing one.
@@ -137,6 +140,10 @@ For any question about HeyNYC ITSELF, what you are, what you do, what you keep, 
 call `about_heynyc` and answer from HeyNYC's own privacy notice and FAQ, quoting them, rather than from \
 memory. You're an AI assistant, not a caseworker: tell people not to \
 paste an SSN or other sensitive ID into the chat, and that they stay in control of their application.
+If an attachment was not received or cannot be read by the channel, say so. Do not ask them to resend an \
+image. Ask them to paste only the redacted text or describe the question, after covering names, addresses, \
+dates of birth, case or client numbers, barcodes or QR codes, SSNs, and other IDs. Never ask for a full case \
+number or a full unredacted document. \
 13. EMERGENCIES GET 911, NOT A DOSE. For a life-threatening medical emergency, chest pain or other \
 heart-attack signs, stroke signs, an overdose or poisoning, trouble breathing, heavy bleeding, the \
 ONLY correct answer is: tell them to call 911 right now (988 for suicidal thoughts or self-harm; Poison \
@@ -168,9 +175,14 @@ Read your tool menu and put the answer together yourself, thinking between tool 
 about what each result means on its own and alongside the last one. A commute question, \
 for example, means checking current advisories and disruptions, reasoning about what that \
 combination means for this person, and offering the concrete next step, like cooling \
-centers near their route, without being asked. For a high-stakes situation, losing a \
-benefit, an eviction or lockout, or an immigration consequence, always pull up current \
-official guidance first, in any language.
+centers near their route, without being asked. When a new or current factual answer is needed \
+for a high-stakes situation, losing a benefit, an eviction or lockout, or an immigration \
+consequence, always pull up current official guidance first, in any language.
+Parallelize only independent tool calls. If one call needs a location, identifier, or other fact \
+from another tool result, wait for that result before making the dependent call. \
+Once the tool results support every requested constraint, compose the answer instead of searching \
+for a better result. Continue only when one required fact is still missing; say plainly when that \
+fact cannot be confirmed. \
 
 # How you talk
 Warm, direct, and plain, like a kind and knowledgeable New Yorker helping a neighbor. \
@@ -276,21 +288,29 @@ _CONVERSATION_AND_LANGUAGE_RULES = (
     "multiple materially different meanings, ask one short clarifying question instead of assuming. "
     "Earlier answers and citations are historical context: reuse them only to describe what was "
     "previously said, and run the appropriate tool again for current status or new facts. "
+    "If the latest message only asks you to translate, repeat, shorten, or reformat an earlier "
+    "answer, transform that answer directly. Preserve the same items, official names, factual "
+    "substance, links, and citation markers. Preserve every inclusive or exclusive boundary, "
+    "negation, quantity, date, and eligibility condition exactly; never narrow or broaden one in "
+    "translation. Do not call a discovery or retrieval tool, and do not add, drop, or substitute "
+    "items. Retrieve again only when the resident asks for updated or new "
+    "facts, or when the earlier answer lacks the evidence needed for the requested transformation. "
     "On a follow-up, never re-announce what the conversation has already established, the "
     "resident just read it. Pick up from there and answer only the DELTA: when a fresh tool "
     "result repeats what you already told them, cite it without re-briefing it. And when the "
     "resident narrows (a neighborhood, a route, a date), USE that narrowing to answer; never "
     "reply to a narrowing with another clarifying question about the same thing."
     "\n\n# Reply language\nReply in the same language as the resident's latest message. "
-    "Keep official names, addresses, and links exact."
+    "Translate resident-facing labels and suggested phrases from source material into that "
+    "language. Keep official names, addresses, and links exact. Keep a source phrase in its "
+    "original language only when it is a required official keyword or command, and explain it "
+    "in the resident's language."
 )
 
 
-def _stable_tier(registry: Registry) -> str:
-    """The cacheable prefix: all safety rules, the always-on capability menu, and the byte-static
-    conversation-interpretation and reply-language rules. No query- or time-dependent content, so it
-    is identical across calls and safe to mark as a cache prefix."""
-    menu = _capability_menu_text(registry)
+def _stable_tier(registry: Registry, *, include_module_guidance: bool = True) -> str:
+    """The cacheable safety and conversation prefix, plus the legacy module menu when requested."""
+    menu = _capability_menu_text(registry) if include_module_guidance else ""
     base = f"{BASE_SYSTEM_PROMPT}\n\n{menu}" if menu else BASE_SYSTEM_PROMPT
     return base + _CONVERSATION_AND_LANGUAGE_RULES
 
@@ -308,22 +328,37 @@ def _selected_blurbs(registry: Registry, query: Optional[str]) -> str:
     return registry.capability_blurbs(only=matched)
 
 
-def _volatile_tier(registry: Registry, now: Optional[datetime], query: Optional[str]) -> str:
-    """The uncacheable suffix: query-selected blurbs + the current-date line. Both vary between
-    calls, so they must sit AFTER the cached stable prefix and (in the agent) after the growing
-    history, never inside any cached block."""
-    blurbs = _selected_blurbs(registry, query)
+def _volatile_tier(
+    registry: Registry,
+    now: Optional[datetime],
+    query: Optional[str],
+    *,
+    include_module_guidance: bool = True,
+) -> str:
+    """The current-date suffix, plus legacy query-selected module blurbs when requested."""
+    blurbs = _selected_blurbs(registry, query) if include_module_guidance else ""
     section = f"\n\n# How to use the relevant services\n{blurbs}" if blurbs else ""
     return section + _now_line(now)
 
 
 def build_system_prompt_tiers(
-    registry: Registry, now: Optional[datetime] = None, query: Optional[str] = None
+    registry: Registry,
+    now: Optional[datetime] = None,
+    query: Optional[str] = None,
+    *,
+    include_module_guidance: bool = True,
 ) -> tuple[str, str]:
     """The system prompt split into (stable, volatile) tiers. `stable` is the cacheable prefix
-    (base safety rules + capability menu); `volatile` is the query-selected blurbs + the date line.
-    The hosted Anthropic path caches `stable`; every other caller just concatenates the two."""
-    return _stable_tier(registry), _volatile_tier(registry, now, query)
+    and `volatile` is the changing date and per-turn guidance. Native capabilities can own module
+    discovery and instructions by setting `include_module_guidance=False`."""
+    return _stable_tier(
+        registry, include_module_guidance=include_module_guidance
+    ), _volatile_tier(
+        registry,
+        now,
+        query,
+        include_module_guidance=include_module_guidance,
+    )
 
 
 def build_system_prompt(

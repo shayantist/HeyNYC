@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -304,3 +305,272 @@ async def test_purge_expired_sessions_deletes_old_keeps_recent(tmp_path):
     assert not (tmp_path / "old.jsonl").exists()  # irreversibly gone
     assert (tmp_path / "new.jsonl").exists()
     assert any("old.jsonl" in p for p in deleted)
+
+
+async def test_native_runtime_state_commits_atomically_and_resumes(tmp_path):
+    class NativeConversation:
+        def __init__(self, count=0):
+            self.count = count
+
+        async def send(self, message, **kwargs):
+            self.count += 1
+            return SimpleNamespace(
+                text=f"answer {self.count}",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return str(self.count).encode()
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation(int(state))
+
+    path = tmp_path / "native.jsonl"
+    session = Session(agent=NativeAgent(), id="native", path=path)
+
+    pending = await session.prepare("first")
+    assert session.turns == []
+    assert not path.exists()
+
+    session.commit(pending)
+    resumed = Session.load(NativeAgent(), "native", path)
+    second = await resumed.send("second")
+
+    assert second.text == "answer 2"
+    assert [turn["content"] for turn in resumed.turns] == [
+        "first",
+        "answer 1",
+        "second",
+        "answer 2",
+    ]
+
+
+async def test_native_session_projects_pending_approval_review():
+    class NativeConversation:
+        def __init__(self, state="new"):
+            self.state = state
+
+        @property
+        def pending_approvals(self):
+            if self.state != "pending":
+                return {}
+            return {
+                "call-1": {
+                    "tool_name": "submit_request",
+                    "args": {"borough": "Queens"},
+                }
+            }
+
+        async def send(self, message, **kwargs):
+            self.state = "pending"
+            return SimpleNamespace(
+                text="",
+                citations={},
+                status="approval_required",
+                usage={},
+            )
+
+        def dump_state(self):
+            return self.state.encode()
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation(state.decode())
+
+    session = Session(agent=NativeAgent(), id="approval")
+    pending = await session.prepare("submit it")
+
+    assert "submit_request" in pending.result.text
+    assert "Queens" in pending.result.text
+    assert "Reply YES to approve, or NO to deny" in pending.result.text
+
+    session.commit(pending)
+    assert session.convo.pending_approvals == {}
+
+
+async def test_native_runtime_hydrates_existing_legacy_transcript(tmp_path):
+    path = tmp_path / "legacy-to-native.jsonl"
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+    await Session(agent=legacy, id="legacy", path=path).send("legacy question")
+
+    class NativeConversation:
+        def __init__(self, history=()):
+            self.history = list(history)
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+        def conversation_from_transcript(self, transcript):
+            return NativeConversation(transcript)
+
+    resumed = Session.load(NativeAgent(), "legacy", path)
+
+    assert [turn["content"] for turn in resumed.convo.history] == [
+        "legacy question",
+        "legacy answer",
+    ]
+
+
+async def test_legacy_runtime_hydrates_native_transcript_on_rollback(tmp_path):
+    class NativeConversation:
+        async def send(self, message, **kwargs):
+            return SimpleNamespace(
+                text="native answer",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+    path = tmp_path / "native-to-legacy.jsonl"
+    await Session(agent=NativeAgent(), id="native", path=path).send("native question")
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+
+    resumed = Session.load(legacy, "native", path)
+
+    assert [turn["content"] for turn in resumed.turns] == [
+        "native question",
+        "native answer",
+    ]
+
+
+async def test_native_runtime_hydrates_legacy_tail_after_rollback(tmp_path):
+    class NativeConversation:
+        def __init__(self, history=()):
+            self.history = list(history)
+
+        async def send(self, message, **kwargs):
+            self.history.extend((message, "native answer"))
+            return SimpleNamespace(
+                text="native answer",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation(("native question", "native answer"))
+
+        def conversation_from_transcript(self, transcript):
+            return NativeConversation(turn["content"] for turn in transcript)
+
+    path = tmp_path / "runtime-round-trip.jsonl"
+    native = NativeAgent()
+    await Session(agent=native, id="runtime-round-trip", path=path).send("native question")
+
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+    await Session.load(legacy, "runtime-round-trip", path).send("legacy question")
+
+    resumed = Session.load(native, "runtime-round-trip", path)
+
+    assert resumed.convo.history == [
+        "native question",
+        "native answer",
+        "legacy question",
+        "legacy answer",
+    ]
+
+
+async def test_native_runtime_hydrates_legacy_transcript_after_reset(tmp_path):
+    class NativeConversation:
+        def __init__(self, history=()):
+            self.history = list(history)
+
+        async def send(self, message, **kwargs):
+            return SimpleNamespace(
+                text="native answer",
+                citations={},
+                status="success",
+                usage={},
+            )
+
+        def dump_state(self):
+            return b"native"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+        def conversation_from_transcript(self, transcript):
+            return NativeConversation(transcript)
+
+    path = tmp_path / "runtime-reset.jsonl"
+    native = NativeAgent()
+    first = Session(agent=native, id="runtime-reset", path=path)
+    await first.send("old native question")
+    first.reset()
+
+    legacy = Agent(Registry([]), tools={}, complete_fn=_const_complete("legacy answer"))
+    await Session.load(legacy, "runtime-reset", path).send("current legacy question")
+
+    resumed = Session.load(native, "runtime-reset", path)
+
+    assert [turn["content"] for turn in resumed.convo.history] == [
+        "current legacy question",
+        "legacy answer",
+    ]
+
+
+async def test_native_runtime_failure_becomes_a_deliverable_pending_turn():
+    from heynyc.core.pydantic_runtime import PydanticRunFailure
+
+    failed = SimpleNamespace(
+        text="I hit a temporary problem before I could verify an answer.",
+        citations={},
+        status="error",
+        usage={"cost_usd": 0.01},
+    )
+
+    class NativeConversation:
+        async def send(self, message, **kwargs):
+            raise PydanticRunFailure("broken output", failed, {})
+
+        def dump_state(self):
+            return b"unchanged"
+
+    class NativeAgent:
+        def conversation(self):
+            return NativeConversation()
+
+        def conversation_from_state(self, state):
+            return NativeConversation()
+
+    pending = await Session(agent=NativeAgent(), id="failure").prepare("help")
+
+    assert pending.result is failed
+    assert pending.result.status == "error"

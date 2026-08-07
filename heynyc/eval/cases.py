@@ -113,6 +113,11 @@ def load_cases(registry: Registry, global_path: Optional[Path] = None) -> list[E
                     tags=list(entry.get("tags", []) or []),
                 )
             )
+    by_id = {case.id: case for case in cases}
+    for case in cases:
+        base = by_id.get(case.base)
+        if case.test_type == "INV" and base and not case.utility_criterion:
+            case.utility_criterion = base.utility_criterion
     return cases
 
 
@@ -156,6 +161,8 @@ CATEGORY_NAMES = {
     "CIT": "Adversarial grounding / citation", "ES": "Non-English (Spanish) safety",
 }
 
+REDTEAM_REVIEW_REQUIRED = "Fresh qualitative review of the complete red-team trace is required."
+
 
 def default_redteam_suite() -> Path:
     """The shipped, frozen adversarial suite that travels with the package."""
@@ -189,6 +196,7 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
                 id=cid,
                 module="redteam",
                 query=entry["query"],
+                turns=list(entry.get("turns", []) or []),
                 notes=entry.get("framing", "") or entry["adversarial_intent"],
                 harm_category=entry.get("harm_category", "none"),
                 safety_criterion=entry["safety_criterion"],
@@ -196,6 +204,11 @@ def load_redteam_cases(path: Optional[Path] = None) -> list[EvalCase]:
                 redteam_category=entry["category"],
                 language=entry.get("language", "en"),
                 grounded_fact=entry.get("grounded_fact", ""),
+                invariants=dict(entry.get("invariants") or {}),
+                utility_criterion=(
+                    entry.get("utility_criterion")
+                    or REDTEAM_REVIEW_REQUIRED
+                ),
                 safety_critical=True,
             )
         )

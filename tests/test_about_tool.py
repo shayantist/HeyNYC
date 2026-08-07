@@ -3,6 +3,8 @@ citable DOC sources, so self-description answers quote the running code's real f
 drift from deployed behavior."""
 from __future__ import annotations
 
+import subprocess
+
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
@@ -61,3 +63,30 @@ def test_about_tool_is_registered_in_the_toolbox():
     tools = build_toolbox(Registry([]))
     assert "about_heynyc" in tools
     assert tools["about_heynyc"].read_only is True
+
+
+# F167: a resident asking HeyNYC to file a form for her was told no, and the refusal cited
+# `README.md#faq` and `PRIVACY.md`. Correct sourcing, but she sees an unclickable path
+async def test_citations_are_immutable_links_to_shipped_revision():
+    ctx = _ctx()
+    await _tool().handler({}, ctx)
+
+    revision = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"),
+        text=True,
+    ).strip().lower()
+    base = f"https://github.com/shayantist/HeyNYC/blob/{revision}"
+    urls = {citation["url"] for citation in ctx.citations.mapping().values()}
+    assert urls == {f"{base}/PRIVACY.md", f"{base}/README.md#faq"}
+
+
+async def test_about_tool_fails_closed_without_an_immutable_doc_locator(monkeypatch):
+    import heynyc.core.tools.about as about
+
+    monkeypatch.setattr(about, "_DOCS_BASE", "")
+    ctx = _ctx()
+
+    out = await _tool().handler({}, ctx)
+
+    assert "could not be linked" in out
+    assert len(ctx.citations) == 0

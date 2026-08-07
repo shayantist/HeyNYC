@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from heynyc.core import config, events
 from heynyc.core.agent import Agent
@@ -182,11 +182,12 @@ def _load_retriever(data_dir: Path):
     return IndexRetriever(store=open_store(index_path), embedder=default_embedder())
 
 
-def build_console_deps(*, console, model: Optional[str] = None, data_dir: Optional[Path] = None) -> Deps:
+def build_console_deps(*, console, model: Optional[Any] = None, data_dir: Optional[Path] = None) -> Deps:
     """Assemble the console channel's `Deps`, mirroring `app.build_deps` but with a console-native
-    agent: it carries the local approver (so the SNAP form flow is consented, not auto-denied) and
-    honors the `--model` override. `--user` identity + the local-dev salt are applied by the caller
-    at message time. `event_sink` is the live-view `ConsoleSink`; every other channel leaves it None."""
+    agent. The legacy runtime carries the local approver; the Pydantic runtime uses the shared
+    durable channel approval flow. Both honor the `--model` override. `--user` identity + the
+    local-dev salt are applied by the caller at message time. `event_sink` is the live-view
+    `ConsoleSink`; every other channel leaves it None."""
     from heynyc.modules.advisories.tools import current_awareness
 
     data = Path(data_dir) if data_dir is not None else config.HEYNYC_DATA_DIR
@@ -197,18 +198,37 @@ def build_console_deps(*, console, model: Optional[str] = None, data_dir: Option
     async def approver(name: str, args: dict) -> bool:
         return approver_sync(name, args)
 
-    agent = Agent(
-        Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST),
-        model=model or config.HEYNYC_MODEL,
-        index=_load_retriever(data),
-        approver=approver,
-        notify_awareness=current_awareness,
-        scope_gate=True,
+    registry = Registry.discover(
+        config.MODULES_DIR,
+        config.BASE_ALLOWLIST,
+        config.NEWS_ALLOWLIST,
     )
+    selected_model = model or config.HEYNYC_MODEL
+    index = _load_retriever(data)
+    if config.HEYNYC_AGENT_RUNTIME == "pydantic":
+        from heynyc.core.pydantic_runtime import build_configured_runtime
+
+        agent = build_configured_runtime(
+            registry,
+            model=selected_model,
+            index=index,
+            current_awareness=current_awareness,
+        )
+    else:
+        agent = Agent(
+            registry,
+            model=selected_model,
+            index=index,
+            approver=approver,
+            notify_awareness=current_awareness,
+            scope_gate=True,
+        )
     store = ChannelStore(
         data / "channels.sqlite3", rate_limit=config.CHANNEL_RATE_LIMIT,
         window_s=config.CHANNEL_RATE_WINDOW_S, dedup_ttl_s=config.CHANNEL_DEDUP_TTL_S,
     )
+    if not hasattr(agent, "conversation_from_state"):
+        store.clear_pending_approvals()
     from heynyc.core import telemetry
 
     return Deps(

@@ -545,6 +545,26 @@ async def test_nyc_advisories_falls_back_to_recent_when_cap_empty():
     assert "Avoid flooded roadways" in flood["snippet"]
 
 
+async def test_recent_fallback_dedups_titles_already_delivered_this_conversation():
+    delivered = frozenset(
+        item["title"].casefold() for item in json.loads(RECENT_MESSAGES_JSON)
+    )
+    client = _combo_client(rss=_rss(), recent_json=RECENT_MESSAGES_JSON)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        delivered_notify_titles=delivered,
+    )
+
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "Nothing new" in out
+    assert "Do not re-brief" in out
+    assert "Avoid flooded roadways" not in out
+
+
 async def test_nyc_advisories_prefers_cap_when_it_has_active():
     # When the CAP feed is working AND has an active advisory, it stays the source (structured,
     # with severity + expiry); the RecentMessages fallback is not needed.
@@ -612,6 +632,22 @@ async def test_nyc_advisories_reports_borough_notices_alongside_citywide():
     assert "Three Alarm Fire" in out
     schema = get_tools()[0].parameters["properties"]
     assert "citywide_only" not in schema
+
+
+async def test_advisory_results_keep_non_overlapping_notices_out_of_plan_answers():
+    client = _combo_client(rss=_rss(), recent_json=RECENT_MESSAGES_JSON)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+    )
+
+    out = await get_tools()[0].handler({"near": "Flushing Meadows Corona Park"}, ctx)
+    await client.aclose()
+
+    assert "Do not enumerate notices that clearly do not overlap" in out
+    assert "name the date and place you checked" in out
+    assert "list these as-is" not in out
 
 
 # --- the shipped module stays valid (mirrors test_module_food_pantries) ----

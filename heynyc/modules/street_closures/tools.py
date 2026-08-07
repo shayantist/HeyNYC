@@ -80,19 +80,18 @@ def _representative_point(record: dict) -> tuple[float, float] | None:
         return None
 
 
-def _parse_on_date(raw: str, today: date) -> str:
-    """Sanitize the asked date to an ISO YYYY-MM-DD string, defaulting to today.
+def _parse_on_date(raw: str, today: date) -> str | None:
+    """Parse an exact ISO date, defaulting to today only when the value is omitted.
 
-    A value that is not a real ISO date (including any SoQL-injection attempt) can never
-    reach the query: it falls back to today. The returned value is always digits-and-dashes,
-    so interpolating it into the $where clause is safe."""
+    An invalid value, including any SoQL-injection attempt, returns None and never reaches
+    the query. A valid returned value is always digits-and-dashes."""
     raw = (raw or "").strip()
-    if raw:
-        try:
-            return date.fromisoformat(raw[:10]).isoformat()
-        except ValueError:
-            pass
-    return today.isoformat()
+    if not raw:
+        return today.isoformat()
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        return None
 
 
 def _closure_citation(ctx: ToolContext, record: dict) -> str:
@@ -141,6 +140,8 @@ async def _street_closures(args: dict, ctx: ToolContext) -> str:
         )
 
     on = _parse_on_date(str(args.get("on", "") or ""), _nyc_today())
+    if on is None:
+        return "The requested date is invalid. Ask for a date in YYYY-MM-DD format."
 
     # PII: geocode the location only to bound the query; the resolved address is never logged.
     origin = await geocode(near, client=ctx.http)

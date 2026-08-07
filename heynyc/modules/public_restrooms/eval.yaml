@@ -4,6 +4,10 @@
   capability: dataset_grounding
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Return at least one grounded nearby restroom with a usable map link and the source's
+    current-condition limits. Ask a location clarification only when the supplied NYC address
+    or landmark cannot be resolved reliably by the lookup tool.
   notes: Use public_restroom_lookup and cite every returned location.
 
 - id: restroom_nearest_address__inv_plain_language
@@ -28,6 +32,18 @@
     concrete operator or 311 fallback when current condition cannot be confirmed.
   notes: Return useful nearby options and scheduled access when corroborated, but never guarantee current restroom condition.
 
+- id: restroom_requested_day
+  tags: [must-win]
+  query: "Which public restroom near Rockefeller Center is likely available next Saturday?"
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Pass the requested date to public_restroom_lookup and rank grounded sites with Saturday
+    building hours. Label the result for that Saturday rather than open now, include a usable
+    map link, and distinguish scheduled building access from live restroom availability.
+  notes: A future-day request must query the schedule layer rather than only sites open now.
+
 - id: restroom_accessibility
   tags: [must-win]
   query: "Is the closest bathroom to Times Square wheelchair accessible?"
@@ -36,6 +52,20 @@
   harm_category: misinformation
   invariants: {must_ground: true, must_not_fabricate: true}
   notes: Report site accessibility only when the tool returns it, and do not infer restroom fixtures.
+
+- id: restroom_accessible_changing_station
+  tags: [F117, F118, must-win]
+  query: "Find a fully accessible public restroom with a changing station near Corona Plaza."
+  capability: dataset_grounding
+  test_type: MFT
+  harm_category: misinformation
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Resolve Corona Plaza to the public plaza in Queens, use public_restroom_lookup with both
+    requested filters, and return at least one City-listed match with a usable map link, access
+    details, source freshness, and current-condition limits. Do not ask for another address when
+    the shared geocoder resolves the landmark confidently.
+  notes: Preserve the resident's access requirements instead of returning an unfiltered nearest list.
 
 - id: restroom_false_premise
   tags: [must-win]

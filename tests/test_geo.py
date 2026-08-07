@@ -18,6 +18,7 @@ from heynyc.core.tools.geo import (
     _looks_like_intersection,
     _nearest_handler,
     _point_in_named_borough,
+    _resolution_note,
     _zip_centroid,
     geocode,
     haversine_m,
@@ -280,6 +281,14 @@ async def test_geocode_no_match_returns_none():
     await client.aclose()
 
 
+async def test_geocode_rejects_a_deictic_location_without_device_coordinates():
+    async def should_not_run(_text):
+        raise AssertionError("deictic location reached the place-name geocoder")
+
+    assert await geocode("near me", forgiving=should_not_run) is None
+    assert await geocode("my current location", forgiving=should_not_run) is None
+
+
 def _fake_forgiving(point):
     """Build an injectable forgiving-geocoder coroutine returning a fixed GeoPoint."""
     async def fn(text):
@@ -359,6 +368,83 @@ async def test_forgiving_fallback_when_geosearch_empty():
     await client.aclose()
     assert point.match_type == "nominatim"
     assert "Apollo" in point.label
+
+
+async def test_geosearch_fallback_name_mismatch_uses_forgiving_landmark_match():
+    correct = GeoPoint(
+        40.7507, -73.8627, "Civic Plaza, Queens, NY", confidence=0.8, match_type="nominatim"
+    )
+
+    def wrong_fuzzy_match(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "features": [{
+                    "geometry": {"coordinates": [-73.8459, 40.7530]},
+                    "properties": {
+                        "name": "CIVIC YARD",
+                        "label": "CIVIC YARD, Queens, NY",
+                        "confidence": 0.8,
+                        "match_type": "fallback",
+                    },
+                }]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(wrong_fuzzy_match))
+    point = await geocode("Civic Plaza", client=client, forgiving=_fake_forgiving(correct))
+    await client.aclose()
+
+    assert point == correct
+
+
+async def test_geosearch_fallback_rejects_a_different_numbered_address():
+    def wrong_address(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "features": [{
+                    "geometry": {"coordinates": [-73.99, 40.75]},
+                    "properties": {
+                        "label": "999 Main Street, Manhattan",
+                        "housenumber": "999",
+                        "confidence": 0.8,
+                        "match_type": "fallback",
+                    },
+                }]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(wrong_address))
+    point = await _geosearch_geocode("123 Main Street", client)
+    await client.aclose()
+
+    assert point is None
+
+
+async def test_geosearch_fallback_accepts_the_matching_numbered_address():
+    def matching_address(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "features": [{
+                    "geometry": {"coordinates": [-73.99, 40.75]},
+                    "properties": {
+                        "label": "123 Main St, Manhattan",
+                        "housenumber": "123",
+                        "confidence": 0.8,
+                        "match_type": "fallback",
+                    },
+                }]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(matching_address))
+    point = await _geosearch_geocode("123 Main Street", client)
+    await client.aclose()
+
+    assert point is not None
+    assert point.label == "123 Main St, Manhattan"
 
 
 async def test_gazetteer_beats_both_providers_for_known_neighborhoods():
@@ -494,6 +580,23 @@ async def test_low_confidence_origin_makes_nearest_clarify(monkeypatch):
     await client.aclose()
     assert "which borough" in out.lower()
     assert "- " not in out  # no location list emitted
+
+
+async def test_nearest_rejects_a_citywide_origin(monkeypatch):
+    async def should_not_geocode(_text, **_kwargs):
+        raise AssertionError("citywide placeholder reached the geocoder")
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "New York City"},
+        ctx,
+    )
+
+    await client.aclose()
+    assert "neighborhood, address, or landmark" in out
 
 
 def _registry_with_cooling() -> Registry:
@@ -787,6 +890,7 @@ async def test_neighborhood_normalization_and_aliases():
         "FiDi": "Manhattan",
         "upper west side, manhattan": "Manhattan",
         "bed-stuy": "Brooklyn",
+        "Flushing": "Queens",
         "Queens Village": "Queens",
     }
     for query, borough in cases.items():
@@ -795,6 +899,21 @@ async def test_neighborhood_normalization_and_aliases():
         await client.aclose()
         assert point is not None and point.match_type == "nta", query
         assert borough in point.label, query
+
+
+def test_neighborhood_resolution_note_names_official_nta_source():
+    point = GeoPoint(
+        40.760197,
+        -73.832301,
+        "Flushing, Queens",
+        confidence=1.0,
+        match_type="nta",
+    )
+
+    note = _resolution_note("Flushing", point)
+
+    assert "official NYC neighborhood data" in note
+    assert "map search" not in note
 
 
 async def test_neighborhood_with_contradictory_borough_falls_through():

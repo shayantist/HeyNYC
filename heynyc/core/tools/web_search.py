@@ -8,6 +8,7 @@ default uses Tavily (which supports include_domains) and degrades gracefully to
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Awaitable, Callable, Optional
 from urllib.parse import urlparse
@@ -25,6 +26,16 @@ SearchFn = Callable[..., Awaitable[list[dict]]]
 
 # Tavily's time_range accepts exactly these; anything else falls back to "year".
 _RECENCY_WINDOWS = ("day", "week", "month", "year")
+_ARCHIVE_WARNING = (
+    "SOURCE STATUS: ARCHIVED. The publisher identifies this as historical or "
+    "out-of-date content; do not present it as current."
+)
+_ARCHIVE_MARKERS = (
+    "archived content",
+    "out of date",
+    "no longer current",
+    "historical content",
+)
 
 
 # Server-side query normalization, the layer where Gemini and ChatGPT put query understanding
@@ -72,31 +83,86 @@ def _domain_allowed(url: str, allowlist: list[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in allowlist)
 
 
+def archive_warning(url: str, text: str = "") -> str:
+    path = (urlparse(url).path or "").lower()
+    haystack = text.lower()
+    if "/archive/" in path or "save-policy-news-archive" in path:
+        return _ARCHIVE_WARNING
+    return _ARCHIVE_WARNING if any(marker in haystack for marker in _ARCHIVE_MARKERS) else ""
+
+
 async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]:
     """Shared Tavily call. Returns [] when no API key (caller treats as unavailable)."""
     if not config.TAVILY_API_KEY:
         return []
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": config.TAVILY_API_KEY,
-                "query": query,
-                "include_domains": allowed_domains,
-                "max_results": 5,
-                "search_depth": "basic",
-                **extra,
-            },
-        )
-        response.raise_for_status()
-        results = response.json().get("results", [])
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": config.TAVILY_API_KEY,
+                    "query": query,
+                    "include_domains": allowed_domains,
+                    "max_results": 5,
+                    "search_depth": "basic",
+                    **extra,
+                },
+            )
+            response.raise_for_status()
+            results = response.json().get("results", [])
+    except (httpx.TimeoutException, httpx.TransportError):
+        return []
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")} for r in results]
+
+
+async def _duckduckgo(
+    query: str,
+    allowed_domains: list[str],
+    recency: Optional[str] = None,
+) -> list[dict]:
+    """Local search fallback for a Tavily plan-limit response; allowlisting remains downstream."""
+    from ddgs import DDGS
+
+    timelimit = {"day": "d", "week": "w", "month": "m", "year": "y"}.get(recency)
+    try:
+        results = await asyncio.to_thread(
+            DDGS().text,
+            query,
+            max_results=20,
+            timelimit=timelimit,
+        )
+    except Exception:
+        return []
+    return [
+        {
+            "title": result.get("title", ""),
+            "url": result.get("href", ""),
+            "snippet": result.get("body", ""),
+        }
+        for result in results
+        if result.get("href") and _domain_allowed(result["href"], allowed_domains)
+    ][:5]
+
+
+async def _search_with_fallback(
+    query: str,
+    allowed_domains: list[str],
+    *,
+    recency: Optional[str] = None,
+    **tavily_options,
+) -> list[dict]:
+    try:
+        return await _tavily(query, allowed_domains, **tavily_options)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 432:
+            raise
+        return await _duckduckgo(query, allowed_domains, recency=recency)
 
 
 async def tavily_search(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
     """Default backend, plain allowlisted search, no recency bias. IGNORES `recency` so the
     default web_search stays untimed and can serve general/historical/older-than-a-year queries."""
-    return await _tavily(query, allowed_domains)
+    return await _search_with_fallback(query, allowed_domains)
 
 
 async def tavily_search_recent(query: str, allowed_domains: list[str], recency: Optional[str] = None) -> list[dict]:
@@ -113,7 +179,12 @@ async def tavily_search_recent(query: str, allowed_domains: list[str], recency: 
     fast-moving current events, default to a full year for slow-moving rules/laws/rulings. Defaults
     to "year" when unset; defense in depth, any unexpected value also falls back to "year"."""
     window = recency if recency in _RECENCY_WINDOWS else "year"
-    return await _tavily(query, allowed_domains, time_range=window)
+    return await _search_with_fallback(
+        query,
+        allowed_domains,
+        recency=window,
+        time_range=window,
+    )
 
 
 _BASE_GOV = {"nyc.gov", "cityofnewyork.us", "mta.info"}
@@ -181,17 +252,30 @@ def _make_handler(
 
         blocks = []
         for r, tier in tagged:
+            snippet = r.get("snippet", "")[:400]
+            if warning := archive_warning(r["url"], f"{r.get('title', '')}\n{snippet}"):
+                snippet = f"{warning}\n\n{snippet}"
             cite = ctx.citations.register(
-                r["url"], snippet=r.get("snippet", "")[:200], title=r.get("title", ""), kind="WEB"
+                r["url"],
+                snippet=snippet,
+                title=r.get("title", ""),
+                kind="WEB",
+                provenance={"evidence_grade": "discovery"},
             )
             label = _TIER_LABELS.get(tier, tier)
             blocks.append(
-                f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{r.get('snippet','')[:400]}"
+                f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{snippet}"
             )
         # Mirror the vendors' exposed search queries: when the query was rewritten, say so,
         # so the model can refine its next search instead of re-sending the same sentence.
         header = f'Searched as: "{query}".\n\n' if query != raw_query else ""
-        return header + "\n\n".join(blocks)
+        guidance = (
+            "\n\nSearch results are discovery snippets. To make claims beyond these snippets "
+            "from an authoritative result, call official_sources with its URL and a focused query."
+            if any(tier == "authoritative" for _result, tier in tagged)
+            else ""
+        )
+        return header + "\n\n".join(blocks) + guidance
 
     return _handler
 
@@ -257,6 +341,9 @@ def web_search_tools(
                 "tools. "
                 "For NYC event listings, what's on, or any follow-up inside an events thread, use "
                 "whats_on_events instead: that catalog is the source for NYC events, not this tool. "
+                "For the same missing fact, make one focused search and, when an authoritative result "
+                "needs its page checked, one `official_sources` call. If that still does not support "
+                "the fact, say you could not confirm it instead of issuing another search. "
                 "Restricted to an allowlist and ranked by source trust; results are tagged "
                 "authoritative/editorial/community. Treat community-tagged (⚠️) results as unconfirmed "
                 "and tell the user to verify. Pass `prefer` to boost the active topic's official "

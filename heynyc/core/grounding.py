@@ -19,24 +19,21 @@ false PASS; and (e) only BLOCK on a fact whose absence is CONCLUSIVE, see the se
 Derived values (distances, counts) are deliberately NOT extracted, check_data_grounding re-derives
 distances; counts are the model's own tally across rows.
 
-Two things determine severity, tuned against real module-eval traces (validation in test_checks.py):
-  • TOKEN KIND, a verbatim structured fact (phone / dollar amount / street address / unit number) is
-    copied literally from a source; a multi-word PROPER-NOUN name drifts too much to trust (acronyms
-    vs the spelled-out program, a correct neighborhood the row omits, plural/typo, aggregated DOC
-    snippets), so a name mismatch is only ever SOFT (informational).
-  • SOURCE COMPLETENESS, a DATA `snapshot` / API `response` is the WHOLE captured source, so a fact's
-    absence is conclusive; a DOC/WEB snippet or a label-only catalog row is a TRUNCATED excerpt, so the
-    fact may live in the un-captured remainder → absence proves nothing.
-A mismatch BLOCKS only when the token is a structured fact AND every cited source is a complete
-capture. Everything else is SOFT. Validation showed this yields ZERO blocking false-fails across all
-modules while a fabricated phone/address/amount cited to a DATA snapshot still hard-fails.
+TOKEN KIND determines severity: a verbatim structured fact (phone / dollar amount / street address /
+unit number) must occur in the captured evidence attached to its citation. A citation cannot rely on
+an unseen part of a page. A multi-word PROPER-NOUN name drifts too much to trust (acronyms vs the
+spelled-out program, a correct neighborhood the row omits, plural/typo, aggregated DOC snippets), so
+a name mismatch is only ever SOFT (informational).
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # Toggle blocking off here if a future module surfaces a hard false-fail. (Kept as the shared source of
 # truth; eval/checks.py re-exports this name so its tests still import it from there.)
@@ -51,7 +48,19 @@ _MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
 _NUMBER_VALUE_RE = re.compile(r"(?<![\w])\d[\d,]*(?:\.\d+)?(?![\w])")
 # A number carrying a VERBATIM unit (temperature / percent), a fact quoted from source text, not a
 # computed/rounded value. Distances/times/counts are intentionally excluded (reformatting → false-fail).
-_UNIT_NUM_RE = re.compile(r"(\d{1,4})\s*(?:°\s*[fc]?|degrees?\b|%|percent\b)", re.IGNORECASE)
+_UNIT_NUM_RE = re.compile(
+    r"(\d{1,4})\s*(°\s*[fc]?|degrees?\b|%|percent\b)",
+    re.IGNORECASE,
+)
+_FULL_DATE_RE = re.compile(
+    r"\b(?:"
+    r"\d{4}-\d{1,2}-\d{1,2}"
+    r"|\d{1,2}/\d{1,2}/\d{2,4}"
+    r"|[^\W\d_]{3,20}\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*|\s+)\d{4}"
+    r"|\d{1,2}\s+[^\W\d_]{3,20}\.?\s+\d{4}"
+    r")\b",
+    re.IGNORECASE,
+)
 _STREET_TYPES = {
     "street", "st", "avenue", "ave", "av", "boulevard", "blvd", "road", "rd", "place", "pl",
     "drive", "dr", "lane", "ln", "court", "ct", "parkway", "pkwy", "plaza", "terrace", "ter",
@@ -130,7 +139,7 @@ def _stringify(obj) -> str:
     return str(obj)
 
 
-def _citation_blob(c: dict) -> Optional[str]:
+def citation_evidence(c: dict) -> Optional[str]:
     """The captured source content for a citation: the DATA `snapshot` (or, for an auditable API
     exchange, the captured `response`, never the redacted request_summary), plus snippet + title
     (DOC/WEB carry only snippet + title). None if the source has none, then it cannot be verified."""
@@ -143,6 +152,8 @@ def _citation_blob(c: dict) -> Optional[str]:
         parts.append(str(c["snippet"]))
     if c.get("title"):
         parts.append(str(c["title"]))
+    if c.get("valid_as_of"):
+        parts.append(str(c["valid_as_of"]))
     return " ".join(parts) if parts else None
 
 
@@ -153,22 +164,57 @@ def _split_claims(text: str) -> list[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
+    """Return original claim, marker-free text, and citations, joining trailing marker-only parts."""
+    out: list[tuple[str, str, list[str]]] = []
+    for block in re.split(r"\n\s*\n", text):
+        block_cited = _CITE_REF_RE.findall(block)
+        if not block_cited:
+            bare = _WS_RE.sub(" ", block).strip()
+            if bare:
+                out.append((block, bare, []))
+            continue
+        tail = re.search(r"(?:\s*\{cite:S\d+\}\s*)+$", block)
+        if tail and block_cited == _CITE_REF_RE.findall(tail.group()):
+            cited = list(dict.fromkeys(block_cited))
+            claims = _split_claims(block[:tail.start()])
+            if claims:
+                out.extend(
+                    (claim, _WS_RE.sub(" ", claim).strip(), cited)
+                    for claim in claims
+                )
+            elif out:
+                original, _prev_bare, prev_cited = out.pop()
+                merged_cited = prev_cited + [
+                    cid for cid in cited if cid not in prev_cited
+                ]
+                out.extend(
+                    (
+                        claim,
+                        _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", claim)).strip(),
+                        merged_cited,
+                    )
+                    for claim in _split_claims(original)
+                )
+            continue
+        for seg in _split_claims(block):
+            cited = _CITE_REF_RE.findall(seg)
+            bare = _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", seg)).strip()
+            if cited and not bare and out:
+                original, prev_bare, prev_cited = out[-1]
+                out[-1] = (
+                    original,
+                    prev_bare,
+                    prev_cited + [cid for cid in cited if cid not in prev_cited],
+                )
+            elif bare:
+                out.append((seg, bare, cited))
+    return [(original, bare, cited) for original, bare, cited in out if cited]
+
+
 def _cited_sentences(text: str) -> list[tuple[str, list[str]]]:
-    """Tier-2's unit: each sentence that carries a citation, paired with the {cite:Sn} ids it cites,
-    with the markers stripped from the text. A segment that is ONLY citation markers annotates the
-    sentence BEFORE it, agents routinely trail '{cite:Sn}' after the closing period, which
-    _split_claims separates into its own segment, so it is merged back onto that sentence rather than
-    checked as an empty claim. (Tier-1 is unaffected: it keeps its per-segment loop.)"""
-    out: list[tuple[str, list[str]]] = []
-    for seg in _split_claims(text):
-        cited = _CITE_REF_RE.findall(seg)
-        bare = _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", seg)).strip()
-        if cited and not bare and out:  # a marker-only segment: attach its ids to the prior sentence
-            prev_text, prev_cited = out[-1]
-            out[-1] = (prev_text, prev_cited + [c for c in cited if c not in prev_cited])
-        elif bare:  # a real sentence (with or without its own marker); a later trailing marker may join
-            out.append((bare, cited))
-    return [(t, c) for t, c in out if c]
+    """Tier-2's marker-free claim units."""
+    return [(bare, cited) for _, bare, cited in _cited_claims(text)]
 
 
 def _salient_tokens(claim: str) -> list[dict]:
@@ -186,7 +232,21 @@ def _salient_tokens(claim: str) -> list[dict]:
         if len(d) >= 2:  # skip "$5", too small, a coincidental match is likely
             tokens.append({"kind": "money", "text": m.group().strip(), "digits": d})
     for m in _UNIT_NUM_RE.finditer(claim):
-        tokens.append({"kind": "unit_number", "text": m.group().strip(), "digits": m.group(1)})
+        tokens.append({
+            "kind": "unit_number",
+            "text": m.group().strip(),
+            "digits": m.group(1),
+            "unit_category": _unit_category(m.group(2)),
+        })
+    for m in _FULL_DATE_RE.finditer(claim):
+        parsed = _parsed_date(m.group())
+        numbers = [str(int(value)) for value in re.findall(r"\d+", m.group())]
+        tokens.append({
+            "kind": "date",
+            "text": m.group().strip(),
+            "numbers": numbers,
+            "parsed": parsed,
+        })
     for m in _ADDRESS_RE.finditer(claim):
         full = m.group().strip()
         # Numeric parts (house number AND numbered streets like "107th") match as digit-runs, so
@@ -233,19 +293,103 @@ def _money_value(text: str) -> Optional[Decimal]:
         return None
 
 
-def _token_matches(tok: dict, blob_norm: str, blob_digits: str, blob: str) -> bool:
+def _unit_category(unit: str) -> str:
+    return "percent" if unit.strip().lower() in {"%", "percent"} else "temperature"
+
+
+def _fold_digits(text: str) -> str:
+    """Rewrite any Unicode decimal digit as its ASCII form.
+
+    `\\d` is Unicode-aware, so the extractor already FINDS `২০২৪-০৯-২৫` and `29 جولائی 2026`;
+    `strptime` then rejects them, so a date written in Bengali or Arabic-Indic numerals could
+    never match its source and the claim failed grounding. Rule 11 makes non-English a
+    first-class safety surface, and a guard that only works in ASCII is not one.
+    """
+    if text.isascii():
+        return text
+    return "".join(
+        str(unicodedata.digit(ch)) if ch.isdigit() and not ch.isascii() else ch
+        for ch in text
+    )
+
+
+def _parsed_date(text: str) -> date | None:
+    normalized = re.sub(
+        r"(\d)(?:st|nd|rd|th)\b", r"\1", _fold_digits(text), flags=re.IGNORECASE
+    )
+    for pattern in (
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%B %d, %Y",
+        "%B %d %Y",
+        "%d %B %Y",
+        "%b. %d, %Y",
+        "%b %d, %Y",
+        "%b. %d %Y",
+        "%b %d %Y",
+        "%d %b. %Y",
+        "%d %b %Y",
+    ):
+        try:
+            return datetime.strptime(normalized, pattern).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _token_matches(
+    tok: dict,
+    blob_norm: str,
+    blob_digits: str,
+    blob: str,
+    *,
+    allow_bare_money: bool = False,
+) -> bool:
     """Lenient by design (favor a false PASS): digit-run substring for numbers, phrase-or-mostly-words
     substring for addresses/proper-nouns."""
     kind = tok["kind"]
     if kind == "money":
         value = _money_value(tok["text"])
-        return value is not None and value in {
+        explicit = {
             parsed
-            for match in _NUMBER_VALUE_RE.finditer(blob)
+            for match in _MONEY_RE.finditer(blob)
             if (parsed := _money_value(match.group())) is not None
         }
-    if kind in ("phone", "unit_number"):
+        bare = (
+            {
+                parsed
+                for match in _NUMBER_VALUE_RE.finditer(blob)
+                if (parsed := _money_value(match.group())) is not None
+            }
+            if allow_bare_money
+            else set()
+        )
+        return value is not None and value in explicit | bare
+    if kind == "unit_number":
+        return any(
+            match.group(1) == tok["digits"]
+            and _unit_category(match.group(2)) == tok["unit_category"]
+            for match in _UNIT_NUM_RE.finditer(blob)
+        )
+    if kind == "phone":
         return (not tok["digits"]) or tok["digits"] in blob_digits
+    if kind == "date":
+        if tok["parsed"] is None:
+            if _norm(tok["text"]) in blob_norm:
+                return True
+            if len(tok["numbers"]) != 2:
+                return False
+            day, year = tok["numbers"]
+            return any(
+                str(parsed.day) == day and str(parsed.year) == year
+                for match in _FULL_DATE_RE.finditer(blob)
+                if (parsed := _parsed_date(match.group())) is not None
+            )
+        return any(
+            _parsed_date(match.group()) == tok["parsed"]
+            for match in _FULL_DATE_RE.finditer(blob)
+        )
     if kind == "address":
         if any(nd not in blob_digits for nd in tok["nums"]):
             return False
@@ -258,9 +402,11 @@ def _token_matches(tok: dict, blob_norm: str, blob_digits: str, blob: str) -> bo
 def _locate(tok: dict, cid: str, c: dict) -> str:
     """Best-effort 'cited exactly here' pointer: the snapshot field (JSON-pointer-ish), or which of
     snippet/title carried the fact. Falls back to the citation id when we can't pin a field."""
-    use_digits = tok["kind"] in ("phone", "money", "unit_number", "address")
+    use_digits = tok["kind"] in ("phone", "money", "unit_number", "date", "address")
     if tok["kind"] == "address":
         needle = tok["nums"][0] if tok["nums"] else ""
+    elif tok["kind"] == "date":
+        needle = tok["numbers"][-1] if tok["numbers"] else ""
     else:
         needle = tok["digits"] if use_digits else tok.get("phrase", "")
     snapshot = (c.get("provenance") or {}).get("snapshot")
@@ -304,7 +450,7 @@ class NLIMismatch:
 @dataclass
 class GroundingResult:
     """The verdict over one answer. `blocking` is True only when a HARD (verbatim-structured) fact is
-    absent from an all-complete-capture claim, the ONLY condition the runtime guard acts on."""
+    absent from the evidence attached to its citation, the ONLY condition the runtime guard acts on."""
     passed: bool
     detail: str
     blocking: bool
@@ -326,6 +472,7 @@ def check_grounding(
     nli=None,
     nli_blocking: bool = False,
     nli_threshold: float = 0.5,
+    current_date: date | None = None,
 ) -> Optional[GroundingResult]:
     """Verify every {cite:Sn}'d salient fact against its source (or the user's query).
 
@@ -350,59 +497,71 @@ def check_grounding(
     locations: list[dict] = []
     checked = 0
     nli_checked = 0
-    for claim in _split_claims(text):
-        cited = _CITE_REF_RE.findall(claim)
-        if not cited:
-            continue
-        # Classify each cited source. COMPLETE = we captured the whole source (a DATA snapshot or an
-        # API response), so a fact's ABSENCE is conclusive. EXCERPT = only a truncated snippet/title
-        # (DOC, WEB, or a label-only catalog row), the fact may live in the un-captured remainder of
-        # the page, so absence there is NOT proof of fabrication. EMPTY = nothing captured. We only
-        # BLOCK when every cited source is COMPLETE; excerpt/empty mismatches are informational.
+    current_date = current_date or datetime.now(ZoneInfo("America/New_York")).date()
+    for claim, bare_claim, cited in _cited_claims(text):
+        # A citation supports the captured evidence attached to it. Exact facts cannot rely on an
+        # unseen part of a page; if the current excerpt is insufficient, retrieve better evidence.
         blobs: dict[str, str] = {}
-        complete = excerpt = 0
         for cid in cited:
             c = citations.get(cid)
-            blob = _citation_blob(c) if c else None
+            blob = citation_evidence(c) if c else None
             if blob is None:
                 continue  # empty capture
             blobs[cid] = blob
-            prov = c.get("provenance") or {}
-            if prov.get("snapshot") or prov.get("response"):
-                complete += 1
-            else:
-                excerpt += 1
         if not blobs and not query_norm:
             continue  # nothing to verify against
         combined_norm = _norm(" ".join(blobs.values())) if blobs else ""
         combined_digits = _digits(" ".join(blobs.values())) if blobs else ""
-        all_complete = complete >= 1 and excerpt == 0 and complete == len(cited)
-        for tok in _salient_tokens(_CITE_REF_RE.sub(" ", claim)):
+        for tok in _salient_tokens(bare_claim):
             checked += 1
             # 1) grounded in one specific cited source → record exactly where.
-            hit = None
+            hit = (
+                "system-date"
+                if tok["kind"] == "date"
+                and tok["parsed"] == current_date
+                else None
+            )
             for cid, blob in blobs.items():
-                if _token_matches(tok, _norm(blob), _digits(blob), blob):
+                if hit is not None:
+                    break
+                provenance = citations[cid].get("provenance") or {}
+                if _token_matches(
+                    tok,
+                    _norm(blob),
+                    _digits(blob),
+                    blob,
+                    allow_bare_money=bool(
+                        provenance.get("snapshot") or provenance.get("response")
+                    ),
+                ):
                     hit = _locate(tok, cid, citations[cid])
                     break
             # 2) grounded across the union of the claim's cited sources (phrase split across sources).
             combined = " ".join(blobs.values())
             if hit is None and blobs and _token_matches(tok, combined_norm, combined_digits, combined):
                 hit = f"{'+'.join(blobs)}#source"
-            # 3) a legitimate restatement of the user's own query (origin address, neighborhood, …).
-            if hit is None and _token_matches(tok, query_norm, query_digits, query):
+            # 3) exact resident-provided context is not a sourced claim. Phone numbers and measured
+            # units still require captured evidence because repeating either can cause direct harm.
+            if (
+                hit is None
+                and tok["kind"] in {"address", "proper_noun", "money", "date"}
+                and _token_matches(tok, query_norm, query_digits, query)
+            ):
                 hit = "user-query"
             if hit is not None:
                 locations.append({"token": tok["text"], "kind": tok["kind"], "where": hit})
                 continue
             # 4) absent everywhere. All cited sources empty → can't verify, don't fail. Otherwise it's a
-            #    catch: HARD (blocks) only for a verbatim structured fact whose sources are ALL complete
-            #    captures; a proper-noun mismatch, or anything cited to an excerpt/label, stays SOFT.
+            #    catch: HARD (blocks) for a verbatim structured fact. Proper-noun mismatches stay SOFT.
             if not blobs:
                 continue
             msg = f"{'/'.join(cited)}: {tok['kind']} '{tok['text']}' not in cited source"
             mismatch = Mismatch(claim=claim, cited=cited, kind=tok["kind"], text=tok["text"], message=msg)
-            hard = all_complete and tok["kind"] != "proper_noun"
+            # Parsed dates are conclusive. Unparsed dates can be translated month names or civic
+            # identifiers such as "Executive Order 13 2026", so record them without blocking.
+            hard = tok["kind"] != "proper_noun" and not (
+                tok["kind"] == "date" and tok["parsed"] is None
+            )
             (hard_failures if hard else soft_failures).append(mismatch)
     # Tier-2 (opt-in): per-sentence faithfulness/NLI. A SEPARATE pass so Tier-1 above is byte-for-byte
     # untouched. Fully gated on `nli`, skipped entirely when nli is None. For each cited sentence, run
@@ -411,8 +570,8 @@ def check_grounding(
     # get a cheap second look too.
     if nli is not None:
         for claim_text, cited in _cited_sentences(text):
-            blobs = {cid: _citation_blob(citations[cid]) for cid in cited
-                     if citations.get(cid) and _citation_blob(citations[cid]) is not None}
+            blobs = {cid: citation_evidence(citations[cid]) for cid in cited
+                     if citations.get(cid) and citation_evidence(citations[cid]) is not None}
             if not blobs:
                 continue  # every cited source is an empty capture, nothing to check against
             verdict = nli.check(claim_text, " ".join(blobs.values()))

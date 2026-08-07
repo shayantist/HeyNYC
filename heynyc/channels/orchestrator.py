@@ -9,13 +9,13 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-from heynyc.core import outcomes, pii_crypto
-from heynyc.core.agent import Agent, _emergency_backstop
+from heynyc.core import config, outcomes, pii_crypto
+from heynyc.core.agent import _emergency_backstop
 from heynyc.core.drafts import DraftStore
 from heynyc.core.memory import ContextCapacityError
-from heynyc.core.session import Session
+from heynyc.core.session import PendingTurn, Session
 
 from . import analytics
 from .base import InboundMessage, KeyedLocks, Replier
@@ -28,6 +28,7 @@ _FLAG_TOKENS = {"wrong", "report", "incorrect", "bad answer", "👎"}
 # them, but the pre-consent reason is NOT persisted: the confirmation promises only the last
 # exchange is shared, so the reviewer sees exactly that and nothing else.
 _FLAG_COMMANDS = ("/wrong", "/report")
+_DISLIKED_TAPBACK_QUOTES = (('"', '"'), ("“", "”"))
 _CONFIRM_TOKENS = {"yes", "y"}
 # Consent is required, not implied: a flag is only recorded after the resident confirms, and the
 # confirmation states exactly what a human will see (the last exchange, nothing else). English-only
@@ -108,7 +109,7 @@ def _nyc_day() -> str:
 
 @dataclass
 class Deps:
-    agent: Agent
+    agent: Any
     store: ChannelStore
     sessions_dir: Path
     salt: str
@@ -127,10 +128,20 @@ class Deps:
 
 def is_flag(text: str) -> bool:
     """The user is flagging the last answer as wrong: a bare token (`wrong`, `👎`) or a slash
-    command (`/wrong`, `/report`) that may carry an optional free-text reason. Routed to the
-    feedback log, never the agent. A sentence that merely contains 'wrong' is NOT a flag."""
+    command (`/wrong`, `/report`) that may carry an optional free-text reason, or Apple's SMS
+    `Disliked "<quoted message>"` tapback wrapper. Routed to the feedback log, never the agent.
+    A sentence that merely contains 'wrong' or 'disliked' is NOT a flag."""
     t = text.strip().lower()
-    return t in _FLAG_TOKENS or any(t == cmd or t.startswith(cmd + " ") for cmd in _FLAG_COMMANDS)
+    tapback = any(
+        t.startswith(f"disliked {opening}") and t.endswith(closing)
+        and len(t) > len(f"disliked {opening}{closing}")
+        for opening, closing in _DISLIKED_TAPBACK_QUOTES
+    )
+    return (
+        t in _FLAG_TOKENS
+        or any(t == cmd or t.startswith(cmd + " ") for cmd in _FLAG_COMMANDS)
+        or tapback
+    )
 
 
 def flag_note(text: str) -> str:
@@ -159,6 +170,15 @@ def is_confirm(text: str) -> bool:
     """An affirmative reply to a pending confirmation (the flag consent gate). Only matched while a
     confirmation is actually pending, so a stray 'yes' in normal chat is a plain turn."""
     return text.strip().lower().rstrip("!?. ") in _CONFIRM_TOKENS
+
+
+def _approval_decision(text: str) -> bool | None:
+    normalized = text.strip().lower()
+    if normalized == "yes":
+        return True
+    if normalized == "no":
+        return False
+    return None
 
 
 def is_new(text: str) -> bool:
@@ -253,6 +273,7 @@ async def handle(
                 return
             if is_new(msg.text):
                 await replier.send_text(_NEW_MESSAGE)
+                deps.store.pop_pending_approval(key)
                 session.reset()
                 return
             if is_privacy(msg.text):
@@ -264,6 +285,20 @@ async def handle(
                 return
             if is_help(msg.text):   # greeting / "what can you do" → the grounded capability menu
                 await replier.send_text(deps.agent.registry.welcome_text())
+                return
+            native_runtime = hasattr(deps.agent, "conversation_from_state")
+            approval_pending = native_runtime and deps.store.has_pending_approval(key)
+            approval_decision = _approval_decision(msg.text)
+            if approval_pending and approval_decision is None:
+                from heynyc.core.pydantic_runtime import PydanticApprovalFlow
+
+                flow = PydanticApprovalFlow(
+                    deps.agent,
+                    deps.store,
+                    key,
+                    ttl_s=config.CHANNEL_APPROVAL_TTL_S,
+                )
+                await replier.send_text(flow.review_text())
                 return
             # Per-resident daily cost cap, after the free commands (they stay available while
             # capped) and only when the deterministic emergency backstop would not fire: a
@@ -282,15 +317,37 @@ async def handle(
                 screen_requested = is_screen(msg.text)
                 reminders = _reminders() + ([_SCREEN_REMINDER] if screen_requested else [])
                 try:
-                    pending = await session.prepare(
-                        msg.text, reminders=reminders, output_dir=art_dir, drafts=user_drafts,
-                        forced_tool=_SCREEN_TOOL if screen_requested else None,
-                        forced_tool_args={
-                            "show_all": msg.text.strip().lower() == "/screen all",
-                        } if screen_requested else None,
-                        excluded_tools=None if screen_requested else {_SCREEN_TOOL},
-                        event_sink=deps.event_sink,
-                    )
+                    if approval_pending:
+                        from heynyc.core.pydantic_runtime import PydanticApprovalFlow
+
+                        flow = PydanticApprovalFlow(
+                            deps.agent,
+                            deps.store,
+                            key,
+                            ttl_s=config.CHANNEL_APPROVAL_TTL_S,
+                        )
+                        result = await flow.resume(
+                            approval_decision,
+                            persist_pending=False,
+                            output_dir=art_dir,
+                            drafts=user_drafts,
+                            event_sink=deps.event_sink,
+                        )
+                        pending = PendingTurn(
+                            user_message=msg.text,
+                            result=result,
+                            runtime_state=flow.conversation.dump_state(),
+                        )
+                    else:
+                        pending = await session.prepare(
+                            msg.text, reminders=reminders, output_dir=art_dir, drafts=user_drafts,
+                            forced_tool=_SCREEN_TOOL if screen_requested else None,
+                            forced_tool_args={
+                                "show_all": msg.text.strip().lower() == "/screen all",
+                            } if screen_requested else None,
+                            excluded_tools=None if screen_requested else {_SCREEN_TOOL},
+                            event_sink=deps.event_sink,
+                        )
                 except ContextCapacityError:
                     await replier.send_text(
                         "I can't safely fit enough of this conversation into the AI model right "
@@ -298,6 +355,11 @@ async def handle(
                     )
                     return
                 result = pending.result
+                approval_state = (
+                    pending.runtime_state
+                    if result.status == "approval_required"
+                    else None
+                )
                 # First-contact welcome LEADS on every channel (owner, 2026-07-21: greet first,
                 # then answer, the way a person would; trailing it after sources read as an
                 # afterthought). Once ever, marked only on the answer path so a first message
@@ -314,6 +376,20 @@ async def handle(
                 if finalize is not None:
                     await finalize()
                 session.commit(pending)
+                if approval_state is not None:
+                    defer_approval = getattr(replier, "stage_pending_approval", None)
+                    if defer_approval is not None:
+                        defer_approval(
+                            key,
+                            approval_state,
+                            ttl_s=config.CHANNEL_APPROVAL_TTL_S,
+                        )
+                    else:
+                        deps.store.set_pending_approval(
+                            key,
+                            approval_state,
+                            ttl_s=config.CHANNEL_APPROVAL_TTL_S,
+                        )
                 turn_cost = result.usage.get("cost_usd")
                 deps.store.add_spend(key, _nyc_day(), float(turn_cost) if turn_cost else 0.0)
                 analytics.record_interaction(
@@ -348,6 +424,8 @@ def _flag_token(text: str) -> str:
     """The bounded command/token the resident used (`report`, `👎`, `/wrong`, ...), never the
     free-text reason. Safe to store: it is a control word, not message content."""
     low = text.strip().lower()
+    if low.startswith("disliked "):
+        return "disliked"
     return next((cmd for cmd in _FLAG_COMMANDS if low.startswith(cmd)), text.strip())
 
 

@@ -54,10 +54,25 @@ def _load_retriever():
 
 
 def build_agent() -> Agent:
+    registry = Registry.discover(
+        config.MODULES_DIR,
+        config.BASE_ALLOWLIST,
+        config.NEWS_ALLOWLIST,
+    )
+    index = _load_retriever()
+    if config.HEYNYC_AGENT_RUNTIME == "pydantic":
+        from heynyc.core.pydantic_runtime import build_configured_runtime
+
+        return build_configured_runtime(
+            registry,
+            model=config.HEYNYC_MODEL,
+            index=index,
+            current_awareness=current_awareness,
+        )
     return Agent(
-        Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST),
+        registry,
         model=config.HEYNYC_MODEL,
-        index=_load_retriever(),
+        index=index,
         notify_awareness=current_awareness,
         scope_gate=True,
     )
@@ -72,6 +87,8 @@ def build_deps(agent: Agent) -> Deps:
         data / "channels.sqlite3", rate_limit=config.CHANNEL_RATE_LIMIT,
         window_s=config.CHANNEL_RATE_WINDOW_S, dedup_ttl_s=config.CHANNEL_DEDUP_TTL_S,
     )
+    if not hasattr(agent, "conversation_from_state"):
+        store.clear_pending_approvals()
     return Deps(
         agent=agent, store=store, sessions_dir=data / "sessions", salt=config.HEYNYC_PII_SALT,
         user_daily_spend_cap=config.HEYNYC_USER_DAILY_SPEND_CAP,

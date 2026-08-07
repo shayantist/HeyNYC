@@ -21,6 +21,7 @@ invent an advisory, a severity, or an expiry.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -35,6 +36,12 @@ from heynyc.core.tools.notify_nyc import (
 
 OFFICIAL = "Notify NYC (nyc.gov/notifynyc) or call 311"
 NYC_TZ = ZoneInfo("America/New_York")
+PLAN_RELEVANCE = (
+    "When the resident asks which notices could affect a current or future plan, compare each "
+    "notice's stated area and time with the requested place and date. Do not enumerate notices "
+    "that clearly do not overlap. If none overlap, say so plainly and name the date and place "
+    "you checked."
+)
 
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
 # state may tell the user there are no active advisories.
@@ -166,7 +173,8 @@ def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
     if near:
         lines.append(
             f"(User asked about '{near}'. The feed's geography is usually citywide, so these are "
-            f"listed as-is, do not filter them out for a specific location.)"
+            f"returned for individual area and time comparison rather than suppressed by the "
+            f"location hint.)"
         )
     for advisory in advisories:
         cite = _advisory_citation(ctx, advisory)
@@ -178,6 +186,7 @@ def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
         "AIR QUALITY, pass along the advisory's sensitive-groups guidance; for a CLOSURE/transport "
         "advisory, point to transit."
     )
+    lines.append(PLAN_RELEVANCE)
     return "\n".join(lines)
 
 
@@ -194,8 +203,8 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
     ]
     if near:
         lines.append(
-            f"(User asked about '{near}'. Notify NYC is usually citywide, so list these as-is and do "
-            f"not filter them out for a specific location.)"
+            f"(User asked about '{near}'. Notify NYC is usually citywide, so these are returned for "
+            f"individual area and time comparison rather than suppressed by the location hint.)"
         )
     for note in notes:
         cite = _recent_citation(ctx, note)
@@ -207,6 +216,7 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
         "FLOODING, pass along any safe-location or road-safety guidance in the notification text. For "
         "a life-threatening emergency, tell the user to call 911 right away."
     )
+    lines.append(PLAN_RELEVANCE)
     return "\n".join(lines)
 
 
@@ -217,6 +227,7 @@ def _render_recent_additions(ctx: ToolContext, notes: list[RecentNote]) -> str:
     ]
     for note in notes:
         lines.append(_recent_block(note, _recent_citation(ctx, note)))
+    lines.append(PLAN_RELEVANCE)
     return "\n".join(lines)
 
 
@@ -237,6 +248,27 @@ _STILL_ACTIVE = (
 
 def _norm_title(title: str) -> str:
     return (title or "").strip().casefold()
+
+
+def _render_recent_delta(
+    ctx: ToolContext,
+    notes: list[RecentNote],
+    delivered: frozenset,
+    render: Callable[[ToolContext, list[RecentNote]], str],
+) -> str:
+    new_notes = [note for note in notes if _norm_title(note.title) not in delivered]
+    old_notes = sorted(
+        (note for note in notes if note not in new_notes), key=lambda note: note.title
+    )
+    old_titles = "; ".join(
+        f"{note.title} {{cite:{_recent_citation(ctx, note)}}}" for note in old_notes
+    )
+    if delivered and not new_notes:
+        return _ALREADY_SHARED.format(titles=old_titles)
+    rendered = render(ctx, new_notes)
+    if old_notes:
+        rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles=old_titles)}"
+    return rendered
 
 
 async def _handler(args: dict, ctx: ToolContext) -> str:
@@ -302,18 +334,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         return "\n\n".join(parts)
     if feed.confirmed:
         if recent.confirmed and recent_notes:
-            new_notes = [n for n in recent_notes if _norm_title(n.title) not in delivered]
-            old_notes = sorted(
-                (n for n in recent_notes if n not in new_notes), key=lambda n: n.title)
-            if delivered and not new_notes:
-                return _ALREADY_SHARED.format(titles="; ".join(
-                    f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in old_notes))
-            rendered = _render_recent_additions(ctx, new_notes)
-            if old_notes:
-                shared = "; ".join(
-                    f"{n.title} {{cite:{_recent_citation(ctx, n)}}}" for n in old_notes)
-                rendered = f"{rendered}\n\n{_STILL_ACTIVE.format(titles=shared)}"
-            return rendered
+            return _render_recent_delta(
+                ctx, recent_notes, delivered, _render_recent_additions
+            )
         # F067: our own forced game-day/prep check finding nothing is not news — return
         # nothing so there is no null result for the model to narrate as an "update".
         # A resident who actually asked gets the plain NO_ACTIVE answer.
@@ -324,7 +347,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     # CAP feed DEGRADED (unreachable / empty body / unreadable), so do NOT trust its emptiness as an
     # all-clear. Consult the city's live notifications before ever telling the user there are none.
     if recent.confirmed and recent_notes:
-        return _render_recent(ctx, recent_notes, near)          # real-time fallback (today's alerts)
+        return _render_recent_delta(
+            ctx,
+            recent_notes,
+            delivered,
+            lambda context, notes: _render_recent(context, notes, near),
+        )
     return COULD_NOT_CONFIRM                                    # both sources degraded -> fail safe
 
 

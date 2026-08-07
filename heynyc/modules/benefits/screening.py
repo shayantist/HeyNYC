@@ -46,6 +46,45 @@ PERSON_FIELDS = frozenset({
 })
 MONEY_ITEM_FIELDS = frozenset({"amount", "frequency", "type"})
 PROGRAM_CODE_PATTERN = r"^S2R\d{3}$"
+_BOOLEAN_FACT_RULE = (
+    "If the resident explicitly supplied this fact, include the field with true or false. "
+    "Treat this boolean independently. Do not infer it from another field, age, role, or "
+    "silence. Omit it when this exact fact is unknown."
+)
+# Field meanings mirror the City's published request schema:
+# https://screeningapidocs.cityofnewyork.us/making-a-request
+HOUSEHOLD_BOOLEAN_DESCRIPTIONS = {
+    "livingRenting": "Whether the household rents its current home.",
+    "livingOwner": "Whether a household member owns the current home or apartment.",
+    "livingStayingWithFriend": "Whether the household is staying with a friend.",
+    "livingHotel": "Whether the household is staying in a hotel.",
+    "livingShelter": "Whether the household is in a shelter or homeless.",
+    "livingPreferNotToSay": "Whether the resident prefers not to disclose housing.",
+}
+PERSON_BOOLEAN_DESCRIPTIONS = {
+    "student": (
+        "Whether the person is a student, not specifically a college student."
+    ),
+    "studentFulltime": "Whether the person is a full-time student.",
+    "pregnant": "Whether the person is pregnant.",
+    "unemployed": "Whether the person is unemployed.",
+    "unemployedWorkedLast18Months": (
+        "Whether the person is unemployed and worked within the last 18 months."
+    ),
+    "blind": "Whether the person is blind.",
+    "disabled": "Whether the person has any disabilities.",
+    "veteran": "Whether the person is a veteran.",
+    "benefitsMedicaid": "Whether the person receives Medicaid benefits.",
+    "benefitsMedicaidDisability": (
+        "Whether the person receives disability-related Medicaid benefits."
+    ),
+    "livingOwnerOnDeed": (
+        "If the household owns its home, whether the person is an owner or on the deed."
+    ),
+    "livingRentalOnLease": (
+        "If the household rents its home, whether the person is on the lease."
+    ),
+}
 
 
 def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
@@ -67,19 +106,29 @@ def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits
 
 def request_schema() -> dict:
     """The one screening contract used by both model tools and runtime validation."""
+    specific_housing_flags = (
+        "livingRenting",
+        "livingOwner",
+        "livingStayingWithFriend",
+        "livingHotel",
+        "livingShelter",
+    )
     household_flags = {
-        name: {"type": "boolean"} for name in (
-            "livingRenting", "livingOwner", "livingStayingWithFriend", "livingHotel",
-            "livingShelter", "livingPreferNotToSay",
-        )
+        name: {
+            "type": "boolean",
+            "description": f"{description} {_BOOLEAN_FACT_RULE}",
+        }
+        for name, description in HOUSEHOLD_BOOLEAN_DESCRIPTIONS.items()
     }
+    household_flags["livingPreferNotToSay"]["description"] += (
+        " True only when every specific housing flag is false or omitted."
+    )
     person_flags = {
-        name: {"type": "boolean"} for name in (
-            "student", "studentFulltime", "pregnant", "unemployed",
-            "unemployedWorkedLast18Months", "blind", "disabled", "veteran",
-            "benefitsMedicaid", "benefitsMedicaidDisability", "livingOwnerOnDeed",
-            "livingRentalOnLease",
-        )
+        name: {
+            "type": "boolean",
+            "description": f"{description} {_BOOLEAN_FACT_RULE}",
+        }
+        for name, description in PERSON_BOOLEAN_DESCRIPTIONS.items()
     }
     household_properties = {
         "cashOnHand": {
@@ -93,7 +142,15 @@ def request_schema() -> dict:
     person_properties = {
         "age": {"type": "number", "minimum": 0, "maximum": 999},
         "householdMemberType": {"type": "string", "enum": list(HOUSEHOLD_MEMBER_TYPES)},
-        "incomes": {"type": "array", "items": _money_item_schema(INCOME_TYPES, 15, 12)},
+        "incomes": {
+            "type": "array",
+            "minItems": 1,
+            "items": _money_item_schema(INCOME_TYPES, 15, 12),
+            "description": (
+                "Reported income items only. Omit when the resident reports no income or the "
+                "amount is unknown; never add a zero placeholder."
+            ),
+        },
         "expenses": {"type": "array", "items": _money_item_schema(EXPENSE_TYPES, 9, 6)},
         **person_flags,
     }
@@ -106,6 +163,20 @@ def request_schema() -> dict:
                 "additionalProperties": False,
                 "description": "Household-level housing and cash-on-hand fields. PII-free.",
                 "properties": household_properties,
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {"livingPreferNotToSay": {"const": True}},
+                            "required": ["livingPreferNotToSay"],
+                        },
+                        "then": {
+                            "properties": {
+                                name: {"const": False}
+                                for name in specific_housing_flags
+                            }
+                        },
+                    }
+                ],
             },
             "persons": {
                 "type": "array", "minItems": 1, "maxItems": 8,
@@ -248,6 +319,11 @@ def validate_arguments(request: object) -> None:
     path = ".".join(str(part) for part in error.absolute_path) or "request"
     if error.validator == "contains":
         detail = "at least one person must have householdMemberType HeadOfHousehold"
+    elif error.validator == "const" and "allOf" in error.absolute_schema_path:
+        detail = (
+            "livingPreferNotToSay cannot be true with a specific housing flag; "
+            "omit it when the resident supplied a housing situation"
+        )
     else:
         detail = error.message
     raise ValueError(f"invalid screening profile at {path}: {detail}")

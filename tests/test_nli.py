@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 
+from heynyc.core import nli
 from heynyc.core.grounding import NLIMismatch, check_grounding
 from heynyc.core.nli import MockNLI, NLIVerdict, PromptedNLI
 
@@ -120,21 +121,44 @@ def test_mock_nli_float_rule_applies_threshold():
 # --- PromptedNLI: prompt build + response parse, against an injected fake completion ---------------
 
 
-def _fake_completion(content: str, capture: dict):
+def _fake_completion(content, capture: dict):
     """A stand-in for litellm.completion: records what it was called with and returns an
     OpenAI-shaped response object carrying `content`."""
 
-    def fn(model, messages):
+    def fn(model, messages, **kwargs):
+        capture["calls"] = capture.get("calls", 0) + 1
         capture["model"] = model
         capture["messages"] = messages
+        capture["kwargs"] = kwargs
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    return fn
+
+
+def _fake_async_completion(content, capture: dict):
+    async def fn(model, messages, **kwargs):
+        capture["calls"] = capture.get("calls", 0) + 1
+        capture["kwargs"] = kwargs
+        usage = SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=20),
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=usage,
+        )
 
     return fn
 
 
 def test_prompted_nli_builds_prompt_and_parses_unsupported():
     capture: dict = {}
-    fake = _fake_completion('{"supported": false, "reason": "source never mentions Ley Local 56"}', capture)
+    fake = _fake_completion(
+        '{"verdicts":[{"id":"claim-0","label":"unsupported",'
+        '"reason":"source never mentions Ley Local 56"}]}',
+        capture,
+    )
     nli = PromptedNLI(model="ollama/qwen3.5:9b", completion_fn=fake)
     verdict = nli.check("Bajo la Ley Local 56 de 2021, deben aceptar efectivo.", _DCWP_TEXT)
 
@@ -150,22 +174,149 @@ def test_prompted_nli_builds_prompt_and_parses_unsupported():
     # Judge support, not truth: the instruction must say so.
     system = "\n".join(m["content"] for m in capture["messages"] if m["role"] == "system")
     assert "support" in system.lower()
-    assert "true" in system.lower() and "false" in system.lower()  # JSON-only contract
+    assert "partial" in system.lower() and "contradicted" in system.lower()
+    assert capture["kwargs"]["response_format"].__name__ == "NLIBatchResponse"
+
+
+def test_prompted_nli_marks_clarifying_questions_as_questions() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"follow-up","label":"supported",'
+            '"reason":"a neutral clarification question"}]}',
+            capture,
+        )
+    )
+
+    checker.check_many([
+        nli.NLIInput(
+            id="follow-up",
+            claim="Did you receive a notice?",
+            source="Resident message: Will my benefits stop?",
+            kind="question",
+        )
+    ])
+
+    user = capture["messages"][1]["content"]
+    system = capture["messages"][0]["content"]
+    assert '"kind": "question"' in user
+    assert "need not be entailed" in system
+    assert "unsupported premise" in system
+    assert "data-minimization reminder" in system
+    assert "other factual or procedural advice" in system
+
+
+def test_prompted_nli_marks_conversational_framing_as_not_always_grounded() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"ack","label":"supported",'
+            '"reason":"non-factual empathy and uncertainty"}]}',
+            capture,
+        )
+    )
+
+    checker.check_many([
+        nli.NLIInput(
+            id="ack",
+            claim="I understand why you are worried. I cannot tell from this message alone.",
+            source="Resident message: Will my benefits stop?",
+            kind="framing",
+        )
+    ])
+
+    user = capture["messages"][1]["content"]
+    system = capture["messages"][0]["content"]
+    assert '"kind": "framing"' in user
+    assert "doesn't require grounding" in system
+    assert "external factual or procedural claim" in system
+
+
+def test_prompted_nli_preserves_leading_question_for_fail_closed_review() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"leading","label":"unsupported",'
+            '"reason":"the question assumes a work-rule cause"}]}',
+            capture,
+        )
+    )
+
+    verdict = checker.check_many([
+        nli.NLIInput(
+            id="leading",
+            claim="Did your SNAP stop because of the work rule?",
+            source="Resident message: Will my benefits stop?",
+            kind="question",
+        )
+    ])[0]
+
+    assert '"kind": "question"' in capture["messages"][1]["content"]
+    assert "because of the work rule" in capture["messages"][1]["content"]
+    assert verdict.supported is False
 
 
 def test_prompted_nli_parses_supported_true():
     capture: dict = {}
-    fake = _fake_completion('{"supported": true, "reason": "the page says businesses must accept cash"}', capture)
+    fake = _fake_completion(
+        '{"verdicts":[{"id":"claim-0","label":"supported",'
+        '"reason":"the page says businesses must accept cash"}]}',
+        capture,
+    )
     verdict = PromptedNLI(completion_fn=fake).check("Businesses must accept cash.", _DCWP_TEXT)
     assert verdict.supported is True
     assert verdict.score >= 0.5
 
 
-def test_prompted_nli_tolerates_prose_wrapped_json():
+def test_prompted_nli_rejects_prose_wrapped_json():
     capture: dict = {}
-    fake = _fake_completion('Sure! Here is my verdict:\n{"supported": false, "reason": "not stated"}\nHope that helps.', capture)
+    fake = _fake_completion(
+        'Sure!\n{"verdicts":[{"id":"claim-0","label":"supported","reason":"stated"}]}\nDone.',
+        capture,
+    )
     verdict = PromptedNLI(completion_fn=fake).check("Some claim.", "Some source.")
     assert verdict.supported is False
+
+
+def test_prompted_nli_rejects_non_boolean_legacy_value():
+    content = '{"supported":"false","reason":"not stated"}'
+    verdict = PromptedNLI(completion_fn=_fake_completion(content, {})).check(
+        "Some claim.", "Some source."
+    )
+    assert verdict.supported is False
+
+
+def test_prompted_nli_checks_many_in_one_request():
+    capture: dict = {}
+    content = (
+        '{"verdicts":['
+        '{"id":"first","label":"supported","reason":"stated"},'
+        '{"id":"second","label":"partial","reason":"scope is broader"}'
+        "]}"
+    )
+    verdicts = PromptedNLI(completion_fn=_fake_completion(content, capture)).check_many([
+        nli.NLIInput(id="first", claim="Claim one.", source="Source one."),
+        nli.NLIInput(id="second", claim="Claim two.", source="Source two."),
+    ])
+
+    assert [verdict.supported for verdict in verdicts] == [True, False]
+    assert len(capture["messages"]) == 2
+    assert capture["calls"] == 1
+
+
+def test_prompted_nli_fails_closed_when_batch_is_incomplete():
+    content = (
+        '{"verdicts":['
+        '{"id":"first","label":"supported","reason":"stated"}'
+        "]}"
+    )
+    verdicts = PromptedNLI(completion_fn=_fake_completion(content, {})).check_many([
+        nli.NLIInput(id="first", claim="Claim one.", source="Source one."),
+        nli.NLIInput(id="second", claim="Claim two.", source="Source two."),
+    ])
+
+    assert [verdict.supported for verdict in verdicts] == [False, False]
+    assert all("incomplete" in verdict.reason for verdict in verdicts)
 
 
 def test_prompted_nli_fails_safe_on_unparseable_response():
@@ -175,3 +326,74 @@ def test_prompted_nli_fails_safe_on_unparseable_response():
         "Some claim.", "Some source."
     )
     assert verdict.supported is False
+
+
+def test_prompted_nli_fails_safe_on_non_string_content():
+    verdict = PromptedNLI(completion_fn=_fake_completion({"unexpected": "object"}, {})).check(
+        "Some claim.", "Some source."
+    )
+    assert verdict.supported is False
+
+
+def test_prompted_nli_fails_safe_on_malformed_response_envelope():
+    def malformed_completion(model, messages, **kwargs):
+        return SimpleNamespace(choices=[])
+
+    verdict = PromptedNLI(completion_fn=malformed_completion).check("Some claim.", "Some source.")
+    assert verdict.supported is False
+
+
+def test_prompted_nli_fails_closed_on_provider_error():
+    def failing_completion(model, messages, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    verdict = PromptedNLI(completion_fn=failing_completion).check(
+        "Some claim.",
+        "Some source.",
+    )
+
+    assert verdict.supported is False
+    assert verdict.reason == "semantic verifier unavailable"
+
+
+async def test_prompted_nli_async_batch_returns_usage_and_one_request():
+    capture: dict = {}
+    content = (
+        '{"verdicts":['
+        '{"id":"first","label":"supported","reason":"stated"},'
+        '{"id":"second","label":"unsupported","reason":"not stated"}'
+        "]}"
+    )
+    run = await PromptedNLI(
+        model="openai/gpt-5.4-nano",
+        async_completion_fn=_fake_async_completion(content, capture),
+    ).arun_many([
+        nli.NLIInput(id="first", claim="Claim one.", source="Source one."),
+        nli.NLIInput(id="second", claim="Claim two.", source="Source two."),
+    ])
+
+    assert isinstance(run, nli.NLIBatchRun)
+    assert [verdict.supported for verdict in run.verdicts] == [True, False]
+    assert run.input_tokens == 120
+    assert run.output_tokens == 30
+    assert run.cached_input_tokens == 20
+    assert run.cost_usd is not None
+    assert run.latency_ms >= 0
+    assert capture["calls"] == 1
+    assert capture["kwargs"]["response_format"].__name__ == "NLIBatchResponse"
+
+
+async def test_prompted_nli_async_batch_fails_closed_on_provider_error():
+    async def failing_completion(model, messages, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    run = await PromptedNLI(
+        async_completion_fn=failing_completion,
+    ).arun_many([
+        nli.NLIInput(id="first", claim="Claim one.", source="Source one."),
+        nli.NLIInput(id="second", claim="Claim two.", source="Source two."),
+    ])
+
+    assert [verdict.supported for verdict in run.verdicts] == [False, False]
+    assert run.error == "RuntimeError"
+    assert run.latency_ms >= 0

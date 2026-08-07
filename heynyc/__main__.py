@@ -621,13 +621,33 @@ async def _cmd_repl_raw(model: str | None = None) -> None:
 _EVAL_COST_PER_CASE_USD = 0.02
 
 
-def _eval_run_metadata(model: str, results: list) -> dict:
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _repeat_eval_cases(cases: list, explicit_case_ids: list[str]) -> list:
+    """Repeat explicit case selections; otherwise keep the broad-run safety subset."""
+    if explicit_case_ids:
+        selected = set(explicit_case_ids)
+        return [case for case in cases if case.id in selected]
+    return [case for case in cases if case.safety_critical]
+
+
+def _eval_run_metadata(
+    model: str,
+    results: list,
+    *,
+    repeat_summary: dict | None = None,
+) -> dict:
     from heynyc.eval.bench import _candidate_cost
 
     cost, input_tokens, output_tokens = _candidate_cost(model, results)
-    return {
+    metadata = {
         "model": model,
-        "case_ids": [result.case.id for result in results],
+        "case_ids": list(dict.fromkeys(result.case.id for result in results)),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "candidate_cost_usd": cost,
@@ -635,6 +655,9 @@ def _eval_run_metadata(model: str, results: list) -> dict:
         "n_model_calls": sum(int(result.usage.get("n_model_calls", 0) or 0) for result in results),
         "n_tool_calls": sum(int(result.usage.get("n_tool_calls", 0) or 0) for result in results),
     }
+    if repeat_summary is not None:
+        metadata["repeat"] = repeat_summary
+    return metadata
 
 
 async def _cmd_eval(
@@ -652,9 +675,13 @@ async def _cmd_eval(
     from datetime import timezone
     from pathlib import Path
 
-    from heynyc.core.agent import Agent
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
+    from heynyc.eval.bench import build_eval_agent
     from heynyc.eval.cases import select_cases
+    from heynyc.eval.report import progress_writer
+
+    if repeat < 1:
+        raise ValueError("repeat must be at least 1")
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     cases = load_cases(registry)
@@ -676,10 +703,20 @@ async def _cmd_eval(
         return
     print(f"Running {len(cases)} eval case(s) across {len(registry.modules)} module(s)...")
 
-    def factory():
-        return Agent(registry, model=model or config.HEYNYC_MODEL, index=retriever, scope_gate=True)
+    selected_model = model or config.HEYNYC_MODEL
 
-    results = await run_all(factory, cases, reminders=_default_reminders())
+    def factory():
+        return build_eval_agent(registry, selected_model, retriever)
+
+    run_dir = Path(out) if out else (
+        config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
+    )
+    results = await run_all(
+        factory,
+        cases,
+        reminders=_default_reminders(),
+        on_case=progress_writer(run_dir),
+    )
     judge = None
     if use_api_judge:
         # The PAID, opt-in API judge. Thread today's date through so it treats live/future-dated
@@ -692,23 +729,83 @@ async def _cmd_eval(
     print("\n" + report.render())
 
     # pass^k reliability on the safety-critical subset (customer-facing metric).
+    repeat_summary = None
+    repeated_artifacts = []
+    billed_results = list(results)
+    repeat_gate_passed = True
     if repeat > 1:
-        safety = [c for c in cases if c.safety_critical]
-        reliable = 0
-        for case in safety:
-            runs = await run_repeated(factory, case, k=repeat, reminders=_default_reminders())
-            sub = await evaluate(runs)
-            if all(r.passed for r in sub.reports):
-                reliable += 1
-        if safety:
-            print(f"\npass^{repeat} (safety subset): {reliable}/{len(safety)} cases reliable across {repeat} runs")
+        from heynyc.eval.report import GateReport
 
-    run_dir = Path(out) if out else (
-        config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
+        repeat_targets = _repeat_eval_cases(cases, case_ids or [])
+        reliable = 0
+        repeated_cases = []
+        for case in repeat_targets:
+            initial = next(result for result in results if result.case.id == case.id)
+            runs = [initial]
+            runs.extend(
+                await run_repeated(
+                    factory,
+                    case,
+                    k=repeat - 1,
+                    reminders=_default_reminders(),
+                )
+            )
+            billed_results.extend(runs[1:])
+            sub = await evaluate(runs)
+            outcomes = [case_report.passed for case_report in sub.reports]
+            is_reliable = all(outcomes)
+            repeat_gate_passed = repeat_gate_passed and is_reliable
+            if is_reliable:
+                reliable += 1
+            artifact_paths = [
+                f"repeats/{case.id}/run-{index:02d}"
+                for index in range(1, len(runs) + 1)
+            ]
+            repeated_artifacts.append(
+                (
+                    case.id,
+                    runs,
+                    [GateReport(reports=[case_report]) for case_report in sub.reports],
+                )
+            )
+            repeated_cases.append({
+                "case_id": case.id,
+                "passed": outcomes,
+                "reliable": is_reliable,
+                "artifacts": artifact_paths,
+            })
+        if repeat_targets:
+            repeat_summary = {
+                "k": repeat,
+                "eligible_case_count": len(repeat_targets),
+                "reliable_case_count": reliable,
+                "cases": repeated_cases,
+            }
+            label = "explicit cases" if case_ids else "safety subset"
+            print(
+                f"\npass^{repeat} ({label}): {reliable}/{len(repeat_targets)} "
+                f"cases reliable across {repeat} runs"
+            )
+
+    for case_id, runs, reports in repeated_artifacts:
+        for index, (run, run_report) in enumerate(zip(runs, reports), start=1):
+            write_run(
+                run_dir / "repeats" / case_id / f"run-{index:02d}",
+                run_report,
+                metadata=_eval_run_metadata(selected_model, [run]),
+            )
+    write_run(
+        run_dir,
+        report,
+        metadata=_eval_run_metadata(
+            selected_model,
+            billed_results,
+            repeat_summary=repeat_summary,
+        ),
+        overall_passed=report.passed and repeat_gate_passed,
     )
-    write_run(run_dir, report, metadata=_eval_run_metadata(config.HEYNYC_MODEL, results))
     print(f"\nRun written to {run_dir}")
-    raise SystemExit(0 if report.passed else 1)
+    raise SystemExit(0 if report.passed and repeat_gate_passed else 1)
 
 
 async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool, out: str | None) -> None:
@@ -787,7 +884,12 @@ def main() -> None:
     )
     # Back-compat hidden alias: `--judge` still maps to the same PAID API judge.
     ev.add_argument("--judge", dest="api_judge", action="store_true", help=argparse.SUPPRESS)
-    ev.add_argument("--repeat", type=int, default=1, help="run the safety subset K times and report pass^K")
+    ev.add_argument(
+        "--repeat",
+        type=_positive_int,
+        default=1,
+        help="repeat explicit --case selections K times, or the safety subset on broader runs",
+    )
     ev.add_argument("--out", default=None, help="run directory to write traces + report into")
     ev.add_argument("--module", default=None, help="only run cases from this module (e.g. benefits)")
     ev.add_argument("--case", dest="case_ids", action="append", default=[],

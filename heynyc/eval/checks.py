@@ -8,12 +8,13 @@ groundedness on top; the free default Agent judge reads these traces directly.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from ..core.citations import content_hash
+from ..core.citations import content_hash, used_discovery_citations
 
 # The cited-claim grounding logic lives in core.grounding, shared VERBATIM with the runtime guard
 # (core/agent.py), one implementation, no drift. _CITED_CLAIM_GROUNDING_BLOCKING is re-exported here
@@ -87,21 +88,49 @@ def looks_like_abstention(text: str) -> bool:
     return any(marker in low for marker in _ABSTAIN_MARKERS)
 
 
+def check_turn_completion(cr: CaseResult) -> Optional[CheckResult]:
+    """Fail a case when any resident turn ended without a deliverable answer."""
+    incomplete = [
+        f"turn {index}: status={getattr(turn, 'status', None)}, "
+        f"text={'present' if str(getattr(turn, 'text', '')).strip() else 'empty'}"
+        for index, turn in enumerate(cr.turn_results, 1)
+        if getattr(turn, "status", None) != "success"
+        or not str(getattr(turn, "text", "")).strip()
+    ]
+    if not cr.turn_results:
+        return None
+    return CheckResult(
+        "turn_completion",
+        passed=not incomplete,
+        detail="" if not incomplete else "; ".join(incomplete),
+    )
+
+
+def _all_tool_calls(cr: CaseResult) -> list[str]:
+    calls = [
+        tool
+        for turn in cr.turn_results
+        for tool in getattr(turn, "tool_calls_made", [])
+    ]
+    return list(dict.fromkeys([*calls, *cr.tool_calls_made]))
+
+
 def check_expected_tools(cr: CaseResult) -> Optional[CheckResult]:
     if not cr.case.expect_tools:
         return None
-    missing = [t for t in cr.case.expect_tools if t not in cr.tool_calls_made]
+    called = _all_tool_calls(cr)
+    missing = [t for t in cr.case.expect_tools if t not in called]
     return CheckResult(
         "expected_tools",
         passed=not missing,
-        detail="" if not missing else f"missing {missing}; called {cr.tool_calls_made}",
+        detail="" if not missing else f"missing {missing}; called {called}",
     )
 
 
 def check_forbidden_tools(cr: CaseResult) -> Optional[CheckResult]:
     if not cr.case.forbid_tools:
         return None
-    used = [t for t in cr.case.forbid_tools if t in cr.tool_calls_made]
+    used = [t for t in cr.case.forbid_tools if t in _all_tool_calls(cr)]
     return CheckResult(
         "forbidden_tools",
         passed=not used,
@@ -148,6 +177,26 @@ def check_abstention(cr: CaseResult) -> Optional[CheckResult]:
     return CheckResult("abstention", passed=hedged, detail=detail, blocking=False)
 
 
+def check_citation_references(cr: CaseResult) -> Optional[CheckResult]:
+    """Fail when resident-facing citation markers do not exist in the result registry."""
+    referenced = set(_CITE_REF_RE.findall(cr.text or ""))
+    if not referenced:
+        return None
+    unknown = sorted(referenced - set(cr.citations))
+    discovery = used_discovery_citations(cr.text, cr.citations)
+    if discovery:
+        return CheckResult(
+            "citation_references",
+            passed=False,
+            detail=f"discovery-only citation ids: {', '.join(discovery)}",
+        )
+    return CheckResult(
+        "citation_references",
+        passed=not unknown,
+        detail="" if not unknown else f"unknown citation ids: {', '.join(unknown)}",
+    )
+
+
 LinkChecker = Callable[[str], Awaitable[int]]
 
 
@@ -162,7 +211,19 @@ async def _default_link_checker(url: str) -> int:
             return 0
 
 
-_CITE_REF_RE = re.compile(r"\{cite:(S\d+)\}")
+_CITE_REF_RE = re.compile(r"\{cite:([^{}]+)\}")
+
+
+def _strip_url_punctuation(url: str) -> str:
+    url = url.rstrip(".,;:!?)}\"]'*_~`")
+    while url and (
+        any(
+            marker in unicodedata.name(url[-1], "")
+            for marker in ("DANDA", "FULL STOP", "QUESTION MARK", "EXCLAMATION MARK")
+        )
+    ):
+        url = url[:-1].rstrip(".,;:!?)}\"]'*_~`")
+    return url
 
 
 async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = None) -> Optional[CheckResult]:
@@ -173,7 +234,7 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
     referenced = set(_CITE_REF_RE.findall(cr.text or ""))
     ids = referenced or set(cr.citations)
     urls = [c["url"] for cid, c in cr.citations.items() if cid in ids and c.get("url")]
-    urls.extend(url.rstrip(".,;:!?)\"]'*_~`") for url in _URL_RE.findall(cr.text or ""))
+    urls.extend(_strip_url_punctuation(url) for url in _URL_RE.findall(cr.text or ""))
     urls = list(dict.fromkeys(urls))
     if not urls:
         return None
@@ -313,11 +374,13 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
     if cr.error:
         return [CheckResult("run", passed=False, detail=f"agent error: {cr.error}")]
     checks = [
+        check_turn_completion(cr),
         check_expected_tools(cr),
         check_forbidden_tools(cr),
         check_cite_kinds(cr),
         check_contains(cr),
         check_abstention(cr),
+        check_citation_references(cr),
         check_readability(cr),
         await check_link_liveness(cr, link_checker),
     ]

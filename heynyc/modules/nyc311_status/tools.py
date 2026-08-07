@@ -33,10 +33,11 @@ DATASET_ID = "erm2-nwe9"
 _NYC_TZ = ZoneInfo("America/New_York")
 _RECENT_DAYS = 30   # area lane window: "recent" 311 activity, keeps the query cheap + honest
 _RADIUS_M = 800     # ~0.5 mile, the "near me" bound handed to Socrata within_circle
-
-_CADENCE_NOTE = (
-    "NYC's 311 status data updates about once a day, so a very recent change may not show yet. "
-    "To report a new problem or see the official status, use portal.311.nyc.gov or call 311."
+_REFILE_URL = "https://portal.311.nyc.gov/article/?kanumber=KA-02419"
+_REFILE_VERIFIED_ON = "2026-07-26"
+_REFILE_GUIDANCE = (
+    "If a closed service request is still unresolved, refile the service request. "
+    "NYC311 feedback does not address an individual service request."
 )
 
 
@@ -86,6 +87,16 @@ def _sr_citation(ctx: ToolContext, record: dict) -> str:
     )
 
 
+def _refile_citation(ctx: ToolContext) -> str:
+    return ctx.citations.register(
+        _REFILE_URL,
+        snippet=_REFILE_GUIDANCE,
+        title="NYC311 Feedback",
+        kind="DOC",
+        valid_as_of=_REFILE_VERIFIED_ON,
+    )
+
+
 async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
     # PII/injection boundary: reduce to digits, so ONLY the number reaches Socrata and a stray
     # quote can never alter the SoQL. NYC SR numbers are all digits (verified live).
@@ -120,9 +131,9 @@ async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
     if resolution:
         lines.append(f"- Resolution on record: {resolution}")
     if status.lower() == "closed":
+        refile_cite = _refile_citation(ctx)
         lines.append(
-            "This request is marked closed. If the problem is still happening, that counts as a new "
-            "issue, report it to 311."
+            f"This request is marked closed. {_REFILE_GUIDANCE} {{cite:{refile_cite}}}"
         )
     else:
         as_of = _valid_as_of(record)[:10]
@@ -130,7 +141,6 @@ async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
             f"This request is still open (status {status})"
             + (f"; its last recorded update was {as_of}." if as_of else ".")
         )
-    lines.append(_CADENCE_NOTE)
     return "\n".join(lines)
 
 
@@ -193,7 +203,6 @@ async def _lookup_area(about: str, near: str, limit: int, ctx: ToolContext) -> s
             pass
         else:
             lines.append(f"   Map: {maps_link(lat, lon)}")
-    lines.append(_CADENCE_NOTE)
     return "\n".join(lines)
 
 

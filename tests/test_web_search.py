@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import httpx
+import pytest
+
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import web_search as web_search_mod
@@ -29,7 +32,53 @@ async def test_web_search_filters_to_allowlist_and_cites():
     assert "Official" in out
     assert "Spam" not in out
     assert ctx.citations.mapping()["S1"]["kind"] == "WEB"
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "discovery",
+    }
     assert len(ctx.citations) == 1
+
+
+async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
+    snippet = "x" * 250 + " decisive detail"
+
+    async def fake_search(query, domains, recency=None):
+        return [
+            {
+                "title": "Official",
+                "url": "https://www.nyc.gov/snap",
+                "snippet": snippet,
+            },
+        ]
+
+    tool = web_search_tools(ALLOW, search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    out = await tool.handler({"query": "current SNAP rule"}, ctx)
+
+    assert "decisive detail" in ctx.citations.mapping()["S1"]["snippet"]
+    assert "call official_sources" in out
+    assert "beyond these snippets" in out
+
+
+async def test_web_search_marks_archived_results_as_not_current():
+    async def fake_search(query, domains, recency=None):
+        return [
+            {
+                "title": "Temporary Protected Status Designated Country",
+                "url": (
+                    "https://www.uscis.gov/archive/"
+                    "temporary-protected-status-designated-country-haiti"
+                ),
+                "snippet": "DHS announced an older effective date.",
+            },
+        ]
+
+    tool = web_search_tools(["uscis.gov"], search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await tool.handler({"query": "current Haiti TPS status"}, ctx)
+
+    assert "SOURCE STATUS: ARCHIVED" in out
+    assert "SOURCE STATUS: ARCHIVED" in ctx.citations.mapping()["S1"]["snippet"]
 
 
 async def test_web_search_no_results_abstains():
@@ -40,6 +89,85 @@ async def test_web_search_no_results_abstains():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
     out = await tool.handler({"query": "x"}, ctx)
     assert "couldn't find" in out.lower() or "no results" in out.lower()
+
+
+async def test_tavily_transport_failure_degrades_to_no_results(monkeypatch):
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            raise httpx.ConnectError("provider unavailable")
+
+    monkeypatch.setattr(web_search_mod.config, "TAVILY_API_KEY", "configured")
+    monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    assert await web_search_mod._tavily("query", ["nyc.gov"]) == []
+
+
+async def test_tavily_http_status_failure_is_not_reported_as_no_results(monkeypatch):
+    class _Response:
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError(
+                "provider rejected request",
+                request=httpx.Request("POST", "https://api.tavily.com/search"),
+                response=httpx.Response(429),
+            )
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr(web_search_mod.config, "TAVILY_API_KEY", "configured")
+    monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await web_search_mod._tavily("query", ["nyc.gov"])
+
+
+async def test_search_falls_back_to_duckduckgo_when_tavily_plan_is_exhausted(monkeypatch):
+    async def exhausted(*_args, **_kwargs):
+        raise httpx.HTTPStatusError(
+            "plan limit exceeded",
+            request=httpx.Request("POST", "https://api.tavily.com/search"),
+            response=httpx.Response(432),
+        )
+
+    async def fallback(query, allowed_domains, recency=None):
+        assert query == "current NYC service"
+        assert allowed_domains == ["nyc.gov"]
+        assert recency == "week"
+        return [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
+
+    monkeypatch.setattr(web_search_mod, "_tavily", exhausted)
+    monkeypatch.setattr(web_search_mod, "_duckduckgo", fallback)
+
+    assert await web_search_mod.tavily_search_recent(
+        "current NYC service", ["nyc.gov"], recency="week"
+    ) == [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
+
+
+async def test_search_does_not_hide_non_plan_tavily_status_errors(monkeypatch):
+    async def rejected(*_args, **_kwargs):
+        raise httpx.HTTPStatusError(
+            "rate limited",
+            request=httpx.Request("POST", "https://api.tavily.com/search"),
+            response=httpx.Response(429),
+        )
+
+    monkeypatch.setattr(web_search_mod, "_tavily", rejected)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await web_search_mod.tavily_search("query", ["nyc.gov"])
 
 
 def _ctx():
@@ -62,12 +190,16 @@ async def test_web_search_ranks_by_tier_and_disclaims_community():
     allow = ["nycgovparks.org", "eventbrite.com"]
     tool = web_search_tools(allow, source_tiers=tiers, search_fn=fake_search)[0]  # default web_search
 
-    out = await _run(tool, "free events")
+    ctx = _ctx()
+    out = await tool.handler({"query": "free events"}, ctx)
     # authoritative ranked above community:
     assert out.index("nycgovparks.org") < out.index("eventbrite.com")
     # community carries the disclaimer:
     assert "⚠️" in out
     assert "confirm before you go" in out.lower()
+    citations = ctx.citations.mapping()
+    assert citations["S1"]["provenance"] == {"evidence_grade": "discovery"}
+    assert citations["S2"]["provenance"] == {"evidence_grade": "discovery"}
 
 
 async def test_web_search_still_hard_gates_ugc_off_allowlist():
@@ -280,3 +412,10 @@ def test_web_search_defers_nyc_event_listings_to_the_catalog():
     assert "long-tail" in desc                            # long-tail facts stay here
     assert "whats_on_events" in desc                      # defers NYC event listings to the catalog
     assert "a specific event this weekend" not in desc    # no longer advertises event listings
+
+
+def test_web_search_description_caps_repeated_search_for_one_missing_fact():
+    desc = web_search_tools(["nyc.gov"])[0].description.lower()
+    assert "same missing fact" in desc
+    assert "one focused search" in desc
+    assert "say you could not confirm it" in desc

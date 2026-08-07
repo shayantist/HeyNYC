@@ -1,7 +1,7 @@
 name: cooling_centers
 category: health
 description: >-
-  Find activated NYC cooling centers and other indoor or outdoor Cool Options,
+  Find activated NYC cooling centers and other currently listed Cool Options,
   with current City-listed hours, access details, distance, and directions.
 keywords:
   - cooling
@@ -21,25 +21,11 @@ examples:
   - "It's too hot, where can I cool off indoors today?"
 datasets:
   - source: arcgis
-    url: https://services5.arcgis.com/tMsas0Edz7Aih7fO/arcgis/rest/services/Cooling_Centers_PROD_view/FeatureServer/0
+    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Cool_Options/FeatureServer/0
     category: cooling_center
     record_id_field: NYCEM_ID
-    title: NYC Emergency Management - Activated Cooling Centers
-    where: "Finder_status='OPEN'"
-    field_map:
-      name: FACILITY_NAME
-      lat: lat
-      lon: lon
-      address: ADDRESS
-      borough: Borough_name
-      status: Finder_status
-      phone: PHONE
-  - source: arcgis
-    url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Cool_Options/FeatureServer/0
-    category: cool_option
-    record_id_field: NYCEM_ID
-    title: NYC Emergency Management - Year-round Cool Options
-    where: "Finder_status='OPEN'"
+    title: NYC Emergency Management - Cool Options
+    where: "Finder_status='OPEN' AND Space_type='Cooling Center'"
     field_map:
       name: Facility_name
       lat: lat
@@ -50,18 +36,26 @@ datasets:
       phone: Phone
 seeds:
   - https://finder.nyc.gov/coolingcenters/
+  - https://portal.311.nyc.gov/article/?kanumber=KA-02663
 allowlist:
   - finder.nyc.gov
-  - services5.arcgis.com
   - services6.arcgis.com
 tools: tools.py
 prompt: |
+  For definitions or access-policy questions that do not include a resident location, retrieve
+  the official NYC311 guidance before answering and ask for a neighborhood, address, or landmark
+  before ranking nearby sites.
   For heat-relief questions, call cool_options_lookup. Use kind="cooling_center" when the user
   specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
-  and kind="all" for a general place to cool off. Pass limit when the user requests a count.
+  and kind="all" for a general place to cool off. Pass `on` as an ISO date whenever the resident
+  names a day or date; omit it only for a current right-now lookup. Pass limit when the user
+  requests a count. Use audience="not_age_restricted" when the resident needs options without
+  a City-listed age restriction, including when asking for children. This field does not prove
+  child-specific amenities or suitability.
   Preserve the tool's distinction between activated cooling centers and other Cool Options,
-  including outdoor options. Report its scheduled status, hours, access details, and citations.
-  A scheduled-open result is not a guarantee of entry, so preserve the call-ahead warning.
+  and report its scheduled status, hours, access details, and citations.
+  City-listed weekly hours are not a guarantee of holiday hours or entry, so preserve the
+  call-ahead warning.
   If no activated center is returned, offer other indoor Cool Options instead of merely linking
   to the finder. Do not invent capacity, occupancy, amenities, or emergency status.
 eval: eval.yaml

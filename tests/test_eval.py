@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from heynyc.core import config
 from heynyc.core.citations import content_hash
 from heynyc.core.registry import Registry
-from heynyc.eval.cases import EvalCase, load_cases
+from heynyc.eval.cases import EvalCase, load_cases, select_cases
 from heynyc.eval.checks import (
     check_abstention,
     check_cite_kinds,
@@ -36,8 +38,41 @@ def test_load_cases_from_real_modules():
     assert "wc_made_up_match" in ids
     assert "benefits_cross_module_snap_center" in ids
     assert "clinic_cross_module_pregnancy_care" in ids
+    assert "cross_module_family_events_and_cooling_preserve_evidence" in ids
+    assert "convo_spanish_snap_screen_and_food_tonight" in ids
     # every module's abstain cases are present
     assert any(c.abstain for c in cases)
+
+
+def test_eval_run_metadata_persists_repeat_outcomes():
+    from types import SimpleNamespace
+
+    from heynyc.__main__ import _eval_run_metadata
+
+    result = SimpleNamespace(
+        case=SimpleNamespace(id="repeat-me"),
+        usage={},
+    )
+    repeat_summary = {
+        "k": 3,
+        "eligible_case_count": 1,
+        "reliable_case_count": 1,
+        "cases": [{"case_id": "repeat-me", "passed": [True, True, True], "reliable": True}],
+    }
+
+    metadata = _eval_run_metadata("model", [result], repeat_summary=repeat_summary)
+
+    assert metadata["repeat"] == repeat_summary
+
+
+def test_explicit_eval_cases_are_repeat_targets_even_when_not_safety_critical():
+    from heynyc.__main__ import _repeat_eval_cases
+
+    ordinary = _case(id="ordinary")
+    safety = _case(id="safety", harm_category="misinformation")
+
+    assert _repeat_eval_cases([ordinary, safety], ["ordinary"]) == [ordinary]
+    assert _repeat_eval_cases([ordinary, safety], []) == [safety]
 
 
 # --- deterministic checks -------------------------------------------------
@@ -49,11 +84,31 @@ def test_expected_tools_check():
     assert not check_expected_tools(cr2).passed
 
 
+def test_expected_tools_check_uses_the_whole_conversation():
+    cr = _result(_case(expect_tools=["nearest"]))
+    cr.turn_results = [
+        SimpleNamespace(tool_calls_made=["nearest"]),
+        SimpleNamespace(tool_calls_made=[]),
+    ]
+
+    assert check_expected_tools(cr).passed
+
+
 def test_forbidden_tools_check():
     cr = _result(_case(forbid_tools=["nearest"]), tools=["web_search"])
     assert check_forbidden_tools(cr).passed
     cr2 = _result(_case(forbid_tools=["nearest"]), tools=["nearest"])
     assert not check_forbidden_tools(cr2).passed
+
+
+def test_forbidden_tools_check_uses_the_whole_conversation():
+    cr = _result(_case(forbid_tools=["submit_application"]))
+    cr.turn_results = [
+        SimpleNamespace(tool_calls_made=["submit_application"]),
+        SimpleNamespace(tool_calls_made=[]),
+    ]
+
+    assert not check_forbidden_tools(cr).passed
 
 
 def test_cite_kinds_check():
@@ -141,6 +196,43 @@ async def test_link_liveness_strips_markdown_around_direct_url():
     assert seen == ["https://finder.nyc.gov/foodhelp"]
 
 
+async def test_link_liveness_strips_sentence_punctuation_after_markdown_url():
+    seen = []
+    cr = _result(
+        _case(),
+        text=(
+            "সরকারি পেজ: [ACCESS NYC SNAP]"
+            "(https://access.nyc.gov/programs/supplemental-nutrition-assistance-program-snap/)।"
+        ),
+    )
+
+    async def checker(url):
+        seen.append(url)
+        return 200 if url.endswith("supplemental-nutrition-assistance-program-snap/") else 404
+
+    result = await check_link_liveness(cr, checker=checker)
+
+    assert result is not None and result.passed
+    assert seen == [
+        "https://access.nyc.gov/programs/supplemental-nutrition-assistance-program-snap/"
+    ]
+
+
+async def test_link_liveness_keeps_unicode_closing_character_in_iri_path():
+    seen = []
+    url = "https://example.gov/কেন্দ্র】"
+    cr = _result(_case(), text=f"Official page: {url}")
+
+    async def checker(candidate):
+        seen.append(candidate)
+        return 200 if candidate == url else 404
+
+    result = await check_link_liveness(cr, checker=checker)
+
+    assert result is not None and result.passed
+    assert seen == [url]
+
+
 async def test_link_liveness_unreachable_is_not_dead():
     # status 0 (timeout / connection reset / bot-block) means "couldn't verify", NOT "gone":
     # it must not fail the gate (flaky + non-reproducible). Only a definitive 404/410 blocks.
@@ -211,7 +303,8 @@ def test_load_cases_parses_taxonomy(tmp_path):
     }))
     (mod / "eval.yaml").write_text(yaml.safe_dump([
         {"id": "demo_ground", "query": "where?", "capability": "dataset_grounding",
-         "test_type": "MFT", "invariants": {"must_ground": True, "must_not_fabricate": True}},
+         "test_type": "MFT", "invariants": {"must_ground": True, "must_not_fabricate": True},
+         "utility_criterion": "Return a useful grounded place"},
         {"id": "demo_inv", "query": "where???", "test_type": "INV",
          "base": "demo_ground", "perturbation": "typo", "expect_same_outcome_as_base": True,
          "language": "es"},
@@ -223,6 +316,7 @@ def test_load_cases_parses_taxonomy(tmp_path):
     assert cases["demo_inv"].base == "demo_ground"
     assert cases["demo_inv"].perturbation == "typo"
     assert cases["demo_inv"].language == "es"
+    assert cases["demo_inv"].utility_criterion == "Return a useful grounded place"
 
 
 async def test_run_case_captures_messages():
@@ -248,6 +342,76 @@ async def test_run_case_captures_messages():
 
     cr = await run_case(_MsgAgent(), _case(id="m"))
     assert any(m.get("role") == "tool" and m["content"] == "RESULT ROWS" for m in cr.messages)
+
+
+async def test_pydantic_eval_agent_confirms_fact_reviews_but_not_actions():
+    from heynyc.core.agent import AgentResult
+    from heynyc.eval.runner import PydanticEvalAgent
+
+    class Conversation:
+        def __init__(self, tool_name, fact_confirmation_names=()):
+            self.runtime = self
+            self.tool_name = tool_name
+            self.fact_confirmation_names = set(fact_confirmation_names)
+            self.pending_approvals = {}
+            self.resumed = False
+
+        def is_fact_confirmation(self, tool_name):
+            return tool_name in self.fact_confirmation_names
+
+        async def send(self, message, **kwargs):
+            self.pending_approvals = {
+                "call-1": {"tool_name": self.tool_name, "args": {"value": 1}}
+            }
+            return AgentResult(
+                text="",
+                citations={},
+                status="approval_required",
+                tool_calls_made=[self.tool_name],
+                usage={"input_tokens": 2, "cost_usd": 0.1},
+            )
+
+        def dump_state(self):
+            return self
+
+        def conversation_from_state(self, state):
+            return state
+
+        async def resume_approvals(self, approvals):
+            self.resumed = True
+            return AgentResult(
+                text="done",
+                citations={},
+                status="success",
+                tool_calls_made=["screen_eligibility"],
+                usage={"input_tokens": 3, "cost_usd": 0.2},
+            )
+
+    class Runtime:
+        def __init__(self, tool_name, fact_confirmation_names=()):
+            self._conversation = Conversation(tool_name, fact_confirmation_names)
+
+        def conversation(self):
+            return self._conversation
+
+    facts_runtime = Runtime(
+        "confirm_screen_eligibility_facts",
+        {"confirm_screen_eligibility_facts"},
+    )
+    facts = await PydanticEvalAgent(facts_runtime).run("screen me")
+    assert facts.text == "done"
+    assert facts_runtime._conversation.resumed
+    assert facts.usage["input_tokens"] == 5
+
+    action_runtime = Runtime("submit_application")
+    action = await PydanticEvalAgent(action_runtime).run("submit it")
+    assert action.status == "approval_required"
+    assert not action_runtime._conversation.resumed
+
+    disguised_action_runtime = Runtime("confirm_submit_facts")
+    disguised_action = await PydanticEvalAgent(disguised_action_runtime).run("submit it")
+    assert disguised_action.status == "approval_required"
+    assert not disguised_action_runtime._conversation.resumed
 
 
 def test_judge_model_defaults_off_agent_model(monkeypatch):
@@ -357,6 +521,148 @@ async def test_run_repeated_runs_k_times():
     assert calls["n"] == 3
 
 
+async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import heynyc.__main__ as cli
+    import heynyc.eval as eval_pkg
+    import heynyc.eval.bench as bench
+
+    case = _case(id="repeat_saved")
+    initial = _result(case, text="initial")
+    initial.usage = {
+        "cost_usd": 0.01,
+        "input_tokens": 10,
+        "output_tokens": 1,
+        "latency_ms": 100,
+        "n_model_calls": 2,
+        "n_tool_calls": 1,
+    }
+    extras = [_result(case, text=f"extra-{index}") for index in range(2)]
+    for result in extras:
+        result.usage = {
+            "cost_usd": 0.01,
+            "input_tokens": 10,
+            "output_tokens": 1,
+            "latency_ms": 100,
+            "n_model_calls": 2,
+            "n_tool_calls": 1,
+        }
+
+    async def fake_run_all(factory, cases, reminders=None, on_case=None):
+        return [initial]
+
+    async def fake_run_repeated(factory, target, k, reminders=None):
+        assert target is case
+        assert k == 2
+        return extras
+
+    monkeypatch.setattr(
+        cli.Registry,
+        "discover",
+        lambda *args, **kwargs: SimpleNamespace(modules={"m": object()}),
+    )
+    monkeypatch.setattr(cli, "_load_retriever", lambda required=False: None)
+    monkeypatch.setattr(eval_pkg, "load_cases", lambda registry: [case])
+    monkeypatch.setattr(eval_pkg, "run_all", fake_run_all)
+    monkeypatch.setattr(eval_pkg, "run_repeated", fake_run_repeated)
+    monkeypatch.setattr(bench, "build_eval_agent", lambda *args, **kwargs: object())
+    writes = []
+    real_write_run = eval_pkg.write_run
+
+    def tracked_write_run(directory, *args, **kwargs):
+        writes.append(directory)
+        return real_write_run(directory, *args, **kwargs)
+
+    monkeypatch.setattr(eval_pkg, "write_run", tracked_write_run)
+
+    import pytest
+
+    with pytest.raises(SystemExit, match="0"):
+        await cli._cmd_eval(
+            use_api_judge=False,
+            repeat=3,
+            out=str(tmp_path),
+            case_ids=[case.id],
+        )
+
+    repeat_root = tmp_path / "repeats" / case.id
+    saved = [
+        json.loads((repeat_root / f"run-{index:02d}" / "traces" / f"{case.id}.json").read_text())
+        for index in range(1, 4)
+    ]
+    assert [item["final_text"] for item in saved] == ["initial", "extra-0", "extra-1"]
+    metadata = json.loads((tmp_path / "report.json").read_text())["metadata"]
+    assert metadata["input_tokens"] == 30
+    assert metadata["output_tokens"] == 3
+    assert metadata["candidate_cost_usd"] == 0.03
+    assert metadata["latency_ms"] == 300
+    assert metadata["n_model_calls"] == 6
+    assert metadata["n_tool_calls"] == 3
+    assert writes[-1] == tmp_path
+
+
+async def test_eval_repeat_failure_blocks_the_run_and_report(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import heynyc.__main__ as cli
+    import heynyc.eval as eval_pkg
+    import heynyc.eval.bench as bench
+
+    case = _case(id="repeat_failure", expect_tools=["needed"])
+    initial = _result(case, text="initial", tools=["needed"])
+    failed_repeat = _result(case, text="missed tool")
+
+    async def fake_run_all(factory, cases, reminders=None, on_case=None):
+        return [initial]
+
+    async def fake_run_repeated(factory, target, k, reminders=None):
+        return [failed_repeat]
+
+    monkeypatch.setattr(
+        cli.Registry,
+        "discover",
+        lambda *args, **kwargs: SimpleNamespace(modules={"m": object()}),
+    )
+    monkeypatch.setattr(cli, "_load_retriever", lambda required=False: None)
+    monkeypatch.setattr(eval_pkg, "load_cases", lambda registry: [case])
+    monkeypatch.setattr(eval_pkg, "run_all", fake_run_all)
+    monkeypatch.setattr(eval_pkg, "run_repeated", fake_run_repeated)
+    monkeypatch.setattr(bench, "build_eval_agent", lambda *args, **kwargs: object())
+
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        await cli._cmd_eval(
+            use_api_judge=False,
+            repeat=2,
+            out=str(tmp_path),
+            case_ids=[case.id],
+        )
+
+    assert exc.value.code == 1
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["passed"] is False
+    assert report["metadata"]["repeat"]["reliable_case_count"] == 0
+    assert "(FAIL)" in (tmp_path / "report.txt").read_text()
+
+
+def test_repeat_count_must_be_positive():
+    import argparse
+
+    import pytest
+
+    from heynyc.__main__ import _positive_int
+
+    assert _positive_int("3") == 3
+    with pytest.raises(argparse.ArgumentTypeError):
+        _positive_int("0")
+    with pytest.raises(argparse.ArgumentTypeError):
+        _positive_int("-1")
+
+
 async def test_gate_with_injected_judge():
     case = _case(id="j", abstain=True)
     agent = _FakeAgent("I don't have that.", [], {})
@@ -370,6 +676,129 @@ async def test_gate_with_injected_judge():
     report = await evaluate(results, judge=judge)
     assert report.passed
     assert any(c.name == "api_grounded" for c in report.reports[0].checks)
+
+
+async def test_utility_case_requires_qualitative_review_before_promotion(tmp_path):
+    from heynyc.eval.report import write_run
+
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+    report = await evaluate([_result(case, text="A mechanically valid answer")])
+
+    assert report.passed
+    assert report.mechanical_passed_count == 1
+    assert report.qualitative_pending_count == 1
+    assert not report.promotion_ready
+    assert "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED" in report.render()
+
+    write_run(tmp_path, report)
+    import json
+
+    data = json.loads((tmp_path / "report.json").read_text())
+    assert data["mechanical_passed"] is True
+    assert data["qualitative_review_required"] is True
+    assert data["qualitative_pending_count"] == 1
+    assert data["promotion_ready"] is False
+    assert data["cases"][0]["promotion_ready"] is False
+
+
+async def test_utility_case_promotes_only_after_passing_qualitative_review():
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+
+    async def judge(cr):
+        from heynyc.eval.checks import CheckResult
+
+        return CheckResult("resident_outcome", passed=True, detail="grounded and useful")
+
+    report = await evaluate(
+        [_result(case, text="A useful grounded answer")],
+        judge=judge,
+    )
+
+    assert report.qualitative_pending_count == 0
+    assert report.promotion_ready
+    assert "(PASS)" in report.render()
+
+
+async def test_failed_qualitative_review_does_not_erase_mechanical_pass():
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+
+    async def judge(cr):
+        from heynyc.eval.checks import CheckResult
+
+        return CheckResult("resident_outcome", passed=False, detail="not useful")
+
+    report = await evaluate([_result(case, text="A valid but unhelpful answer")], judge=judge)
+
+    assert report.mechanical_passed_count == 1
+    assert report.passed_count == 0
+    assert not report.promotion_ready
+    assert "(FAIL)" in report.render()
+
+
+def test_mixed_failed_and_pending_reviews_render_as_fail():
+    from heynyc.eval.checks import CheckResult
+    from heynyc.eval.report import CaseReport, GateReport
+
+    review = CheckResult("redteam_safe", passed=False, detail="unsafe")
+    failed = CaseReport(
+        "failed",
+        "redteam",
+        [CheckResult("mechanical", passed=True), review],
+        qualitative_review_required=True,
+        qualitative_review=review,
+    )
+    pending = CaseReport(
+        "pending",
+        "redteam",
+        [CheckResult("mechanical", passed=True)],
+        qualitative_review_required=True,
+    )
+
+    rendered = GateReport([failed, pending]).render()
+
+    assert "(FAIL)" in rendered
+    assert "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED" not in rendered
+
+
+async def test_resident_outcome_named_check_is_mechanical_without_utility_criterion():
+    from heynyc.eval.checks import CheckResult
+    from heynyc.eval.report import CaseReport
+
+    report = CaseReport(
+        case_id="ordinary",
+        module="m",
+        checks=[CheckResult("resident_outcome", passed=False)],
+    )
+
+    assert not report.mechanical_passed
+    assert not report.promotion_ready
+
+
+async def test_nonblocking_judge_cannot_satisfy_required_qualitative_review():
+    from heynyc.eval.checks import CheckResult
+
+    case = _case(id="utility", utility_criterion="Give a useful next step")
+
+    async def judge(cr):
+        return CheckResult(
+            "resident_outcome",
+            passed=True,
+            detail="advisory only",
+            blocking=False,
+        )
+
+    report = await evaluate([_result(case, text="A valid answer")], judge=judge)
+
+    assert not report.promotion_ready
+
+
+async def test_case_without_utility_criterion_keeps_existing_pass_behavior():
+    report = await evaluate([_result(_case(id="ordinary"), text="A valid answer")])
+
+    assert report.passed
+    assert report.qualitative_pending_count == 0
+    assert report.promotion_ready
+    assert "(PASS)" in report.render()
 
 
 def test_looks_like_abstention_recognizes_scope_and_prediction_declines():
@@ -617,6 +1046,22 @@ def test_multi_turn_case_schema_derives_final_query(tmp_path):
     assert cases["convo_case"].turns == ["first question", "and a follow-up?"]
     assert cases["convo_case"].query == "and a follow-up?"  # checks apply to the final turn
     assert cases["single_case"].turns == ["one shot"]  # single-turn stays the degenerate case
+
+
+def test_public_capability_gate_stays_compact_and_complete():
+    cases = load_cases(Registry.discover(config.MODULES_DIR))
+    selected = select_cases(cases, tags=["public-capability"])
+
+    assert {case.id for case in selected} == {
+        "immigration_tps_change",
+        "public_capability_city_day_plan",
+        "public_capability_landmark_essentials",
+        "public_capability_new_parent_services",
+        "public_capability_spanish_snap_food_and_center",
+        "public_capability_tenant_rights_and_311_status",
+        "public_capability_urgent_housing_then_lotteries",
+        "workers_tip_theft",
+    }
 
 
 async def test_runner_plays_multi_turn_cases_through_a_conversation():

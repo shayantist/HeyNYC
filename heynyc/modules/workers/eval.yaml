@@ -6,7 +6,7 @@
 
 # --- MFT: the tip-theft gap, now answered-with-citation instead of a safe abstention ----
 - id: workers_tip_theft
-  tags: [general-chat, must-win]
+  tags: [general-chat, must-win, public-capability]
   query: "My boss is keeping our tips at the restaurant. Is that legal, and what can I do?"
   capability: scope
   test_type: MFT

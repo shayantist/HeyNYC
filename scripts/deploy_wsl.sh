@@ -31,6 +31,12 @@ sudo -n true 2>/dev/null || {
 set -a
 . "$SHARED/.env"
 set +a
+deploy_ref="${HEYNYC_DEPLOY_REF:-origin/main}"
+case "$deploy_ref" in
+    origin/*) ;;
+    *) echo "HEYNYC_DEPLOY_REF must name a pushed origin ref" >&2; exit 64 ;;
+esac
+remote_ref="refs/remotes/$deploy_ref"
 [ "${HEYNYC_DATA_DIR:-}" = "$SHARED/data" ] || {
     echo "HEYNYC_DATA_DIR must point to $SHARED/data" >&2
     exit 78
@@ -80,8 +86,12 @@ esac
 
 git -C "$SOURCE" fetch --prune origin
 git -C "$SOURCE" cat-file -e "$sha^{commit}"
-git -C "$SOURCE" merge-base --is-ancestor "$sha" origin/main || {
-    echo "$sha is not contained in origin/main" >&2
+git -C "$SOURCE" show-ref --verify --quiet "$remote_ref" || {
+    echo "$deploy_ref is not a fetched remote ref" >&2
+    exit 65
+}
+git -C "$SOURCE" merge-base --is-ancestor "$sha" "$remote_ref" || {
+    echo "$sha is not contained in $deploy_ref" >&2
     exit 65
 }
 
@@ -97,7 +107,7 @@ elif [ -e "$release" ]; then
 fi
 git -C "$SOURCE" worktree add --detach "$release" "$sha"
 ln -s "$SHARED/.env" "$release/.env"
-(cd "$release" && uv sync --frozen --extra whatsapp)
+(cd "$release" && uv sync --frozen --extra whatsapp --extra pydantic-ai)
 : > "$release/.heynyc-ready"
 validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
