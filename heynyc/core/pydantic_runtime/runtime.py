@@ -1421,7 +1421,19 @@ class PydanticRuntimeAdapter:
                 ),
                 **(
                     {"safety_response_source": "deterministic"}
-                    if safety_risk in {"self_harm", "imminent_self_harm"}
+                    if (
+                        safety_risk in {"self_harm", "imminent_self_harm"}
+                        or emergency is not None and bool(emergency.sources)
+                    )
+                    else {}
+                ),
+                **(
+                    {
+                        "deterministic_evidence_citations": sorted(
+                            used_citations(backstop, citations.mapping())
+                        )
+                    }
+                    if emergency is not None and emergency.sources
                     else {}
                 ),
             }

@@ -384,6 +384,8 @@ async def test_exact_infant_dose_request_short_circuits_before_model(query, expe
     assert result.citations["S2"]["url"] == (
         "https://www.poison.org/need-immediate-assistance"
     )
+    assert result.diagnostics["safety_response_source"] == "deterministic"
+    assert result.diagnostics["deterministic_evidence_citations"] == ["S1", "S2"]
 
 
 @pytest.mark.parametrize(
@@ -473,6 +475,8 @@ async def test_bengali_missed_dose_floor_bypasses_pydantic_model():
         assert result.citations["S2"]["url"] == (
             "https://www.poison.org/need-immediate-assistance"
         )
+        assert result.diagnostics["safety_response_source"] == "deterministic"
+        assert result.diagnostics["deterministic_evidence_citations"] == ["S1", "S2"]
 
     inverse = await runtime.run("মায়ের pressure medicine কোথায় পাব? কোন clinic-এ যাব?")
     assert inverse.text == "আমি সাহায্য করতে পারি।"
