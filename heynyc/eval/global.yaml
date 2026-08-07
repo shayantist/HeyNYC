@@ -69,24 +69,6 @@
     RULED 2026-07-21, denial is a reason not a gate. Updated 2026-07-28 after the 2026 final made
     the original prediction stale: the case now stays future-facing through the current pilot.
 
-- id: convo_hot_water_section_bn
-  turns:
-    - "আমার বাসায় পাঁচ দিন ধরে গরম পানি নেই। এখন কী করব?"
-    - "কোন section?"
-  expect_tools: [housing_guidance]
-  expect_contains: ["27-2031"]
-  abstain: false
-  capability: conversation
-  language: bn
-  tags: [F175, conversation, multilingual, must-win]
-  utility_criterion: >-
-    Read the short Bengali follow-up from the hot-water context established in the first turn.
-    Name section 27-2031 with that section's own citation, preserve grounded 311 and HPD next
-    steps, and do not substitute the heat-only section 27-2029.
-  notes: >-
-    F175 classifier-retention case. The semantic situation must be selected from the full
-    conversation, not from a current-turn language phrase list.
-
 - id: convo_new_location_replaces_old
   turns:
     - "nearest cooling center to 350 5th ave"

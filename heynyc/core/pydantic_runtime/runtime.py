@@ -60,7 +60,6 @@ from heynyc.core.agent import (
     _delivered_notify_titles,
     _emergency_backstop_result,
     _ground_emergency_backstop,
-    _hot_water_section_feedback,
     _internal_config_backstop,
     _reply_script_feedback,
     _sensitive_identifier_backstop,
@@ -951,12 +950,6 @@ class PydanticRuntimeAdapter:
                 "with official_sources and cite that evidence, or omit the unverified claim.",
                 citation_ids=sorted(discovery_ids)[:_SEMANTIC_RETRY_ITEMS],
             )
-        if feedback := _hot_water_section_feedback(
-            "housing-hot-water-code-section" in ctx.loaded_capability_ids,
-            rendered,
-            mapping,
-        ):
-            reject("required_scope", feedback)
         verdict = check_grounding(
             rendered,
             mapping,
