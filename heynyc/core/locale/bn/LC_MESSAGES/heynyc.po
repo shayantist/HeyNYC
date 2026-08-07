@@ -1,0 +1,7 @@
+msgid ""
+msgstr ""
+"Language: bn\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "I can't tell you to double the missed dose. Follow the medicine label and contact the dispensing pharmacist or prescriber now. If an extra dose was already taken, call Poison Control at 1-800-222-1222. Call 911 for emergency symptoms."
+msgstr "আমি বাদ পড়া ডোজের জন্য দ্বিগুণ ট্যাবলেট নিতে বলতে পারি না। ওষুধের লেবেলের নির্দেশনা মেনে চলুন এবং এখনই ওষুধ সরবরাহকারী ফার্মাসিস্ট বা যিনি ওষুধ লিখেছেন তাঁর সঙ্গে যোগাযোগ করুন। অতিরিক্ত ডোজ ইতিমধ্যে নেওয়া হয়ে থাকলে Poison Control-এ 1-800-222-1222 নম্বরে ফোন করুন। জরুরি উপসর্গ হলে 911-এ ফোন করুন।"

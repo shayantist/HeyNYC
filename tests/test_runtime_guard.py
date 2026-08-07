@@ -404,6 +404,93 @@ async def test_general_child_medication_question_still_reaches_model(query):
     assert result.text == "I can help with that question."
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "মায়ের pressure medicine আজ সকালে দিতে ভুলেছি। এখন কি দুইটা tablet দেব?",
+        "দুইটা দেব না তো? এখন কাকে ফোন করব?",
+    ],
+)
+async def test_bengali_missed_dose_floor_bypasses_legacy_model(query):
+    expected = (
+        "আমি বাদ পড়া ডোজের জন্য দ্বিগুণ ট্যাবলেট নিতে বলতে পারি না। ওষুধের লেবেলের নির্দেশনা "
+        "মেনে চলুন এবং এখনই ওষুধ সরবরাহকারী ফার্মাসিস্ট বা যিনি ওষুধ লিখেছেন তাঁর সঙ্গে যোগাযোগ "
+        "করুন। অতিরিক্ত ডোজ ইতিমধ্যে নেওয়া হয়ে থাকলে Poison Control-এ 1-800-222-1222 নম্বরে "
+        "ফোন করুন। জরুরি উপসর্গ হলে 911-এ ফোন করুন।"
+    )
+
+    async def model(messages, tool_schemas):
+        raise AssertionError("the Bengali missed-dose floor must bypass the model")
+
+    agent = Agent(Registry([]), tools={}, complete_fn=model)
+    result = await agent.run(query)
+
+    assert result.text == f"{expected} {{cite:S1}} {{cite:S2}}"
+    assert result.usage["n_model_calls"] == 0
+    assert result.citations["S1"]["url"] == (
+        "https://medlineplus.gov/ency/patientinstructions/000600.htm"
+    )
+    assert result.citations["S2"]["url"] == (
+        "https://www.poison.org/need-immediate-assistance"
+    )
+
+
+async def test_bengali_missed_dose_floor_bypasses_pydantic_model():
+    from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
+
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return ModelResponse([TextPart("আমি সাহায্য করতে পারি।")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+    )
+    expected = (
+        "আমি বাদ পড়া ডোজের জন্য দ্বিগুণ ট্যাবলেট নিতে বলতে পারি না। ওষুধের লেবেলের নির্দেশনা "
+        "মেনে চলুন এবং এখনই ওষুধ সরবরাহকারী ফার্মাসিস্ট বা যিনি ওষুধ লিখেছেন তাঁর সঙ্গে যোগাযোগ "
+        "করুন। অতিরিক্ত ডোজ ইতিমধ্যে নেওয়া হয়ে থাকলে Poison Control-এ 1-800-222-1222 নম্বরে "
+        "ফোন করুন। জরুরি উপসর্গ হলে 911-এ ফোন করুন।"
+    )
+
+    for query in (
+        "মায়ের pressure medicine আজ সকালে দিতে ভুলেছি। এখন কি দুইটা tablet দেব?",
+        "দুইটা দেব না তো? এখন কাকে ফোন করব?",
+    ):
+        result = await runtime.run(query)
+        assert result.usage["n_model_calls"] == 0
+        assert result.text == f"{expected} {{cite:S1}} {{cite:S2}}"
+        assert result.citations["S1"]["url"] == (
+            "https://medlineplus.gov/ency/patientinstructions/000600.htm"
+        )
+        assert result.citations["S2"]["url"] == (
+            "https://www.poison.org/need-immediate-assistance"
+        )
+
+    inverse = await runtime.run("মায়ের pressure medicine কোথায় পাব? কোন clinic-এ যাব?")
+    assert inverse.text == "আমি সাহায্য করতে পারি।"
+    assert inverse.usage["n_model_calls"] == 1
+    assert calls == 1
+
+
+async def test_bengali_clinic_location_still_reaches_legacy_model():
+    async def model(messages, tool_schemas):
+        return _assistant(content="I can help with that question.")
+
+    agent = Agent(Registry([]), tools={}, complete_fn=model)
+
+    inverse = await agent.run("মায়ের pressure medicine কোথায় পাব? কোন clinic-এ যাব?")
+    assert inverse.text == "I can help with that question."
+    assert inverse.usage["n_model_calls"] == 1
+
+
 # --- Tier 3: catch + feedback + retry -------------------------------------------------------------
 
 async def test_guard_catches_ungrounded_phone_then_model_fixes_it():

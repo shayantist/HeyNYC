@@ -39,6 +39,7 @@ from .crisis_lines import (
 )
 from .freshness import attach_temporal_provenance
 from .grounding import GroundingResult, check_grounding
+from .localization import localize
 from .memory import (
     ContextCapacityError,
     ContextPlan,
@@ -1626,6 +1627,18 @@ _INFANT_DOSE_RESPONSE_ES = (
     "hayas dado una dosis incorrecta, llama a Poison Control al 1-800-222-1222. Llama al 911 solo "
     "si tiene síntomas de emergencia."
 )
+_MISSED_DOSE_BN_RE = re.compile(
+    r"(?:ভুলে গেছি|ভুলেছি|দিতে ভুল|মিস).{0,100}"
+    r"(?:দুইটা|দুইটি|২টা|২টি|দ্বিগুণ|double)"
+    r"|(?:দুইটা|দুইটি|২টা|২টি|দ্বিগুণ).{0,25}"
+    r"(?:দেব|খাব|দিতে|খাওয়াব|খাওয়াব).{0,60}(?:না তো|কাকে ফোন|ফোন|এখন)",
+    re.IGNORECASE,
+)
+_MISSED_DOSE_RESPONSE_EN = (
+    "I can't tell you to double the missed dose. Follow the medicine label and contact the "
+    "dispensing pharmacist or prescriber now. If an extra dose was already taken, call Poison "
+    "Control at 1-800-222-1222. Call 911 for emergency symptoms."
+)
 _INFANT_MEDICATION_CONCERN_EN_RE = re.compile(
     r"\b(?:cold medicine|cough medicine|medication)\b.{0,90}\b(?:sleepy|drowsy|hard to wake)\b|"
     r"\b(?:sleepy|drowsy|hard to wake)\b.{0,90}\b(?:cold medicine|cough medicine|medication)\b",
@@ -1672,6 +1685,12 @@ _NIMH_SUICIDE_SAFETY_SOURCE_SNIPPET = (
 # floor keeps its citations
 _SOURCE_POISON_CONTROL = "poison_control"
 _SOURCE_INFANT_DOSING = "infant_dosing"
+_SOURCE_MISSED_DOSE = "missed_dose"
+_MISSED_DOSE_SOURCE_URL = "https://medlineplus.gov/ency/patientinstructions/000600.htm"
+_MISSED_DOSE_SOURCE_SNIPPET = (
+    "Most of the time, you move on and take the next dose when it is due. Do not take a double "
+    "dose. Check with your provider or pharmacist."
+)
 _INFANT_DOSING_SOURCE_URL = (
     "https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids"
 )
@@ -1693,6 +1712,15 @@ def _ground_emergency_backstop(
     a phone number, which is identical in every LL30 language's verified copy.
     """
     cite_ids: list[str] = []
+    if _SOURCE_MISSED_DOSE in sources:
+        cite_ids.append(citations.register(
+            _MISSED_DOSE_SOURCE_URL,
+            title="Keeping your medicines organized | MedlinePlus",
+            snippet=_MISSED_DOSE_SOURCE_SNIPPET,
+            kind="WEB",
+            valid_as_of="2024-09-04",
+            provenance={"evidence_grade": "authoritative"},
+        ))
     if "988" in text:
         cite_ids.append(citations.register(
             _NYC_988_SOURCE_URL,
@@ -1814,6 +1842,11 @@ def _emergency_backstop_result(user_message: str) -> Optional[Backstop]:
         return Backstop(
             compose_crisis_floor(_SELF_HARM_RESPONSE_EN, _crisis_language(user_message)),
             "self_harm",
+        )
+    if _MISSED_DOSE_BN_RE.search(user_message):
+        return Backstop(
+            localize(_MISSED_DOSE_RESPONSE_EN, "bn"),
+            sources=frozenset({_SOURCE_MISSED_DOSE, _SOURCE_POISON_CONTROL}),
         )
     if _EXACT_DOSE_RE.search(user_message):
         # Caregiver asking about someone else: an emergency, but not this resident's crisis
