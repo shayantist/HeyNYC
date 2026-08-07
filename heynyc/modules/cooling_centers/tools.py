@@ -379,7 +379,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     try:
         target_date = date.fromisoformat(requested_on) if requested_on else now.date()
     except ValueError:
-        return "The `on` date must use YYYY-MM-DD. Ask the resident to clarify the date."
+        return "The date must use YYYY-MM-DD. Ask the resident to clarify the date."
     planning_ahead = target_date != now.date()
     target_day_name = _DAY_NAMES[target_date.weekday()]
     for item in unique:
@@ -387,20 +387,36 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         item["target_hours"] = _scheduled_hours(item["record"], target_date.weekday())
         item["target_open"] = _scheduled_open(item["record"], target_date.weekday())
         item["distance_m"] = haversine_m(origin.lat, origin.lon, item["lat"], item["lon"])
-    if kind == "cooling_center" and not planning_ahead:
+    current_items = unique
+    current_open = [item for item in current_items if item["open_now"] is True]
+    if not planning_ahead:
         if selected_item and selected_item["open_now"] is not True:
+            selected_label = {
+                "cooling_center": "cooling center",
+                "indoor": "indoor Cool Option",
+            }.get(kind, "Cool Option")
             if any(
                 _open_now(item["record"], now) is True
                 and _site_key(item) != _site_key(selected_item)
                 for item in candidate_items
             ):
-                return (
-                    "The selected cooling center is not confirmed open now. "
+                alternative_note = (
                     "Other current cooling center options can be checked."
+                    if kind == "cooling_center"
+                    else "Other current options can be checked."
                 )
-            return f"The selected cooling center is not confirmed open now. {_INDOOR_NEXT_STEP}"
-        if not any(item["open_now"] is True for item in unique):
-            return f"No activated cooling center is confirmed open now. {_INDOOR_NEXT_STEP}"
+                return (
+                    f"The selected {selected_label} is not confirmed open now. "
+                    + alternative_note
+                )
+            return f"The selected {selected_label} is not confirmed open now. {_INDOOR_NEXT_STEP}"
+        if selected_item is None and not current_open:
+            if kind == "cooling_center":
+                return f"No activated cooling center is confirmed open now. {_INDOOR_NEXT_STEP}"
+            label = "indoor Cool Options" if kind == "indoor" else "Cool Options"
+            return f"No current {label} are confirmed open now. I cannot safely recommend a destination."
+        if selected_item is None:
+            unique = current_open
     if planning_ahead:
         unique.sort(
             key=lambda item: (
@@ -422,12 +438,12 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     nearest_open = (
         None
         if planning_ahead
-        else next((item for item in unique if item["open_now"] is True), None)
+        else next((item for item in current_items if item["open_now"] is True), None)
     )
     closer_closed = (
         [
             item
-            for item in unique
+            for item in current_items
             if item["open_now"] is False and item["distance_m"] < nearest_open["distance_m"]
         ]
         if nearest_open

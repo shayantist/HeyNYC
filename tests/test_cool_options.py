@@ -530,6 +530,78 @@ async def test_current_cooling_lookup_fails_closed_when_hours_are_unknown(monkey
 
 
 @pytest.mark.asyncio
+async def test_current_indoor_lookup_fails_closed_when_all_rows_are_closed(monkeypatch):
+    row = {
+        **_site_row("indoor-closed", "Flushing Library"),
+        "Location_type": "Indoor",
+        "Space_type": "Other Indoor Cool Option",
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "12:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [row])
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "indoor"},
+        _context("Where can I cool down indoors now?"),
+    )
+
+    assert "confirmed open now" in output
+    assert "Flushing Library" not in output
+    assert "123 W 42 ST" not in output
+    assert "google.com/maps" not in output
+
+
+@pytest.mark.asyncio
+async def test_current_indoor_lookup_keeps_a_confirmed_open_row(monkeypatch):
+    row = {
+        **_site_row("indoor-open", "Open Indoor Option"),
+        "Location_type": "Indoor",
+        "Space_type": "Other Indoor Cool Option",
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "05:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [row])
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "indoor"},
+        _context("Where can I cool down indoors now?"),
+    )
+
+    assert "Open Indoor Option" in output
+    assert "scheduled open now" in output
+
+
+@pytest.mark.asyncio
+async def test_current_all_lookup_does_not_bypass_closed_row_guard(monkeypatch):
+    rows = [
+        {
+            **_site_row("indoor-closed", "Closed Indoor Option"),
+            "Location_type": "Indoor",
+            "Space_type": "Other Indoor Cool Option",
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "12:00 PM",
+        },
+        {
+            **_site_row("center-closed", "Closed Cooling Center", 2),
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "12:00 PM",
+        },
+    ]
+    handler = _patch_lookup(monkeypatch, rows)
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "all"},
+        _context("Where can I cool down now?"),
+    )
+
+    assert "confirmed open now" in output
+    assert "Closed Indoor Option" not in output
+    assert "Closed Cooling Center" not in output
+    assert "123 W 42 ST" not in output
+    assert "google.com/maps" not in output
+
+
+@pytest.mark.asyncio
 async def test_current_cooling_lookup_keeps_a_confirmed_open_row(monkeypatch):
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.7580, -73.9780, text)
