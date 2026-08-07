@@ -13,6 +13,9 @@ from .base import Tool, ToolContext
 # The running service's own files are the source of truth for self-description. Read at call time.
 _PRIVACY = config.PROJECT_ROOT / "PRIVACY.md"
 _README = config.PROJECT_ROOT / "README.md"
+# F167: the locator a resident SEES has to be openable. The text still comes from the local file,
+# so the answer cannot drift, but `PRIVACY.md` rendered as a citation just looks like a broken link
+_DOCS_BASE = "https://github.com/shayantist/HeyNYC/blob/main"
 
 
 def _faq_section(readme_text: str) -> str:
@@ -40,8 +43,8 @@ def _read(path: Path) -> str:
 def about_tools() -> list[Tool]:
     async def _handler(args: dict, ctx: ToolContext) -> str:
         sources = [
-            ("HeyNYC Privacy Notice", "PRIVACY.md", _read(_PRIVACY)),
-            ("HeyNYC FAQ", "README.md#faq", _faq_section(_read(_README))),
+            ("HeyNYC Privacy Notice", f"{_DOCS_BASE}/PRIVACY.md", _read(_PRIVACY)),
+            ("HeyNYC FAQ", f"{_DOCS_BASE}/README.md#faq", _faq_section(_read(_README))),
         ]
         blocks: list[str] = []
         for title, url, text in sources:

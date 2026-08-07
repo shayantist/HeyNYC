@@ -142,7 +142,13 @@ _MULTI_TOOL_SCOPE_REMINDER = (
 TEMPORARY_FAILURE_FALLBACK = (
     "I hit a temporary problem before I could verify an answer. "
     "Please try again in a moment. If you need help now, call 311 and ask for the service you "
-    "need, or call 911 if anyone is in danger."
+    "need."
+)
+# F166: F151 added the 911 pointer to every failure, so a Medicaid renewal error told a
+# 71-year-old to call 911. The pointer belongs to "this turn could not be SCREENED", not to
+# "something broke": where the screen ran and cleared, the risk is known and 911 is just alarming
+UNSCREENED_FAILURE_FALLBACK = (
+    TEMPORARY_FAILURE_FALLBACK + " If anyone is in danger, call 911."
 )
 VERIFICATION_ABSTAIN_FALLBACK = (
     "I couldn't verify that against the reliable sources I found, so I don't "
@@ -1294,18 +1300,18 @@ class PydanticRuntimeAdapter:
                 safety_error = type(exc).__name__
                 # Fail closed, unless the deterministic floor already caught it
                 if backstop is None:
-                    backstop = TEMPORARY_FAILURE_FALLBACK
+                    backstop = UNSCREENED_FAILURE_FALLBACK
             if safety_run is not None:
                 language = getattr(safety_run, "language", None)
                 screened_risk = safety_run.risk
                 if language is None:
                     safety_error = "MissingCrisisLanguage"
                     if backstop is None:
-                        backstop = TEMPORARY_FAILURE_FALLBACK
+                        backstop = UNSCREENED_FAILURE_FALLBACK
                 elif language not in {"en", *LL30_LANGUAGES}:
                     safety_error = "InvalidCrisisLanguage"
                     if backstop is None:
-                        backstop = TEMPORARY_FAILURE_FALLBACK
+                        backstop = UNSCREENED_FAILURE_FALLBACK
                 elif screened_risk in {"self_harm", "imminent_self_harm"}:
                     # The screen decides: it serves the resident's own language
                     safety_risk = screened_risk

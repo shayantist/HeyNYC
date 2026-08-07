@@ -61,3 +61,15 @@ def test_about_tool_is_registered_in_the_toolbox():
     tools = build_toolbox(Registry([]))
     assert "about_heynyc" in tools
     assert tools["about_heynyc"].read_only is True
+
+
+# F167: a resident asking HeyNYC to file a form for her was told no, and the refusal cited
+# `README.md#faq` and `PRIVACY.md`. Correct sourcing, but she sees an unclickable path
+async def test_citations_are_resolvable_links_not_repo_paths():
+    ctx = _ctx()
+    await _tool().handler({}, ctx)
+
+    urls = [c["url"] for c in ctx.citations.mapping().values()]
+    assert urls, "the tool registered no sources at all"
+    for url in urls:
+        assert url.startswith("https://"), f"{url} is a repo path, not something a resident can open"

@@ -77,6 +77,7 @@ from heynyc.core.pydantic_runtime import (
 )
 from heynyc.core.pydantic_runtime.runtime import (
     TEMPORARY_FAILURE_FALLBACK,
+    UNSCREENED_FAILURE_FALLBACK,
     VERIFICATION_ABSTAIN_FALLBACK,
     _degraded_failure_text,
     _ModelTimingCapability,
@@ -4862,7 +4863,19 @@ async def test_a_persistently_stalled_request_gives_up_after_one_retry() -> None
 # twelve successful retrieval steps, and every source the runtime was holding was discarded
 def test_failure_copy_routes_the_resident_somewhere() -> None:
     assert "311" in TEMPORARY_FAILURE_FALLBACK
-    assert "911" in TEMPORARY_FAILURE_FALLBACK
+
+
+# F166: F151's fix added the 911 clause unconditionally, so a 71-year-old asking about a Medicaid
+# renewal error was told to call 911. 311 fits any turn; 911 does not
+def test_failure_copy_does_not_raise_an_emergency_on_a_screened_turn() -> None:
+    assert "911" not in TEMPORARY_FAILURE_FALLBACK
+
+
+# Inverse: when the crisis screen ITSELF failed we do not know whether this turn is an
+# emergency, so that copy is the one place the 911 pointer must survive
+def test_failure_copy_keeps_911_when_the_turn_could_not_be_screened() -> None:
+    assert "911" in UNSCREENED_FAILURE_FALLBACK
+    assert "311" in UNSCREENED_FAILURE_FALLBACK
 
 
 def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
