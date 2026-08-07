@@ -569,6 +569,38 @@ async def test_current_indoor_lookup_keeps_a_confirmed_open_row(monkeypatch):
 
     assert "Open Indoor Option" in output
     assert "scheduled open now" in output
+    result_line = next(line for line in output.splitlines() if line.startswith("1."))
+    assert "rough estimate from the resolved place point, not a street address" in result_line
+
+
+@pytest.mark.asyncio
+async def test_cooling_lookup_keeps_precise_address_distance_unqualified(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(
+            40.7580,
+            -73.9780,
+            "123 Main Street, Queens, NY",
+            match_type="geosearch",
+            bbl="4000000001",
+        )
+
+    row = {
+        **_site_row("indoor-open", "Open Indoor Option"),
+        "Location_type": "Indoor",
+        "Space_type": "Other Indoor Cool Option",
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "05:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [row])
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+
+    output = await handler(
+        {"near": "123 Main Street, Queens", "kind": "indoor"},
+        _context("Where can I cool down indoors now?"),
+    )
+
+    result_line = next(line for line in output.splitlines() if line.startswith("1."))
+    assert "rough estimate from the resolved place point" not in result_line
 
 
 @pytest.mark.asyncio

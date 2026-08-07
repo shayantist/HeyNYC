@@ -11,6 +11,7 @@ from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 from heynyc.core.tools.geo import (
     _requested_result_limit,
     _resolution_note,
+    format_distance,
     geocode,
     haversine_m,
     maps_link,
@@ -477,14 +478,20 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
         lines.append(note + ".")
     for index, item in enumerate(selected, 1):
         cite = _citation(ctx, item)
-        distance = miles(item["distance_m"])
+        distance = format_distance(
+            near,
+            origin,
+            miles(item["distance_m"]),
+            unit="miles",
+            suffix="",
+        )
         item_type = (
             "cooling center"
             if planning_ahead and item["active"]
             else item["type"]
         )
         lines.append(
-            f"{index}. {item['name']}, {item_type}, {distance:.2f} miles {{cite:{cite}}}"
+            f"{index}. {item['name']}, {item_type}, {distance} {{cite:{cite}}}"
         )
         if planning_ahead and item["active"]:
             lines.append(
