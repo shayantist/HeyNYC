@@ -150,6 +150,7 @@ async def test_nearest_child_care_ranks_grounds_and_links():
     assert len(site_lines) == 2                        # no-coords row dropped
     assert "Close Care" in site_lines[0]               # nearest first
     assert "Far Care" in site_lines[1]
+    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
     assert "(718) 555-0002" in out                     # phone surfaced
     assert "0 YEARS - 2 YEARS" in out                  # age range surfaced
     assert "40" in out                                 # capacity surfaced

@@ -10,7 +10,13 @@ from heynyc.core.citations import data_provenance
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import dataset_url, normalize, query_dataset, row_url
-from heynyc.core.tools.geo import geocode, haversine_m, maps_link, miles
+from heynyc.core.tools.geo import (
+    format_distance,
+    geocode,
+    haversine_m,
+    maps_link,
+    miles,
+)
 
 COOL_OPTIONS_URL = (
     "https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/"
@@ -259,7 +265,10 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         distance_mi = miles(distance_m)
         city_cite = _city_citation(ctx, binding, place, origin, distance_mi)
         city_cites.append(city_cite)
-        lines.append(f"{index}. {place.name}, {distance_mi:.2f} miles {{cite:{city_cite}}}")
+        lines.append(
+            f"{index}. {place.name}, "
+            f"{format_distance(near, origin, distance_mi, unit='miles', suffix='')} {{cite:{city_cite}}}"
+        )
         if corroboration:
             cool_cite = _cool_citation(ctx, corroboration)
             day_name = _DAY_NAMES[requested.weekday() if future_schedule else now.weekday()]

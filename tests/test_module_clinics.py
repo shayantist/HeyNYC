@@ -126,6 +126,7 @@ async def test_find_clinic_merges_ranks_and_attaches_per_class_citations(monkeyp
     assert "H+H Test Hospital" in site_lines[0]          # nearest first (merged across classes)
     assert "Close FQHC" in site_lines[1]
     assert "Far FQHC" in site_lines[2]
+    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
     # both class tags surfaced
     assert "NYC Health + Hospitals (NYC Care)" in out
     assert "Community Health Center (FQHC)" in out

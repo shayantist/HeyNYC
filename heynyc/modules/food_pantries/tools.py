@@ -27,6 +27,7 @@ from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     _clarify_message,
     _resolution_note,
+    format_distance,
     geocode,
     haversine_m,
     miles,
@@ -482,7 +483,7 @@ def _availability_citation(
 def _pantry_block(
     pantry: FoodPantry,
     cite: str,
-    dist_mi: float,
+    distance: str,
     now: datetime,
     requested: date | None = None,
     service_window: tuple[int, int] | None = None,
@@ -523,7 +524,7 @@ def _pantry_block(
         status = _status_label(_open_now(pantry.raw, now))
         weekday = now.weekday()
     parts = [f"- {pantry.name}{flag_str} ({pantry.address or 'NYC'}), "
-             f"{dist_mi:.2f} mi straight-line, {status} {{cite:{cite}}}"]
+             f"{distance}, {status} {{cite:{cite}}}"]
     hours = _listed_hours(pantry.raw, weekday)
     if hours:
         label = (
@@ -829,7 +830,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             _pantry_block(
                 pantry,
                 cite,
-                dist_mi,
+                format_distance(near, origin, dist_mi),
                 now,
                 requested,
                 service_window,

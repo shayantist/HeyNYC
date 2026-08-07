@@ -12,6 +12,7 @@ from heynyc.core.tools.geo import (
     _borough_rect,
     _detect_borough,
     _distance_handler,
+    _fallback_landmark_identity_matches,
     _geosearch_geocode,
     _geosearch_params,
     _in_nyc,
@@ -20,9 +21,11 @@ from heynyc.core.tools.geo import (
     _point_in_named_borough,
     _resolution_note,
     _zip_centroid,
+    format_distance,
     geocode,
     haversine_m,
     miles,
+    origin_precision,
     travel_distance,
 )
 
@@ -829,6 +832,29 @@ async def test_distance_handler_reports_route():
     await client.aclose()
     assert "2.00 mi" in out
     assert "20.0 min" in out
+    assert "rough estimate from the resolved place point, not a street address" in out
+
+
+async def test_distance_handler_marks_an_approximate_destination_as_rough(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        if text == "123 Main Street, Manhattan":
+            return GeoPoint(40.750, -73.990, "123 Main St, Manhattan", match_type="geosearch")
+        return GeoPoint(40.765, -73.982, "Apollo Theater, Harlem", match_type="nominatim")
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"routes": [{"distance": 3218.69, "duration": 1200}]})
+        )
+    )
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
+    out = await _distance_handler(
+        {"origin": "123 Main Street, Manhattan", "destination": "Apollo Theater, Harlem"}, ctx
+    )
+    await client.aclose()
+
+    assert "rough estimate from the resolved place point, not a street address" in out
+    assert "~20.0 min by driving (OSRM)" in out
 
 
 def test_place_citation_is_row_addressed_and_carries_recomputable_provenance():
@@ -914,10 +940,10 @@ def test_neighborhood_resolution_note_names_official_nta_source():
 
     assert note == (
         "(Resolved 'Flushing' to 'Flushing, Queens' via official NYC neighborhood data. "
-        "Distances are rough neighborhood-center estimates, not a street address.)"
+        "Distances are a rough estimate from the resolved place point, not a street address.)"
     )
     assert "official NYC neighborhood data" in note
-    assert "rough neighborhood-center estimate" in note
+    assert "rough estimate from the resolved place point" in note
     assert "map search" not in note
 
 
@@ -933,6 +959,127 @@ def test_street_address_resolution_note_does_not_call_distance_a_neighborhood_es
     note = _resolution_note("123 Main Street, Queens", point)
 
     assert "rough neighborhood-center estimate" not in note
+
+
+def test_distance_precision_classifier_formats_live_provider_point_as_rough():
+    point = GeoPoint(40.765, -73.832, "Flushing near Main Street", match_type="mapbox")
+
+    assert format_distance("Flushing near Main Street", point, 0.14) == (
+        "0.14 mi straight-line, rough estimate from the resolved place point, not a street address"
+    )
+
+
+def test_distance_precision_classifier_keeps_address_and_coordinate_formatting_precise():
+    address = GeoPoint(40.765, -73.832, "41-17 Main Street, Queens", match_type="geosearch")
+    coordinates = GeoPoint(40.765, -73.832, "40.76500,-73.83200", match_type="coordinates")
+
+    assert format_distance("41-17 Main Street, Queens", address, 0.14) == "0.14 mi straight-line"
+    assert format_distance("40.765,-73.832", coordinates, 0.14) == "0.14 mi straight-line"
+
+
+def test_distance_precision_classifier_trusts_validated_geosearch_bbl_for_long_address():
+    point = GeoPoint(
+        40.765,
+        -73.832,
+        "123 Martin Luther King Jr Boulevard, Manhattan",
+        match_type="geosearch",
+        bbl="1012345678",
+    )
+
+    assert origin_precision("123 Martin Luther King Jr Boulevard, Manhattan", point) == "precise"
+
+
+def test_distance_precision_classifier_trusts_validated_long_fallback_address_only():
+    point = GeoPoint(
+        40.765,
+        -73.982,
+        "123 Martin Luther King Jr Blvd, New York, NY, United States",
+        confidence=0.95,
+        match_type="mapbox",
+    )
+
+    assert origin_precision("123 Martin Luther King Jr Boulevard, Manhattan", point) == "precise"
+    assert origin_precision("124 Martin Luther King Jr Boulevard, Manhattan", point) == "approximate"
+    assert origin_precision("123 First Avenue, Manhattan", point) == "approximate"
+    assert origin_precision("123 Martin Luther King Jr, Manhattan", point) == "approximate"
+
+
+async def test_validated_numeric_fallback_address_is_precise_for_supported_providers():
+    query = "123 Main Street, Manhattan"
+
+    for provider in ("mapbox", "nominatim"):
+        fallback = GeoPoint(
+            40.765,
+            -73.982,
+            "123 Main St, Manhattan",
+            confidence=0.95,
+            match_type=provider,
+        )
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"features": []}))
+        )
+        point = await geocode(
+            query,
+            client=client,
+            forgiving=_fake_forgiving(fallback),
+            borough_contains=_fake_borough_contains(True),
+        )
+        await client.aclose()
+
+        assert point is not None
+        assert origin_precision(query, point) == "precise"
+
+
+def test_fallback_address_identity_ignores_provider_locality_and_suffix_variants():
+    cases = (
+        (
+            "123 Main Street, Manhattan",
+            "123 Main St, New York, NY 10001, United States",
+        ),
+        (
+            "29-00 Northern Boulevard, Queens",
+            "29-00 Northern Blvd, New York, NY, United States",
+        ),
+        (
+            "123 Martin Luther King Jr Boulevard, Queens",
+            "123 Martin Luther King Jr Blvd, New York, NY, United States",
+        ),
+    )
+
+    for query, label in cases:
+        assert _fallback_landmark_identity_matches(query, label)
+
+
+def test_fallback_address_identity_rejects_different_number_or_street():
+    label = "123 Main St, New York, NY 10001, United States"
+
+    assert not _fallback_landmark_identity_matches("124 Main Street, Manhattan", label)
+    assert not _fallback_landmark_identity_matches("123 First Avenue, Manhattan", label)
+
+
+def test_distance_precision_classifier_accepts_identity_matched_intersections():
+    point = GeoPoint(
+        40.765,
+        -73.832,
+        "Main Street and 41st Avenue, Queens",
+        match_type="mapbox",
+    )
+
+    assert origin_precision("Main Street and 41st Avenue, Queens", point) == "precise"
+
+
+def test_resolution_note_does_not_call_an_accepted_intersection_imprecise():
+    point = GeoPoint(
+        40.765,
+        -73.832,
+        "Main Street and 41st Avenue, Queens",
+        match_type="geosearch",
+    )
+
+    note = _resolution_note("Main Street and 41st Avenue, Queens", point)
+
+    assert "Intersections geocode imprecisely" not in note
+    assert "If that's not the intended spot" in note
 
 
 async def test_neighborhood_with_contradictory_borough_falls_through():

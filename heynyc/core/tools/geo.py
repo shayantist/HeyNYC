@@ -351,6 +351,55 @@ def miles(meters: float) -> float:
     return meters / METERS_PER_MILE
 
 
+def origin_precision(query: str, point: GeoPoint) -> str:
+    """Classify whether a resolved origin is precise enough for ordinary distances."""
+    if point.match_type == "coordinates":
+        return "precise"
+    if point.match_type == "geosearch" and point.bbl.strip():
+        return "precise"
+    if (
+        point.match_type in ("geosearch", "mapbox", "nominatim")
+        and not point.low_confidence
+        and not _gate_low_confidence(point)
+        and re.match(r"\s*\d+(?:-\d+)?[A-Za-z]?\b", query)
+        and _STREET_SUFFIX_RE.search(query)
+        and _fallback_landmark_identity_matches(query, point.label)
+    ):
+        return "precise"
+    if (
+        _looks_like_intersection(query)
+        and not point.low_confidence
+        and _intersection_identity_matches(query, point.label)
+    ):
+        return "precise"
+    return "approximate"
+
+
+def format_distance(
+    query: str,
+    origin: GeoPoint,
+    distance_mi: float,
+    *,
+    unit: str = "mi",
+    suffix: str = "straight-line",
+    destination_query: str = "",
+    destination: GeoPoint | None = None,
+) -> str:
+    """Format deterministic distance text with an in-line approximate-origin warning."""
+    text = f"{distance_mi:.2f} {unit}"
+    if suffix:
+        text += suffix if suffix.startswith(",") else f" {suffix}"
+    if (
+        origin_precision(query, origin) != "precise"
+        or (
+            destination is not None
+            and origin_precision(destination_query, destination) != "precise"
+        )
+    ):
+        text += ", rough estimate from the resolved place point, not a street address"
+    return text
+
+
 def maps_link(lat: float, lon: float) -> str:
     """A Google Maps link to a coordinate. It's a deterministic URL transform of
     an already-grounded GeoPoint, so it carries no hallucination risk (no citation
@@ -479,6 +528,28 @@ def _fallback_landmark_identity_matches(text: str, label: str) -> bool:
     if _looks_like_intersection(text):
         return True
     ignored = {"a", "an", "the"}
+
+    def address_identity(value: str) -> tuple[str, set[str]]:
+        tokens = [
+            _LOCATION_TOKEN_ALIASES.get(token, token)
+            for token in _LOCATION_TOKEN_RE.findall(value.casefold())
+            if token not in ignored
+        ]
+        suffix = next(
+            (index for index, token in enumerate(tokens) if token in _STREET_SUFFIXES),
+            len(tokens),
+        )
+        number_match = re.match(r"\s*(\d+(?:-\d+)?[a-z]?)\b", value.casefold())
+        number = number_match.group(1) if number_match else ""
+        return number, set(tokens[:suffix + 1])
+
+    if re.match(r"\s*\d+", text):
+        query_number, query_tokens = address_identity(text)
+        label_number, label_tokens = address_identity(label)
+        if query_number and query_number != label_number:
+            return False
+        return query_tokens.issubset(label_tokens)
+
     query_tokens = {
         _LOCATION_TOKEN_ALIASES.get(token, token)
         for token in _LOCATION_TOKEN_RE.findall(text.casefold())
@@ -682,13 +753,9 @@ def _resolution_note(query: str, point: GeoPoint) -> str:
         else "map search"
     )
     note = f"(Resolved '{query}' to '{point.label}' via {source}."
-    if point.match_type == "nta":
-        return note + " Distances are rough neighborhood-center estimates, not a street address.)"
-    if _looks_like_intersection(query) and point.match_type == "geosearch":
-        # Fell back to the strict geocoder for an intersection, least reliable case.
-        note += " Intersections geocode imprecisely here, confirm with the user before relying on it.)"
-    else:
-        note += " If that's not the intended spot, ask for a street address.)"
+    if origin_precision(query, point) != "precise":
+        return note + " Distances are a rough estimate from the resolved place point, not a street address.)"
+    note += " If that's not the intended spot, ask for a street address.)"
     return note
 
 
@@ -800,7 +867,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         website = f", official info: {place.website}" if place.website else ""
         hours = f", hours: {place.hours}" if place.hours else ""
         lines.append(
-            f"- {place.name} ({where}), {dist_mi:.2f} mi straight-line, "
+            f"- {place.name} ({where}), {format_distance(args['near'], origin, dist_mi)}, "
             f"status={place.status or 'unknown'}{phone}{updated} {{cite:{cite}}}, "
             f"directions: {maps_link(place.lat, place.lon)}{website}{hours}"
         )
@@ -822,8 +889,16 @@ async def _distance_handler(args: dict, ctx: ToolContext) -> str:
     result = await travel_distance(origin, dest, mode=args.get("mode", "driving"), client=ctx.http)
     dist_mi = miles(result["meters"])
     if result["minutes"] is not None:
-        return f"{origin.label} → {dest.label}: {dist_mi:.2f} mi, ~{result['minutes']} min by {result['mode']} (OSRM)."
-    return f"{origin.label} → {dest.label}: {dist_mi:.2f} mi straight-line (routing unavailable)."
+        distance = format_distance(
+            args["origin"], origin, dist_mi,
+            suffix=f", ~{result['minutes']} min by {result['mode']} (OSRM)",
+            destination_query=args["destination"], destination=dest,
+        )
+        return f"{origin.label} → {dest.label}: {distance}."
+    return (
+        f"{origin.label} → {dest.label}: "
+        f"{format_distance(args['origin'], origin, dist_mi, destination_query=args['destination'], destination=dest)} (routing unavailable)."
+    )
 
 
 def geo_tools() -> list[Tool]:

@@ -659,6 +659,7 @@ async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
     assert len(site_lines) == 2                        # bad-coords row dropped
     assert "Close Halal Pantry" in site_lines[0]       # nearest first
     assert "Far Pantry" in site_lines[1]
+    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
     assert "Halal" in site_lines[0]                    # dietary/access flag surfaced
     assert "open now" in site_lines[0].lower()         # open-now computed from structured hours
     assert "Immediate food need" not in out             # ordinary lookup keeps the normal ordering

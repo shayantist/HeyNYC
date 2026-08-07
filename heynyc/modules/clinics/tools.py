@@ -35,6 +35,7 @@ from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     _clarify_message,
     _resolution_note,
+    format_distance,
     geocode,
     haversine_m,
     maps_link,
@@ -265,11 +266,11 @@ def _program_citation(ctx: ToolContext, klass: str) -> str:
 
 # --- the tool --------------------------------------------------------------
 
-def _clinic_block(clinic: Clinic, cite: str, dist_mi: float) -> str:
+def _clinic_block(clinic: Clinic, cite: str, distance: str) -> str:
     guarantee = CLASS_GUARANTEE[clinic.klass]
     where = clinic.address or clinic.borough or "NYC"
     parts = [f"- {clinic.name} [{guarantee.label}] ({where}), "
-             f"{dist_mi:.2f} mi straight-line {{cite:{cite}}}"]
+             f"{distance} {{cite:{cite}}}"]
     if clinic.phone:
         parts.append(f"  Phone: {clinic.phone}")
     if clinic.url:
@@ -335,7 +336,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         dist_mi = miles(haversine_m(origin.lat, origin.lon, clinic.lat, clinic.lon))
         cite = _facility_citation(ctx, clinic, origin_lat=origin.lat, origin_lon=origin.lon,
                                   dist_mi=dist_mi)
-        lines.append(_clinic_block(clinic, cite, dist_mi))
+        lines.append(_clinic_block(clinic, cite, format_distance(near, origin, dist_mi)))
         if clinic.klass not in classes_present:
             classes_present.append(clinic.klass)
 

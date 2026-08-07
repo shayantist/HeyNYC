@@ -34,6 +34,7 @@ from heynyc.core.tools.datasets import dataset_url, query_dataset, row_url
 from heynyc.core.tools.geo import (
     _clarify_message,
     _resolution_note,
+    format_distance,
     geocode,
     haversine_m,
     miles,
@@ -195,9 +196,9 @@ def _descriptor(site: ChildCareSite) -> str:
     return f" ({' '.join(parts)})" if parts else ""
 
 
-def _site_block(site: ChildCareSite, cite: str, dist_mi: float, fallback_cite: str = "") -> str:
+def _site_block(site: ChildCareSite, cite: str, distance: str, fallback_cite: str = "") -> str:
     parts = [f"- {site.name}{_descriptor(site)} ({site.address or 'NYC'}) - "
-             f"{dist_mi:.2f} mi straight-line {{cite:{cite}}}"]
+             f"{distance} {{cite:{cite}}}"]
     if site.age_range:
         parts.append(f"  Ages served: {site.age_range}")
     if site.capacity_phrase:
@@ -267,7 +268,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 CHILDCARE_CONTACT_URL, snippet="Child care services",
                 title="NYC Health: Child Care", kind="DOC",
             )
-        lines.append(_site_block(site, cite, dist_mi, fallback_cite))
+        lines.append(_site_block(
+            site, cite, format_distance(near, origin, dist_mi), fallback_cite,
+        ))
     lines.append("Capacity is each program's MAXIMUM licensed size, NOT open spots - a program may be "
                  "full. This data has NO hours, NO cost/tuition, and NO current openings: tell the "
                  "user to call when a phone is listed, or use NYC Child Care Connect or 311. These are "

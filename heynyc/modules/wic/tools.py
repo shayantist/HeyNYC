@@ -26,6 +26,7 @@ from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     _clarify_message,
     _resolution_note,
+    format_distance,
     geocode,
     haversine_m,
     miles,
@@ -203,11 +204,11 @@ def _site_citation(ctx: ToolContext, site: WicSite, *,
     )
 
 
-def _site_block(site: WicSite, cite: str, dist_mi: float, fallback_cite: str = "") -> str:
+def _site_block(site: WicSite, cite: str, distance: str, fallback_cite: str = "") -> str:
     temp = " (temporary/rotating site - call to confirm it's open)" if \
         site.site_type.lower() == "temporary" else ""
     parts = [f"- {site.name}{temp} ({site.address or 'NYC'}) - "
-             f"{dist_mi:.2f} mi straight-line {{cite:{cite}}}"]
+             f"{distance} {{cite:{cite}}}"]
     if site.phone:
         parts.append(f"  Phone: {site.phone} - call for hours and to book an appointment")
     if site.website:
@@ -273,7 +274,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 WIC_APPLY_URL, snippet="Apply for WIC", title="NY State WIC: How to Apply",
                 kind="DOC",
             )
-        lines.append(_site_block(site, cite, dist_mi, fallback_cite))
+        lines.append(_site_block(
+            site, cite, format_distance(near, origin, dist_mi), fallback_cite,
+        ))
     lines.append("This data has NO hours and NO appointment info - tell the user to call the site "
                  "for hours and to book. WIC has income and category rules (pregnant, postpartum, "
                  "infants, and children under 5); don't assert eligibility from this list - point "

@@ -136,6 +136,7 @@ async def test_nearest_wic_site_ranks_grounds_and_links():
     assert len(site_lines) == 2                        # no-coords row dropped
     assert "Close WIC Center" in site_lines[0]         # nearest first
     assert "Far WIC Center" in site_lines[1]
+    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
     assert "(718) 555-0002" in out                     # phone surfaced
     assert "http://example.org/wic" in out             # website surfaced when present
     assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link

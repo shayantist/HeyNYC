@@ -247,7 +247,7 @@ async def test_lookup_uses_the_residents_requested_date(monkeypatch):
     seen_where = []
 
     async def fake_geocode(text, **kwargs):
-        return GeoPoint(40.0, -73.0, text)
+        return GeoPoint(40.0, -73.0, text, match_type="coordinates")
 
     async def fake_city(*args, **kwargs):
         return [
@@ -310,6 +310,8 @@ async def test_lookup_uses_the_residents_requested_date(monkeypatch):
     )
 
     assert "1. Saturday Plaza Restroom" in output
+    assert "1. Saturday Plaza Restroom, 0.07 miles {cite:" in output
+    assert "straight-line" not in output
     assert "Friday Plaza Restroom" not in output
     assert "site building is scheduled on Saturday, 2026-07-18" in output
     assert "scheduled open now" not in output
