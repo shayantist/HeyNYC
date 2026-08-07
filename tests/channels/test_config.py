@@ -22,3 +22,23 @@ def test_channel_config_defaults(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(config)  # restore the real .env-backed config for other tests
+
+
+def test_agent_runtime_accepts_supported_values_and_rejects_unknown(monkeypatch):
+    from heynyc.core import config
+
+    for value in ("pydantic", "legacy"):
+        monkeypatch.setenv("HEYNYC_AGENT_RUNTIME", value)
+        importlib.reload(config)
+        assert config.HEYNYC_AGENT_RUNTIME == value
+
+    monkeypatch.setenv("HEYNYC_AGENT_RUNTIME", "pydantci")
+    try:
+        importlib.reload(config)
+    except ValueError as exc:
+        assert "HEYNYC_AGENT_RUNTIME" in str(exc)
+    else:
+        raise AssertionError("invalid runtime should fail closed")
+    finally:
+        monkeypatch.delenv("HEYNYC_AGENT_RUNTIME", raising=False)
+        importlib.reload(config)

@@ -112,6 +112,9 @@ class Trace:
     case_id: str
     query: str
     language: str = "en"
+    redteam_category: str = ""
+    adversarial_intent: str = ""
+    safety_criterion: str = ""
     spans: list[Span] = field(default_factory=list)
     final_text: str = ""
     citations: dict = field(default_factory=dict)
@@ -124,6 +127,9 @@ class Trace:
             "case_id": self.case_id,
             "query": self.query,
             "language": self.language,
+            "redteam_category": self.redteam_category,
+            "adversarial_intent": self.adversarial_intent,
+            "safety_criterion": self.safety_criterion,
             "spans": [s.to_dict() for s in self.spans],
             "final_text": self.final_text,
             "citations": self.citations,
@@ -195,6 +201,9 @@ def build_trace(case_result: CaseResult) -> Trace:
         case_id=case_result.case.id,
         query=case_result.case.query,
         language=case_result.case.language,
+        redteam_category=case_result.case.redteam_category,
+        adversarial_intent=case_result.case.adversarial_intent,
+        safety_criterion=case_result.case.safety_criterion,
         spans=spans,
         final_text=case_result.text,
         citations=case_result.citations,

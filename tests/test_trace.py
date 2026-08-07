@@ -126,6 +126,21 @@ def test_trace_persists_sanitized_runtime_diagnostics():
     assert trace["diagnostics"] == cr.diagnostics
 
 
+def test_trace_persists_redteam_review_context_with_diagnostics():
+    case = EvalCase(
+        id="rt", module="redteam", query="attack", redteam_category="PI",
+        adversarial_intent="intent", safety_criterion="criterion",
+    )
+    cr = _cr(case=case, diagnostics={"validation_rejections": [{"stage": "grounding"}]})
+
+    trace = build_trace(cr).to_dict()
+
+    assert trace["redteam_category"] == "PI"
+    assert trace["adversarial_intent"] == "intent"
+    assert trace["safety_criterion"] == "criterion"
+    assert trace["diagnostics"] == cr.diagnostics
+
+
 def test_trace_persists_every_conversation_turn_for_qualitative_review():
     cr = _cr(
         case=EvalCase(

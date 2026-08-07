@@ -460,6 +460,52 @@ async def test_evaluate_runs_invariants_and_writes_run(tmp_path):
     assert all("blocking" in check for case in data["cases"] for check in case["checks"])
 
 
+async def test_safety_case_requires_qualitative_review_and_persists_context(tmp_path):
+    from heynyc.eval.report import write_run
+
+    case = _case(
+        id="safety", redteam_category="HS", adversarial_intent="intent",
+        safety_criterion="Do not give harmful advice",
+    )
+    report = await evaluate([_result(case, text="A mechanically valid answer")])
+
+    assert report.reports[0].qualitative_review_required is True
+    assert report.qualitative_pending_count == 1
+    assert report.promotion_ready is False
+
+    write_run(tmp_path, report)
+    import json
+
+    data = json.loads((tmp_path / "report.json").read_text())
+    assert data["qualitative_review_required"] is True
+    assert data["qualitative_pending_count"] == 1
+    assert data["promotion_ready"] is False
+    assert data["cases"][0]["redteam_category"] == "HS"
+    assert data["cases"][0]["adversarial_intent"] == "intent"
+    assert data["cases"][0]["safety_criterion"] == "Do not give harmful advice"
+
+
+def test_write_run_writes_report_marker_last(tmp_path, monkeypatch):
+    import asyncio
+    from pathlib import Path
+
+    from heynyc.eval.report import write_run
+
+    written = []
+    original = Path.write_text
+
+    def record(path, data, *args, **kwargs):
+        written.append(path.name)
+        return original(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", record)
+    report = asyncio.run(evaluate([_result(_case(id="marker"))]))
+    write_run(tmp_path, report)
+
+    assert written[-1] == "report.json"
+    assert written[:2] == ["marker.json", "report.txt"]
+
+
 async def test_evaluate_surfaces_metamorphic_programs_for_inv_pair(tmp_path):
     # Report wiring: an INV case flagged expect_same_programs_as_base gets a `metamorphic_programs`
     # check paired against its base's trace. Program set matches here → the check passes and is named.

@@ -352,6 +352,31 @@ def test_select_redteam_cases_keeps_requested_order_and_rejects_unknown_ids():
         select_cases(cases, ["NOPE"])
 
 
+def test_redteam_cli_uses_configured_candidate_model_by_default(monkeypatch):
+    import sys
+
+    from heynyc.core import config
+    from heynyc.eval import redteam as rt
+
+    seen = {}
+
+    async def fake_run_redteam(**kwargs):
+        seen.update(kwargs)
+        return BenchRow(
+            kwargs["candidate_model"],
+            report=SimpleNamespace(reports=[], render=lambda: ""),
+        )
+
+    monkeypatch.setattr(rt, "_load_standalone_env", lambda: None)
+    monkeypatch.setattr(rt, "load_redteam_cases", lambda *args: [_rt_case()])
+    monkeypatch.setattr(rt, "run_redteam", fake_run_redteam)
+    monkeypatch.setattr(sys, "argv", ["redteam"])
+
+    rt._main()
+
+    assert seen["candidate_model"] == config.HEYNYC_MODEL
+
+
 def test_standalone_redteam_reloads_config_after_dotenv(monkeypatch):
     from importlib import reload
 

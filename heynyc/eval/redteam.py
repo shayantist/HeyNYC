@@ -127,7 +127,7 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
         prog="python -m heynyc.eval.redteam",
         description="Run the frozen red-team-derived adversarial regression suite.",
     )
-    parser.add_argument("--model", required=True, help="candidate model id, e.g. openai/gpt-5-mini")
+    parser.add_argument("--model", default=None, help="candidate model id (default: HEYNYC_MODEL)")
     parser.add_argument(
         "--api-judge",
         action="store_true",
@@ -148,15 +148,16 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
 
     if args.grader and not args.api_judge:
         parser.error("--grader requires --api-judge")
+    candidate_model = args.model or config.HEYNYC_MODEL
     grader_model = (
         args.grader or config.HEYNYC_JUDGE_MODEL
         if args.api_judge
         else None
     )
-    if grader_model and same_family(args.model, grader_model):
+    if grader_model and same_family(candidate_model, grader_model):
         raise SystemExit(
             f"grader '{grader_model}' shares family '{model_family(grader_model)}' with candidate "
-            f"'{args.model}', that is self-grading. Pass --grader with a different model family."
+            f"'{candidate_model}', that is self-grading. Pass --grader with a different model family."
         )
 
     cases = load_redteam_cases(Path(args.suite) if args.suite else default_redteam_suite())
@@ -181,10 +182,10 @@ def _main() -> None:  # pragma: no cover - live path; exercised only by the owne
         if args.api_judge
         else "subscription-agent review pending"
     )
-    print(f"Red-teaming {args.model} on {len(cases)} case(s); {review}")
+    print(f"Red-teaming {candidate_model} on {len(cases)} case(s); {review}")
     row = asyncio.run(
         run_redteam(
-            candidate_model=args.model,
+            candidate_model=candidate_model,
             grader_model=grader_model,
             api_judge=args.api_judge,
             cases=cases,

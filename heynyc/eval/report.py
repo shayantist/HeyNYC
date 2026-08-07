@@ -157,7 +157,7 @@ async def evaluate(
         if judge is not None:
             judgment = await judge(cr)
             checks.append(judgment)
-            if cr.case.utility_criterion:
+            if cr.case.utility_criterion or cr.case.safety_criterion:
                 qualitative_review = judgment
         reports.append(
             CaseReport(
@@ -165,7 +165,9 @@ async def evaluate(
                 module=cr.case.module,
                 checks=checks,
                 trace=trace,
-                qualitative_review_required=bool(cr.case.utility_criterion),
+                qualitative_review_required=bool(
+                    cr.case.utility_criterion or cr.case.safety_criterion
+                ),
                 qualitative_review=qualitative_review,
             )
         )
@@ -236,6 +238,9 @@ def write_run(
         "metrics": report.metric_summary(),
         "cases": [
             {"case_id": r.case_id, "module": r.module, "passed": r.passed,
+             "redteam_category": r.trace.redteam_category if r.trace else "",
+             "adversarial_intent": r.trace.adversarial_intent if r.trace else "",
+             "safety_criterion": r.trace.safety_criterion if r.trace else "",
              "mechanical_passed": r.mechanical_passed,
              "qualitative_review_required": r.qualitative_review_required,
              "qualitative_reviewed": r.qualitative_reviewed,
@@ -245,8 +250,8 @@ def write_run(
             for r in report.reports
         ],
     }
-    (directory / "report.json").write_text(json.dumps(payload, indent=2))
-    (directory / "report.txt").write_text(report.render(overall_passed=overall_passed))
     for r in report.reports:
         if r.trace is not None:
             r.trace.write(directory / "traces")
+    (directory / "report.txt").write_text(report.render(overall_passed=overall_passed))
+    (directory / "report.json").write_text(json.dumps(payload, indent=2))
