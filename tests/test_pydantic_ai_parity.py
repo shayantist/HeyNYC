@@ -86,10 +86,11 @@ from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
-from heynyc.core.tools.geo import resident_supplied_location
+from heynyc.core.tools.geo import GeoPoint, resident_supplied_location
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
 from heynyc.eval.trace import build_trace
+from heynyc.modules.cooling_centers import tools as cooling
 from scripts.pydantic_ai_repl import _resolve_pending
 
 
@@ -676,6 +677,107 @@ def test_conversation_state_normalizes_persisted_safety_language(
 
     assert restored._safety_language is None
     assert json.loads(restored.dump_state())["safety_language"] is None
+
+
+def _cooling_rows() -> list[dict]:
+    return [
+        {
+            "OBJECTID": 1,
+            "NYCEM_ID": "RAICES",
+            "Facility_name": "Raices Times Square",
+            "Address": "123 W 42 ST",
+            "lat": 40.7600,
+            "lon": -73.9780,
+            "Finder_status": "OPEN",
+            "Space_type": "Cooling Center",
+        },
+        {
+            "OBJECTID": 2,
+            "NYCEM_ID": "OTHER",
+            "Facility_name": "Closer Cooling Site",
+            "Address": "1 Main St",
+            "lat": 40.7581,
+            "lon": -73.9780,
+            "Finder_status": "OPEN",
+            "Space_type": "Cooling Center",
+        },
+    ]
+
+
+async def test_cooling_followup_reuses_resident_accepted_site_when_model_omits_it(
+    monkeypatch,
+) -> None:
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, "Flushing, Queens")
+
+    async def fake_query(url, **kwargs):
+        return _cooling_rows()
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    model_calls = 0
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls in {1, 3, 5, 7}:
+            args = {"near": "Flushing, Queens", "kind": "cooling_center", "limit": 2}
+            return ModelResponse([ToolCallPart("cool_options_lookup", args, f"cool-{model_calls}")])
+        return ModelResponse([TextPart("Here are the verified cooling center details.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"cool_options_lookup": cooling.get_tools()[0]},
+        guard_grounding=False,
+    )
+    conversation = runtime.conversation()
+
+    first = await conversation.send("What are my options near Flushing?")
+    assert "/cooling/site" not in conversation._resident_facts
+    assert conversation._resident_facts["/cooling/offered"].value == {
+        "keys": ["raices", "other"],
+        "origin": [40.7580, -73.9780],
+        "scope": {"kind": "cooling_center", "audience": "any"},
+    }
+    followup = await conversation.send(
+        "好 就去那个最近的 Raices 那家 今天几点开门"
+    )
+    first_text = "\n".join(str(message.get("content") or "") for message in first.messages)
+    followup_text = "\n".join(
+        str(message.get("content") or "") for message in followup.messages
+    )
+
+    assert "Raices Times Square" in first_text
+    assert "Closer Cooling Site" in first_text
+    assert "Raices Times Square" in followup_text
+    assert "Closer Cooling Site" not in followup_text
+    assert conversation._resident_facts["/cooling/site"].value == {
+        "key": "raices",
+        "origin": [40.7580, -73.9780],
+    }
+    hours = await conversation.send("What time does that one open?")
+    hours_text = "\n".join(
+        str(message.get("content") or "") for message in hours.messages
+    )
+    assert "Raices Times Square" in hours_text
+    assert "Closer Cooling Site" not in hours_text
+    conversation = runtime.conversation_from_state(conversation.dump_state())
+    assert conversation._resident_facts["/cooling/site"].value == {
+        "key": "raices",
+        "origin": [40.7580, -73.9780],
+    }
+    changed = await conversation.send("Actually, what about Closer Cooling Site?")
+    changed_text = "\n".join(
+        str(message.get("content") or "") for message in changed.messages
+    )
+
+    assert "Closer Cooling Site" in changed_text
+    assert "Raices Times Square" not in changed_text
+    assert conversation._resident_facts["/cooling/site"].value == {
+        "key": "other",
+        "origin": [40.7580, -73.9780],
+    }
 
 
 async def test_structured_fact_confirmation_unlocks_read_only_screening() -> None:

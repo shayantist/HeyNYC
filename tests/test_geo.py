@@ -912,8 +912,27 @@ def test_neighborhood_resolution_note_names_official_nta_source():
 
     note = _resolution_note("Flushing", point)
 
+    assert note == (
+        "(Resolved 'Flushing' to 'Flushing, Queens' via official NYC neighborhood data. "
+        "Distances are rough neighborhood-center estimates, not a street address.)"
+    )
     assert "official NYC neighborhood data" in note
+    assert "rough neighborhood-center estimate" in note
     assert "map search" not in note
+
+
+def test_street_address_resolution_note_does_not_call_distance_a_neighborhood_estimate():
+    point = GeoPoint(
+        40.760197,
+        -73.832301,
+        "123 Main Street, Queens",
+        confidence=1.0,
+        match_type="geosearch",
+    )
+
+    note = _resolution_note("123 Main Street, Queens", point)
+
+    assert "rough neighborhood-center estimate" not in note
 
 
 async def test_neighborhood_with_contradictory_borough_falls_through():

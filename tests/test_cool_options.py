@@ -9,7 +9,7 @@ import pytest
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ResidentFact, ToolContext
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.cooling_centers import tools as cooling
 
@@ -20,6 +20,293 @@ def test_cooling_module_loads_current_cool_options_lookup():
     tool_names = {tool.name for tool in registry.load_module_tools()}
 
     assert "cool_options_lookup" in tool_names
+
+
+def _site_row(key: str, name: str, object_id: int = 1, lat: float = 40.7600) -> dict:
+    return {
+        "OBJECTID": object_id,
+        "NYCEM_ID": key.upper(),
+        "Facility_name": name,
+        "Address": "123 W 42 ST",
+        "lat": lat,
+        "lon": -73.9780,
+        "Finder_status": "OPEN",
+        "Space_type": "Cooling Center",
+    }
+
+
+def _site_rows() -> list[dict]:
+    return [
+        _site_row("raices", "Raices Times Square"),
+        _site_row("other", "Closer Cooling Site", 2, 40.7581),
+    ]
+
+
+def _context(turn: str, facts: dict | None = None) -> ToolContext:
+    return ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry.discover(config.MODULES_DIR),
+        user_turns=(turn,),
+        resident_facts=facts or {},
+    )
+
+
+def _patch_lookup(monkeypatch, rows: list[dict]):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7580, -73.9780, text)
+
+    async def fake_query(url, **kwargs):
+        return rows
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    return cooling.get_tools()[0].handler
+
+
+@pytest.fixture
+def lookup(monkeypatch):
+    return _patch_lookup(monkeypatch, _site_rows())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("near", ["Flushing", "Queens", "Brooklyn", "New York"])
+async def test_origin_only_tokens_do_not_select_a_facility(monkeypatch, near):
+    lookup = _patch_lookup(
+        monkeypatch,
+        [_site_row("origin", f"{near} Library"), _site_row("other", "Other Center", 2)],
+    )
+    ctx = _context(f"options near {near}")
+
+    await lookup({"near": near, "kind": "cooling_center"}, ctx)
+
+    assert "/cooling/site" not in ctx.resident_facts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["Site Times Square", "Cooling Center 7"])
+async def test_exact_full_generic_leading_facility_name_is_selectable(monkeypatch, name):
+    lookup = _patch_lookup(
+        monkeypatch,
+        [_site_row("chosen", name), _site_row("other", "Other Center", 2, 40.7581)],
+    )
+    ctx = _context(f"Please take me to {name}")
+
+    output = await lookup({"near": "Flushing, Queens", "kind": "cooling_center"}, ctx)
+
+    assert output.splitlines()[2].startswith(f"1. {name}")
+    assert ctx.resident_facts["/cooling/site"].value["key"] == "chosen"
+
+
+def test_partial_site_requires_a_unique_resident_authored_identifier():
+    items = [
+        {"name": "Raices Times Square"},
+        {"name": "Closer Cooling Site"},
+    ]
+
+    assert cooling._site_from_turn(items, "Raices", requested="Raices") == items[0]
+    assert cooling._site_from_turn(items, "What are my hours?", requested="Raices") is None
+    assert cooling._site_from_turn(
+        items + [{"name": "Raices Queens"}], "Raices", requested="Raices"
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_later_selection_is_limited_to_the_stored_offered_set(lookup):
+    ctx = _context(
+        "Closer Cooling Site",
+        {
+            "/cooling/offered": ResidentFact(
+                value={
+                    "keys": ["raices"],
+                    "origin": [40.7580, -73.9780],
+                    "scope": {"kind": "cooling_center", "audience": "any"},
+                },
+                source_turn_id="1",
+                status="captured",
+            ),
+            "/cooling/site": ResidentFact(
+                value={"key": "raices", "origin": [40.7580, -73.9780]},
+                source_turn_id="1",
+                status="captured",
+            ),
+        },
+    )
+
+    output = await lookup(
+        {"near": "Flushing, Queens", "kind": "cooling_center", "site": "Closer Cooling Site"},
+        ctx,
+    )
+
+    assert "1. Raices Times Square" in output
+    assert "Closer Cooling Site" not in output
+    assert ctx.resident_facts["/cooling/site"].value["key"] == "raices"
+
+
+@pytest.mark.asyncio
+async def test_origin_change_replaces_offered_and_selected_state(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        if text == "Flushing, Queens":
+            return GeoPoint(40.7580, -73.9780, text)
+        return GeoPoint(40.7000, -73.9000, text)
+
+    calls = 0
+
+    async def fake_query(url, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _site_rows() if calls == 1 else [_site_row("brooklyn", "Brooklyn Center")]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    ctx = _context("Raices")
+    await cooling.get_tools()[0].handler(
+        {"near": "Flushing, Queens", "kind": "cooling_center"}, ctx
+    )
+    ctx.user_turns = ("Show me options near Brooklyn",)
+
+    await cooling.get_tools()[0].handler(
+        {"near": "Brooklyn", "kind": "cooling_center"}, ctx
+    )
+
+    assert ctx.resident_facts["/cooling/offered"].value == {
+        "keys": ["brooklyn"],
+        "origin": [40.7, -73.9],
+        "scope": {"kind": "cooling_center", "audience": "any"},
+    }
+    assert "/cooling/site" not in ctx.resident_facts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("second_args", "expected_scope"),
+    [
+        ({"kind": "indoor", "audience": "any"}, {"kind": "indoor", "audience": "any"}),
+        (
+            {"kind": "cooling_center", "audience": "not_age_restricted"},
+            {"kind": "cooling_center", "audience": "not_age_restricted"},
+        ),
+    ],
+)
+async def test_same_origin_scope_change_replaces_offered_and_selected_state(
+    monkeypatch, second_args, expected_scope
+):
+    rows = [
+        {
+            **_site_row("old", "Old Cooling Center"),
+            "Location_type": "Outdoor",
+            "Age_restriction": "Yes",
+        },
+        {
+            **_site_row("new", "New Filtered Option", 2, 40.7581),
+            "Location_type": "Indoor",
+            "Age_restriction": "No",
+        },
+    ]
+    lookup = _patch_lookup(monkeypatch, rows)
+    ctx = _context("Old Cooling Center")
+
+    await lookup(
+        {"near": "Flushing, Queens", "kind": "cooling_center", "audience": "any"},
+        ctx,
+    )
+    assert ctx.resident_facts["/cooling/site"].value["key"] == "old"
+    ctx.user_turns = ("Show me options",)
+
+    output = await lookup(
+        {"near": "Flushing, Queens", **second_args},
+        ctx,
+    )
+
+    assert "New Filtered Option" in output
+    assert "I couldn't re-confirm" not in output
+    assert ctx.resident_facts["/cooling/offered"].value == {
+        "keys": ["new"],
+        "origin": [40.758, -73.978],
+        "scope": expected_scope,
+    }
+    assert "/cooling/site" not in ctx.resident_facts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,value", [
+    ("/cooling/site", None),
+    ("/cooling/offered", {"keys": "raices", "origin": [40.7580, -73.9780]}),
+])
+async def test_malformed_cooling_state_is_cleared_without_raising(lookup, path, value):
+    ctx = _context(
+        "What time does it open?",
+        {path: ResidentFact(value=value, source_turn_id="1", status="captured")},
+    )
+
+    output = await lookup({"near": "Flushing, Queens", "kind": "cooling_center"}, ctx)
+
+    assert "NYC Cool Options" in output
+    if path == "/cooling/site":
+        assert path not in ctx.resident_facts
+    else:
+        assert ctx.resident_facts[path].value == {
+            "keys": ["raices", "other"],
+            "origin": [40.7580, -73.9780],
+            "scope": {"kind": "cooling_center", "audience": "any"},
+        }
+
+
+@pytest.mark.asyncio
+async def test_unknown_offered_scope_clears_selection_and_refreshes_results(lookup):
+    ctx = _context(
+        "What time does it open?",
+        {
+            "/cooling/offered": ResidentFact(
+                value={
+                    "keys": ["raices"],
+                    "origin": [40.7580, -73.9780],
+                    "scope": {"kind": "unknown", "audience": "any"},
+                },
+                source_turn_id="1",
+                status="captured",
+            ),
+            "/cooling/site": ResidentFact(
+                value={"key": "raices", "origin": [40.7580, -73.9780]},
+                source_turn_id="1",
+                status="captured",
+            ),
+        },
+    )
+
+    assert cooling._decode_site_fact(
+        ctx.resident_facts["/cooling/offered"].value, offered=True
+    ) is None
+
+    output = await lookup({"near": "Flushing, Queens", "kind": "cooling_center"}, ctx)
+
+    assert "Raices Times Square" in output
+    assert "Closer Cooling Site" in output
+    assert ctx.resident_facts["/cooling/offered"].value == {
+        "keys": ["raices", "other"],
+        "origin": [40.7580, -73.9780],
+        "scope": {"kind": "cooling_center", "audience": "any"},
+    }
+    assert "/cooling/site" not in ctx.resident_facts
+
+
+@pytest.mark.asyncio
+async def test_negated_model_site_cannot_select_or_retain_prior_site(lookup):
+    ctx = _context("Raices")
+    await lookup({"near": "Flushing, Queens", "kind": "cooling_center"}, ctx)
+
+    ctx.user_turns = ("Not Raices, show me other options",)
+    output = await lookup(
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "site": "Raices Times Square",
+        },
+        ctx,
+    )
+
+    assert "Raices Times Square" not in output
+    assert "Closer Cooling Site" in output
+    assert "/cooling/site" not in ctx.resident_facts
 
 
 @pytest.mark.asyncio

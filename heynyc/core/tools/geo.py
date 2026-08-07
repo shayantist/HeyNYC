@@ -682,6 +682,8 @@ def _resolution_note(query: str, point: GeoPoint) -> str:
         else "map search"
     )
     note = f"(Resolved '{query}' to '{point.label}' via {source}."
+    if point.match_type == "nta":
+        return note + " Distances are rough neighborhood-center estimates, not a street address.)"
     if _looks_like_intersection(query) and point.match_type == "geosearch":
         # Fell back to the strict geocoder for an intersection, least reliable case.
         note += " Intersections geocode imprecisely here, confirm with the user before relying on it.)"
