@@ -229,6 +229,19 @@
   notes: If the active-center feed is empty, say so and use the same tool to offer indoor Cool
     Options. Do not stop at a finder link or invent an activated site.
 
+- id: cooling_indoor_none_open_flushing
+  tags: [F171, must-win]
+  query: "Are any indoor Cool Options open near Flushing, Queens right now?"
+  capability: abstention
+  test_type: MFT
+  expect_tools: [cool_options_lookup]
+  invariants: {must_ground: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Use the current indoor lookup. If it reports no confirmed-open options, return that grounded
+    result and stop instead of retrying retrieval or recommending a closed destination.
+  notes: Regression for F171. The definitive no-open indoor result is a terminal answer for this
+    turn, while a current confirmed-open result should still be surfaced normally.
+
 # --- Multi-turn follow-ups: answer what we have, link out for what we don't --
 - id: cooling_followup_reservation
   tags: [must-win]
