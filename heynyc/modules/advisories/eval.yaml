@@ -137,7 +137,7 @@
     feed and correct with grounded truth (no such advisory) or decline. Both pass.
 
 - id: adv_false_premise_fee
-  tags: [must-win]
+  tags: [F115, must-win]
   query: "How much does it cost to receive Notify NYC emergency alerts?"
   capability: dataset_grounding
   test_type: DIR

@@ -32,12 +32,16 @@
   notes: Plain street address — the reliable geocoding path.
 
 - id: snap_where_to_apply_in_person
-  tags: [must-win]
+  tags: [F176, must-win]
   query: "Where can I apply for SNAP in person near Jackson Heights, Queens?"
   capability: dataset_grounding
   test_type: MFT
   invariants: {must_ground: true, must_not_fabricate: true}
-  notes: Must ground in the ~13 HRA centers and also note the online ACCESS HRA option; never invent a center.
+  utility_criterion: >-
+    Ground the answer in the HRA center dataset and mention the ACCESS HRA online option. When the
+    returned center status is unknown, label the hours as a regular schedule and tell the resident
+    to confirm holiday or temporary exceptions before traveling.
+  notes: Regression for F176. Regular hours without current status are not a confirmed-open destination.
 
 - id: snap_directions
   tags: [must-win]
