@@ -1,0 +1,7 @@
+msgid ""
+msgstr ""
+"Language: es\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "These are regular hours. Confirm holiday or temporary schedule exceptions before traveling."
+msgstr "Estas son las horas habituales. Confirme las excepciones por días festivos o cambios temporales en el horario antes de viajar."

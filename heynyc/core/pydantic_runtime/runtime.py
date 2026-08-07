@@ -76,7 +76,7 @@ from heynyc.core.crisis_lines import (
 )
 from heynyc.core.freshness import attach_temporal_provenance
 from heynyc.core.grounding import check_grounding
-from heynyc.core.localization import localize
+from heynyc.core.localization import localize, localized_source_limit
 from heynyc.core.memory import (
     CompactFn,
     ContextCapacityError,
@@ -373,6 +373,42 @@ def _notify_titles_from_result(result: AgentResult) -> frozenset:
             "citations": used_citations(result.text, result.citations),
         }
     ])
+
+
+def _missing_source_limits(
+    text: str,
+    citations: dict[str, dict],
+    language: str | None,
+) -> dict[str, str]:
+    limits: dict[str, str] = {}
+    for citation_id, citation in used_citations(text, citations).items():
+        if citation.get("kind") != "DATA":
+            continue
+        limitation = str(
+            (citation.get("provenance") or {})
+            .get("derivation", {})
+            .get("limitations")
+            or ""
+        ).strip()
+        localized = localized_source_limit(limitation, language)
+        if localized and localized not in text:
+            limits.setdefault(localized, citation_id)
+    return limits
+
+
+def _attach_source_limits(
+    text: str,
+    citations: dict[str, dict],
+    language: str | None,
+) -> str:
+    limits = _missing_source_limits(text, citations, language)
+    if not limits:
+        return text
+    notes = "\n".join(
+        f"{limitation} {{cite:{citation_id}}}"
+        for limitation, citation_id in limits.items()
+    )
+    return f"{text.rstrip()}\n\n{notes}"
 
 
 def _follow_up_awareness(awareness: str, delivered_titles: frozenset) -> str:
@@ -915,6 +951,13 @@ class PydanticRuntimeAdapter:
                     items=misowned[:_SEMANTIC_RETRY_ITEMS],
                 )
             rendered = _render_grounded_answer(output)
+            if limits := _missing_source_limits(rendered, mapping, ctx.deps.language):
+                reject(
+                    "source_limit",
+                    "Include each source limitation exactly in the answer and do not state or "
+                    "imply a confirmed current status that the source does not provide: "
+                    + " ".join(limits),
+                )
         elif isinstance(output, ClarificationRequest):
             rendered = output.question.strip()
             if _loaded_capability_requires_grounded_handoff(ctx):
@@ -1227,6 +1270,7 @@ class PydanticRuntimeAdapter:
             started,
             model_time_ms=timing_capability.elapsed_ms,
             status=status,
+            language=language,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:
@@ -1594,6 +1638,7 @@ class PydanticRuntimeAdapter:
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
+            language=language,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:
@@ -1635,6 +1680,7 @@ class PydanticRuntimeAdapter:
         started: float,
         *,
         model_time_ms: float,
+        language: str | None = None,
     ) -> AgentResult:
         return self._project_result(
             native.new_messages(),
@@ -1643,6 +1689,7 @@ class PydanticRuntimeAdapter:
             citations,
             started,
             model_time_ms=model_time_ms,
+            language=language,
         )
 
     def _project_result(
@@ -1661,6 +1708,7 @@ class PydanticRuntimeAdapter:
         *,
         model_time_ms: float,
         status: str | None = None,
+        language: str | None = None,
     ) -> AgentResult:
         tool_calls = [
             part.tool_name
@@ -1702,16 +1750,23 @@ class PydanticRuntimeAdapter:
         cost, cost_source = _complete_cost(self.model, new_messages, usage)
         text = ""
         if not pending:
+            rendered = (
+                _render_grounded_answer(output)
+                if isinstance(output, GroundedAnswer)
+                else output.question
+                if isinstance(output, ClarificationRequest)
+                else NONFACTUAL_OUTCOME_TEXT
+                if isinstance(output, NonfactualOutcome)
+                else str(output)
+            )
+            if isinstance(output, GroundedAnswer):
+                rendered = _attach_source_limits(
+                    rendered,
+                    citations.mapping(),
+                    language,
+                )
             text = attach_temporal_provenance(
-                (
-                    _render_grounded_answer(output)
-                    if isinstance(output, GroundedAnswer)
-                    else output.question
-                    if isinstance(output, ClarificationRequest)
-                    else NONFACTUAL_OUTCOME_TEXT
-                    if isinstance(output, NonfactualOutcome)
-                    else str(output)
-                ),
+                rendered,
                 citations.mapping(),
             )
         result_status = status or ("approval_required" if pending else "success")
@@ -2207,6 +2262,7 @@ class _PydanticConversation:
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
+            language=self._safety_language,
         )
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:

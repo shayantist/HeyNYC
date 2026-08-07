@@ -22,6 +22,10 @@ _WELCOME_FOOTER = _(
     "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
     "flag a bad answer, or DELETE MY DATA to erase everything I keep."
 )
+_REGULAR_HOURS_SOURCE_LIMIT = _(
+    "These are regular hours. Confirm holiday or temporary schedule exceptions before traveling."
+)
+_SOURCE_LIMITS = frozenset({_REGULAR_HOURS_SOURCE_LIMIT})
 
 
 def _locale(language: str | None) -> str | None:
@@ -47,6 +51,18 @@ def localize(message: str, language: str | None) -> str:
         fallback=True,
     )
     return translation.gettext(message)
+
+
+def localized_source_limit(message: str, language: str | None) -> str | None:
+    if message not in _SOURCE_LIMITS:
+        return None
+    locale = _locale(language)
+    if locale is None:
+        return None
+    if locale.split("_", 1)[0] == "en":
+        return message
+    translated = localize(message, locale)
+    return translated if translated != message else None
 
 
 def welcome_footer(categories: Iterable[str], language: str | None = None) -> str | None:

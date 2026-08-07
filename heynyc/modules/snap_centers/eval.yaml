@@ -43,6 +43,22 @@
     to confirm holiday or temporary exceptions before traveling.
   notes: Regression for F176. Regular hours without current status are not a confirmed-open destination.
 
+- id: snap_where_to_apply_in_person__es
+  tags: [F176, multilingual, must-win]
+  query: "¿Dónde puedo solicitar SNAP en persona cerca de Jackson Heights, Queens?"
+  language: es
+  capability: dataset_grounding
+  test_type: INV
+  base: snap_where_to_apply_in_person
+  perturbation: translation
+  expect_same_outcome_as_base: true
+  invariants: {must_ground: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Fundamenta la respuesta en los centros de HRA y menciona la opción en línea ACCESS HRA.
+    Cuando no se conozca el estado actual del centro, presenta las horas como horario habitual
+    e indica que se confirmen las excepciones por días festivos o cambios temporales antes de viajar.
+  notes: Caso multilingüe emparejado para F176.
+
 - id: snap_directions
   tags: [must-win]
   query: "Can you give me directions to the nearest SNAP center to Harlem?"

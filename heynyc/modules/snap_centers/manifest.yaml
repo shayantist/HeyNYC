@@ -24,6 +24,8 @@ datasets:
       address: street_address
       borough: borough
       hours: comments
+    limitations: >-
+      These are regular hours. Confirm holiday or temporary schedule exceptions before traveling.
 allowlist:
   - access.nyc.gov
   - nyc.gov
