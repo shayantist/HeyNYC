@@ -8,3 +8,9 @@ msgstr "我在核实答案之前遇到了暂时性问题。请稍后再试。如
 
 msgid "I couldn't verify that against the reliable sources I found, so I don't want to guess. Try asking with a little more detail and I'll check again."
 msgstr "我无法根据找到的可靠来源核实这一点，所以不想猜测。请尝试提供更多细节，我会再帮您查询。"
+
+msgid "No current indoor Cool Options are confirmed open now. I cannot safely recommend a destination."
+msgstr "目前没有确认开放的室内 Cool Options。我无法安全地推荐目的地。"
+
+msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination."
+msgstr "目前没有确认开放的 Cool Options。我无法安全地推荐目的地。"

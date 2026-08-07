@@ -55,6 +55,9 @@ class ToolContext:
     semantic_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
     response_priority_citation_ids: set[str] = field(default_factory=set)
+    language: str | None = None
+    cooling_terminal_result: str | None = None
+    cooling_terminal_citation_ids: tuple[str, ...] = ()
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

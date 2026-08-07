@@ -37,7 +37,7 @@ from pydantic_ai.capabilities import (
     ReinjectSystemPrompt,
     WrapModelRequestHandler,
 )
-from pydantic_ai.exceptions import ToolFailed
+from pydantic_ai.exceptions import SkipModelRequest, ToolFailed
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -618,6 +618,39 @@ class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
         return request_context
 
 
+class _CoolingTerminalCapability(AbstractCapability[ToolContext]):
+    """End a definitive current cooling absence before another retrieval request."""
+
+    def __init__(self, structured_grounding: bool) -> None:
+        self.structured_grounding = structured_grounding
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[ToolContext],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        result = ctx.deps.cooling_terminal_result
+        if result is None:
+            return request_context
+        result = localize(result, ctx.deps.language)
+        if self.structured_grounding:
+            response = ModelResponse([
+                ToolCallPart(
+                    _GROUNDED_OUTPUT_TOOL,
+                    {
+                        "grounded_blocks": [{
+                            "text": result,
+                            "citation_ids": list(ctx.deps.cooling_terminal_citation_ids),
+                        }]
+                    },
+                    "cooling-terminal",
+                )
+            ])
+        else:
+            response = ModelResponse([TextPart(result)])
+        raise SkipModelRequest(response)
+
+
 class PydanticRuntimeAdapter:
     """Run existing HeyNYC tools through PydanticAI without changing production runtime code."""
 
@@ -702,6 +735,7 @@ class PydanticRuntimeAdapter:
                 ReinjectSystemPrompt(),
                 Hooks(tool_execute_error=_recover_upstream_tool_error),
                 _PreserveToolScopesCapability(set(self.tools)),
+                _CoolingTerminalCapability(structured_grounding),
                 *(
                     [PrepareOutputTools(_authoritative_output_tools)]
                     if structured_grounding and guard_grounding
@@ -1413,6 +1447,7 @@ class PydanticRuntimeAdapter:
                 if response_priority_citation_ids is not None
                 else set()
             ),
+            language=language,
         )
         instructions = list(reminders or ())
         reply_language = _reply_language(safety_run, user_turns)
@@ -2082,6 +2117,7 @@ class _PydanticConversation:
             delivered_notify_titles=self._delivered_notify_titles,
             resident_facts=self._resident_facts,
             response_priority_citation_ids=self._response_priority_citation_ids,
+            language=self._safety_language,
         )
         started = time.perf_counter()
         message_id = f"pydantic-{time.monotonic_ns()}"

@@ -5,7 +5,7 @@ import re
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from heynyc.core.citations import data_provenance
+from heynyc.core.citations import content_hash, data_provenance
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 from heynyc.core.tools.geo import (
@@ -146,6 +146,38 @@ def _citation(ctx: ToolContext, item: dict) -> str:
         kind="DATA",
         valid_as_of=_edit_date(record),
         provenance=data_provenance(record, record_id=record_id, field_pointer="/"),
+    )
+
+
+def _terminal_citation(ctx: ToolContext, items: list[dict], now: datetime, snippet: str) -> str:
+    rows = [
+        {
+            "record_id": str(item["record"].get("NYCEM_ID") or item["record"].get("OBJECTID", "")),
+            "snapshot": item["record"],
+            "content_hash": content_hash(item["record"]),
+            "open_now": item["open_now"],
+        }
+        for item in items
+    ]
+    valid_as_of = {_edit_date(item["record"]) for item in items}
+    return ctx.citations.register(
+        COOL_OPTIONS_URL,
+        snippet=snippet,
+        title="NYC Emergency Management Cool Options",
+        kind="DATA",
+        valid_as_of=valid_as_of.pop() if len(valid_as_of) == 1 else "",
+        provenance=data_provenance(
+            {"rows": rows},
+            record_id="filtered-query",
+            field_pointer="/rows",
+            derivation={
+                "now": now.isoformat(),
+                "open_now": [
+                    {"record_id": row["record_id"], "value": row["open_now"]}
+                    for row in rows
+                ],
+            },
+        ),
     )
 
 
@@ -415,7 +447,12 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             if kind == "cooling_center":
                 return f"No activated cooling center is confirmed open now. {_INDOOR_NEXT_STEP}"
             label = "indoor Cool Options" if kind == "indoor" else "Cool Options"
-            return f"No current {label} are confirmed open now. I cannot safely recommend a destination."
+            result = f"No current {label} are confirmed open now. I cannot safely recommend a destination."
+            ctx.cooling_terminal_result = result
+            ctx.cooling_terminal_citation_ids = (
+                _terminal_citation(ctx, current_items, now, result),
+            )
+            return result
         if selected_item is None:
             unique = current_open
     if planning_ahead:
