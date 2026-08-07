@@ -2,7 +2,7 @@ name: housing
 category: housing
 description: >-
   Help with housing trouble in NYC, eviction prevention (Homebase offices), your
-  right to a free lawyer in housing court, no-heat / no-hot-water complaints, checking
+  right to free legal representation or advice in housing court, no-heat / no-hot-water complaints, checking
   a building's open HPD complaints and violations, and where to go for shelter tonight.
   Program info (CityFHEPS, Section 8, NYCHA, rent freeze) is handled by the benefits module.
 keywords:
@@ -145,18 +145,23 @@ prompt: |
   trouble," you can call BOTH hpd_building_lookup and hpd_litigation_lookup. Same street-address
   rule: no BBL means no lookup, so ask for a street address rather than guess a building.
 
-  RIGHT TO COUNSEL (a free lawyer for eviction), NO HEAT / NO HOT WATER, and SHELTER / NOWHERE TO
+  RIGHT TO COUNSEL (free legal representation or advice for an eviction case), NO HEAT / NO HOT WATER, and SHELTER / NOWHERE TO
   STAY are answered ONLY through housing_guidance, never from your own knowledge. These are static
-  but OFFICIAL facts (intake addresses, the heat-season temperature standard, the free-lawyer path),
+  but OFFICIAL facts (intake addresses, the heat-season temperature standard, the legal-help path),
   so they must come from the tool WITH its citation, not from this prompt or your memory. Do NOT state
   a shelter address, a phone number, a temperature, a heat-season date, or an income/eligibility
   figure unless housing_guidance returned it, then report only what it returned and carry its
   {cite:Sn}.
 
-  RIGHT TO COUNSEL (a free lawyer for eviction / "I'm being taken to housing court and can't afford a
+  RIGHT TO COUNSEL (free legal representation or advice for an eviction case / "I'm being taken to housing court and can't afford a
   lawyer") → call housing_guidance(topic="right_to_counsel") and report ONLY what it returns, cited:
-  the free lawyer and how to connect (311 Tenant Helpline / Housing Court Answers). Do not add an
+  the representation-or-advice condition and how to connect (311 Tenant Helpline / Housing Court Answers). Do not add an
   income threshold or phone number of your own.
+
+  BRONX HOUSING COURT LOCATION / CONTACT (including Mount Hope) → call
+  housing_guidance(topic="bronx_housing_court") and report ONLY what it returns, cited. Do not add
+  the Bronx-specific address to a generic citywide Right-to-Counsel answer. Keep the main Housing
+  Court at 1118 Grand Concourse distinct from the landlord-tenant offices at 851 Grand Concourse.
 
   NO HEAT / NO HOT WATER → call housing_guidance(topic="no_heat") and report ONLY what it returns,
   cited: the heat-season dates, the temperature standard, the Housing Maintenance Code sections

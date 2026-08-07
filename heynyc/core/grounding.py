@@ -160,7 +160,7 @@ def citation_evidence(c: dict) -> Optional[str]:
 def _split_claims(text: str) -> list[str]:
     """Sentence/line/list-item segments. Over-splitting is SAFE here: a segment with no {cite:Sn}
     marker is never inspected, and fewer tokens per claim means fewer chances to false-fail."""
-    parts = re.split(r"[\n\r]+|(?<=[.!?])\s+", text)
+    parts = re.split(r"[\n\r]+|(?i:(?<!a\.m\.)(?<!p\.m\.))(?<=[.!?])\s+", text)
     return [p.strip() for p in parts if p and p.strip()]
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 from heynyc.core.citations import content_hash
-from heynyc.core.grounding import check_grounding
+from heynyc.core.grounding import _split_claims, check_grounding
 
 
 def _data_cite(snapshot: dict, *, snippet="", url="https://data.cityofnewyork.us/x/row-9.json"):
@@ -72,6 +72,21 @@ def test_trailing_citation_keeps_failure_at_the_smallest_claim():
     assert res is not None
     assert res.blocking
     assert res.hard_failures[0].claim == "- Do not call 212-555-0100."
+
+
+def test_sentence_splitter_keeps_time_abbreviation_with_following_action():
+    for text in (
+        "The hotline is open until 5 p.m. or call 311 for help.",
+        "The hotline is open until 5 P.M. or call 311 for help.",
+    ):
+        assert _split_claims(text) == [text]
+
+
+def test_sentence_splitter_still_splits_normal_sentences():
+    assert _split_claims("Call 311. Ask for the Tenant Helpline.") == [
+        "Call 311.",
+        "Ask for the Tenant Helpline.",
+    ]
 
 
 def test_translated_full_date_matches_english_source_by_numeric_components():

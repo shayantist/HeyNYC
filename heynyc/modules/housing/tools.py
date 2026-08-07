@@ -312,7 +312,7 @@ async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
 
 # --- housing_guidance: static-but-OFFICIAL routing facts, each cited to its source page ----
 #
-# The Right-to-Counsel free-lawyer facts, the no-heat temperature standard, and the shelter-intake
+# The Right-to-Counsel legal-help facts, the no-heat temperature standard, and the shelter-intake
 # sites are STATIC, but they are official facts, not the model's memory. Stating them from the
 # manifest prompt with no citation is exactly what the cite-or-abstain contract forbids (the eval's
 # tool_sanity check caught it). So they live here as grounded facts and are returned WITH a DOC
@@ -320,9 +320,8 @@ async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
 # page, like index_search's), not DATA (there is no queried dataset row) and not WEB (this is an
 # authoritative city page, not a web-search hit).
 #
-# Every URL + fact below was verified LIVE against the page (HTTP 200, page supports the fact) on
-# VERIFIED_ON. `snippet` is deliberately a subset of `body`'s wording so the eval's faithfulness
-# check (snippet ⊆ fetched tool output) holds. Re-verify the live pages before editing any fact.
+# Existing URLs and facts were verified live against their pages on VERIFIED_ON
+# Each fact can carry a newer date when separately verified
 VERIFIED_ON = "2026-07-25"
 
 
@@ -332,6 +331,7 @@ class _Fact:
     title: str    # citation title
     snippet: str  # short cite label, subset of `body` wording (keeps faithfulness overlap high)
     body: str     # the grounded fact text to report, cited
+    valid_as_of: str = VERIFIED_ON
 
 
 _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
@@ -359,6 +359,23 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
                       "say 'I would like an attorney'. To reach help before then: call Housing Court "
                       "Answers at 718-557-1379 or 212-962-4795 (Monday to Friday, 9am to 5pm), or call "
                       "311 and ask for the Tenant Helpline."),
+            ),
+        ),
+    ),
+    "bronx_housing_court": (
+        "Bronx Housing Court location and direct contact:",
+        (
+            _Fact(
+                url="https://www.nycourts.gov/courts/12th-judicial-district/new-york-city-housing-court-bronx-county-branch/bronx-county-housing-court-directory",
+                title="Bronx County Housing Court Directory, New York Courts",
+                snippet=("Bronx Housing Court is at 1118 Grand Concourse, Bronx, NY 10456; the Help "
+                         "Center phone is 718-466-3022; landlord-tenant offices are at 851 Grand "
+                         "Concourse, Bronx, NY 10451, phone 718-466-3025"),
+                body=("The Bronx Housing Court is at 1118 Grand Concourse, Bronx, NY 10456. The Help "
+                      "Center phone is 718-466-3022. Landlord-tenant offices for the Commercial Part, "
+                      "NYCHA, and illegal lockouts involving unrepresented litigants are at 851 Grand "
+                      "Concourse, Bronx, NY 10451, phone 718-466-3025."),
+                valid_as_of="2026-08-07",
             ),
         ),
     ),
@@ -416,14 +433,16 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-60410",
                 title="NYC Housing Maintenance Code section 27-2029 (Heat and Hot Water), American Legal Publishing",
-                snippet=("these standards are set in the NYC Housing Maintenance Code: the minimum indoor "
-                         "temperature rule is section 27-2029 and the hot water minimum is section 27-2031, "
-                         "both in Article 8 (Heat and Hot Water)"),
-                body=("These standards are set in New York City's Housing Maintenance Code (Administrative "
-                      "Code Title 27, Chapter 2): the minimum indoor temperature rule is section 27-2029 "
-                      "and the hot water minimum is section 27-2031, both in Article 8 (Heat and Hot "
-                      "Water). So the temperature and hot-water minimums are the landlord's legal "
-                      "obligation under the code, not just a guideline."),
+                snippet="the minimum indoor temperature rule is section 27-2029 in Article 8 (Heat and Hot Water)",
+                body=("The minimum indoor temperature rule is section 27-2029 of New York City's "
+                      "Housing Maintenance Code, Article 8 (Heat and Hot Water)."),
+            ),
+            _Fact(
+                url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-236495",
+                title="NYC Housing Maintenance Code section 27-2031 (Supply of Hot Water), American Legal Publishing",
+                snippet="the hot water minimum is section 27-2031 in Article 8 (Heat and Hot Water)",
+                body=("The hot water minimum is section 27-2031 of New York City's Housing Maintenance "
+                      "Code, Article 8 (Heat and Hot Water)."),
             ),
         ),
     ),
@@ -498,9 +517,11 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
     ),
 }
 
-# free-text → canonical topic. The `topic` arg SHOULD be one of the three keys, but the model may
+# free-text → canonical topic. The `topic` arg SHOULD be one of the keys, but the model may
 # hand us the user's words ("my landlord shut the heat off"); map those to a topic rather than fail.
 _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("bronx_housing_court", ("bronx housing court", "mount hope housing court",
+                              "housing court in the bronx")),
     ("right_to_counsel", ("counsel", "lawyer", "attorney", "legal", "represent", "housing court",
                           "eviction help", "sued", "taken to court")),
     # No bare "cold" here: it inverted a COLD-water outage into the hot-water frame (F070). The
@@ -555,7 +576,7 @@ def _shelter_facts(as_of: date | None = None) -> tuple[_Fact, ...]:
 
 
 def _resolve_topic(raw: str) -> str | None:
-    """Map the `topic` arg (a canonical key or free text) to one of the three guidance topics."""
+    """Map the `topic` arg (a canonical key or free text) to a guidance topic."""
     key = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
     if key in _GUIDANCE:
         return key
@@ -570,11 +591,12 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded guidance for that topic. Use housing_guidance with topic = "
-                "'right_to_counsel' (free eviction lawyer), 'no_heat' (no heat / no HOT water), "
+                "'right_to_counsel' (free eviction legal help), 'no_heat' (no heat / no HOT water), "
                 "'no_water' (no COLD water / no running water at all), 'shelter' (shelter intake "
-                "tonight), or 'source_of_income' (a landlord refusing a voucher, Section 8 / "
-                "CityFHEPS). For a building's HPD record use hpd_building_lookup; for anything else, "
-                "point the user to 311.")
+                "tonight), 'bronx_housing_court' (the Bronx court location and direct contact), or "
+                "'source_of_income' (a landlord refusing a voucher, Section 8 / CityFHEPS). For a "
+                "building's HPD record use hpd_building_lookup; for anything else, point the user "
+                "to 311.")
     intro, facts = _GUIDANCE[topic]
     if topic == "shelter":
         facts = _shelter_facts()
@@ -582,7 +604,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     cite_ids = []
     for fact in facts:
         cite = ctx.citations.register(
-            fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of=VERIFIED_ON,
+            fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of=fact.valid_as_of,
         )
         cite_ids.append(cite)
         lines.append(f"- {fact.body} {{cite:{cite}}}")
@@ -658,12 +680,13 @@ def get_tools() -> list[Tool]:
         Tool(
             name="housing_guidance",
             description=(
-                "Return NYC's official, grounded guidance for five high-stakes housing situations, "
-                "each WITH a citation to the official source page: `right_to_counsel` (the FREE "
-                "lawyer for an eviction case + how to connect), `no_heat` (no heat, or no HOT water, "
+                "Return NYC's official, grounded guidance for six high-stakes housing situations, "
+                "each WITH a citation to the official source page: `right_to_counsel` (free legal "
+                "representation or advice for an eviction case + how to connect), `no_heat` (no heat, or no HOT water, "
                 "the heat-season temperature standard + how to file), `no_water` (no COLD water, or "
                 "no running water at all, a water-service outage), `shelter` (where to go for shelter "
-                "intake tonight, families with children / pregnant vs. single adults), and "
+                "intake tonight, families with children / pregnant vs. single adults), "
+                "`bronx_housing_court` (the Bronx court location and direct contact), and "
                 "`source_of_income` (a landlord refusing a Section 8 / CityFHEPS voucher, the NYC "
                 "source-of-income protection). Let the resident's OWN words pick the water topic: "
                 "heat or hot water -> `no_heat`; cold water or no water at all -> `no_water`. They are "
@@ -679,8 +702,9 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": ("right_to_counsel | no_heat | shelter | source_of_income: the "
-                                        "housing situation (free text is mapped to one of these four)."),
+                        "description": ("right_to_counsel | bronx_housing_court | no_heat | no_water "
+                                        "| shelter | source_of_income: the housing situation (free "
+                                        "text is mapped when possible)."),
                     },
                 },
                 "required": ["topic"],

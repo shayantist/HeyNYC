@@ -367,18 +367,34 @@ async def _run_guidance(topic: str):
     return out, citations
 
 
-async def test_guidance_right_to_counsel_grounds_free_lawyer_and_cites():
+async def test_guidance_right_to_counsel_grounds_legal_help_and_cites():
     out, citations = await _run_guidance("right_to_counsel")
     assert "free legal help" in out.lower()
     assert "718-557-1379" in out          # Housing Court Answers, from the official page
     assert "311" in out
-    # exactly one DOC citation, to the verified HRA / Office of Civil Justice page
+    assert "1118 Grand Concourse" not in out
+    assert "718-466-3022" not in out
+    # Generic citywide legal help must not inject a Bronx-specific destination
     mapping = citations.mapping()
     assert len(mapping) == 1
     cite = mapping["S1"]
     assert cite["kind"] == "DOC"
     assert cite["url"] == "https://www.nyc.gov/site/hra/help/legal-services-for-tenants.page"
     assert "{cite:S1}" in out             # the fact carries its citation inline
+
+
+async def test_guidance_bronx_housing_court_returns_direct_distinct_locations():
+    out, citations = await _run_guidance("bronx_housing_court")
+
+    assert "1118 Grand Concourse" in out
+    assert "718-466-3022" in out
+    assert "851 Grand Concourse" in out
+    assert "718-466-3025" in out
+    mapping = citations.mapping()
+    assert len(mapping) == 1
+    assert mapping["S1"]["url"].endswith("bronx-county-housing-court-directory")
+    assert mapping["S1"]["valid_as_of"] == "2026-08-07"
+    assert "{cite:S1}" in out
 
 
 async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
@@ -393,14 +409,17 @@ async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
     # the escalation ladder rungs are stated (immediately hazardous violation → Housing Court)
     assert "class C" in out or "immediately hazardous" in out
     assert "housing court" in low
-    # two DOC citations now: S1 the HPD page (temps/season/ladder), S2 amlegal (the code sections)
+    # three DOC citations: HPD, section 27-2029, and section 27-2031
     mapping = citations.mapping()
-    assert len(mapping) == 2
+    assert len(mapping) == 3
     assert mapping["S1"]["kind"] == "DOC"
     assert mapping["S1"]["url"].endswith("heat-and-hot-water-information.page")
     assert mapping["S2"]["kind"] == "DOC"
-    assert "amlegal" in mapping["S2"]["url"]
-    assert "{cite:S1}" in out and "{cite:S2}" in out
+    assert mapping["S2"]["url"] == "https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-60410"
+    assert "27-2029" in mapping["S2"]["title"]
+    assert mapping["S3"]["url"] == "https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-236495"
+    assert "27-2031" in mapping["S3"]["title"]
+    assert "{cite:S1}" in out and "{cite:S2}" in out and "{cite:S3}" in out
 
 
 def test_heat_season_status_states_current_applicability():
@@ -520,6 +539,7 @@ async def test_guidance_unknown_topic_abstains_without_citation():
     out, citations = await _run_guidance("rent freeze eligibility")
     assert len(citations) == 0             # nothing grounded → nothing cited
     assert "311" in out                    # routes the user onward
+    assert "free eviction lawyer" not in out
     assert "{cite:" not in out
 
 
@@ -543,15 +563,23 @@ def test_housing_module_loads_with_tool_and_eval():
     assert module is not None
     assert module.category == "housing"
     assert "Do not describe this as recent reports" in module.prompt
+    assert "free legal representation or advice" in module.prompt
+    assert "a free lawyer" not in module.prompt
     tool_names = {t.name for t in registry.load_module_tools()}
     assert "hpd_building_lookup" in tool_names
     assert "hpd_litigation_lookup" in tool_names
     assert "housing_guidance" in tool_names
+    guidance = next(t for t in get_tools() if t.name == "housing_guidance")
+    assert "free legal representation or advice" in guidance.description
+    assert "the FREE lawyer" not in guidance.description
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "housing"]
     assert cases, "housing should ship eval cases"
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
+    right_to_counsel = next(c for c in cases if c.id == "housing_right_to_counsel")
+    assert "free legal representation or advice" in right_to_counsel.notes
+    assert "free lawyer" not in right_to_counsel.notes
     # the routing cases now expect the grounding tool + a citation (cite-or-abstain)
     routing = {c.id: c for c in cases if c.id in {
         "housing_right_to_counsel", "housing_no_heat", "housing_shelter_family",
