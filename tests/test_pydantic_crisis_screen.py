@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -12,7 +13,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import RequestUsage
 
 from heynyc.core.crisis_lines import CRISIS_LINES, crisis_response
-from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
+from heynyc.core.pydantic_runtime import PydanticRunFailure, PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.runtime import _reply_language
 from heynyc.core.pydantic_runtime.safety import build_crisis_screen
 from heynyc.core.registry import Registry
@@ -168,6 +169,7 @@ async def test_unavailable_crisis_screen_fails_closed_before_answering() -> None
     result = await runtime.run("Where is the nearest SNAP center?")
 
     assert "temporary problem" in result.text
+    assert "911" in result.text
     assert answer_calls == 0
     assert result.diagnostics["safety_error"] == "TimeoutError"
     assert result.usage["safety_error"] == "TimeoutError"
@@ -277,6 +279,7 @@ async def test_runtime_fails_closed_on_a_missing_risk_language() -> None:
     result = await runtime.run("Where can I get food?")
 
     assert "temporary problem" in result.text
+    assert "911" in result.text
     assert result.diagnostics["safety_error"] == "MissingCrisisLanguage"
     assert result.usage["safety_error"] == "MissingCrisisLanguage"
     assert answer_calls == 0
@@ -315,9 +318,34 @@ async def test_runtime_fails_closed_on_invalid_language_for_no_risk() -> None:
 
     result = await runtime.run("Where can I get food?")
 
+    assert "911" in result.text
     assert result.diagnostics["safety_error"] == "InvalidCrisisLanguage"
     assert result.usage["safety_error"] == "InvalidCrisisLanguage"
     assert answer_calls == 0
+
+
+async def test_screened_downstream_failure_does_not_add_911() -> None:
+    async def answer(
+        _messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        raise UnexpectedModelBehavior("answer provider down")
+
+    screen, _ = _screen_returning("none")
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(answer),
+        registry=Registry([]),
+        tools={},
+        crisis_screen=screen,
+    )
+
+    with pytest.raises(PydanticRunFailure) as failed:
+        await runtime.run("Where can I renew Medicaid?")
+
+    result = failed.value.partial_result
+    assert "temporary problem" in result.text
+    assert "311" in result.text
+    assert "911" not in result.text
 
 
 async def test_runtime_ignores_injected_model_authored_crisis_text() -> None:

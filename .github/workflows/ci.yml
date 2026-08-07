@@ -1,9 +1,7 @@
 name: CI
 
-# Runs the offline test suite plus two security gates (dependency CVE scan + secret scan)
-# on every push to main and every pull request. This is the repo's first CI; it closes
-# security-audit finding F2 (no CI, no dependency/secret scanning). Action and tool versions
-# are pinned (setup-uv no longer ships a moving @v8 tag, so it is patch-pinned).
+# Runs the offline test suite plus a dependency CVE scan on every push to main and every
+# pull request. GitHub provides native secret scanning and push protection for this public repo
 on:
   push:
     branches: ["main"]
@@ -54,20 +52,3 @@ jobs:
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
           inputs: requirements.txt
-
-  secret-scan:
-    name: Secret scan (TruffleHog)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout (full history for a diff scan)
-        uses: actions/checkout@v5.0.0
-        with:
-          fetch-depth: 0
-
-      # TruffleHog OSS is free and needs no license (unlike gitleaks-action, which requires a
-      # paid GITLEAKS_LICENSE to scan org-owned repos). --results=verified,unknown fails the job
-      # only on credentials it could verify or could not rule out, keeping false positives down.
-      - name: TruffleHog secret scan
-        uses: trufflesecurity/trufflehog@v3.95.6
-        with:
-          extra_args: --results=verified,unknown
