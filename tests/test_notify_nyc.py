@@ -7,6 +7,7 @@ tool's grounding+citation / clean abstention. The shipped module load mirrors te
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, datetime, timezone
 
@@ -440,7 +441,7 @@ async def test_fetch_recent_advisories_empty_array_is_degraded():
     assert feed.confirmed is False
 
 
-async def test_current_awareness_fetches_recent_messages_each_turn(monkeypatch):
+async def test_current_awareness_reuses_a_recent_snapshot(monkeypatch):
     calls = 0
 
     async def loader():
@@ -449,10 +450,46 @@ async def test_current_awareness_fetches_recent_messages_each_turn(monkeypatch):
         return notify_nyc.RecentFeed(confirmed=True, notes=[])
 
     monkeypatch.setattr(advisory_tools, "fetch_recent_advisories", loader)
+    monkeypatch.setattr(advisory_tools, "_awareness_cache", None, raising=False)
+    await advisory_tools.current_awareness()
+    await advisory_tools.current_awareness()
+
+    assert calls == 1
+
+
+async def test_current_awareness_does_not_cache_a_degraded_fetch(monkeypatch):
+    calls = 0
+
+    async def loader():
+        nonlocal calls
+        calls += 1
+        return notify_nyc.RecentFeed(confirmed=calls > 1, notes=[])
+
+    monkeypatch.setattr(advisory_tools, "fetch_recent_advisories", loader)
+    monkeypatch.setattr(advisory_tools, "_awareness_cache", None, raising=False)
     await advisory_tools.current_awareness()
     await advisory_tools.current_awareness()
 
     assert calls == 2
+
+
+async def test_current_awareness_coalesces_concurrent_fetches(monkeypatch):
+    calls = 0
+
+    async def loader():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return notify_nyc.RecentFeed(confirmed=True, notes=[])
+
+    monkeypatch.setattr(advisory_tools, "fetch_recent_advisories", loader)
+    monkeypatch.setattr(advisory_tools, "_awareness_cache", None, raising=False)
+    await asyncio.gather(
+        advisory_tools.current_awareness(),
+        advisory_tools.current_awareness(),
+    )
+
+    assert calls == 1
 
 
 async def test_incidental_check_with_nothing_active_returns_nothing_to_narrate():

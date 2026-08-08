@@ -107,7 +107,34 @@ Scoped web search is a retrieval tool, not a resident-facing web channel. For SM
 
 ## How it works
 
-HeyNYC routes a question to a service module, then uses grounded tools such as city datasets, the benefits screener, geocoding, and scoped official-source search. It returns inline citations for supported facts and sends the answer through a deterministic grounding guard before delivery. If the evidence does not support a claim, it hedges or abstains and routes people to 311 or the right agency. The [safety guide](SAFETY.md) covers the guard and its boundaries.
+```mermaid
+flowchart TD
+    A["SMS or WhatsApp message"] --> B["Channel and session handling"]
+    R["REPL message"] --> C
+    B --> C["Urgent safety routing"]
+    C -->|Risk detected| D["Deterministic safety response"]
+    C -->|Continue| E["Cached Notify NYC awareness"]
+    E --> F["Answer model and official-data tools"]
+    F --> G["GroundedAnswer: claims paired with source IDs"]
+    G --> H["Deterministic grounding checks"]
+    H -->|Rejected| F
+    H -->|Accepted| I["Render citations and deliver"]
+    H -. "Optional and off by default" .-> J["Claim-evidence model checker"]
+    J -->|Rejected| F
+    J -->|Accepted| I
+    I --> K["SMS or WhatsApp: commit the turn"]
+    I --> L["REPL: update the live console"]
+```
+
+The default Pydantic runtime follows this path:
+
+1. For SMS and WhatsApp, the channel layer normalizes the message, deduplicates provider retries, restores the resident's encrypted session, and keeps that resident's turns in order while other residents can run concurrently. The REPL enters the agent directly and does not use channel persistence ([channel orchestrator](heynyc/channels/orchestrator.py), [REPL](heynyc/__main__.py)).
+2. The current safety gate routes clear time-critical cases before the general tool loop. Narrow deterministic backstops cover chest pain, overdose or unsafe medication dosing, and high-confidence self-harm signals. The default Pydantic runtime adds multilingual self-harm classification and message-language detection; the retained legacy runtime uses only the deterministic backstops ([risk screen](heynyc/core/pydantic_runtime/safety.py), [runtime boundary](heynyc/core/pydantic_runtime/runtime.py), [deterministic backstops](heynyc/core/agent.py)).
+3. Normal turns receive a short-lived cached snapshot of current Notify NYC messages. Only this proactive awareness preflight uses the cache; an explicit `nyc_advisories` tool request still fetches fresh, citable data ([advisory awareness](heynyc/modules/advisories/tools.py)).
+4. The answer model selects only the service modules and official-data tools needed for the question ([module conventions](heynyc/modules/README.md)).
+5. Factual output is a `GroundedAnswer`: small claim blocks paired with source IDs. Structure makes the evidence relationship inspectable; it does not make a claim true by itself ([output schema](heynyc/core/pydantic_runtime/projection.py)).
+6. Deterministic validators reject unknown citations, unsupported specifics, discovery-only sources, and other grounding failures. A rejected draft may be retried; exhausted verification fails closed instead of shipping a partial answer ([grounding guard](heynyc/core/grounding.py), [safety boundaries](SAFETY.md)). The optional model-based claim-evidence checker is a comparison tool and is off by default.
+7. Only the accepted answer is rendered. SMS and WhatsApp commit the persistent turn through the channel delivery flow; the REPL updates its live console directly ([session persistence](heynyc/core/session.py), [REPL streaming](heynyc/__main__.py)).
 
 ## Repo layout
 
@@ -182,4 +209,4 @@ Offline tests prove contracts; live evals prove behavior.
 
 **What would this cost a city?** The grounding guarantee lives in the deterministic guard rather than in an expensive model, which is what makes cheap or self-hosted models safe to run; measured by the built-in telemetry, the median resident turn costs under two cents on the pilot's current stack. The economics of the design are part of [SAFETY.md](SAFETY.md).
 
-_Last updated: 2026-07-25_
+_Last updated: 2026-08-08_

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import date, datetime, timezone
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import data_provenance
@@ -42,6 +43,9 @@ PLAN_RELEVANCE = (
     "that clearly do not overlap. If none overlap, say so plainly and name the date and place "
     "you checked."
 )
+_AWARENESS_TTL_S = 60.0
+_awareness_cache: tuple[float, str] | None = None
+_awareness_lock = asyncio.Lock()
 
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
 # state may tell the user there are no active advisories.
@@ -159,9 +163,20 @@ def _recent_awareness(feed, today: date) -> str:
 
 
 async def current_awareness() -> str:
-    return _recent_awareness(
-        await fetch_recent_advisories(), datetime.now(NYC_TZ).date(),
-    )
+    global _awareness_cache
+
+    now = monotonic()
+    if _awareness_cache is not None and now - _awareness_cache[0] < _AWARENESS_TTL_S:
+        return _awareness_cache[1]
+    async with _awareness_lock:
+        now = monotonic()
+        if _awareness_cache is not None and now - _awareness_cache[0] < _AWARENESS_TTL_S:
+            return _awareness_cache[1]
+        feed = await fetch_recent_advisories()
+        awareness = _recent_awareness(feed, datetime.now(NYC_TZ).date())
+        if feed.confirmed:
+            _awareness_cache = (monotonic(), awareness)
+        return awareness
 
 
 def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
