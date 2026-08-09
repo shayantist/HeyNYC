@@ -103,6 +103,7 @@ from .projection import (
     _dynamic_instructions,
     _function_tool_schemas,
     _grounded_block_text,
+    _legacy_citation_ids,
     _measurement_messages,
     _native_cache_settings,
     _native_history,
@@ -155,9 +156,14 @@ VERIFICATION_ABSTAIN_FALLBACK = (
     "I couldn't verify that against the reliable sources I found, so I don't "
     "want to guess. Try asking with a little more detail and I'll check again."
 )
+OFFICIAL_PAGES_REACHED_HEADING = "Official pages I did reach before the problem:"
 
 
-def _degraded_failure_text(text: str, citations: CitationRegistry) -> str:
+def _degraded_failure_text(
+    text: str,
+    citations: CitationRegistry,
+    language: str | None = None,
+) -> str:
     """Hand back the official pages already retrieved instead of stranding the resident.
 
     F151: a family at PATH intake with a stroller received a bare "temporary problem" apology
@@ -177,7 +183,7 @@ def _degraded_failure_text(text: str, citations: CitationRegistry) -> str:
     seen: dict[str, str] = {}
     for citation in official:
         seen.setdefault(citation["url"], citation.get("title") or citation["url"])
-    lines = [text, "", "Official pages I did reach before the problem:"]
+    lines = [text, "", localize(OFFICIAL_PAGES_REACHED_HEADING, language)]
     lines += [f"- {title}: {url}" for url, title in list(seen.items())[:3]]
     return "\n".join(lines)
 class NonfactualOutcome(BaseModel):
@@ -445,12 +451,19 @@ def _finish_events(
     result: AgentResult,
 ) -> None:
     if result.status == "error":
+        moderation_failure = any(
+            rejection.get("stage") in {
+                "output_moderation",
+                "output_moderation_unavailable",
+            }
+            for rejection in result.diagnostics.get("validation_rejections", ())
+        )
         _emit(
             sink,
             events.ErrorEvent(
                 scope="model",
                 message="The model run ended before a verified answer was ready.",
-                retryable=True,
+                retryable=not moderation_failure,
             ),
         )
     _emit(
@@ -715,6 +728,7 @@ class PydanticRuntimeAdapter:
         stream_model_requests: bool = False,
         run_timeout_s: float = 180,
         crisis_screen: Callable[[tuple[str, ...]], Awaitable[Any]] | None = None,
+        output_guard: Callable[[str], Awaitable[frozenset[str]]] | None = None,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -735,6 +749,7 @@ class PydanticRuntimeAdapter:
         self._stream_model_requests = stream_model_requests
         self._run_timeout_s = run_timeout_s
         self._crisis_screen = crisis_screen
+        self._output_guard = output_guard
         self._structured_grounding = structured_grounding
         # F154: attaching an event handler is what makes PydanticAI stream the model request
         # A structured run already DISCARDS its text deltas (`include_text` below), so when
@@ -936,11 +951,17 @@ class PydanticRuntimeAdapter:
                         "When a grounded block includes legacy citation markers, those "
                         "markers must exactly match citation_ids.",
                     )
-            if any("{cite:" in text for text in authored):
+            leftover_markers = [
+                citation_id
+                for text in authored
+                for citation_id in _legacy_citation_ids(text)
+            ]
+            if leftover_markers:
                 reject(
                     "citation_marker",
                     "Do not write citation markers. Put source IDs in citation_ids; "
-                    "the runtime renders markers."
+                    "the runtime renders markers.",
+                    citation_ids=sorted(set(leftover_markers))[:_SEMANTIC_RETRY_ITEMS],
                 )
             if misowned := _misowned_proper_nouns(output, mapping, ctx.deps.query):
                 reject(
@@ -951,13 +972,6 @@ class PydanticRuntimeAdapter:
                     items=misowned[:_SEMANTIC_RETRY_ITEMS],
                 )
             rendered = _render_grounded_answer(output)
-            if limits := _missing_source_limits(rendered, mapping, ctx.deps.language):
-                reject(
-                    "source_limit",
-                    "Include each source limitation exactly in the answer and do not state or "
-                    "imply a confirmed current status that the source does not provide: "
-                    + " ".join(limits),
-                )
         elif isinstance(output, ClarificationRequest):
             rendered = output.question.strip()
             if _loaded_capability_requires_grounded_handoff(ctx):
@@ -1127,6 +1141,33 @@ class PydanticRuntimeAdapter:
             reject("reply_script", feedback)
         return output
 
+    async def _apply_output_guard(
+        self,
+        result: AgentResult,
+        deps: ToolContext,
+        language: str | None,
+    ) -> None:
+        if self._output_guard is None or not result.text or result.status != "success":
+            return
+        try:
+            blocked = await self._output_guard(result.text)
+        except Exception as exc:
+            deps.validation_rejections.append({
+                "attempt": len(deps.validation_rejections) + 1,
+                "stage": "output_moderation_unavailable",
+                "error": type(exc).__name__,
+            })
+        else:
+            if not blocked:
+                return
+            deps.validation_rejections.append({
+                "attempt": len(deps.validation_rejections) + 1,
+                "stage": "output_moderation",
+                "categories": sorted(blocked),
+            })
+        result.text = localize(TEMPORARY_FAILURE_FALLBACK, language)
+        result.status = "error"
+
     @staticmethod
     def _merge_safety_usage(result: AgentResult, run: Any) -> None:
         if run is None:
@@ -1265,7 +1306,11 @@ class PydanticRuntimeAdapter:
         result = self._project_result(
             messages,
             _captured_usage(messages),
-            _degraded_failure_text(localize(text, language), citations),
+            _degraded_failure_text(
+                localize(text, language),
+                citations,
+                language,
+            ),
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
@@ -1530,7 +1575,10 @@ class PydanticRuntimeAdapter:
                                     event_sink,
                                     message_id,
                                     stream,
-                                    include_text=not self._structured_grounding,
+                                    include_text=(
+                                        not self._structured_grounding
+                                        and self._output_guard is None
+                                    ),
                                 )
                             )
                             if event_sink is not None or self._streams_without_a_sink
@@ -1640,6 +1688,7 @@ class PydanticRuntimeAdapter:
             model_time_ms=timing_capability.elapsed_ms,
             language=language,
         )
+        await self._apply_output_guard(result, deps, language)
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
@@ -2209,7 +2258,10 @@ class _PydanticConversation:
                                     event_sink,
                                     message_id,
                                     stream,
-                                    include_text=not self.runtime._structured_grounding,
+                                    include_text=(
+                                        not self.runtime._structured_grounding
+                                        and self.runtime._output_guard is None
+                                    ),
                                 )
                             )
                             if event_sink is not None
@@ -2264,6 +2316,7 @@ class _PydanticConversation:
             model_time_ms=timing_capability.elapsed_ms,
             language=self._safety_language,
         )
+        await self.runtime._apply_output_guard(result, deps, self._safety_language)
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests

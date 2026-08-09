@@ -9,6 +9,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
 ):
     captured = {}
     safety_screen = object()
+    output_guard = object()
 
     def build_runtime(_registry, **kwargs):
         captured.update(kwargs)
@@ -27,7 +28,11 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
         ),
     )
     model = TestModel()
-    build_configured_runtime(Registry([]), model=model)
+    build_configured_runtime(
+        Registry([]),
+        model=model,
+        output_guard=output_guard,
+    )
 
     assert captured["structured_grounding"] is True
     assert captured["use_module_capabilities"] is True
@@ -35,6 +40,24 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
     assert captured["model"] is model
     assert captured["fact_review_model"] is model
     assert captured["crisis_screen"] is safety_screen
+    assert captured["output_guard"] is output_guard
+
+
+def test_configured_runtime_keeps_uncalibrated_output_moderation_off(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_runtime",
+        lambda _registry, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_crisis_screen",
+        lambda _model, *, model_name: object(),
+    )
+
+    build_configured_runtime(Registry([]), model=TestModel())
+
+    assert captured["output_guard"] is None
 
 
 def test_configured_model_delegates_non_openai_providers_to_pydantic(

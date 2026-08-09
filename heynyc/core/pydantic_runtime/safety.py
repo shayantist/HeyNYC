@@ -72,3 +72,21 @@ def build_crisis_screen(
         )
 
     return screen
+
+
+def build_output_moderator(
+    client: Any,
+    *,
+    model: str = "omni-moderation-latest",
+) -> Callable[[str], Awaitable[frozenset[str]]]:
+    async def moderate(text: str) -> frozenset[str]:
+        response = await client.moderations.create(model=model, input=text)
+        result = response.results[0]
+        categories = result.categories.model_dump(by_alias=True)
+        if not result.flagged:
+            return frozenset()
+        return frozenset(
+            category for category, blocked in categories.items() if blocked
+        )
+
+    return moderate

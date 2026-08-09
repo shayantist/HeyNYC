@@ -79,7 +79,7 @@ def test_f176_projection_does_not_leak_english_without_a_locale_message() -> Non
 
 
 @pytest.mark.asyncio
-async def test_f176_missing_localized_limit_retries_before_projection(monkeypatch) -> None:
+async def test_f176_missing_localized_limit_is_added_without_a_model_retry(monkeypatch) -> None:
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.runtime.check_grounding",
         lambda *_args, **_kwargs: None,
@@ -110,11 +110,7 @@ async def test_f176_missing_localized_limit_retries_before_projection(monkeypatc
         calls += 1
         if calls == 1:
             return ModelResponse([ToolCallPart("nearest", {}, "nearest-1")])
-        text = (
-            "Queens SNAP Center tiene un horario habitual"
-            if calls == 2
-            else SPANISH_LIMITATION
-        )
+        text = "Queens SNAP Center tiene un horario habitual"
         return ModelResponse([
             ToolCallPart(
                 info.output_tools[0].name,
@@ -151,8 +147,6 @@ async def test_f176_missing_localized_limit_retries_before_projection(monkeypatc
         crisis_screen=crisis_screen,
     ).run("¿Dónde puedo solicitar SNAP en persona cerca de Jackson Heights?")
 
-    assert calls == 3
-    assert result.diagnostics["validation_rejections"] == [
-        {"attempt": 1, "stage": "source_limit"}
-    ]
+    assert calls == 2
+    assert result.diagnostics["validation_rejections"] == []
     assert result.text.count(SPANISH_LIMITATION) == 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any, Callable
@@ -41,6 +42,10 @@ _OUTPUT_TOOLS = {
     _CLARIFICATION_OUTPUT_TOOL,
 }
 _SEMANTIC_CITATION_CHARS = 1_200
+_LEGACY_CITATION_RE = re.compile(
+    r"\{\s*cite\s*:\s*(S\d+)\s*\}",
+    re.IGNORECASE,
+)
 
 class GroundedBlock(BaseModel):
     text: str = Field(
@@ -70,10 +75,15 @@ class ClarificationRequest(BaseModel):
 
 
 def _grounded_block_text(block: GroundedBlock) -> str:
-    text = block.text
-    for citation_id in dict.fromkeys(block.citation_ids):
-        text = text.replace(f"{{cite:{citation_id}}}", "")
-    return text.strip()
+    declared = {citation_id.casefold() for citation_id in block.citation_ids}
+    return _LEGACY_CITATION_RE.sub(
+        lambda match: "" if match.group(1).casefold() in declared else match.group(),
+        block.text,
+    ).strip()
+
+
+def _legacy_citation_ids(text: str) -> list[str]:
+    return [match.group(1).upper() for match in _LEGACY_CITATION_RE.finditer(text)]
 
 
 def _semantic_citation_evidence(citation: dict) -> str:
@@ -269,16 +279,18 @@ def _complete_cost(
     messages: Sequence[ModelMessage],
     usage: Any,
 ) -> tuple[float | None, str]:
-    native = _native_cost(messages)
-    if native is not None:
-        return native, "pydantic-native"
-    fallback = priced_cost_usd(
+    current = priced_cost_usd(
         model,
         usage.input_tokens,
         usage.output_tokens,
         usage.cache_read_tokens,
     )
-    return fallback, "litellm-fallback" if fallback is not None else "unpriced"
+    if current is not None:
+        return current, "litellm-fallback"
+    native = _native_cost(messages)
+    if native is not None:
+        return native, "pydantic-native"
+    return None, "unpriced"
 
 
 def _captured_usage(messages: Sequence[ModelMessage]) -> RunUsage:

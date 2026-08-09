@@ -29,7 +29,7 @@ from .projection import (
     _semantic_citation_evidence,
 )
 from .runtime import PydanticRunFailure, PydanticRuntimeAdapter
-from .safety import build_crisis_screen
+from .safety import build_crisis_screen, build_output_moderator
 from .tools import (
     _resident_fact_errors,
     adapt_tool,
@@ -57,6 +57,7 @@ __all__ = (
     "approval_review_text",
     "build_configured_runtime",
     "build_crisis_screen",
+    "build_output_moderator",
     "build_module_capabilities",
     "build_runtime",
     "compact_memory",
@@ -84,6 +85,7 @@ def build_runtime(
     fact_review_model_name: str = "",
     stream_model_requests: bool = False,
     crisis_screen: Any = None,
+    output_guard: Any = None,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
     runtime_tools = tools if tools is not None else build_toolbox(registry, index=index)
@@ -122,6 +124,7 @@ def build_runtime(
         fact_review_model_name=fact_review_model_name,
         stream_model_requests=stream_model_requests,
         crisis_screen=crisis_screen,
+        output_guard=output_guard,
     )
 
 
@@ -163,6 +166,7 @@ def build_configured_runtime(
     model: Any,
     index: Any = None,
     current_awareness: Callable[[], Awaitable[str]] | None = None,
+    output_guard: Any = None,
 ) -> PydanticRuntimeAdapter:
     selected_model = configured_model(model) if isinstance(model, str) else model
     safety_model_name = (
@@ -198,4 +202,5 @@ def build_configured_runtime(
             safety_model,
             model_name=safety_model_name,
         ),
+        output_guard=output_guard,
     )

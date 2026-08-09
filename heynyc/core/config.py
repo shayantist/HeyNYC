@@ -12,24 +12,18 @@ PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
 # LLM
 # RULED 2026-07-21 (owner, "just use the .env value and keep it consistent"): the answer model is
 # read from the env here, the single source of truth, and the agent core defaults to THIS value
-# (not a hardcoded model of its own). The fallback is a cheap production-parity model rather than
-# Sonnet: the old Sonnet default made dev sessions that build an Agent without an explicit model
-# silently run at ~3.3x the production price. Production sets HEYNYC_MODEL in .env (the pilot pins
-# gpt-5.6-luna at medium effort); this default only governs an unset environment.
-HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "openai/gpt-5.4-mini")
+# (not a hardcoded model of its own). Production sets HEYNYC_MODEL in .env; this matching fallback
+# only governs an unset environment.
+HEYNYC_MODEL = os.getenv("HEYNYC_MODEL", "openai/gpt-5.6-luna")
 # The Pydantic runtime is the default after the focused live promotion gate. Operators can set
 # `HEYNYC_AGENT_RUNTIME=legacy` for the retained rollback path.
 _AGENT_RUNTIMES = frozenset({"pydantic", "legacy"})
 HEYNYC_AGENT_RUNTIME = os.getenv("HEYNYC_AGENT_RUNTIME", "pydantic").strip().lower()
 if HEYNYC_AGENT_RUNTIME not in _AGENT_RUNTIMES:
     raise ValueError("HEYNYC_AGENT_RUNTIME must be 'pydantic' or 'legacy'")
-# Small semantic preflight that blocks unrelated questions before retrieval. Keep this cheaper than
-# the resident-answer model; deployments can override it independently.
-# RULED 2026-07-20 (the F058 tier decision): mini, not nano. Nano's ceiling was measured, not
-# assumed — with the tri-state event signal in the prompt, nano held classification (7/7) but
-# dropped the denial-reframe from its 8/9 baseline to 5/8 across three prompt-shape revisions;
-# mini-as-scope holds both (7/7 and 7/8) for roughly +$0.40 per thousand turns.
-HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.4-mini")
+# Safety and language preflight before retrieval. Deployments can override it independently.
+# RULED 2026-08-09: Luna replaces mini after its price fell below mini's at both token rates.
+HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.6-luna")
 # Reasoning effort for the ANSWER model, set beside HEYNYC_MODEL so production runs the benched
 # configuration (2026-07-18: luna-medium is the measured recommendation; at low/none luna loses
 # the clock-reading and thread-holding that justify its cost). Unset means the provider default,
