@@ -32,7 +32,7 @@
   notes: Plain street address — the reliable geocoding path.
 
 - id: snap_where_to_apply_in_person
-  tags: [F176, must-win]
+  tags: [F176, F178, must-win]
   query: "Where can I apply for SNAP in person near Jackson Heights, Queens?"
   capability: dataset_grounding
   test_type: MFT
@@ -40,11 +40,12 @@
   utility_criterion: >-
     Ground the answer in the HRA center dataset and mention the ACCESS HRA online option. When the
     returned center status is unknown, label the hours as a regular schedule and tell the resident
-    to confirm holiday or temporary exceptions before traveling.
-  notes: Regression for F176. Regular hours without current status are not a confirmed-open destination.
+    to confirm holiday or temporary exceptions before traveling. Preserve every material
+    service-specific hours qualifier for each center and cite the source that supports each handoff.
+  notes: Regression for F176 and F178. Regular hours without current status are not a confirmed-open destination.
 
 - id: snap_where_to_apply_in_person__es
-  tags: [F176, multilingual, must-win]
+  tags: [F176, F178, F179, multilingual, must-win]
   query: "¿Dónde puedo solicitar SNAP en persona cerca de Jackson Heights, Queens?"
   language: es
   capability: dataset_grounding
@@ -57,7 +58,8 @@
     Fundamenta la respuesta en los centros de HRA y menciona la opción en línea ACCESS HRA.
     Cuando no se conozca el estado actual del centro, presenta las horas como horario habitual
     e indica que se confirmen las excepciones por días festivos o cambios temporales antes de viajar.
-  notes: Caso multilingüe emparejado para F176.
+    Conserva cada restricción material del horario de cada servicio y cita la fuente de cada opción.
+  notes: Caso multilingüe emparejado para F176, F178 y F179.
 
 - id: snap_directions
   tags: [must-win]

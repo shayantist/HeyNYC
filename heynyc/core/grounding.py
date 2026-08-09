@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 # Toggle blocking off here if a future module surfaces a hard false-fail. (Kept as the shared source of
@@ -44,6 +45,11 @@ _WS_RE = re.compile(r"\s+")
 # A 10-digit US phone in any punctuation, optional leading country code. Bounded so it can't grab a
 # fragment of a longer digit run.
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)")
+_SERVICE_NUMBER_RE = re.compile(r"(?<!\d)(?:211|311|511|711|811|911|988)(?!\d)")
+_CLOCK_RE = re.compile(
+    r"(?<!\d)(1[0-2]|0?\d)(?::([0-5]\d))?\s*([ap])(?:\s*\.?\s*m\.?)",
+    re.IGNORECASE,
+)
 _MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
 _NUMBER_VALUE_RE = re.compile(r"(?<![\w])\d[\d,]*(?:\.\d+)?(?![\w])")
 # A number carrying a VERBATIM unit (temperature / percent), a fact quoted from source text, not a
@@ -61,6 +67,8 @@ _FULL_DATE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_URL_RE = re.compile(r"https?://[^\s)>]+")
+_COORDINATE_PAIR_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 _STREET_TYPES = {
     "street", "st", "avenue", "ave", "av", "boulevard", "blvd", "road", "rd", "place", "pl",
     "drive", "dr", "lane", "ln", "court", "ct", "parkway", "pkwy", "plaza", "terrace", "ter",
@@ -137,6 +145,28 @@ def _stringify(obj) -> str:
     if isinstance(obj, (list, tuple)):
         return " ".join(_stringify(v) for v in obj)
     return str(obj)
+
+
+def _clock_minutes(text: str) -> set[int]:
+    values: set[int] = set()
+    for match in _CLOCK_RE.finditer(text):
+        hour = int(match.group(1)) % 12
+        if match.group(3).casefold() == "p":
+            hour += 12
+        values.add(hour * 60 + int(match.group(2) or 0))
+    return values
+
+
+def _required_schedule_times(citation: dict) -> set[int]:
+    snapshot = (citation.get("provenance") or {}).get("snapshot")
+    if not snapshot:
+        return set()
+    return {
+        minute
+        for clause in re.split(r"[;\n]", _stringify(snapshot))
+        if re.search(r"\bonly\b", clause, re.IGNORECASE)
+        for minute in _clock_minutes(clause)
+    }
 
 
 def citation_evidence(c: dict) -> Optional[str]:
@@ -221,12 +251,31 @@ def _salient_tokens(claim: str) -> list[dict]:
     """High-signal, specific facts only. Each token carries how to match it (digit-run / phrase /
     all-significant-words). Common words, lone lowercase words, and the cite marker are never tokens."""
     tokens: list[dict] = []
+    for url in _URL_RE.findall(claim):
+        parsed = urlsplit(url)
+        if parsed.hostname not in {"google.com", "www.google.com", "maps.google.com"}:
+            continue
+        query = parse_qs(parsed.query)
+        coordinate_text = (query.get("query") or query.get("destination") or [""])[0]
+        match = _COORDINATE_PAIR_RE.fullmatch(coordinate_text)
+        if match:
+            tokens.append({
+                "kind": "map_coordinates",
+                "text": coordinate_text,
+                "point": (float(match.group(1)), float(match.group(2))),
+            })
     for m in _PHONE_RE.finditer(claim):
         d = _digits(m.group())
         if len(d) == 11 and d.startswith("1"):
             d = d[1:]
         if len(d) == 10:
             tokens.append({"kind": "phone", "text": m.group().strip(), "digits": d})
+    for m in _SERVICE_NUMBER_RE.finditer(claim):
+        tokens.append({
+            "kind": "service_number",
+            "text": m.group(),
+            "digits": m.group(),
+        })
     for m in _MONEY_RE.finditer(claim):
         d = _digits(m.group())
         if len(d) >= 2:  # skip "$5", too small, a coincidental match is likely
@@ -372,6 +421,8 @@ def _token_matches(
             and _unit_category(match.group(2)) == tok["unit_category"]
             for match in _UNIT_NUM_RE.finditer(blob)
         )
+    if kind == "service_number":
+        return any(match.group() == tok["digits"] for match in _SERVICE_NUMBER_RE.finditer(blob))
     if kind == "phone":
         return (not tok["digits"]) or tok["digits"] in blob_digits
     if kind == "date":
@@ -399,10 +450,36 @@ def _token_matches(
     return True
 
 
+def _map_coordinates_match(tok: dict, citation: dict) -> bool:
+    provenance = citation.get("provenance") or {}
+    snapshot = provenance.get("snapshot") or {}
+    candidates = [provenance.get("derivation", {}).get("point")]
+    if isinstance(snapshot, dict):
+        candidates.append([
+            snapshot.get("latitude", snapshot.get("lat")),
+            snapshot.get("longitude", snapshot.get("lon", snapshot.get("lng"))),
+        ])
+    latitude, longitude = tok["point"]
+    for point in candidates:
+        if not point or len(point) != 2 or None in point:
+            continue
+        try:
+            source_latitude, source_longitude = map(float, point)
+        except (TypeError, ValueError):
+            continue
+        if abs(latitude - source_latitude) <= 0.00001 and abs(longitude - source_longitude) <= 0.00001:
+            return True
+    return False
+
+
 def _locate(tok: dict, cid: str, c: dict) -> str:
     """Best-effort 'cited exactly here' pointer: the snapshot field (JSON-pointer-ish), or which of
     snippet/title carried the fact. Falls back to the citation id when we can't pin a field."""
-    use_digits = tok["kind"] in ("phone", "money", "unit_number", "date", "address")
+    if tok["kind"] == "map_coordinates":
+        return f"{cid}#/provenance"
+    use_digits = tok["kind"] in (
+        "phone", "service_number", "money", "unit_number", "date", "address"
+    )
     if tok["kind"] == "address":
         needle = tok["nums"][0] if tok["nums"] else ""
     elif tok["kind"] == "date":
@@ -498,6 +575,26 @@ def check_grounding(
     checked = 0
     nli_checked = 0
     current_date = current_date or datetime.now(ZoneInfo("America/New_York")).date()
+    for block in re.split(r"\n\s*\n", text):
+        cited = list(dict.fromkeys(_CITE_REF_RE.findall(block)))
+        block_times = _clock_minutes(_CITE_REF_RE.sub(" ", block))
+        if not cited or not block_times:
+            continue
+        for cid in cited:
+            required_times = _required_schedule_times(citations.get(cid) or {})
+            if not required_times:
+                continue
+            checked += 1
+            missing_times = required_times - block_times
+            if not missing_times:
+                continue
+            hard_failures.append(Mismatch(
+                claim=_CITE_REF_RE.sub(" ", block).strip(),
+                cited=cited,
+                kind="schedule_qualifier",
+                text=", ".join(str(value) for value in sorted(missing_times)),
+                message=f"{cid}: restricted schedule window omitted",
+            ))
     for claim, bare_claim, cited in _cited_claims(text):
         # A citation supports the captured evidence attached to it. Exact facts cannot rely on an
         # unseen part of a page; if the current excerpt is insufficient, retrieve better evidence.
@@ -525,20 +622,30 @@ def check_grounding(
                 if hit is not None:
                     break
                 provenance = citations[cid].get("provenance") or {}
-                if _token_matches(
-                    tok,
-                    _norm(blob),
-                    _digits(blob),
-                    blob,
-                    allow_bare_money=bool(
-                        provenance.get("snapshot") or provenance.get("response")
-                    ),
-                ):
+                token_matches = (
+                    _map_coordinates_match(tok, citations[cid])
+                    if tok["kind"] == "map_coordinates"
+                    else _token_matches(
+                        tok,
+                        _norm(blob),
+                        _digits(blob),
+                        blob,
+                        allow_bare_money=bool(
+                            provenance.get("snapshot") or provenance.get("response")
+                        ),
+                    )
+                )
+                if token_matches:
                     hit = _locate(tok, cid, citations[cid])
                     break
             # 2) grounded across the union of the claim's cited sources (phrase split across sources).
             combined = " ".join(blobs.values())
-            if hit is None and blobs and _token_matches(tok, combined_norm, combined_digits, combined):
+            if (
+                hit is None
+                and blobs
+                and tok["kind"] != "map_coordinates"
+                and _token_matches(tok, combined_norm, combined_digits, combined)
+            ):
                 hit = f"{'+'.join(blobs)}#source"
             # 3) exact resident-provided context is not a sourced claim. Phone numbers and measured
             # units still require captured evidence because repeating either can cause direct harm.

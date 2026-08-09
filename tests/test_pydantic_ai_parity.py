@@ -5059,6 +5059,25 @@ def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
     assert "google.com" not in text
 
 
+def test_failure_text_localizes_the_official_pages_heading() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page",
+        title="SNAP Benefits - HRA",
+        kind="WEB",
+        snippet="Official SNAP help",
+        provenance={"evidence_grade": "authoritative"},
+    )
+
+    text = _degraded_failure_text(
+        VERIFICATION_ABSTAIN_FALLBACK,
+        citations,
+        language="es",
+    )
+
+    assert "Páginas oficiales que sí pude consultar antes del problema:" in text
+
+
 def test_failure_text_is_unchanged_when_nothing_authoritative_was_reached() -> None:
     citations = CitationRegistry()
     citations.register(

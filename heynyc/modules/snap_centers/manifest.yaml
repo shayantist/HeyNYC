@@ -29,15 +29,23 @@ datasets:
 allowlist:
   - access.nyc.gov
   - nyc.gov
+seeds:
+  - https://a069-access.nyc.gov/accesshra/
+  - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
+focus_tools:
+  - nearest
+  - official_sources
 prompt: |
   For "where do I apply for SNAP / food stamps in person" or "SNAP center/office near me",
-  call nearest(category="snap_center", near=<the user's address>). Report ONLY the centers the
+  call nearest(category="snap_center", near=<the user's address>, k=1). Report ONLY the center the
   tool returns and cite each one, these are the ~13 HRA SNAP application/enrollment centers.
 
-  ALWAYS add that they can also apply online at ACCESS HRA (accesshra.nyc.gov) without visiting
-  a center at all, or call 311. Pass through the source's listed hours and row update date. The
-  source does NOT surface a phone number, so tell users to confirm schedule exceptions before going,
-  and NEVER invent phone numbers or eligibility rules. If the tool returns nothing or geocoding
-  fails, don't guess a center.
-  point the user to ACCESS HRA (accesshra.nyc.gov) and 311.
+  After nearest, call official_sources once with both declared SNAP pages to verify the online
+  application and help options. Add the supported ACCESS HRA online option without making the
+  resident visit a center. Include a phone handoff only when the retrieved page explicitly supports
+  it. A phone handoff is for general SNAP help, never schedule confirmation, unless the retrieved
+  page explicitly says it confirms center hours. Pass through every service-specific hours qualifier
+  and the row update date. The center source does NOT surface a phone number, so label its schedule
+  as regular hours and warn that holiday or temporary exceptions may exist. NEVER invent phone
+  numbers or eligibility rules. If retrieval or geocoding fails, don't guess.
 eval: eval.yaml

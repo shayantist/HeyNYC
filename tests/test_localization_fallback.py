@@ -22,6 +22,13 @@ def test_chinese_current_turn_localizes_deterministic_failure_copies() -> None:
     )
 
 
+def test_spanish_current_turn_localizes_verification_abstention() -> None:
+    assert localization.localize(VERIFICATION_ABSTAIN_FALLBACK, "es") == (
+        "No pude verificarlo con las fuentes confiables que encontré, así que no quiero "
+        "adivinar. Intenta preguntar con un poco más de detalle y lo comprobaré de nuevo."
+    )
+
+
 def test_failure_copy_preserves_english_for_non_localized_turns(monkeypatch, tmp_path) -> None:
     assert localization.localize(TEMPORARY_FAILURE_FALLBACK, "en") == (
         TEMPORARY_FAILURE_FALLBACK

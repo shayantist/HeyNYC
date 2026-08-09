@@ -318,6 +318,34 @@ def test_equivalent_money_format_is_grounded():
     assert res is not None and res.passed, res.detail
 
 
+def test_f177_map_coordinates_must_match_one_cited_record():
+    citations = {
+        "S1": _data_cite({"name": "Hunts Point", "latitude": "40.817656", "longitude": "-73.890358"}),
+        "S2": _data_cite({"name": "East End", "latitude": "40.804465", "longitude": "-73.93526"}),
+    }
+
+    res = check_grounding(
+        "[Mapa de East End](https://www.google.com/maps/search/?api=1&query=40.80447,-73.89036) "
+        "{cite:S1} {cite:S2}",
+        citations,
+    )
+
+    assert res is not None and res.blocking
+    assert res.hard_failures[0].kind == "map_coordinates"
+
+
+def test_f177_map_coordinates_accept_rounded_cited_record():
+    citation = _data_cite({"name": "East End", "latitude": "40.804465", "longitude": "-73.93526"})
+
+    res = check_grounding(
+        "[Mapa de East End](https://www.google.com/maps/search/?api=1&query=40.80447,-73.93526) "
+        "{cite:S1}",
+        {"S1": citation},
+    )
+
+    assert res is not None and res.passed, res.detail
+
+
 def test_nli_none_is_byte_identical_to_tier1_only():
     """Regression guard for the Tier-2 hook: passing nli=None (today's every caller) must leave the
     Tier-1 result untouched and the two new fields at their empty defaults. Pinned across a grounded

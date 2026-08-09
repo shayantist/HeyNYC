@@ -519,6 +519,60 @@ def build_module_capabilities(
     descendants: dict[str, list] = {}
     for module in registry.modules:
         descendants.setdefault(root_name(module.name), []).append(module)
+    root_modules = frozenset(descendants)
+
+    focus_by_capability: dict[str, tuple[str, frozenset[str], bool]] = {}
+    for module in registry.modules:
+        if module.parent:
+            continue
+        if module.focus_tools:
+            focus_by_capability[module.name] = (
+                module.name,
+                frozenset(module.focus_tools),
+                False,
+            )
+        for member in descendants[module.name]:
+            for hint in member.situations:
+                if not hint.focus_tools:
+                    continue
+                normalized_module = module.name.replace("_", "-")
+                hint_id = hint.name.replace("_", "-").removeprefix(
+                    f"{normalized_module}-"
+                )
+                focus_by_capability[f"{module.name}-{hint_id}"] = (
+                    module.name,
+                    frozenset(hint.focus_tools),
+                    True,
+                )
+
+    for tool in shared_tools:
+        def focus(
+            ctx: Any,
+            definition: Any,
+            *,
+            tool_name: str = tool.name,
+        ) -> Any:
+            loaded_owners = {
+                module_name
+                for capability_id in ctx.loaded_capability_ids
+                for module_name in root_modules
+                if capability_id == module_name
+                or capability_id.startswith(f"{module_name}-")
+            }
+            if len(loaded_owners) != 1:
+                return definition
+            loaded = [
+                focus_by_capability[capability_id]
+                for capability_id in ctx.loaded_capability_ids
+                if capability_id in focus_by_capability
+            ]
+            if not loaded:
+                return definition
+            specific = [tools for _owner, tools, is_specific in loaded if is_specific]
+            allowed = set().union(*(specific or [tools for _owner, tools, _ in loaded]))
+            return definition if tool_name in allowed else None
+
+        tool.prepare = focus
 
     capabilities: list[Capability[ToolContext]] = []
     for module in registry.modules:

@@ -83,6 +83,8 @@ class ServiceModule(BaseModel):
     seeds: list[str] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)
     prompt: str = ""  # capability blurb injected into the system prompt
+    # Shared tools kept visible after this module capability loads. Empty means no narrowing.
+    focus_tools: list[str] = Field(default_factory=list)
     tools: Optional[str] = None  # optional module-specific tools file (e.g. "tools.py")
     eval: Optional[str] = None  # eval cases file (e.g. "eval.yaml")
     # Trust tiers for web_search ranking: {tier: [domain, ...]} where tier is one of

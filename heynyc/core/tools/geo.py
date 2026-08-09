@@ -712,6 +712,16 @@ async def travel_distance(
     The public OSRM server only serves the driving profile; self-host for
     walking/cycling. On any failure we degrade to Haversine with minutes=None.
     """
+    if (
+        mode != "driving"
+        and OSRM_BASE.rstrip("/") == "https://router.project-osrm.org"
+    ):
+        return {
+            "meters": haversine_m(origin.lat, origin.lon, dest.lat, dest.lon),
+            "minutes": None,
+            "mode": "straight-line",
+            "source": "haversine",
+        }
     profile = {"driving": "driving", "walking": "foot", "cycling": "bike"}.get(mode, "driving")
     coords = f"{origin.lon},{origin.lat};{dest.lon},{dest.lat}"
     own = client is None
