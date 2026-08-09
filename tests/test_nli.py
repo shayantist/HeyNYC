@@ -383,6 +383,32 @@ async def test_prompted_nli_async_batch_returns_usage_and_one_request():
     assert capture["kwargs"]["response_format"].__name__ == "NLIBatchResponse"
 
 
+async def test_prompted_nli_default_transport_omits_temperature(monkeypatch):
+    capture: dict = {}
+    content = (
+        '{"verdicts":['
+        '{"id":"first","label":"supported","reason":"stated"}'
+        "]}"
+    )
+
+    async def completion(**kwargs):
+        capture.update(kwargs)
+        return await _fake_async_completion(content, {})(
+            kwargs["model"],
+            kwargs["messages"],
+            response_format=kwargs["response_format"],
+        )
+
+    monkeypatch.setattr("litellm.acompletion", completion)
+
+    run = await PromptedNLI(model="openai/gpt-5.6-luna").arun_many([
+        nli.NLIInput(id="first", claim="Claim one.", source="Source one."),
+    ])
+
+    assert run.verdicts[0].supported is True
+    assert "temperature" not in capture
+
+
 async def test_prompted_nli_async_batch_fails_closed_on_provider_error():
     async def failing_completion(model, messages, **kwargs):
         raise RuntimeError("provider unavailable")

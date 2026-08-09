@@ -270,7 +270,6 @@ class PromptedNLI:
         kwargs: dict = {
             "model": self._model,
             "messages": messages,
-            "temperature": 0.0,
             "response_format": NLIBatchResponse,
             "timeout": self._timeout,
         }
@@ -287,7 +286,7 @@ class PromptedNLI:
             return await self._async_completion_fn(self._model, messages, **kwargs)
         from litellm import acompletion
 
-        kwargs.update({"model": self._model, "messages": messages, "temperature": 0.0})
+        kwargs.update({"model": self._model, "messages": messages})
         if self._api_base:
             kwargs["api_base"] = self._api_base
         return await acompletion(**kwargs)
