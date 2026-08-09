@@ -128,6 +128,19 @@
     complaint; heat season Oct 1–May 31; daytime minimum 68°F when below 55°F outside, 62°F overnight;
     hot water 120°F year-round. No temperature or date stated from the model's own knowledge.
 
+- id: housing_hot_water_section_bn
+  query: "আমার বাসায় পাঁচ দিন ধরে গরম পানি নেই। NYC code-এর কোন section এটা cover করে, আর এখন কী করব?"
+  language: bn
+  capability: scope
+  test_type: MFT
+  expect_tools: [housing_guidance]
+  expect_contains: ["27-2031"]
+  invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  tags: [F175, must-win]
+  notes: Bengali matched case for the F175 live miss. Must name section 27-2031 for hot water with
+    that section's own citation and preserve the grounded 311 and HPD next steps. Section 27-2029
+    covers heat and does not answer the resident's requested hot-water section.
+
 - id: housing_no_cold_water
   query: "Is it normal that my building has no cold water today?"
   capability: scope

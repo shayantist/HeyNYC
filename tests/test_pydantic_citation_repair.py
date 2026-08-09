@@ -1,3 +1,4 @@
+import pytest
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -25,6 +26,18 @@ def test_matching_citation_marker_variants_are_repaired_without_a_retry():
     )
 
 
+def test_matching_unclosed_citation_marker_is_repaired_without_a_retry():
+    block = GroundedBlock(
+        text="Benefits may change. {cite:S1",
+        citation_ids=["S1"],
+    )
+
+    assert _grounded_block_text(block) == "Benefits may change."
+    assert _render_grounded_answer(GroundedAnswer(grounded_blocks=[block])) == (
+        "Benefits may change. {cite:S1}"
+    )
+
+
 def test_unknown_citation_marker_is_not_repaired():
     block = GroundedBlock(
         text="Benefits may change. {cite:S2}",
@@ -35,7 +48,8 @@ def test_unknown_citation_marker_is_not_repaired():
     assert _legacy_citation_ids(_grounded_block_text(block)) == ["S2"]
 
 
-async def test_matching_marker_variant_does_not_consume_an_output_retry():
+@pytest.mark.parametrize("marker", ["{ CITE : s1 }", "{cite:S1"])
+async def test_matching_marker_variant_does_not_consume_an_output_retry(marker: str):
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -60,7 +74,7 @@ async def test_matching_marker_variant_does_not_consume_an_output_retry():
                 info.output_tools[0].name,
                 {
                     "grounded_blocks": [{
-                        "text": "Benefits may change. { CITE : s1 }",
+                        "text": f"Benefits may change. {marker}",
                         "citation_ids": ["S1"],
                     }]
                 },

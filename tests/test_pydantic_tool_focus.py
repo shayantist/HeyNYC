@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from pydantic_ai.tools import ToolDefinition
@@ -90,3 +91,27 @@ def test_cross_module_no_focus_capability_still_disables_narrowing():
     )
 
     assert distance.prepare(context, definition) is definition
+
+
+def test_hot_water_situation_points_to_parent_that_owns_its_module_tool():
+    registry = Registry.discover(Path("heynyc/modules"))
+    housing_guidance = _tool("housing_guidance")
+    housing_guidance.module = "housing"
+
+    _adapted, capabilities = build_module_capabilities(
+        registry,
+        {"housing_guidance": housing_guidance},
+    )
+    capabilities_by_id = {
+        capability.id: capability
+        for capability in capabilities
+    }
+
+    assert "housing-hot-water-code-section" in capabilities_by_id
+    parent = capabilities_by_id["housing"]
+    situation = capabilities_by_id["housing-hot-water-code-section"]
+    assert [tool.name for tool in parent.tools].count("housing_guidance") == 1
+    assert all(tool.name != "housing_guidance" for tool in situation.tools)
+    assert "load the parent `housing` capability" in "\n".join(
+        situation.get_instructions()
+    )

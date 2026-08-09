@@ -43,7 +43,7 @@ _OUTPUT_TOOLS = {
 }
 _SEMANTIC_CITATION_CHARS = 1_200
 _LEGACY_CITATION_RE = re.compile(
-    r"\{\s*cite\s*:\s*(S\d+)\s*\}",
+    r"\{\s*cite\s*:\s*(S\d+)(?:\s*\}|(?=\s|$))",
     re.IGNORECASE,
 )
 

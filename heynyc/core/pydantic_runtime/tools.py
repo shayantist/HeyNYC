@@ -605,12 +605,16 @@ def build_module_capabilities(
                 defer_loading=True,
             )
         )
+        available_tool_names = {tool.name for tool in available_tools}
         for member in descendants[module.name]:
             for hint in member.situations:
                 normalized_module = module.name.replace("_", "-")
                 hint_id = hint.name.replace("_", "-").removeprefix(
                     f"{normalized_module}-"
                 )
+                owned_focus_tools = [
+                    name for name in hint.focus_tools if name in available_tool_names
+                ]
                 instructions = "\n".join(
                     part
                     for part in (
@@ -624,6 +628,13 @@ def build_module_capabilities(
                         (
                             "Official pages: " + ", ".join(hint.urls)
                             if hint.urls else ""
+                        ),
+                        (
+                            f"To use its module-owned tools, load the parent "
+                            f"`{module.name}` capability before calling: "
+                            + ", ".join(f"`{name}`" for name in owned_focus_tools)
+                            if owned_focus_tools
+                            else ""
                         ),
                         (
                             "Call `official_sources` with every Official pages URL "

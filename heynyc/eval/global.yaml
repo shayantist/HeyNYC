@@ -85,6 +85,42 @@
   notes: Restored conversational context must never mean stale-location reuse; this is the
     F042 class exercised through a real correction turn.
 
+- id: convo_f169_closed_cooling_site_not_retained
+  turns:
+    - "你好，我家里很热，没有空调。请问现在我可以去哪里凉快一点？"
+    - "我在Flushing附近，靠近Main Street，但是不想说完整地址。我71岁，刚做完髋关节手术，要用walker，不能走很远。"
+    - "好的，Flushing Library我知道。那里现在开门吗？有空调吗？我用walker，应该坐车还是可以慢慢走过去？"
+  expect_tools: [cool_options_lookup]
+  abstain: false
+  capability: conversation
+  language: zh
+  tags: [F169, conversation, multilingual, must-win]
+  utility_criterion: >-
+    Never present Flushing Library as a usable current destination unless the current City lookup
+    confirms it open. If it is closed, unknown, or absent from the current offered set, say that
+    plainly and do not retain its address, distance, map, or destination framing. Preserve the
+    resident's walker and recent hip-surgery constraint, and give only a currently supported safer
+    next step with resolving citations.
+  notes: Exact three-turn Wei replay that exposed F169. A closed site must fail closed even when the
+    resident names it on the follow-up.
+
+- id: convo_f171_no_open_resets_for_corrected_address
+  turns:
+    - "我在 Main Street 的 Flushing Library 附近。现在有室内 Cool Options 开放吗？"
+    - "更准确的是 41-17 Main Street, Flushing, NY 11355。请按这个地址重新查一次。"
+  expect_tools: [cool_options_lookup]
+  abstain: false
+  capability: conversation
+  language: zh
+  tags: [F171, conversation, multilingual, must-win]
+  utility_criterion: >-
+    When the current City rows establish that no indoor option is open at the evaluated time, each
+    turn must end immediately with the localized, cited no-open result. The first terminal result
+    must not block one new lookup after the resident supplies the corrected address. Neither turn
+    may continue into web search or repeated cooling lookups after its definitive result.
+  notes: Exact F171 mechanism replay. The live probe controls only the evaluation clock while using
+    the real configured model, geocoder, City rows, runtime, grounding, citations, and telemetry.
+
 - id: convo_confirmed_location_is_not_re_asked
   turns:
     - "where's the nearest food pantry to 82nd st and roosevelt ave in queens?"

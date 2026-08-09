@@ -393,7 +393,10 @@ async def test_guidance_bronx_housing_court_returns_direct_distinct_locations():
     mapping = citations.mapping()
     assert len(mapping) == 1
     assert mapping["S1"]["url"].endswith("bronx-county-housing-court-directory")
-    assert mapping["S1"]["valid_as_of"] == "2026-08-07"
+    assert "Commercial Part" in mapping["S1"]["snippet"]
+    assert "NYCHA" in mapping["S1"]["snippet"]
+    assert "illegal lockouts" in mapping["S1"]["snippet"]
+    assert mapping["S1"]["valid_as_of"] == "2026-08-09"
     assert "{cite:S1}" in out
 
 
@@ -419,6 +422,8 @@ async def test_guidance_no_heat_grounds_standard_code_ladder_and_cites():
     assert "27-2029" in mapping["S2"]["title"]
     assert mapping["S3"]["url"] == "https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-236495"
     assert "27-2031" in mapping["S3"]["title"]
+    assert "year-round" in mapping["S3"]["snippet"]
+    assert "120 degrees" in mapping["S3"]["snippet"]
     assert "{cite:S1}" in out and "{cite:S2}" in out and "{cite:S3}" in out
 
 
@@ -580,6 +585,8 @@ def test_housing_module_loads_with_tool_and_eval():
     right_to_counsel = next(c for c in cases if c.id == "housing_right_to_counsel")
     assert "free legal representation or advice" in right_to_counsel.notes
     assert "free lawyer" not in right_to_counsel.notes
+    hot_water_bengali = next(c for c in cases if c.id == "housing_hot_water_section_bn")
+    assert hot_water_bengali.language == "bn"
     # the routing cases now expect the grounding tool + a citation (cite-or-abstain)
     routing = {c.id: c for c in cases if c.id in {
         "housing_right_to_counsel", "housing_no_heat", "housing_shelter_family",

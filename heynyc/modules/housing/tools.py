@@ -369,13 +369,14 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
                 url="https://www.nycourts.gov/courts/12th-judicial-district/new-york-city-housing-court-bronx-county-branch/bronx-county-housing-court-directory",
                 title="Bronx County Housing Court Directory, New York Courts",
                 snippet=("Bronx Housing Court is at 1118 Grand Concourse, Bronx, NY 10456; the Help "
-                         "Center phone is 718-466-3022; landlord-tenant offices are at 851 Grand "
-                         "Concourse, Bronx, NY 10451, phone 718-466-3025"),
+                         "Center phone is 718-466-3022; landlord-tenant offices for the Commercial "
+                         "Part, NYCHA, and illegal lockouts involving unrepresented litigants are at "
+                         "851 Grand Concourse, Bronx, NY 10451, phone 718-466-3025"),
                 body=("The Bronx Housing Court is at 1118 Grand Concourse, Bronx, NY 10456. The Help "
                       "Center phone is 718-466-3022. Landlord-tenant offices for the Commercial Part, "
                       "NYCHA, and illegal lockouts involving unrepresented litigants are at 851 Grand "
                       "Concourse, Bronx, NY 10451, phone 718-466-3025."),
-                valid_as_of="2026-08-07",
+                valid_as_of="2026-08-09",
             ),
         ),
     ),
@@ -440,9 +441,12 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-236495",
                 title="NYC Housing Maintenance Code section 27-2031 (Supply of Hot Water), American Legal Publishing",
-                snippet="the hot water minimum is section 27-2031 in Article 8 (Heat and Hot Water)",
-                body=("The hot water minimum is section 27-2031 of New York City's Housing Maintenance "
-                      "Code, Article 8 (Heat and Hot Water)."),
+                snippet=("section 27-2031 is the year-round hot-water rule and generally requires "
+                         "a constant minimum of 120 degrees Fahrenheit"),
+                body=("Section 27-2031 of New York City's Housing Maintenance Code is the year-round "
+                      "hot-water rule and generally requires a constant minimum of 120 degrees "
+                      "Fahrenheit."),
+                valid_as_of="2026-08-09",
             ),
         ),
     ),
