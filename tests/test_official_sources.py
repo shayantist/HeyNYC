@@ -658,6 +658,43 @@ async def test_benefits_declares_current_snap_work_rule_pages():
     assert len(ctx.citations) == 2
 
 
+async def test_advisories_recovers_authoritative_notify_cost_evidence():
+    faq = "https://a858-nycnotify.nyc.gov/Home/FAQ"
+    terms = (
+        "https://www.nyc.gov/site/em/resources/notify_nyc/"
+        "notify-nyc-short-code-terms-conditions-privacy-policy-information.page"
+    )
+    registry = Registry.discover(config.MODULES_DIR)
+    client = _Client({
+        faq: (
+            "<title>Notify NYC FAQ</title>"
+            "<p>The Notify NYC mobile app is completely free to use.</p>"
+        ),
+        terms: (
+            "<title>Notify NYC Short Code Terms</title>"
+            "<p>Message and Data Rates May Apply. You are responsible for these charges "
+            "to your wireless provider.</p>"
+        ),
+    })
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {
+            "urls": [faq, terms],
+            "query": "Notify NYC cost free message data rates wireless provider",
+        },
+        ctx,
+    )
+
+    assert "completely free" in out
+    assert "Message and Data Rates May Apply" in out
+    assert len(ctx.citations) == 2
+    assert all(
+        citation["provenance"] == {"evidence_grade": "authoritative"}
+        for citation in ctx.citations.mapping().values()
+    )
+
+
 async def test_official_sources_extracts_text_from_an_approved_pdf():
     url = "https://www.nycourts.gov/decision-list.pdf"
     buffer = BytesIO()

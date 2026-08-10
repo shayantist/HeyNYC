@@ -20,6 +20,8 @@ tools: tools.py
 eval: eval.yaml
 seeds:
   - https://www.nyc.gov/notifynyc
+  - https://a858-nycnotify.nyc.gov/Home/FAQ
+  - https://www.nyc.gov/site/em/resources/notify_nyc/notify-nyc-short-code-terms-conditions-privacy-policy-information.page
 allowlist:
   - nyc.gov
   - everbridge.net
