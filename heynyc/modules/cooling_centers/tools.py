@@ -9,12 +9,13 @@ from heynyc.core.citations import content_hash, data_provenance
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 from heynyc.core.tools.geo import (
+    GeoPoint,
     _requested_result_limit,
     _resolution_note,
+    directions_link,
     format_distance,
     geocode,
     haversine_m,
-    maps_link,
     miles,
     resident_supplied_location,
 )
@@ -567,7 +568,8 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             lines.append(f"   {', '.join(flags)}")
         if item["phone"]:
             lines.append(f"   Phone: {item['phone']}")
-        lines.append(f"   Map: {maps_link(item['lat'], item['lon'])}")
+        destination = GeoPoint(item["lat"], item["lon"], item["name"])
+        lines.append(f"   Directions from resolved origin: {directions_link(origin, destination)}")
 
     lines.append(
         "Weekly hours, holiday schedules, one-off closures, and access policies can change. "

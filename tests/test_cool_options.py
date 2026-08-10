@@ -337,7 +337,7 @@ async def test_negated_model_site_cannot_select_or_retain_prior_site(lookup):
 
 
 @pytest.mark.asyncio
-async def test_lookup_combines_active_centers_and_indoor_cool_options(monkeypatch):
+async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypatch):
     calls = []
 
     async def fake_geocode(text, **kwargs):
@@ -403,7 +403,9 @@ async def test_lookup_combines_active_centers_and_indoor_cool_options(monkeypatc
     assert "Resolved 'Rockefeller Center'" in output
     assert "Wednesday: 8a-10p" in output
     assert "Accessible: Yes" in output
-    assert output.count("https://www.google.com/maps/search/?api=1&query=") == 2
+    assert output.count("https://www.google.com/maps/dir/?api=1&origin=40.75800,-73.97800") == 2
+    assert "destination=40.75920,-73.97610" in output
+    assert "destination=40.75690,-73.96770" in output
     assert len(ctx.citations.mapping()) == 2
     assert calls == [(cooling.COOL_OPTIONS_URL, "Finder_status='OPEN'")]
 

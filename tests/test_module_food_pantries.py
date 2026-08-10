@@ -7,13 +7,14 @@ DATA citation, and abstention when geocoding fails.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import httpx
 import pytest
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
+from heynyc.core.grounding import check_grounding
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import GeoPoint
@@ -966,6 +967,46 @@ async def test_nearest_food_pantry_uses_the_residents_requested_date(monkeypatch
     assert "Saturday, 2026-07-18" in out
     assert "scheduled open now" not in out
     assert "10:00 AM-2:00 PM" in out
+
+
+async def test_f185_future_date_respects_monthly_occurrence_notes(monkeypatch):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="First And Third Thursday Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="monthly-thursday",
+            fp_notes="1ST & 3RD THURSDAY",
+            fp_thu_open1="12:00 PM",
+            fp_thu_close1="3:00 PM",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "k": 1, "on": "2026-08-13"},
+        ctx,
+    )
+    await client.aclose()
+
+    assert "monthly schedule excludes Thursday, 2026-08-13" in out
+    assert "weekly schedule lists hours on Thursday, 2026-08-13" not in out
+    assert "Thursday's listed weekly hours" not in out
+
+
+def test_f185_calendar_guard_rejects_wrong_monthly_weekday_occurrence():
+    result = check_grounding(
+        "August 13 is the third Thursday. {cite:S1}",
+        {"S1": {"snippet": "1ST & 3RD THURSDAY"}},
+        current_date=date(2026, 8, 9),
+    )
+
+    assert result is not None and result.blocking
+    assert result.hard_failures[0].kind == "calendar_consistency"
 
 
 async def test_nearest_food_pantry_filters_source_service_type():

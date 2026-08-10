@@ -252,13 +252,14 @@
   notes: No reservation data (they're walk-in) — must not invent a process; abstain or point to 311/official.
 
 - id: cooling_followup_directions
-  tags: [must-win]
+  tags: [F182, must-win]
   query: "Can you give me a map link and directions to the nearest cooling center to Harlem?"
   capability: dataset_grounding
   test_type: MFT
   expect_contains: ["maps"]
   invariants: {must_ground: true, must_not_fabricate: true}
-  notes: Directions are a deterministic Google Maps link off a grounded coordinate — we CAN provide this (navigation handoff).
+  notes: Directions are a deterministic Google Maps link from the grounded origin to the grounded
+    destination. Do not claim that its walking or transit route is accessible without evidence.
 
 # --- Citation presence ------------------------------------------------------
 - id: cooling_citation_required

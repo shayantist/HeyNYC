@@ -1,5 +1,11 @@
 import httpx
 
+from heynyc.core import config
+from heynyc.core.citations import CitationRegistry
+from heynyc.core.grounding import check_grounding
+from heynyc.core.registry import Registry
+from heynyc.core.tools import geo
+from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import GeoPoint, travel_distance
 
 
@@ -59,3 +65,50 @@ async def test_custom_osrm_may_serve_a_walking_profile(monkeypatch):
     assert result["source"] == "osrm"
     assert result["mode"] == "walking"
     assert result["minutes"] == 10.0
+
+
+async def test_f182_distance_handler_returns_grounded_directions_link(monkeypatch):
+    async def fake_geocode(text, **_kwargs):
+        return (
+            GeoPoint(40.75780, -73.82890, "Flushing Library")
+            if text == "Flushing Library"
+            else GeoPoint(40.78328, -73.83521, "Petco College Point")
+        )
+
+    async def fake_distance(*_args, **_kwargs):
+        return {"meters": 2_880, "minutes": 8.0, "mode": "driving", "source": "osrm"}
+
+    monkeypatch.setattr(geo, "geocode", fake_geocode)
+    monkeypatch.setattr(geo, "travel_distance", fake_distance)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry.discover(config.MODULES_DIR),
+    )
+
+    output = await geo.geo_tools()[2].handler(
+        {
+            "origin": "Flushing Library",
+            "destination": "Petco College Point",
+            "mode": "transit",
+        },
+        ctx,
+    )
+
+    assert (
+        "https://www.google.com/maps/dir/?api=1&origin=40.75780,-73.82890"
+        "&destination=40.78328,-73.83521&travelmode=transit" in output
+    )
+    assert "{cite:S1}" in output
+    citations = ctx.citations.mapping()
+    assert citations["S1"]["provenance"]["derivation"]["point"] == [40.78328, -73.83521]
+    assert check_grounding(output, citations).blocking is False
+    changed = output.replace("destination=40.78328,-73.83521", "destination=40.70000,-73.90000")
+    assert check_grounding(changed, citations).blocking is True
+    changed = output.replace("origin=40.75780,-73.82890", "origin=40.70000,-73.90000")
+    assert check_grounding(changed, citations).blocking is True
+    assert "travelmode=bicycling" in geo.directions_link(
+        GeoPoint(40.75780, -73.82890),
+        GeoPoint(40.78328, -73.83521),
+        mode="cycling",
+    )
+    assert "transit" in geo.geo_tools()[2].parameters["properties"]["mode"]["enum"]

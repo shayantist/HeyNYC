@@ -350,8 +350,9 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
                 title="Legal Services for Tenants Facing Eviction, NYC's Right to Counsel (HRA / Office of Civil Justice)",
                 snippet=("tenants facing eviction in Housing Court or NYCHA administrative proceedings "
                          "have access to free legal representation or advice, in every ZIP code, "
-                         "regardless of immigration status; call Housing Court Answers 718-557-1379 "
-                         "or 311 and ask for the Tenant Helpline"),
+                         "regardless of immigration status; call Housing Court Answers at "
+                         "718-557-1379 or 212-962-4795, Monday to Friday, 9am to 5pm, or call 311 "
+                         "and ask for the Tenant Helpline"),
                 body=("NYC's Right-to-Counsel (Universal Access) law means tenants facing eviction in "
                       "Housing Court or NYCHA administrative proceedings have access to free legal "
                       "representation or advice, in every ZIP code, regardless of immigration status. "
@@ -359,6 +360,7 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
                       "say 'I would like an attorney'. To reach help before then: call Housing Court "
                       "Answers at 718-557-1379 or 212-962-4795 (Monday to Friday, 9am to 5pm), or call "
                       "311 and ask for the Tenant Helpline."),
+                valid_as_of="2026-08-09",
             ),
         ),
     ),

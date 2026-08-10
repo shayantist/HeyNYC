@@ -407,6 +407,21 @@ def maps_link(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={lat:.5f},{lon:.5f}"
 
 
+def directions_link(
+    origin: GeoPoint, destination: GeoPoint, *, mode: str | None = None
+) -> str:
+    """Open platform directions between two already-grounded points."""
+    link = (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&origin={origin.lat:.5f},{origin.lon:.5f}"
+        f"&destination={destination.lat:.5f},{destination.lon:.5f}"
+    )
+    travel_mode = {
+        "driving": "driving", "walking": "walking", "cycling": "bicycling", "transit": "transit",
+    }.get(mode)
+    return f"{link}&travelmode={travel_mode}" if travel_mode else link
+
+
 # --- Borough-aware query biasing -----------------------------------------------------------------
 # NYC GeoSearch does not infer a borough from a borough WORD sitting in a plain /search query, so a
 # raw "125th Street Manhattan" resolves to a same-named "125 Street" in College Point, Queens. The
@@ -694,6 +709,19 @@ async def geocode(
         if point is not None and _looks_like_intersection(text):
             if not _intersection_identity_matches(text, point.label):
                 point.low_confidence = True
+        if point is None and m and _looks_like_intersection(text.split(",", 1)[0]):
+            centroid = _zip_centroid(m.group())
+            if centroid is not None and _in_nyc(*centroid):
+                lat, lon = centroid
+                point = GeoPoint(
+                    lat=lat,
+                    lon=lon,
+                    label=f"ZIP {m.group()} area",
+                    confidence=1.0,
+                    match_type="zcta",
+                )
+                if borough is not None and not await borough_contains(point, borough, client):
+                    return None
         return point
     finally:
         if own:
@@ -898,16 +926,39 @@ async def _distance_handler(args: dict, ctx: ToolContext) -> str:
         return _clarify_message(args["destination"])
     result = await travel_distance(origin, dest, mode=args.get("mode", "driving"), client=ctx.http)
     dist_mi = miles(result["meters"])
+    directions = directions_link(origin, dest, mode=args.get("mode"))
+    snapshot = {
+        "origin": {"label": origin.label, "latitude": origin.lat, "longitude": origin.lon},
+        "destination": {"label": dest.label, "latitude": dest.lat, "longitude": dest.lon},
+        "route": result,
+    }
+    citation = ctx.citations.register(
+        directions,
+        snippet=f"{origin.label} to {dest.label}, {dist_mi:.2f} mi",
+        title="Resolved route inputs",
+        kind="DATA",
+        provenance=data_provenance(
+            snapshot,
+            record_id=directions,
+            field_pointer="/",
+            derivation={
+                "origin": [origin.lat, origin.lon],
+                "point": [dest.lat, dest.lon],
+                "distance_mi": dist_mi,
+            },
+        ),
+    )
     if result["minutes"] is not None:
         distance = format_distance(
             args["origin"], origin, dist_mi,
             suffix=f", ~{result['minutes']} min by {result['mode']} (OSRM)",
             destination_query=args["destination"], destination=dest,
         )
-        return f"{origin.label} → {dest.label}: {distance}."
+        return f"{origin.label} → {dest.label}: {distance}. Directions: {directions} {{cite:{citation}}}"
     return (
         f"{origin.label} → {dest.label}: "
-        f"{format_distance(args['origin'], origin, dist_mi, destination_query=args['destination'], destination=dest)} (routing unavailable)."
+        f"{format_distance(args['origin'], origin, dist_mi, destination_query=args['destination'], destination=dest)} "
+        f"(routing unavailable). Directions: {directions} {{cite:{citation}}}"
     )
 
 
@@ -944,13 +995,20 @@ def geo_tools() -> list[Tool]:
         ),
         Tool(
             name="distance",
-            description="Travel distance and time between two NYC places. NEVER estimate distances yourself.",
+            description=(
+                "Travel distance and time between two NYC places and return a grounded Directions "
+                "link. NEVER estimate distances yourself."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
                     "origin": {"type": "string"},
                     "destination": {"type": "string"},
-                    "mode": {"type": "string", "enum": ["driving", "walking", "cycling"], "default": "driving"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["driving", "walking", "cycling", "transit"],
+                        "default": "driving",
+                    },
                 },
                 "required": ["origin", "destination"],
             },

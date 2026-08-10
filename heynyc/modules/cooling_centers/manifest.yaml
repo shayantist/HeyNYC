@@ -54,6 +54,8 @@ prompt: |
   child-specific amenities or suitability.
   Preserve the tool's distinction between activated cooling centers and other Cool Options,
   and report its scheduled status, hours, access details, and citations.
+  When the resident cannot walk far, preserve the tool's origin-to-destination Directions link.
+  Do not claim that a walking or transit route is accessible unless retrieved evidence proves it.
   City-listed weekly hours are not a guarantee of holiday hours or entry, so preserve the
   call-ahead warning.
   If no activated center is returned, offer other indoor Cool Options instead of merely linking

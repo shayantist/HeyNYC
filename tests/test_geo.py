@@ -169,6 +169,44 @@ async def test_non_nyc_bare_zip_returns_none():
     await client.aclose()
 
 
+async def test_f184_failed_intersection_with_nyc_zip_degrades_to_zip_centroid():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"features": []})
+        )
+    )
+
+    point = await geocode(
+        "18th Avenue and Fort Hamilton Parkway, Brooklyn, NY 11218",
+        client=client,
+        forgiving=_fake_forgiving(None),
+        borough_contains=_fake_borough_contains(True),
+    )
+    await client.aclose()
+
+    assert point is not None
+    assert point.match_type == "zcta"
+    assert point.label == "ZIP 11218 area"
+
+
+async def test_f184_failed_full_address_with_zip_does_not_degrade_to_area():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"features": []})
+        )
+    )
+
+    point = await geocode(
+        "123 Example Street, Brooklyn, NY 11218",
+        client=client,
+        forgiving=_fake_forgiving(None),
+        borough_contains=_fake_borough_contains(True),
+    )
+    await client.aclose()
+
+    assert point is None
+
+
 async def test_real_address_still_uses_geosearch():
     # No 5-digit token → falls through to GeoSearch, unaffected by the ZIP guard.
     def handler(request: httpx.Request) -> httpx.Response:

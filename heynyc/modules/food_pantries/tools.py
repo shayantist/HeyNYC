@@ -226,6 +226,10 @@ def _open_now(record: dict, now: datetime) -> bool | None:
     Never guesses: a record with hours on other days but none today reads as closed today (False);
     a record with no parseable hours anywhere returns None so the agent says it doesn't have them.
     """
+    if _schedule_conflict(record, now.date()):
+        return None
+    if _monthly_occurrence_allows(record, now.date()) is False:
+        return False
     prefix = _prefix(record)
     today_slots = _day_slots(record, prefix, _DAYS[now.weekday()])
     previous_slots = _day_slots(record, prefix, _DAYS[(now.weekday() - 1) % 7])
@@ -247,6 +251,8 @@ def _open_now(record: dict, now: datetime) -> bool | None:
 def _scheduled_on(record: dict, requested: date) -> bool | None:
     if _schedule_conflict(record, requested):
         return None
+    if _monthly_occurrence_allows(record, requested) is False:
+        return False
     prefix = _prefix(record)
     if _day_slots(record, prefix, _DAYS[requested.weekday()]):
         return True
@@ -263,6 +269,8 @@ def _scheduled_during(
 ) -> bool | None:
     if _schedule_conflict(record, requested):
         return None
+    if _monthly_occurrence_allows(record, requested) is False:
+        return False
     prefix = _prefix(record)
     slots = _day_slots(record, prefix, _DAYS[requested.weekday()])
     if slots:
@@ -287,6 +295,25 @@ def _schedule_conflict(record: dict, requested: date) -> bool:
     source_occurrences = set(_MONTHLY_OCCURRENCE_RE.findall(source_days))
     note_occurrences = set(_MONTHLY_OCCURRENCE_RE.findall(notes))
     return bool(source_occurrences and note_occurrences and source_occurrences != note_occurrences)
+
+
+def _monthly_occurrence_allows(record: dict, requested: date) -> bool | None:
+    prefix = _prefix(record)
+    day = _DAYS[requested.weekday()]
+    weekday = requested.strftime("%A").lower()
+    occurrence_sets = [
+        set(_MONTHLY_OCCURRENCE_RE.findall(text))
+        for text in (
+            _clean(record.get(f"{prefix}_days_orig")),
+            _clean(record.get(f"{prefix}_notes")),
+        )
+        if day in text.lower() or weekday in text.lower()
+    ]
+    occurrence_sets = [values for values in occurrence_sets if values]
+    if not occurrence_sets or any(values != occurrence_sets[0] for values in occurrence_sets[1:]):
+        return None
+    occurrence = str((requested.day - 1) // 7 + 1)
+    return occurrence in occurrence_sets[0]
 
 
 def _status_label(open_now: bool | None) -> str:
@@ -490,6 +517,9 @@ def _pantry_block(
 ) -> str:
     flags = _flags(pantry)
     flag_str = f" [{', '.join(flags)}]" if flags else ""
+    show_hours = _monthly_occurrence_allows(
+        pantry.raw, requested or now.date()
+    ) is not False
     if service_window:
         requested = requested or now.date()
         start, end = service_window
@@ -510,6 +540,8 @@ def _pantry_block(
                 f"source fields conflict about the {requested.strftime('%A')} schedule "
                 f"for {day}, call to verify"
             )
+        elif _monthly_occurrence_allows(pantry.raw, requested) is False:
+            status = f"monthly schedule excludes {day}, call to verify changes"
         else:
             scheduled = _scheduled_on(pantry.raw, requested)
             status = (
@@ -526,7 +558,7 @@ def _pantry_block(
     parts = [f"- {pantry.name}{flag_str} ({pantry.address or 'NYC'}), "
              f"{distance}, {status} {{cite:{cite}}}"]
     hours = _listed_hours(pantry.raw, weekday)
-    if hours:
+    if hours and show_hours:
         label = (
             f"{requested.strftime('%A')}'s"
             if requested and requested != now.date()

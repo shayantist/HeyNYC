@@ -383,6 +383,19 @@ async def test_guidance_right_to_counsel_grounds_legal_help_and_cites():
     assert "{cite:S1}" in out             # the fact carries its citation inline
 
 
+async def test_f183_right_to_counsel_evidence_preserves_the_first_action():
+    _out, citations = await _run_guidance("right_to_counsel")
+    answer = (
+        "Your first step is to call Housing Court Answers at 718-557-1379 or "
+        "212-962-4795, Monday to Friday, 9am to 5pm, or call 311 and ask for the "
+        "Tenant Helpline. {cite:S1}"
+    )
+
+    verdict = check_grounding(answer, citations.mapping())
+
+    assert verdict is not None and not verdict.blocking
+
+
 async def test_guidance_bronx_housing_court_returns_direct_distinct_locations():
     out, citations = await _run_guidance("bronx_housing_court")
 

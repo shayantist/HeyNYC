@@ -69,6 +69,30 @@ _FULL_DATE_RE = re.compile(
 )
 _URL_RE = re.compile(r"https?://[^\s)>]+")
 _COORDINATE_PAIR_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+_MONTHLY_WEEKDAY_CLAIM_RE = re.compile(
+    r"\b(?P<month>[A-Za-z]+)\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
+    r"(?:,?\s+(?P<year>\d{4}))?\s+(?:is|falls\s+on|will\s+be)\s+(?:the\s+)?"
+    r"(?P<occurrence>first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+"
+    r"(?P<weekday>Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
+    re.IGNORECASE,
+)
+_MONTH_NUMBERS = {
+    name: number
+    for number, name in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"),
+        1,
+    )
+}
+_WEEKDAY_NUMBERS = {
+    name.casefold(): number
+    for number, name in enumerate(
+        ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    )
+}
+_OCCURRENCE_NUMBERS = {
+    "first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3,
+    "fourth": 4, "4th": 4, "fifth": 5, "5th": 5,
+}
 _STREET_TYPES = {
     "street", "st", "avenue", "ave", "av", "boulevard", "blvd", "road", "rd", "place", "pl",
     "drive", "dr", "lane", "ln", "court", "ct", "parkway", "pkwy", "plaza", "terrace", "ter",
@@ -256,14 +280,16 @@ def _salient_tokens(claim: str) -> list[dict]:
         if parsed.hostname not in {"google.com", "www.google.com", "maps.google.com"}:
             continue
         query = parse_qs(parsed.query)
-        coordinate_text = (query.get("query") or query.get("destination") or [""])[0]
-        match = _COORDINATE_PAIR_RE.fullmatch(coordinate_text)
-        if match:
-            tokens.append({
-                "kind": "map_coordinates",
-                "text": coordinate_text,
-                "point": (float(match.group(1)), float(match.group(2))),
-            })
+        for query_field in ("query", "origin", "destination"):
+            coordinate_text = (query.get(query_field) or [""])[0]
+            match = _COORDINATE_PAIR_RE.fullmatch(coordinate_text)
+            if match:
+                tokens.append({
+                    "kind": "map_coordinates",
+                    "text": coordinate_text,
+                    "point": (float(match.group(1)), float(match.group(2))),
+                    "role": "origin" if query_field == "origin" else "point",
+                })
     for m in _PHONE_RE.finditer(claim):
         d = _digits(m.group())
         if len(d) == 11 and d.startswith("1"):
@@ -453,8 +479,8 @@ def _token_matches(
 def _map_coordinates_match(tok: dict, citation: dict) -> bool:
     provenance = citation.get("provenance") or {}
     snapshot = provenance.get("snapshot") or {}
-    candidates = [provenance.get("derivation", {}).get("point")]
-    if isinstance(snapshot, dict):
+    candidates = [provenance.get("derivation", {}).get(tok.get("role", "point"))]
+    if tok.get("role") != "origin" and isinstance(snapshot, dict):
         candidates.append([
             snapshot.get("latitude", snapshot.get("lat")),
             snapshot.get("longitude", snapshot.get("lon", snapshot.get("lng"))),
@@ -575,6 +601,35 @@ def check_grounding(
     checked = 0
     nli_checked = 0
     current_date = current_date or datetime.now(ZoneInfo("America/New_York")).date()
+    for block in re.split(r"\n\s*\n", text):
+        cited = list(dict.fromkeys(_CITE_REF_RE.findall(block)))
+        if not cited:
+            continue
+        for match in _MONTHLY_WEEKDAY_CLAIM_RE.finditer(block):
+            month = _MONTH_NUMBERS.get(match.group("month").casefold()[:3])
+            if month is None:
+                continue
+            year = int(match.group("year") or current_date.year)
+            if match.group("year") is None and month < current_date.month:
+                year += 1
+            try:
+                claimed_date = date(year, month, int(match.group("day")))
+            except ValueError:
+                continue
+            checked += 1
+            occurrence = (claimed_date.day - 1) // 7 + 1
+            if (
+                claimed_date.weekday() == _WEEKDAY_NUMBERS[match.group("weekday").casefold()]
+                and occurrence == _OCCURRENCE_NUMBERS[match.group("occurrence").casefold()]
+            ):
+                continue
+            hard_failures.append(Mismatch(
+                claim=_CITE_REF_RE.sub(" ", block).strip(),
+                cited=cited,
+                kind="calendar_consistency",
+                text=match.group().strip(),
+                message=f"{'/'.join(cited)}: calendar claim is internally inconsistent",
+            ))
     for block in re.split(r"\n\s*\n", text):
         cited = list(dict.fromkeys(_CITE_REF_RE.findall(block)))
         block_times = _clock_minutes(_CITE_REF_RE.sub(" ", block))
