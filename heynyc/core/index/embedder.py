@@ -56,7 +56,7 @@ class FastEmbedEmbedder:
         self.model_id = f"fastembed:{model_name}"
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return [list(map(float, vec)) for vec in self._model.embed(texts)]
+        return [list(map(float, vec)) for vec in self._model.embed(texts, batch_size=32)]
 
 
 def default_embedder() -> Embedder:

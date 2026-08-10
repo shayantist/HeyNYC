@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import httpx
 
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.index import IndexRetriever
 from heynyc.core.index.corpus import build_index, chunk_text, clean_html
-from heynyc.core.index.embedder import HashEmbedder
+from heynyc.core.index.embedder import FastEmbedEmbedder, HashEmbedder
 from heynyc.core.index.store import IndexDoc, InMemoryVectorStore, LanceVectorStore
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
@@ -37,6 +40,23 @@ def test_hash_embedder_deterministic_and_normalized():
     v2 = e.embed(["cooling center near me"])[0]
     assert v1 == v2
     assert abs(sum(x * x for x in v1) ** 0.5 - 1.0) < 1e-9
+
+
+def test_fastembed_uses_a_memory_bounded_batch(monkeypatch):
+    seen = {}
+
+    class FakeTextEmbedding:
+        def __init__(self, **kwargs):
+            pass
+
+        def embed(self, texts, **kwargs):
+            seen.update(kwargs)
+            return [[1.0] for _ in texts]
+
+    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeTextEmbedding))
+
+    assert FastEmbedEmbedder().embed(["one", "two"]) == [[1.0], [1.0]]
+    assert seen == {"batch_size": 32}
 
 
 def test_inmemory_store_ranks_relevant_first():
