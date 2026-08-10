@@ -50,7 +50,11 @@ _LEGACY_CITATION_RE = re.compile(
 class GroundedBlock(BaseModel):
     text: str = Field(
         min_length=1,
-        description="One factual or procedural claim, without citation markers.",
+        description=(
+            "One factual or procedural claim directly supported by its cited evidence, without "
+            "citation markers. Do not turn a cited prohibition into an unsupported positive "
+            "instruction."
+        ),
     )
     citation_ids: list[str] = Field(
         min_length=1,

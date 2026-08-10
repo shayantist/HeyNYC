@@ -32,7 +32,7 @@
   notes: Plain street address — the reliable geocoding path.
 
 - id: snap_where_to_apply_in_person
-  tags: [F176, F178, must-win]
+  tags: [F176, F178, F187, must-win]
   query: "Where can I apply for SNAP in person near Jackson Heights, Queens?"
   capability: dataset_grounding
   test_type: MFT
