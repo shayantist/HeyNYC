@@ -23,6 +23,9 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
     log = tmp_path / "commands.log"
     for directory in (shared / "data", previous / ".venv" / "bin", source, fake_bin):
         directory.mkdir(parents=True)
+    old_index = shared / "data" / "index.lance"
+    old_index.mkdir()
+    (old_index / "old.txt").write_text("old index")
     env_file = shared / ".env"
     env_file.write_text(
         f"HEYNYC_DATA_DIR={shared / 'data'}\n"
@@ -60,9 +63,12 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         f"echo \"git $*\" >> {log}\n"
         "if [ \"${1:-}\" = -C ]; then worktree=$2; shift 2; fi\n"
         "case \"$1 $2\" in\n"
-        "  'worktree add') target=$4; mkdir -p \"$target/.venv/bin\"; cat > \"$target/.venv/bin/python\" <<'PY'\n"
+        "  'worktree add') target=$4; mkdir -p \"$target/.venv/bin\" \"$target/scripts\"; if [ \"${TARGET_OLD_CONTROLLER:-0}\" = 1 ]; then printf '#!/bin/sh\\n# HEYNYC_PREPARED_RELEASE\\nexit 0\\n' > \"$target/scripts/deploy_wsl.sh\"; else cp \"$DEPLOY_SCRIPT\" \"$target/scripts/deploy_wsl.sh\"; fi; chmod +x \"$target/scripts/deploy_wsl.sh\"; cat > \"$target/.venv/bin/python\" <<'PY'\n"
         "#!/bin/sh\n"
+        f"echo \"python $*\" >> {log}\n"
         "case \"$*\" in *'state_snapshot.py restore'*) while [ \"$#\" -gt 0 ]; do if [ \"$1\" = --target ]; then mkdir -p \"$2\"; break; fi; shift; done ;; esac\n"
+        "case \"$*\" in *'-m heynyc index-build'*) if [ \"${SYMLINK_FRESH_INDEX:-0}\" = 1 ]; then mkdir -p \"$HEYNYC_DATA_DIR/real-index.lance\"; echo new > \"$HEYNYC_DATA_DIR/real-index.lance/new.txt\"; ln -s \"$HEYNYC_DATA_DIR/real-index.lance\" \"$HEYNYC_DATA_DIR/index.lance\"; else mkdir -p \"$HEYNYC_DATA_DIR/index.lance\"; echo new > \"$HEYNYC_DATA_DIR/index.lance/new.txt\"; fi; if [ \"${INCOMPLETE_INDEX_BUILD:-0}\" = 1 ]; then echo '  ok=1  chunks=1  failed=1'; else echo '  ok=2  chunks=2  failed=0'; fi ;; esac\n"
+        "case \"$*\" in *'-m heynyc index-search'*) if [ \"${URL_ONLY_IN_TEXT:-0}\" = 1 ]; then echo 'document text mentions https://a858-nycnotify.nyc.gov/Home/FAQ and notify-nyc-short-code-terms-conditions-privacy-policy-information.page'; else echo 'https://a858-nycnotify.nyc.gov/Home/FAQ'; [ \"${FAIL_INDEX_PROBE:-0}\" = 1 ] || echo 'https://www.nyc.gov/site/em/resources/notify_nyc/notify-nyc-short-code-terms-conditions-privacy-policy-information.page'; fi ;; esac\n"
         "if [ \"${1:-}\" = -c ]; then echo 30; fi\n"
         "exit 0\n"
         "PY\n"
@@ -85,8 +91,21 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
     _executable(
         fake_bin / "mv",
         "#!/bin/sh\n"
+        "case \"${1:-}\" in */shared/data/index.lance) [ \"${FAIL_OLD_INDEX_MOVE:-0}\" != 1 ] || exit 1 ;; esac\n"
+        "case \"${1:-}\" in */new-data/index.lance) [ \"${FAIL_FRESH_INDEX_MOVE:-0}\" != 1 ] || exit 1 ;; esac\n"
         "if [ \"${1:-}\" = -Tf ]; then /usr/bin/python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' \"$2\" \"$3\"; if [ \"${SIGNAL_AFTER_SWITCH:-0}\" = 1 ] && [ ! -f \"$SIGNAL_SENT\" ]; then : > \"$SIGNAL_SENT\"; kill -TERM \"$PPID\"; fi; exit 0; fi\n"
         "exec /bin/mv \"$@\"\n",
+    )
+    _executable(
+        fake_bin / "shasum",
+        "#!/bin/sh\n"
+        "case \"$*\" in *'-c ../SHA256SUMS'*) [ \"${FAIL_INDEX_CHECKSUM:-0}\" != 1 ] || exit 1 ;; esac\n"
+        "exec /usr/bin/shasum \"$@\"\n",
+    )
+    _executable(
+        fake_bin / "stat",
+        "#!/bin/sh\n"
+        "case \"$*\" in *shared/data*) echo 1 ;; *to-delete*) if [ \"${CROSS_FILESYSTEM_INDEX:-0}\" = 1 ]; then echo 2; else echo 1; fi ;; *service) echo 1 ;; *) exec /usr/bin/stat \"$@\" ;; esac\n",
     )
 
     env = {
@@ -98,6 +117,7 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "SIGNAL_SENT": str(tmp_path / "signal-sent"),
         "EXPECTED_DEPLOY_REF": "refs/remotes/origin/main",
         "HEYNYC_TMPFILES_CONFIG": str(tmp_path / "heynyc-backups.conf"),
+        "DEPLOY_SCRIPT": str(SCRIPT),
     }
     return env, root, previous, log
 
@@ -147,6 +167,231 @@ def test_wsl_deploy_prepares_before_the_short_stopped_window() -> None:
     assert "restore-check" not in text
     assert "prestart_recovery" in text
     assert text.index("prestart_recovery=1") < stop
+
+
+def test_wsl_deploy_builds_and_probes_a_fresh_index_before_stopping() -> None:
+    text = SCRIPT.read_text()
+
+    build = text.index("-m heynyc index-build")
+    faq_probe = text.index("Notify NYC mobile app cost")
+    terms_probe = text.index("Notify NYC short code message data rates")
+    stop = text.index('systemctl stop "$SERVICE"')
+    snapshot = text.index('state_snapshot.py" create')
+    swap = text.index('mv "$fresh_index" "$active_index"')
+
+    assert build < faq_probe < terms_probe < stop < snapshot < swap
+    assert 'failed=0' in text
+    assert '--urls-only' in text
+    assert '"$ROOT/to-delete"' in text
+
+
+def test_wsl_deploy_quarantines_the_old_index_and_activates_the_fresh_one(
+    tmp_path: Path,
+) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    assert (root / "shared" / "data" / "index.lance" / "new.txt").read_text() == "new\n"
+    quarantines = list((root / "to-delete").glob("*-index-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "old-index.lance" / "old.txt").read_text() == "old index"
+    assert (quarantines[0] / "inventory.tsv").is_file()
+    assert (quarantines[0] / "SHA256SUMS").is_file()
+    commands = log.read_text()
+    assert commands.index("python -m heynyc index-build") < commands.index("systemctl stop heynyc")
+
+
+def test_wsl_deploy_restores_the_old_index_on_prestart_failure(tmp_path: Path) -> None:
+    env, root, _, _ = _deploy_fixture(tmp_path)
+    env["SIGNAL_AFTER_SWITCH"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").read_text() == "old index"
+    quarantines = list((root / "to-delete").glob("*-index-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "failed-index.lance" / "new.txt").read_text() == "new\n"
+
+
+def test_wsl_deploy_hands_control_to_the_prepared_target_release() -> None:
+    text = SCRIPT.read_text()
+
+    assert 'HEYNYC_PREPARED_RELEASE' in text
+    assert 'exec "$release/scripts/deploy_wsl.sh" "$sha"' in text
+    assert '"$release/scripts/deploy_wsl.sh" --protocol' in text
+    assert '"$ROOT/deploy.lock" -ef /proc/self/fd/9' in text
+    assert 'flock -n 9' in text
+    assert 'mktemp -d "$ROOT/to-delete/' in text
+    assert 'mktemp -d "$ROOT/to-delete/$timestamp-$sha-rollback-' in text
+
+
+def test_wsl_deploy_rejects_an_old_target_controller(tmp_path: Path) -> None:
+    env, _, _, log = _deploy_fixture(tmp_path)
+    env["TARGET_OLD_CONTROLLER"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert "target deploy controller does not support prepared releases" in result.stderr
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_an_incomplete_index_before_downtime(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["INCOMPLETE_INDEX_BUILD"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_a_failed_index_probe_before_downtime(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["FAIL_INDEX_PROBE"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_source_urls_found_only_in_document_text(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["URL_ONLY_IN_TEXT"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_cross_filesystem_index_moves_before_downtime(
+    tmp_path: Path,
+) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["CROSS_FILESYSTEM_INDEX"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert "index quarantine must share the live data filesystem" in result.stderr
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_a_symlinked_live_index_before_downtime(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    active = root / "shared" / "data" / "index.lance"
+    target = root / "shared" / "data" / "real-index.lance"
+    active.rename(target)
+    active.symlink_to(target)
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert "active retrieval index must be a real directory" in result.stderr
+    assert target.joinpath("old.txt").is_file()
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_external_prepared_release_state(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["HEYNYC_PREPARED_RELEASE"] = str(root / "releases" / f"{NEW_SHA}-injected")
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 64
+    assert "prepared release requires inherited deployment state" in result.stderr
+    assert not log.exists()
+
+
+def test_wsl_deploy_ignores_prepared_release_state_from_dotenv(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    injected = root / "releases" / f"{NEW_SHA}-injected"
+    with (root / "shared" / ".env").open("a") as handle:
+        handle.write(f"HEYNYC_PREPARED_RELEASE={injected}\nHEYNYC_DEPLOY_LOCKED=1\n")
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "worktree add --detach" in log.read_text()
+
+
+def test_wsl_deploy_rejects_internal_variable_collisions_from_dotenv(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    with (root / "shared" / ".env").open("a") as handle:
+        handle.write(f"sha={OLD_SHA}\n")
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert not log.exists()
+    assert (root / "current").resolve().name == OLD_SHA
+
+
+def test_wsl_deploy_rejects_a_symlinked_quarantine_root(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    quarantine_target = tmp_path / "external-quarantine"
+    quarantine_target.mkdir()
+    (root / "to-delete").symlink_to(quarantine_target)
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert "to-delete must be a real directory" in result.stderr
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_rejects_a_symlinked_fresh_index_before_downtime(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["SYMLINK_FRESH_INDEX"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert "fresh retrieval index must be a real directory" in result.stderr
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl stop heynyc" not in log.read_text()
+
+
+def test_wsl_deploy_restores_the_old_index_after_checksum_failure(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["FAIL_INDEX_CHECKSUM"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl start heynyc" in log.read_text(), result.stderr
+
+
+def test_wsl_deploy_restores_the_old_index_after_fresh_move_failure(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["FAIL_FRESH_INDEX_MOVE"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl start heynyc" in log.read_text(), result.stderr
+
+
+def test_wsl_deploy_restarts_old_service_after_old_index_move_failure(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    env["FAIL_OLD_INDEX_MOVE"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "shared" / "data" / "index.lance" / "old.txt").is_file()
+    assert "systemctl start heynyc" in log.read_text(), result.stderr
 
 
 def test_wsl_deploy_installs_native_snapshot_retention(tmp_path: Path) -> None:

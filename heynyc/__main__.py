@@ -201,12 +201,15 @@ async def _cmd_index_build() -> None:
         print(f"    ✗ {fail['url']}, {fail['error']}")
 
 
-def _cmd_index_search(query: str) -> None:
+def _cmd_index_search(query: str, urls_only: bool = False) -> None:
     retriever = _load_retriever(required=True)
     if retriever is None:
         return
     for doc, score in retriever.search(query, k=5):
-        print(f"[{score:.2f}] {doc.title}, {doc.url}\n    {doc.text[:160]}...\n")
+        if urls_only:
+            print(doc.url)
+        else:
+            print(f"[{score:.2f}] {doc.title}, {doc.url}\n    {doc.text[:160]}...\n")
 
 
 def _record_agent_turn(session_id: str, model: str, result) -> None:
@@ -853,6 +856,7 @@ def main() -> None:
     newmod.add_argument("name")
     sub.add_parser("index-build", help="fetch + embed module seeds into the index")
     isearch = sub.add_parser("index-search", help="query the index directly (no LLM)")
+    isearch.add_argument("--urls-only", action="store_true", help="print one result URL per line")
     isearch.add_argument("query")
     chat = sub.add_parser("chat", help="ask the agent a question (one-shot)")
     chat.add_argument("--model", default=None, help="answer model override; without it, .env (HEYNYC_MODEL) ALWAYS decides")
@@ -923,7 +927,7 @@ def main() -> None:
     elif args.command == "index-build":
         asyncio.run(_cmd_index_build())
     elif args.command == "index-search":
-        _cmd_index_search(args.query)
+        _cmd_index_search(args.query, urls_only=args.urls_only)
     elif args.command == "chat":
         asyncio.run(_cmd_chat(args.question, model=args.model))
     elif args.command == "repl":

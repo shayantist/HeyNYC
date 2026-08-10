@@ -238,6 +238,30 @@ def test_embedders_expose_model_id():
     assert HashEmbedder(dim=128).model_id == "hash:128"
 
 
+def test_index_search_can_emit_machine_readable_urls(monkeypatch, capsys):
+    import heynyc.__main__ as cli
+
+    docs = [
+        IndexDoc(id="1", text="first", title="First", url="https://example.test/one"),
+        IndexDoc(id="2", text="second", title="Second", url="https://example.test/two"),
+    ]
+
+    class Retriever:
+        def search(self, query, k):
+            assert query == "probe"
+            assert k == 5
+            return [(docs[0], 0.9), (docs[1], 0.8)]
+
+    monkeypatch.setattr(cli, "_load_retriever", lambda required: Retriever())
+
+    cli._cmd_index_search("probe", urls_only=True)
+
+    assert capsys.readouterr().out.splitlines() == [
+        "https://example.test/one",
+        "https://example.test/two",
+    ]
+
+
 def test_embedded_store_memoizes_by_content_and_model():
     from heynyc.core.index import cache as idxcache
 

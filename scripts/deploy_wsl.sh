@@ -2,7 +2,19 @@
 # Manual, exact-SHA deployment for the single-host WSL pilot.
 set -eu
 
+DEPLOY_PROTOCOL="heynyc-deploy-v2"
+if [ "$#" -eq 1 ] && [ "$1" = --protocol ]; then
+    echo "$DEPLOY_PROTOCOL"
+    exit 0
+fi
 [ "$#" -eq 1 ] || { echo "usage: $0 <40-character pushed SHA>" >&2; exit 64; }
+deploy_locked="${HEYNYC_DEPLOY_LOCKED:-0}"
+prepared_release="${HEYNYC_PREPARED_RELEASE:-}"
+unset HEYNYC_DEPLOY_LOCKED HEYNYC_PREPARED_RELEASE
+[ -z "$prepared_release" ] || [ "$deploy_locked" = 1 ] || {
+    echo "prepared release requires inherited deployment state" >&2
+    exit 64
+}
 sha="$1"
 case "$sha" in
     *[!0-9a-f]*|'') echo "deployment SHA must be lowercase hexadecimal" >&2; exit 64 ;;
@@ -18,10 +30,19 @@ BACKUPS="$ROOT/backups"
 TMPFILES_CONFIG="${HEYNYC_TMPFILES_CONFIG:-/etc/tmpfiles.d/heynyc-backups.conf}"
 SERVICE="${HEYNYC_SYSTEMD_SERVICE:-heynyc}"
 PORT="${HEYNYC_PORT:-8791}"
+readonly DEPLOY_PROTOCOL deploy_locked prepared_release sha ROOT SOURCE SHARED RELEASES CURRENT
+readonly BACKUPS TMPFILES_CONFIG SERVICE PORT
 
 mkdir -p "$ROOT" "$RELEASES" "$BACKUPS"
-exec 9>"$ROOT/deploy.lock"
-flock -n 9 || { echo "another deployment holds $ROOT/deploy.lock" >&2; exit 75; }
+if [ "$deploy_locked" = 1 ]; then
+    if { [ -e /proc/self/fd/9 ] && ! [ "$ROOT/deploy.lock" -ef /proc/self/fd/9 ]; } || ! flock -n 9; then
+        echo "inherited deployment lock is unavailable" >&2
+        exit 75
+    fi
+else
+    exec 9>"$ROOT/deploy.lock"
+    flock -n 9 || { echo "another deployment holds $ROOT/deploy.lock" >&2; exit 75; }
+fi
 sudo -n true 2>/dev/null || {
     echo "sudo authorization is not cached; run sudo -v interactively, then retry" >&2
     exit 77
@@ -53,11 +74,15 @@ remote_ref="refs/remotes/$deploy_ref"
 validate_release() {
     candidate="$1"
     expected_sha="${2:-}"
+    candidate_real="$(readlink -f "$candidate" 2>/dev/null)" || return 1
+    releases_real="$(readlink -f "$RELEASES" 2>/dev/null)" || return 1
     case "$candidate" in
         "$RELEASES"/*) ;;
         *) return 1 ;;
     esac
-    [ ! -L "$candidate" ] &&
+    [ "$(dirname "$candidate_real")" = "$releases_real" ] &&
+        [ "$candidate_real" = "$candidate" ] &&
+        [ ! -L "$candidate" ] &&
         [ -d "$candidate" ] &&
         [ -f "$candidate/.heynyc-ready" ] &&
         [ -L "$candidate/.env" ] &&
@@ -68,6 +93,10 @@ validate_release() {
         git -C "$candidate" diff --cached --quiet -- &&
         [ "$(git -C "$candidate" status --porcelain --untracked-files=all)" = "?? .heynyc-ready" ] &&
         { [ -z "$expected_sha" ] || [ "$(git -C "$candidate" rev-parse HEAD)" = "$expected_sha" ]; }
+}
+
+filesystem_id() {
+    stat -c %d "$1" 2>/dev/null || stat -f %d "$1"
 }
 
 [ -L "$CURRENT" ] || { echo "$CURRENT must be a release symlink" >&2; exit 78; }
@@ -101,18 +130,33 @@ if [ "$(git -C "$previous" rev-parse HEAD)" = "$sha" ]; then
     echo "$sha is already deployed"
     exit 0
 fi
-if [ -e "$release" ] || [ -L "$release" ]; then
-    release="$RELEASES/$sha-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    [ ! -e "$release" ] && [ ! -L "$release" ] || {
-        echo "unique release path already exists: $release" >&2
-        exit 73
+if [ -n "$prepared_release" ]; then
+    release="$prepared_release"
+    validate_release "$release" "$sha" || {
+        echo "prepared release is not ready for requested SHA" >&2
+        exit 78
     }
+else
+    if [ -e "$release" ] || [ -L "$release" ]; then
+        release="$RELEASES/$sha-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        [ ! -e "$release" ] && [ ! -L "$release" ] || {
+            echo "unique release path already exists: $release" >&2
+            exit 73
+        }
+    fi
+    git -C "$SOURCE" worktree add --detach "$release" "$sha"
+    ln -s "$SHARED/.env" "$release/.env"
+    (cd "$release" && uv sync --frozen --extra whatsapp --extra pydantic-ai)
+    : > "$release/.heynyc-ready"
+    validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
+    if [ "$("$release/scripts/deploy_wsl.sh" --protocol 2>/dev/null)" != "$DEPLOY_PROTOCOL" ]; then
+        echo "target deploy controller does not support prepared releases" >&2
+        exit 78
+    fi
+    export HEYNYC_PREPARED_RELEASE="$release"
+    export HEYNYC_DEPLOY_LOCKED=1
+    exec "$release/scripts/deploy_wsl.sh" "$sha"
 fi
-git -C "$SOURCE" worktree add --detach "$release" "$sha"
-ln -s "$SHARED/.env" "$release/.env"
-(cd "$release" && uv sync --frozen --extra whatsapp --extra pydantic-ai)
-: > "$release/.heynyc-ready"
-validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 snapshot="$BACKUPS/$timestamp-$sha-$$"
 python="$release/.venv/bin/python"
@@ -124,6 +168,56 @@ next_pointer="$ROOT/.current.$timestamp.$$"
 case "$BACKUPS" in
     *[[:space:]]*) echo "backup path must not contain whitespace" >&2; exit 78 ;;
 esac
+[ ! -L "$ROOT/to-delete" ] || { echo "to-delete must be a real directory" >&2; exit 78; }
+mkdir -p "$ROOT/to-delete"
+[ -d "$ROOT/to-delete" ] && [ ! -L "$ROOT/to-delete" ] || {
+    echo "to-delete must be a real directory" >&2
+    exit 78
+}
+index_quarantine="$(mktemp -d "$ROOT/to-delete/$timestamp-$sha-index-XXXXXX")"
+index_build_data="$index_quarantine/new-data"
+active_index="$SHARED/data/index.lance"
+fresh_index="$index_build_data/index.lance"
+[ ! -L "$active_index" ] && [ -d "$active_index" ] || {
+    echo "active retrieval index must be a real directory" >&2
+    exit 78
+}
+[ "$(filesystem_id "$active_index")" = "$(filesystem_id "$index_quarantine")" ] &&
+    [ "$(filesystem_id "$ROOT")" = "$(filesystem_id "$index_quarantine")" ] || {
+    echo "index quarantine must share the live data filesystem" >&2
+    exit 78
+}
+command -v shasum >/dev/null 2>&1 || { echo "shasum is required" >&2; exit 69; }
+mkdir -p "$index_build_data"
+build_log="$index_quarantine/index-build.log"
+if ! HEYNYC_DATA_DIR="$index_build_data" "$python" -m heynyc index-build >"$build_log" 2>&1; then
+    cat "$build_log"
+    echo "index build failed; evidence preserved at $index_quarantine" >&2
+    exit 1
+fi
+cat "$build_log"
+if ! grep -Eq 'ok=[1-9][0-9]*[[:space:]]+chunks=[1-9][0-9]*[[:space:]]+failed=0' "$build_log"; then
+    echo "index build did not produce a complete nonempty corpus; evidence preserved at $index_quarantine" >&2
+    exit 1
+fi
+if [ -L "$fresh_index" ] || [ ! -d "$fresh_index" ]; then
+    echo "fresh retrieval index must be a real directory; evidence preserved at $index_quarantine" >&2
+    exit 1
+fi
+faq_probe="$index_quarantine/notify-faq-probe.log"
+HEYNYC_DATA_DIR="$index_build_data" "$python" -m heynyc index-search --urls-only \
+    "Notify NYC mobile app cost money in-app purchases free" >"$faq_probe"
+grep -Fxq 'https://a858-nycnotify.nyc.gov/Home/FAQ' "$faq_probe" || {
+    echo "fresh index did not retrieve the Notify NYC FAQ; evidence preserved at $index_quarantine" >&2
+    exit 1
+}
+terms_probe="$index_quarantine/notify-terms-probe.log"
+HEYNYC_DATA_DIR="$index_build_data" "$python" -m heynyc index-search --urls-only \
+    "Notify NYC short code message data rates wireless provider charges" >"$terms_probe"
+grep -Fxq 'https://www.nyc.gov/site/em/resources/notify_nyc/notify-nyc-short-code-terms-conditions-privacy-policy-information.page' "$terms_probe" || {
+    echo "fresh index did not retrieve the Notify NYC terms; evidence preserved at $index_quarantine" >&2
+    exit 1
+}
 retention_days=$("$python" -c 'from heynyc.core.pii_crypto import retention_days; print(f"{retention_days():g}")')
 tmpfiles_rule="d $BACKUPS 0700 - - mM:${retention_days}d -"
 if [ -e "$TMPFILES_CONFIG" ] || [ -L "$TMPFILES_CONFIG" ]; then
@@ -138,6 +232,20 @@ sudo systemctl enable --now systemd-tmpfiles-clean.timer
 sudo systemd-tmpfiles --clean "$TMPFILES_CONFIG"
 prestart_recovery=0
 startup_attempted=0
+index_change_started=0
+
+restore_previous_index() {
+    [ "$index_change_started" -eq 1 ] || return 0
+    if [ -d "$index_quarantine/old-index.lance" ]; then
+        if [ -e "$active_index" ] || [ -L "$active_index" ]; then
+            mv "$active_index" "$index_quarantine/failed-index.lance" || return 1
+        fi
+        mv "$index_quarantine/old-index.lance" "$active_index"
+    elif [ ! -d "$active_index" ]; then
+        return 1
+    fi
+    return 0
+}
 
 recover_before_start() {
     status="$1"
@@ -147,17 +255,23 @@ recover_before_start() {
         rollback_ok=1
         current_target="$(readlink -f "$CURRENT" 2>/dev/null || true)"
         if [ "$startup_attempted" -eq 0 ] && [ "$current_target" != "$previous" ]; then
-            rollback_pointer="$ROOT/.rollback.$timestamp.$$"
-            if ! ln -s "$previous" "$rollback_pointer" 2>/dev/null; then
+            if ! rollback_directory="$(mktemp -d "$ROOT/to-delete/$timestamp-$sha-rollback-XXXXXX")"; then
                 rollback_ok=0
-            elif ! mv -Tf "$rollback_pointer" "$CURRENT" 2>/dev/null; then
-                echo "rollback pointer remains at $rollback_pointer" >&2
-                rollback_ok=0
+            else
+                rollback_pointer="$rollback_directory/current"
+                if ! ln -s "$previous" "$rollback_pointer" 2>/dev/null; then
+                    rollback_ok=0
+                elif ! mv -Tf "$rollback_pointer" "$CURRENT" 2>/dev/null; then
+                    echo "rollback pointer remains at $rollback_pointer" >&2
+                    rollback_ok=0
+                fi
             fi
         fi
         current_target="$(readlink -f "$CURRENT" 2>/dev/null || true)"
         if [ "$startup_attempted" -eq 0 ]; then
             if [ "$current_target" != "$previous" ] || ! validate_release "$previous"; then
+                rollback_ok=0
+            elif ! restore_previous_index; then
                 rollback_ok=0
             fi
             if [ "$rollback_ok" -eq 1 ] && ! sudo systemctl start "$SERVICE" 2>/dev/null; then
@@ -196,6 +310,24 @@ if ! "$python" "$release/scripts/state_snapshot.py" verify "$snapshot" \
     echo "snapshot application verification failed before the release pointer changed" >&2
     exit 1
 fi
+[ -d "$active_index" ] || {
+    echo "active retrieval index is missing" >&2
+    exit 1
+}
+index_change_started=1
+mv "$active_index" "$index_quarantine/old-index.lance"
+(
+    cd "$index_quarantine/old-index.lance"
+    : >../inventory.tsv
+    : >../SHA256SUMS
+    find . -type f | LC_ALL=C sort | while IFS= read -r file; do
+        size=$(wc -c <"$file" | tr -d ' ')
+        printf '%s\t%s\n' "${file#./}" "$size" >>../inventory.tsv
+        shasum -a 256 "$file" >>../SHA256SUMS
+    done
+    shasum -a 256 -c ../SHA256SUMS >/dev/null
+)
+mv "$fresh_index" "$active_index"
 
 ln -s "$release" "$next_pointer"
 mv -Tf "$next_pointer" "$CURRENT"
