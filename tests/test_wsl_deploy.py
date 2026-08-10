@@ -51,6 +51,7 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         f"  'show -p') case \"$*\" in *WorkingDirectory*) echo '{root / 'current'}' ;;"
         f" *ExecStart*) echo \"{{ path={root / 'current'}/.venv/bin/python ; argv[]={root / 'current'}/.venv/bin/python -m heynyc serve --provider twilio --port 8791${{SYSTEMD_EXTRA:-}} ; ignore_errors=no ; }}\" ;; esac ;;\n"
         "  'stop heynyc') count=0; [ ! -f \"$STOP_COUNT\" ] || count=$(cat \"$STOP_COUNT\"); count=$((count + 1)); echo \"$count\" > \"$STOP_COUNT\"; [ \"${FAIL_STOP_CALL:-}\" != \"$count\" ] ;;\n"
+        "  'start heynyc') if [ \"${SIGNAL_ON_START:-0}\" = 1 ] && [ ! -f \"$SIGNAL_SENT\" ]; then : > \"$SIGNAL_SENT\"; kill -TERM \"$PPID\"; fi ;;\n"
         "esac\n",
     )
     _executable(
@@ -59,27 +60,32 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         f"echo \"git $*\" >> {log}\n"
         "if [ \"${1:-}\" = -C ]; then worktree=$2; shift 2; fi\n"
         "case \"$1 $2\" in\n"
-        "  'worktree remove') target=$4; rm -rf \"$target\" ;;\n"
         "  'worktree add') target=$4; mkdir -p \"$target/.venv/bin\"; cat > \"$target/.venv/bin/python\" <<'PY'\n"
         "#!/bin/sh\n"
         "case \"$*\" in *'state_snapshot.py restore'*) while [ \"$#\" -gt 0 ]; do if [ \"$1\" = --target ]; then mkdir -p \"$2\"; break; fi; shift; done ;; esac\n"
+        "if [ \"${1:-}\" = -c ]; then echo 30; fi\n"
         "exit 0\n"
         "PY\n"
         "chmod +x \"$target/.venv/bin/python\" ;;\n"
         "  'rev-parse --is-inside-work-tree') echo true ;;\n"
-        "  'rev-parse HEAD') basename \"$worktree\" ;;\n"
+        "  'rev-parse HEAD') basename \"$worktree\" | cut -c1-40 ;;\n"
         "  'status --porcelain') echo '?? .heynyc-ready' ;;\n"
         "  'show-ref --verify') [ \"$4\" = \"$EXPECTED_DEPLOY_REF\" ] ;;\n"
         "  'merge-base --is-ancestor') [ \"$4\" = \"$EXPECTED_DEPLOY_REF\" ] ;;\n"
         "esac\n",
     )
     _executable(fake_bin / "uv", "#!/bin/sh\nexit 0\n")
+    _executable(
+        fake_bin / "systemd-tmpfiles",
+        "#!/bin/sh\n"
+        f"echo \"systemd-tmpfiles $*\" >> {log}\n",
+    )
     _executable(fake_bin / "sleep", "#!/bin/sh\nexit 0\n")
     _executable(fake_bin / "curl", "#!/bin/sh\n[ \"${CURL_FAIL:-0}\" != 1 ]\n")
     _executable(
         fake_bin / "mv",
         "#!/bin/sh\n"
-        "if [ \"${1:-}\" = -Tf ]; then /bin/rm -f \"$3\"; exec /bin/mv \"$2\" \"$3\"; fi\n"
+        "if [ \"${1:-}\" = -Tf ]; then /usr/bin/python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' \"$2\" \"$3\"; if [ \"${SIGNAL_AFTER_SWITCH:-0}\" = 1 ] && [ ! -f \"$SIGNAL_SENT\" ]; then : > \"$SIGNAL_SENT\"; kill -TERM \"$PPID\"; fi; exit 0; fi\n"
         "exec /bin/mv \"$@\"\n",
     )
 
@@ -89,7 +95,9 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "HEYNYC_DEPLOY_ROOT": str(root),
         "HEYNYC_SOURCE_REPO": str(source),
         "STOP_COUNT": str(tmp_path / "stop-count"),
+        "SIGNAL_SENT": str(tmp_path / "signal-sent"),
         "EXPECTED_DEPLOY_REF": "refs/remotes/origin/main",
+        "HEYNYC_TMPFILES_CONFIG": str(tmp_path / "heynyc-backups.conf"),
     }
     return env, root, previous, log
 
@@ -127,17 +135,46 @@ def test_wsl_deploy_prepares_before_the_short_stopped_window() -> None:
     sync = text.index("uv sync --frozen --extra whatsapp --extra pydantic-ai")
     stop = text.index('systemctl stop "$SERVICE"')
     snapshot = text.index('state_snapshot.py" create')
-    restore_probe = text.index('state_snapshot.py" restore')
+    application_check = text.index('state_snapshot.py" verify')
     switch = text.index('mv -Tf "$next_pointer" "$CURRENT"')
     start = text.index('systemctl start "$SERVICE"', switch)
     local_health = text.index("http://127.0.0.1:$PORT/health")
     public_health = text.index('https://$HEYNYC_NGROK_DOMAIN/health')
     reconcile = text.index("reconcile_twilio.py")
 
-    assert sync < stop < snapshot < restore_probe < switch < start < local_health < public_health < reconcile
-    assert "restore-check" in text
+    assert sync < stop < snapshot < application_check < switch < start < local_health < public_health < reconcile
+    assert "--application-state" in text
+    assert "restore-check" not in text
     assert "prestart_recovery" in text
     assert text.index("prestart_recovery=1") < stop
+
+
+def test_wsl_deploy_installs_native_snapshot_retention(tmp_path: Path) -> None:
+    env, _, _, log = _deploy_fixture(tmp_path)
+    config = tmp_path / "heynyc-backups.conf"
+    env["HEYNYC_TMPFILES_CONFIG"] = str(config)
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    assert config.read_text() == (
+        f"d {tmp_path / 'service' / 'backups'} 0700 - - mM:30d -\n"
+    )
+    commands = log.read_text()
+    assert "systemctl enable --now systemd-tmpfiles-clean.timer" in commands
+    assert "systemd-tmpfiles --clean" in commands
+
+
+def test_wsl_deploy_rejects_a_dangling_retention_config_symlink(tmp_path: Path) -> None:
+    env, _, _, _ = _deploy_fixture(tmp_path)
+    config = tmp_path / "heynyc-backups.conf"
+    target = tmp_path / "unexpected-target"
+    config.symlink_to(target)
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert not target.exists()
 
 
 def test_wsl_deploy_fails_closed_and_parses_as_posix_shell() -> None:
@@ -152,6 +189,10 @@ def test_wsl_deploy_fails_closed_and_parses_as_posix_shell() -> None:
     assert "trap 'recover_before_start 129' HUP" in text
     assert "trap 'recover_before_start 130' INT" in text
     assert "trap 'recover_before_start 143' TERM" in text
+    assert "rm -rf" not in text
+    assert "rm -f" not in text
+    assert "worktree remove" not in text
+    assert '--deletion-generation "$SHARED/data/.deletion-generation"' in text
     subprocess.run(["sh", "-n", SCRIPT], check=True)
 
 
@@ -167,9 +208,52 @@ def test_wsl_deploy_rebuilds_a_cached_release(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     commands = log.read_text()
-    assert f"worktree remove --force {cached}" in commands
-    assert f"worktree add --detach {cached} {NEW_SHA}" in commands
-    assert (cached / ".heynyc-ready").read_text() == ""
+    assert f"worktree add --detach {cached}-" in commands
+    assert (cached / ".heynyc-ready").read_text() == "untrusted cache"
+    rebuilt = [path for path in (root / "releases").iterdir() if path.name.startswith(f"{NEW_SHA}-")]
+    assert len(rebuilt) == 1
+    assert (rebuilt[0] / ".heynyc-ready").read_text() == ""
+
+
+def test_wsl_deploy_is_idempotent_after_a_cached_release_collision(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    cached = root / "releases" / NEW_SHA
+    (cached / ".venv" / "bin").mkdir(parents=True)
+    (cached / ".heynyc-ready").write_text("untrusted cache")
+    (cached / ".env").symlink_to(root / "shared" / ".env")
+    _executable(cached / ".venv" / "bin" / "python", "#!/bin/sh\nexit 0\n")
+
+    first = _run_deploy(env)
+    second = _run_deploy(env)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert "already deployed" in second.stdout
+    assert log.read_text().count("worktree add --detach") == 1
+
+
+def test_wsl_deploy_signal_after_pointer_switch_restores_previous(tmp_path: Path) -> None:
+    env, root, previous, log = _deploy_fixture(tmp_path)
+    env["SIGNAL_AFTER_SWITCH"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "current").resolve() == previous
+    assert "pre-start deployment failure" in result.stderr
+    assert "systemctl start heynyc" in log.read_text()
+
+
+def test_wsl_deploy_signal_during_startup_restarts_current_release(tmp_path: Path) -> None:
+    env, root, previous, log = _deploy_fixture(tmp_path)
+    env["SIGNAL_ON_START"] = "1"
+
+    result = _run_deploy(env)
+
+    assert result.returncode != 0
+    assert (root / "current").resolve() != previous
+    assert "ensured the current service is started" in result.stderr
+    assert log.read_text().count("systemctl start heynyc") == 2
 
 
 def test_wsl_deploy_can_verify_an_explicit_candidate_ref(tmp_path: Path) -> None:

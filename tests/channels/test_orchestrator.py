@@ -401,6 +401,7 @@ async def test_delete_asks_to_confirm_stating_what_goes_and_survives_before_any_
 async def test_delete_removes_session_draft_and_flags_and_next_message_starts_fresh(tmp_path):
     deps = _drafts_deps(tmp_path)
     from heynyc.channels.identity import user_key as _uk
+    from heynyc.core import pii_crypto
     key = _uk("whatsapp_meta", "+1555", "s")
 
     # Build real state: a committed conversation, a confirmed flag pointer, a draft, and spend.
@@ -426,6 +427,7 @@ async def test_delete_removes_session_draft_and_flags_and_next_message_starts_fr
     assert not draft_file.exists()                          # draft actually gone
     assert deps.store.flags() == []                         # flag rows gone
     assert abs(deps.store.daily_spend(key, "2026-07-20") - 0.09) < 1e-9  # spend survives
+    assert pii_crypto.deletion_generation(tmp_path / ".deletion-generation") == 1
 
     # The next message starts fresh: no earlier turn reaches the model.
     seen = []
@@ -442,6 +444,27 @@ async def test_delete_removes_session_draft_and_flags_and_next_message_starts_fr
         "cooling centers" in str(m.get("content", ""))
         for m in seen if m.get("role") != "system"
     )
+
+
+async def test_delete_fails_closed_when_snapshot_invalidation_cannot_persist(
+    tmp_path, monkeypatch
+):
+    from heynyc.core import pii_crypto
+
+    deps = _drafts_deps(tmp_path)
+    await handle(_msg(text="before deletion", mid="barrier-0"), FakeReplier(), deps)
+    session_file = next((tmp_path / "sessions").glob("*.jsonl"))
+    await handle(_msg(text="DELETE MY DATA", mid="barrier-1"), FakeReplier(), deps)
+
+    def fail(_path):
+        raise OSError("barrier unavailable")
+
+    monkeypatch.setattr(pii_crypto, "advance_deletion_generation", fail)
+
+    with pytest.raises(OSError, match="barrier unavailable"):
+        await handle(_msg(text="YES", mid="barrier-2"), FakeReplier(), deps)
+
+    assert session_file.exists()
 
 
 async def test_non_yes_after_delete_cancels_and_runs_as_a_normal_turn(tmp_path):

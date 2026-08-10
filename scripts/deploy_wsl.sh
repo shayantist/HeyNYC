@@ -15,6 +15,7 @@ SHARED="$ROOT/shared"
 RELEASES="$ROOT/releases"
 CURRENT="$ROOT/current"
 BACKUPS="$ROOT/backups"
+TMPFILES_CONFIG="${HEYNYC_TMPFILES_CONFIG:-/etc/tmpfiles.d/heynyc-backups.conf}"
 SERVICE="${HEYNYC_SYSTEMD_SERVICE:-heynyc}"
 PORT="${HEYNYC_PORT:-8791}"
 
@@ -96,14 +97,16 @@ git -C "$SOURCE" merge-base --is-ancestor "$sha" "$remote_ref" || {
 }
 
 release="$RELEASES/$sha"
-if [ "$release" = "$previous" ]; then
+if [ "$(git -C "$previous" rev-parse HEAD)" = "$sha" ]; then
     echo "$sha is already deployed"
     exit 0
 fi
-if [ -L "$release" ]; then
-    rm -f "$release"
-elif [ -e "$release" ]; then
-    git -C "$SOURCE" worktree remove --force "$release"
+if [ -e "$release" ] || [ -L "$release" ]; then
+    release="$RELEASES/$sha-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    [ ! -e "$release" ] && [ ! -L "$release" ] || {
+        echo "unique release path already exists: $release" >&2
+        exit 73
+    }
 fi
 git -C "$SOURCE" worktree add --detach "$release" "$sha"
 ln -s "$SHARED/.env" "$release/.env"
@@ -112,12 +115,29 @@ ln -s "$SHARED/.env" "$release/.env"
 validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 snapshot="$BACKUPS/$timestamp-$sha-$$"
-restore_probe="$ROOT/.restore-check.$$"
 python="$release/.venv/bin/python"
-[ ! -e "$restore_probe" ] || { echo "restore probe target already exists" >&2; exit 73; }
-next_pointer="$ROOT/.current.$$"
+next_pointer="$ROOT/.current.$timestamp.$$"
+[ ! -e "$next_pointer" ] && [ ! -L "$next_pointer" ] || {
+    echo "next release pointer already exists: $next_pointer" >&2
+    exit 73
+}
+case "$BACKUPS" in
+    *[[:space:]]*) echo "backup path must not contain whitespace" >&2; exit 78 ;;
+esac
+retention_days=$("$python" -c 'from heynyc.core.pii_crypto import retention_days; print(f"{retention_days():g}")')
+tmpfiles_rule="d $BACKUPS 0700 - - mM:${retention_days}d -"
+if [ -e "$TMPFILES_CONFIG" ] || [ -L "$TMPFILES_CONFIG" ]; then
+    [ ! -L "$TMPFILES_CONFIG" ] && [ "$(cat "$TMPFILES_CONFIG")" = "$tmpfiles_rule" ] || {
+        echo "unexpected snapshot retention config at $TMPFILES_CONFIG" >&2
+        exit 78
+    }
+else
+    printf '%s\n' "$tmpfiles_rule" | sudo tee "$TMPFILES_CONFIG" >/dev/null
+fi
+sudo systemctl enable --now systemd-tmpfiles-clean.timer
+sudo systemd-tmpfiles --clean "$TMPFILES_CONFIG"
 prestart_recovery=0
-pointer_switched=0
+startup_attempted=0
 
 recover_before_start() {
     status="$1"
@@ -125,26 +145,33 @@ recover_before_start() {
     trap - EXIT HUP INT TERM
     if [ "$prestart_recovery" -eq 1 ]; then
         rollback_ok=1
-        rm -rf "$restore_probe" 2>/dev/null || true
-        rm -f "$next_pointer" 2>/dev/null || true
-        if [ "$pointer_switched" -eq 1 ]; then
-            rollback_pointer="$ROOT/.rollback.$$"
+        current_target="$(readlink -f "$CURRENT" 2>/dev/null || true)"
+        if [ "$startup_attempted" -eq 0 ] && [ "$current_target" != "$previous" ]; then
+            rollback_pointer="$ROOT/.rollback.$timestamp.$$"
             if ! ln -s "$previous" "$rollback_pointer" 2>/dev/null; then
                 rollback_ok=0
             elif ! mv -Tf "$rollback_pointer" "$CURRENT" 2>/dev/null; then
-                rm -f "$rollback_pointer" 2>/dev/null || true
+                echo "rollback pointer remains at $rollback_pointer" >&2
                 rollback_ok=0
             fi
         fi
         current_target="$(readlink -f "$CURRENT" 2>/dev/null || true)"
-        if [ "$current_target" != "$previous" ] || ! validate_release "$previous"; then
-            rollback_ok=0
-        fi
-        if [ "$rollback_ok" -eq 1 ] && ! sudo systemctl start "$SERVICE" 2>/dev/null; then
+        if [ "$startup_attempted" -eq 0 ]; then
+            if [ "$current_target" != "$previous" ] || ! validate_release "$previous"; then
+                rollback_ok=0
+            fi
+            if [ "$rollback_ok" -eq 1 ] && ! sudo systemctl start "$SERVICE" 2>/dev/null; then
+                rollback_ok=0
+            fi
+        elif ! sudo systemctl start "$SERVICE" 2>/dev/null; then
             rollback_ok=0
         fi
         if [ "$rollback_ok" -eq 1 ]; then
-            echo "pre-start deployment failure; restored the old pointer and service" >&2
+            if [ "$startup_attempted" -eq 0 ]; then
+                echo "pre-start deployment failure; restored the old pointer and service" >&2
+            else
+                echo "deployment interrupted during startup; ensured the current service is started" >&2
+            fi
         else
             echo "pre-start recovery failed; operator intervention is required" >&2
         fi
@@ -164,25 +191,26 @@ if ! "$python" "$release/scripts/state_snapshot.py" create \
     echo "snapshot failed before the release pointer changed" >&2
     exit 1
 fi
-if ! "$python" "$release/scripts/state_snapshot.py" restore "$snapshot" \
-    --target "$restore_probe"; then
-    echo "restore verification failed before the release pointer changed" >&2
+if ! "$python" "$release/scripts/state_snapshot.py" verify "$snapshot" \
+    --application-state --deletion-generation "$SHARED/data/.deletion-generation"; then
+    echo "snapshot application verification failed before the release pointer changed" >&2
     exit 1
 fi
-rm -rf "$restore_probe"
 
 ln -s "$release" "$next_pointer"
 mv -Tf "$next_pointer" "$CURRENT"
-pointer_switched=1
-prestart_recovery=0
-trap - EXIT HUP INT TERM
+startup_attempted=1
 if ! sudo systemctl start "$SERVICE"; then
+    prestart_recovery=0
+    trap - EXIT HUP INT TERM
     sudo systemctl stop "$SERVICE" 2>/dev/null || true
     echo "new service failed to start" >&2
     echo "Automatic state rollback is intentionally disabled after startup; snapshot: $snapshot" >&2
     echo "Previous release: ${previous:-none}" >&2
     exit 1
 fi
+trap - EXIT HUP INT TERM
+prestart_recovery=0
 
 health_check() {
     url="$1"

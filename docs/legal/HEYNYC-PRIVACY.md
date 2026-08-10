@@ -2,7 +2,7 @@
 
 **Effective date:** July 17, 2026
 
-**Updated:** July 28, 2026, to describe the separate safety-screen model call
+**Updated:** August 10, 2026, to describe deployment snapshots and deletion recovery boundaries
 
 This notice explains how [Reach4Help](https://reach4help.org/) handles information when you use HeyNYC by SMS, WhatsApp, command line, or another supported channel. It supplements the general [Reach4Help Privacy Policy](https://reach4help.org/privacy/). If the two notices conflict about HeyNYC, this HeyNYC notice controls.
 
@@ -34,7 +34,7 @@ Reach4Help does not sell personal information or use HeyNYC messages for adverti
 
 HeyNYC's application [converts a sender address into a salted pseudonymous identifier](../../heynyc/channels/identity.py) before saving application-level sessions, telemetry, drafts, or feedback. The application does not save the raw phone number in those local records. The messaging provider still receives and processes the phone number so it can deliver messages.
 
-HeyNYC saves conversation text so the assistant can understand follow-up questions and avoid appearing to forget an ongoing conversation. Before a resident-answer request reaches the answer model, the current pilot [uses a measured context budget](../../heynyc/core/memory.py), keeps complete recent turns, and may replace older turns with a typed continuity record. A separate safety model receives the current resident message and, when available, the immediately preceding resident message to classify self-harm risk before ordinary answering. That safety call is not covered by the answer-context budget and may use a different configured model provider. Prior assistant prose is not treated as evidence for new factual claims. In-progress application drafts may also be saved so you can return and finish them. Public hosted deployments [require encryption and run a scheduled deletion process](../../heynyc/channels/app.py) for local conversation and draft files after the configured inactivity period, which defaults to 30 days. Pseudonymous operational metrics and [encrypted, pattern-redacted feedback](../../heynyc/channels/analytics.py) may be kept longer when needed for security, evaluation, and service improvement.
+HeyNYC saves conversation text so the assistant can understand follow-up questions and avoid appearing to forget an ongoing conversation. Before a resident-answer request reaches the answer model, the current pilot [uses a measured context budget](../../heynyc/core/memory.py), keeps complete recent turns, and may replace older turns with a typed continuity record. A separate safety model receives the current resident message and, when available, the immediately preceding resident message to classify self-harm risk before ordinary answering. That safety call is not covered by the answer-context budget and may use a different configured model provider. Prior assistant prose is not treated as evidence for new factual claims. In-progress application drafts may also be saved so you can return and finish them. Public hosted deployments [require encryption and run a scheduled deletion process](../../heynyc/channels/app.py) for local conversation and draft files after the configured inactivity period, which defaults to 30 days. The [single-host deployment path](../../scripts/deploy_wsl.sh) also creates snapshots containing encrypted resident records and removes expired snapshots on that configured schedule. Confirmed in-chat deletion invalidates older snapshots before live records are deleted, so the supported recovery path cannot restore them. Pseudonymous operational metrics and [encrypted, pattern-redacted feedback](../../heynyc/channels/analytics.py) may be kept longer when needed for security, evaluation, and service improvement.
 
 No security or deletion method is perfect. Reach4Help limits what the application stores, restricts access, and uses technical safeguards appropriate to the pilot, but cannot guarantee absolute security.
 
@@ -49,13 +49,13 @@ What the current code demonstrates:
 - Conversation records are [encrypted per record with authenticated encryption](../../heynyc/core/session.py)
 - Resident-authored feedback is [pattern-redacted before encrypted storage](../../heynyc/channels/analytics.py)
 - Twilio requests are [encrypted and persisted before acknowledgement](../../heynyc/channels/twilio.py), resume after restart, and are scrubbed after successful delivery
+- Confirmed `DELETE MY DATA` [invalidates older snapshots before deleting live resident records](../../heynyc/channels/orchestrator.py)
+- The single-host deploy path [creates and verifies state snapshots](../../scripts/state_snapshot.py) and uses systemd's [native expiry mechanism](https://www.freedesktop.org/software/systemd/man/systemd-tmpfiles.html)
 
 What is not implemented yet:
 
-- (Shipped 2026-07-20, after this notice's effective date: in-chat `DELETE MY DATA` now deletes the conversation transcript, draft, and pending report flags after confirmation; `NEW` and `PRIVACY` work as before. Email deletion remains available.)
-- (Shipped 2026-07-22: confirmed `DELETE MY DATA` now also deletes queued messages associated with the resident.)
 - A self-service data-export command or downloadable archive
-- An automated, restore-tested backup and host-migration process
+- An automated cross-host migration process
 - A settled retention and deletion policy for longer-lived pseudonymous telemetry
 - Live semantic acceptance of memory compaction across long multilingual conversations
 - An external privacy, security, accessibility, or standards-compliance audit

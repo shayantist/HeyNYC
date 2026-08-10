@@ -7,6 +7,8 @@ absent-where-expected or malformed (never a silent cleartext write).
 from __future__ import annotations
 
 import base64
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -108,3 +110,24 @@ def test_is_enabled_tracks_env(monkeypatch):
     assert pii_crypto.is_enabled() is True
     monkeypatch.setenv(_KEY, "   ")  # whitespace-only counts as unset
     assert pii_crypto.is_enabled() is False
+
+
+def test_retention_days_rejects_nonfinite_values(monkeypatch):
+    monkeypatch.setenv("HEYNYC_PII_RETENTION_DAYS", "inf")
+
+    assert pii_crypto.retention_days() == pii_crypto.DEFAULT_RETENTION_DAYS
+
+
+def test_concurrent_deletions_each_advance_the_generation(tmp_path, monkeypatch):
+    generation = tmp_path / ".deletion-generation"
+    original_write = pii_crypto.write_deletion_generation
+
+    def delayed_write(path, value):
+        time.sleep(0.02)
+        original_write(path, value)
+
+    monkeypatch.setattr(pii_crypto, "write_deletion_generation", delayed_write)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: pii_crypto.advance_deletion_generation(generation), range(8)))
+
+    assert pii_crypto.deletion_generation(generation) == 8

@@ -35,7 +35,10 @@ Fail-closed posture:
 from __future__ import annotations
 
 import base64
+import fcntl
+import math
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -142,7 +145,72 @@ def retention_days() -> float:
         days = float(raw)
     except ValueError:
         return DEFAULT_RETENTION_DAYS
-    return days if days > 0 else DEFAULT_RETENTION_DAYS
+    return days if math.isfinite(days) and days > 0 else DEFAULT_RETENTION_DAYS
+
+
+def deletion_generation(path: Path) -> int:
+    """Read the non-PII generation that invalidates older state snapshots."""
+    path = Path(path)
+    if path.is_symlink():
+        raise PiiCryptoError("deletion generation must not be a symlink")
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return 0
+    try:
+        generation = int(raw)
+    except ValueError as exc:
+        raise PiiCryptoError("deletion generation is invalid") from exc
+    if generation < 0:
+        raise PiiCryptoError("deletion generation is invalid")
+    return generation
+
+
+def write_deletion_generation(path: Path, generation: int) -> None:
+    """Atomically persist a validated deletion generation."""
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+        raise PiiCryptoError("deletion generation is invalid")
+    path = Path(path)
+    if path.is_symlink():
+        raise PiiCryptoError("deletion generation must not be a symlink")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as stream:
+            stream.write(f"{generation}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+            temporary = Path(stream.name)
+        temporary.replace(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def advance_deletion_generation(path: Path) -> int:
+    """Invalidate existing snapshots before deleting live resident state."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        generation = deletion_generation(path) + 1
+        write_deletion_generation(path, generation)
+        return generation
+    finally:
+        os.close(directory_fd)
 
 
 def purge_expired_files(

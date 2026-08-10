@@ -412,6 +412,7 @@ def _execute_delete(key: str, deps: Deps) -> None:
     report-flag rows (pending + confirmed). PII-free aggregate statistics and the anonymized daily
     spend record survive for abuse control, exactly as the confirmation copy promised. Deleting the
     session file means the next inbound message loads an empty history, so the conversation is fresh."""
+    pii_crypto.advance_deletion_generation(deps.sessions_dir.parent / ".deletion-generation")
     (deps.sessions_dir / f"{key}.jsonl").unlink(missing_ok=True)
     if deps.drafts is not None:
         deps.drafts.for_user(key).delete()
