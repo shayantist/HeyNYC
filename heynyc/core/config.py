@@ -24,6 +24,9 @@ if HEYNYC_AGENT_RUNTIME not in _AGENT_RUNTIMES:
 # Safety and language preflight before retrieval. Deployments can override it independently.
 # RULED 2026-08-09: Luna replaces mini after its price fell below mini's at both token rates.
 HEYNYC_SCOPE_MODEL = os.getenv("HEYNYC_SCOPE_MODEL", "openai/gpt-5.6-luna")
+# Batched claim-to-source check after structured answer generation
+# Any LiteLLM provider is valid, and the answer model stays the default
+HEYNYC_CITATION_CHECK_MODEL = os.getenv("HEYNYC_CITATION_CHECK_MODEL", HEYNYC_MODEL)
 # Reasoning effort for the ANSWER model, set beside HEYNYC_MODEL so production runs the benched
 # configuration (2026-07-18: luna-medium is the measured recommendation; at low/none luna loses
 # the clock-reading and thread-holding that justify its cost). Unset means the provider default,

@@ -60,6 +60,42 @@ def test_configured_runtime_keeps_uncalibrated_output_moderation_off(monkeypatch
     assert captured["output_guard"] is None
 
 
+def test_configured_runtime_enables_the_citation_checker_for_provider_models(
+    monkeypatch,
+):
+    captured = {}
+    configured = []
+    citation_checker = object()
+
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.config.HEYNYC_CITATION_CHECK_MODEL",
+        "anthropic/claude-sonnet-4-6",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.configured_model",
+        lambda model, **_kwargs: configured.append(model) or object(),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.PromptedNLI",
+        lambda model: citation_checker if model == "anthropic/claude-sonnet-4-6" else None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_crisis_screen",
+        lambda _model, *, model_name: object(),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_runtime",
+        lambda _registry, **kwargs: captured.update(kwargs),
+    )
+
+    build_configured_runtime(Registry([]), model="openai/gpt-5.6-luna")
+
+    assert captured["semantic_verifier"] is citation_checker
+    assert "openai/gpt-5.6-luna" in configured
+
+
 def test_configured_model_delegates_non_openai_providers_to_pydantic(
     monkeypatch,
 ) -> None:

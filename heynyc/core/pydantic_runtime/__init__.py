@@ -10,6 +10,7 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
 from heynyc.core import config
 from heynyc.core.memory import compact_memory, context_capacity, request_tokens
+from heynyc.core.nli import PromptedNLI
 from heynyc.core.prompts import build_system_prompt_tiers
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
@@ -187,6 +188,11 @@ def build_configured_runtime(
         current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
         structured_grounding=True,
+        semantic_verifier=(
+            PromptedNLI(config.HEYNYC_CITATION_CHECK_MODEL)
+            if isinstance(model, str)
+            else None
+        ),
         fact_review_model=(
             configured_model(config.HEYNYC_FACT_REVIEW_MODEL)
             if isinstance(model, str)

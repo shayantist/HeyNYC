@@ -54,6 +54,14 @@ sources:
     text: >
       SNAP participants must continue to meet program requirements to remain eligible for
       benefits. You can submit your recertification online at myBenefits, in
+  notify_fees:
+    title: Notify NYC
+    url: https://portal.311.nyc.gov/article/?kanumber=KA-01082
+    capture: trace_web_snippet
+    truncated: true
+    text: >
+      Fees Telecommunications carriers may charge regular voice and data fees for any
+      Notify NYC message received. Check with your carrier for rates.
 
 items:
   - id: f115_real_recertification
@@ -194,3 +202,21 @@ items:
     reference_label: unsupported
     reference_reason: >
       The excerpt does not establish 311, a Fair Hearing request, or a 10-day deadline.
+
+  - id: f187_notify_program_free
+    kind: saved
+    language: en
+    severity: medium
+    claim: Notify NYC itself is free.
+    evidence_ids: [notify_fees]
+    reference_label: unsupported
+    reference_reason: The excerpt supports carrier fees but does not say the program is free.
+
+  - id: supported_notify_carrier_fees
+    kind: control
+    language: en
+    severity: medium
+    claim: Your carrier may charge regular voice and data fees for Notify NYC messages.
+    evidence_ids: [notify_fees]
+    reference_label: supported
+    reference_reason: The excerpt directly supports regular carrier voice and data fees.

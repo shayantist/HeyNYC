@@ -17,8 +17,8 @@ tests stay offline and the real backend is swappable:
                    compatible litellm model. A general LLM remains a calibrated candidate rather than
                    the production Tier-2.
 
-This module is off by default. The Pydantic comparison arm can opt into PromptedNLI, but the
-resident runtime does not.
+The configured Pydantic runtime uses PromptedNLI for provider models. Injected test models remain
+offline and do not construct it.
 """
 from __future__ import annotations
 
@@ -264,6 +264,7 @@ class PromptedNLI:
                 messages,
                 response_format=NLIBatchResponse,
                 timeout=self._timeout,
+                num_retries=0,
             )
         from litellm import completion  # lazy: keep litellm import out of module load
 
@@ -272,6 +273,7 @@ class PromptedNLI:
             "messages": messages,
             "response_format": NLIBatchResponse,
             "timeout": self._timeout,
+            "num_retries": 0,
         }
         if self._api_base:
             kwargs["api_base"] = self._api_base
@@ -281,6 +283,7 @@ class PromptedNLI:
         kwargs: dict = {
             "response_format": NLIBatchResponse,
             "timeout": self._timeout,
+            "num_retries": 0,
         }
         if self._async_completion_fn is not None:
             return await self._async_completion_fn(self._model, messages, **kwargs)

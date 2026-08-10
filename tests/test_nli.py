@@ -176,6 +176,7 @@ def test_prompted_nli_builds_prompt_and_parses_unsupported():
     assert "support" in system.lower()
     assert "partial" in system.lower() and "contradicted" in system.lower()
     assert capture["kwargs"]["response_format"].__name__ == "NLIBatchResponse"
+    assert capture["kwargs"]["num_retries"] == 0
 
 
 def test_prompted_nli_marks_clarifying_questions_as_questions() -> None:
@@ -381,6 +382,7 @@ async def test_prompted_nli_async_batch_returns_usage_and_one_request():
     assert run.latency_ms >= 0
     assert capture["calls"] == 1
     assert capture["kwargs"]["response_format"].__name__ == "NLIBatchResponse"
+    assert capture["kwargs"]["num_retries"] == 0
 
 
 async def test_prompted_nli_default_transport_omits_temperature(monkeypatch):
