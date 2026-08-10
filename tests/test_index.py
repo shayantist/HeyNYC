@@ -6,7 +6,7 @@ from heynyc.core.citations import CitationRegistry
 from heynyc.core.index import IndexRetriever
 from heynyc.core.index.corpus import build_index, chunk_text, clean_html
 from heynyc.core.index.embedder import HashEmbedder
-from heynyc.core.index.store import IndexDoc, InMemoryVectorStore
+from heynyc.core.index.store import IndexDoc, InMemoryVectorStore, LanceVectorStore
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
@@ -79,7 +79,7 @@ async def test_index_search_tool_empty():
     assert "No indexed" in out
 
 
-async def test_build_index_fetches_chunks_embeds():
+async def test_build_index_reports_failures_without_publishing_a_partial_corpus():
     module = ServiceModule(name="things_to_do", category="tourism", seeds=["https://example.test/a", "https://dead.test/b"])
     registry = Registry([module])
 
@@ -97,7 +97,138 @@ async def test_build_index_fetches_chunks_embeds():
     assert summary["ok"] == 1
     assert len(summary["failed"]) == 1  # the dead seed
     assert summary["chunks"] >= 1
-    assert store.count() == summary["chunks"]
+    assert store.count() == 0
+
+
+async def test_build_index_replaces_the_existing_persistent_corpus(tmp_path):
+    url = "https://example.test/current"
+    registry = Registry([ServiceModule(name="current", seeds=[url])])
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(200, text="<title>Current</title><p>Current guidance.</p>")
+    ))
+    store = LanceVectorStore(tmp_path / "index.lance")
+
+    first = await build_index(registry, store, HashEmbedder(dim=64), client=client)
+    second = await build_index(registry, store, HashEmbedder(dim=64), client=client)
+    await client.aclose()
+
+    assert first["chunks"] == second["chunks"] == 1
+    assert store.count() == 1
+
+
+async def test_build_index_preserves_existing_corpus_when_any_seed_fails():
+    current = "https://example.test/current"
+    dead = "https://example.test/dead"
+    registry = Registry([ServiceModule(name="current", seeds=[current, dead])])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == dead:
+            return httpx.Response(503)
+        return httpx.Response(200, text="<title>Current</title><p>New guidance.</p>")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    embedder = HashEmbedder(dim=64)
+    old = IndexDoc(id="old", text="Prior complete guidance", vector=embedder.embed(["prior"])[0])
+    store = InMemoryVectorStore()
+    store.add([old])
+
+    summary = await build_index(registry, store, embedder, client=client)
+    await client.aclose()
+
+    assert len(summary["failed"]) == 1
+    assert store.search(embedder.embed(["prior"])[0], "prior", k=1)[0][0].id == "old"
+
+
+async def test_build_index_preserves_existing_corpus_when_every_seed_fails():
+    url = "https://example.test/dead"
+    registry = Registry([ServiceModule(name="current", seeds=[url])])
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(503)
+    ))
+    store = InMemoryVectorStore()
+    store.add([IndexDoc(id="old", text="Prior complete guidance", vector=[1.0])])
+
+    summary = await build_index(registry, store, HashEmbedder(dim=64), client=client)
+    await client.aclose()
+
+    assert len(summary["failed"]) == 1
+    assert store.count() == 1
+
+
+async def test_build_index_preserves_existing_corpus_when_embedding_fails():
+    class FailingEmbedder(HashEmbedder):
+        def embed(self, texts):
+            raise RuntimeError("embedding failed")
+
+    url = "https://example.test/current"
+    registry = Registry([ServiceModule(name="current", seeds=[url])])
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(200, text="<p>Current guidance.</p>")
+    ))
+    store = InMemoryVectorStore()
+    store.add([IndexDoc(id="old", text="Prior complete guidance", vector=[1.0])])
+
+    try:
+        await build_index(registry, store, FailingEmbedder(dim=64), client=client)
+    except RuntimeError as exc:
+        assert str(exc) == "embedding failed"
+    else:
+        raise AssertionError("embedding failure should propagate")
+    finally:
+        await client.aclose()
+
+    assert store.count() == 1
+
+
+async def test_build_index_rejects_truncated_embedding_output():
+    class TruncatingEmbedder(HashEmbedder):
+        def embed(self, texts):
+            return super().embed(texts[:1])
+
+    url = "https://example.test/current"
+    registry = Registry([ServiceModule(name="current", seeds=[url])])
+    body = "<p>" + ("Current detailed guidance. " * 200) + "</p>"
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(200, text=body)
+    ))
+    store = InMemoryVectorStore()
+    store.add([IndexDoc(id="old", text="Prior complete guidance", vector=[1.0])])
+
+    try:
+        await build_index(registry, store, TruncatingEmbedder(dim=64), client=client)
+    except RuntimeError as exc:
+        assert str(exc) == "embedder returned 1 vector(s) for 6 chunk(s)"
+    else:
+        raise AssertionError("truncated embedding output should fail closed")
+    finally:
+        await client.aclose()
+
+    assert store.count() == 1
+
+
+async def test_build_index_preserves_existing_corpus_when_replace_fails():
+    class FailingReplaceStore(InMemoryVectorStore):
+        def replace(self, docs):
+            raise RuntimeError("replace failed")
+
+    url = "https://example.test/current"
+    registry = Registry([ServiceModule(name="current", seeds=[url])])
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(200, text="<p>Current guidance.</p>")
+    ))
+    store = FailingReplaceStore()
+    store.add([IndexDoc(id="old", text="Prior complete guidance", vector=[1.0])])
+
+    try:
+        await build_index(registry, store, HashEmbedder(dim=64), client=client)
+    except RuntimeError as exc:
+        assert str(exc) == "replace failed"
+    else:
+        raise AssertionError("replace failure should propagate")
+    finally:
+        await client.aclose()
+
+    assert store.count() == 1
 
 
 def test_embedders_expose_model_id():

@@ -105,6 +105,7 @@ def _hybrid_rank(docs: list[IndexDoc], query_vec: list[float], query_text: str,
 
 class VectorStore(Protocol):
     def add(self, docs: list[IndexDoc]) -> None: ...
+    def replace(self, docs: list[IndexDoc]) -> None: ...
     def search(self, query_vec: list[float], query_text: str, k: int = 5) -> list[tuple[IndexDoc, float]]: ...
     def count(self) -> int: ...
 
@@ -115,6 +116,9 @@ class InMemoryVectorStore:
 
     def add(self, docs: list[IndexDoc]) -> None:
         self._docs.extend(docs)
+
+    def replace(self, docs: list[IndexDoc]) -> None:
+        self._docs = list(docs)
 
     def count(self) -> int:
         return len(self._docs)
@@ -149,6 +153,17 @@ class LanceVectorStore:
             self._table = self._db.create_table(self._table_name, data=rows)
         else:
             self._table.add(rows)
+
+    def replace(self, docs: list[IndexDoc]) -> None:
+        rows = [
+            {"id": d.id, "text": d.text, "url": d.url, "title": d.title,
+             "module": d.module, "vector": d.vector}
+            for d in docs if d.vector is not None
+        ]
+        if rows:
+            self._table = self._db.create_table(
+                self._table_name, data=rows, mode="overwrite",
+            )
 
     def count(self) -> int:
         return 0 if self._table is None else self._table.count_rows()

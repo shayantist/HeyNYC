@@ -70,7 +70,7 @@ async def build_index(
     embedder: Embedder,
     client: Optional[httpx.AsyncClient] = None,
 ) -> dict:
-    """Fetch every module seed, chunk, embed, and add to the store.
+    """Fetch every module seed, chunk, embed, and replace the store corpus.
 
     Returns a summary {urls, ok, failed, chunks}. Failures are recorded, not raised,
     so one dead seed doesn't sink the whole build.
@@ -78,6 +78,7 @@ async def build_index(
     own = client is None
     client = client or httpx.AsyncClient(timeout=30.0)
     summary = {"urls": 0, "ok": 0, "failed": [], "chunks": 0}
+    documents: list[IndexDoc] = []
     try:
         for module in registry.modules:
             for url in module.seeds:
@@ -92,6 +93,10 @@ async def build_index(
                     summary["failed"].append({"url": url, "error": "no text extracted"})
                     continue
                 vectors = embedder.embed(chunks)
+                if len(vectors) != len(chunks):
+                    raise RuntimeError(
+                        f"embedder returned {len(vectors)} vector(s) for {len(chunks)} chunk(s)"
+                    )
                 docs = [
                     IndexDoc(
                         id=f"{module.name}::{url}::{i}",
@@ -103,9 +108,11 @@ async def build_index(
                     )
                     for i, (chunk, vec) in enumerate(zip(chunks, vectors))
                 ]
-                store.add(docs)
+                documents.extend(docs)
                 summary["ok"] += 1
                 summary["chunks"] += len(docs)
+        if documents and not summary["failed"]:
+            store.replace(documents)
     finally:
         if own:
             await client.aclose()
