@@ -743,7 +743,10 @@ class PydanticRuntimeAdapter:
         self._fact_confirmation_names = frozenset(fact_confirmation_names)
         self.model = getattr(model, "model_name", type(model).__name__)
         self._current_awareness = current_awareness
-        self._usage_limits = usage_limits or UsageLimits(request_limit=8)
+        self._usage_limits = usage_limits or UsageLimits(
+            request_limit=8,
+            tool_calls_limit=10,
+        )
         self._answer_model_route = answer_model_route
         self._semantic_verifier = semantic_verifier
         self._stream_model_requests = stream_model_requests

@@ -1,6 +1,7 @@
 """Environment-driven configuration. Secrets via env only, never hardcoded."""
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -87,7 +88,7 @@ def _parse_spend_cap(raw: str) -> float | None:
         cap = float(raw.strip())
     except ValueError:
         return None
-    return cap if cap > 0 else None
+    return cap if math.isfinite(cap) and cap > 0 else None
 
 
 HEYNYC_SPEND_CAP = _parse_spend_cap(os.getenv("HEYNYC_SPEND_CAP", ""))

@@ -4611,8 +4611,56 @@ def test_build_runtime_reserves_capability_discovery_requests() -> None:
         use_module_capabilities=True,
     )
 
-    assert direct._usage_limits == UsageLimits(request_limit=8)
-    assert deferred._usage_limits == UsageLimits(request_limit=10)
+    assert direct._usage_limits == UsageLimits(request_limit=8, tool_calls_limit=10)
+    assert deferred._usage_limits == UsageLimits(request_limit=10, tool_calls_limit=10)
+
+
+@pytest.mark.parametrize(
+    ("requested_calls", "expected_calls", "expected_status"),
+    [(10, 10, "success"), (11, 0, "max_turns")],
+)
+async def test_runtime_enforces_the_native_tool_call_limit(
+    requested_calls: int,
+    expected_calls: int,
+    expected_status: str,
+) -> None:
+    calls = 0
+
+    async def handler(_args: dict, _ctx: ToolContext) -> str:
+        nonlocal calls
+        calls += 1
+        return "ok"
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([
+                ToolCallPart("probe", {}, f"probe-{index}")
+                for index in range(requested_calls)
+            ])
+        return ModelResponse([TextPart("Done")])
+
+    runtime = build_runtime(
+        Registry([]),
+        tools={
+            "probe": Tool(
+                name="probe",
+                description="Return a test result",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+            )
+        },
+        model=FunctionModel(model),
+        structured_grounding=False,
+    )
+
+    result = await runtime.run("Run probes")
+
+    assert calls == expected_calls
+    assert result.status == expected_status
 
 
 async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_rounds() -> None:

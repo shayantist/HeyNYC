@@ -38,9 +38,17 @@ def test_demo_launcher_verifies_public_endpoint_and_required_env():
     text = script.read_text()
 
     # Required-env gate, by name, before anything starts.
-    for name in ("HEYNYC_PII_KEY", "HEYNYC_PII_SALT", "TWILIO_AUTH_TOKEN", "OPENAI_API_KEY"):
+    for name in (
+        "HEYNYC_PII_KEY",
+        "HEYNYC_PII_SALT",
+        "HEYNYC_USER_DAILY_SPEND_CAP",
+        "TWILIO_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+    ):
         assert name in text
     assert "missing" in text.lower()
+    assert "config.HEYNYC_USER_DAILY_SPEND_CAP is None" in text
+    assert "HEYNYC_USER_DAILY_SPEND_CAP must be a positive number" in text
 
     # One-shot public-endpoint gate after ngrok starts (this is the check that caught F081 live).
     assert "https://$DOMAIN/health" in text

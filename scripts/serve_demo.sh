@@ -15,6 +15,7 @@ fi
 missing=""
 [ -n "${HEYNYC_PII_KEY:-}" ] || missing="$missing HEYNYC_PII_KEY"
 [ -n "${HEYNYC_PII_SALT:-}" ] || missing="$missing HEYNYC_PII_SALT"
+[ -n "${HEYNYC_USER_DAILY_SPEND_CAP:-}" ] || missing="$missing HEYNYC_USER_DAILY_SPEND_CAP"
 [ -n "${TWILIO_AUTH_TOKEN:-}" ] || missing="$missing TWILIO_AUTH_TOKEN"
 [ -n "${OPENAI_API_KEY:-}" ] || missing="$missing OPENAI_API_KEY"
 [ -n "${HEYNYC_MODEL:-}" ] || missing="$missing HEYNYC_MODEL"
@@ -25,6 +26,10 @@ DOMAIN="$HEYNYC_NGROK_DOMAIN"
 if [ -n "$missing" ]; then
     echo "Missing required env:$missing" >&2
     echo "Load the ignored .env first, e.g.: set -a && . ./.env && set +a" >&2
+    exit 1
+fi
+if ! uv run python -c 'from heynyc.core import config; raise SystemExit(config.HEYNYC_USER_DAILY_SPEND_CAP is None)'; then
+    echo "HEYNYC_USER_DAILY_SPEND_CAP must be a positive number" >&2
     exit 1
 fi
 

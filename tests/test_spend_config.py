@@ -26,7 +26,18 @@ def test_spend_cap_parses_a_positive_dollar_ceiling(monkeypatch):
 def test_spend_cap_zero_and_garbage_are_disabled(monkeypatch):
     from heynyc.core import config
 
-    for raw in ("0", "0.0", "-1", "", "   ", "notanumber"):
+    for raw in (
+        "0",
+        "0.0",
+        "-1",
+        "",
+        "   ",
+        "notanumber",
+        "nan",
+        "inf",
+        "+Infinity",
+        "1e999",
+    ):
         monkeypatch.setenv("HEYNYC_SPEND_CAP", raw)
         importlib.reload(config)
         assert config.HEYNYC_SPEND_CAP is None, raw

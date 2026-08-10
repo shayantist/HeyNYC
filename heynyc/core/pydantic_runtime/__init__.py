@@ -117,7 +117,10 @@ def build_runtime(
         use_module_capabilities=use_module_capabilities,
         current_awareness=current_awareness,
         extra_capabilities=extra_capabilities,
-        usage_limits=UsageLimits(request_limit=10 if use_module_capabilities else 8),
+        usage_limits=UsageLimits(
+            request_limit=10 if use_module_capabilities else 8,
+            tool_calls_limit=10,
+        ),
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
         semantic_verifier=semantic_verifier,
