@@ -158,6 +158,14 @@ if [ -n "$prepared_release" ]; then
         exit 78
     }
 else
+    if command -v uv >/dev/null 2>&1; then
+        uv_command=uv
+    elif [ -x "$HOME/.local/bin/uv" ]; then
+        uv_command="$HOME/.local/bin/uv"
+    else
+        echo "uv is required in PATH or at $HOME/.local/bin/uv" >&2
+        exit 69
+    fi
     if [ -e "$release" ] || [ -L "$release" ]; then
         release="$RELEASES/$sha-$(date -u +%Y%m%dT%H%M%SZ)-$$"
         [ ! -e "$release" ] && [ ! -L "$release" ] || {
@@ -167,7 +175,7 @@ else
     fi
     git -C "$SOURCE" worktree add --detach "$release" "$sha"
     ln -s "$SHARED/.env" "$release/.env"
-    (cd "$release" && uv sync --frozen --extra whatsapp --extra pydantic-ai)
+    (cd "$release" && "$uv_command" sync --frozen --extra whatsapp --extra pydantic-ai)
     : > "$release/.heynyc-ready"
     validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
     if [ "$("$release/scripts/deploy.sh" --protocol 2>/dev/null)" != "$DEPLOY_PROTOCOL" ]; then

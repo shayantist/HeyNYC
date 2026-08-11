@@ -149,6 +149,17 @@ def test_wsl_deploy_defaults_to_fetched_origin_main(tmp_path: Path) -> None:
     assert NEW_SHA in commands
 
 
+def test_wsl_deploy_finds_uv_in_the_standard_user_install(tmp_path: Path) -> None:
+    env, _, _, _ = _deploy_fixture(tmp_path)
+    user_bin = tmp_path / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    Path(env["PATH"].split(":", 1)[0], "uv").rename(user_bin / "uv")
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_deploy_via_ssh_uses_only_a_local_ssh_alias(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -280,7 +291,7 @@ def test_wsl_deploy_is_exact_sha_locked_and_uses_shared_state() -> None:
 def test_wsl_deploy_prepares_before_the_short_stopped_window() -> None:
     text = SCRIPT.read_text()
 
-    sync = text.index("uv sync --frozen --extra whatsapp --extra pydantic-ai")
+    sync = text.index("sync --frozen --extra whatsapp --extra pydantic-ai")
     stop = text.index('systemctl stop "$SERVICE"')
     snapshot = text.index('state_snapshot.py" create')
     application_check = text.index('state_snapshot.py" verify')
