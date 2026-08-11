@@ -329,8 +329,7 @@ VERIFIED_ON = "2026-07-25"
 class _Fact:
     url: str      # official nyc.gov source page (verified HTTP 200)
     title: str    # citation title
-    snippet: str  # short cite label, subset of `body` wording (keeps faithfulness overlap high)
-    body: str     # the grounded fact text to report, cited
+    body: str     # verified fact used as both tool output and citation evidence
     valid_as_of: str = VERIFIED_ON
 
 
@@ -348,11 +347,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/hra/help/legal-services-for-tenants.page",
                 title="Legal Services for Tenants Facing Eviction, NYC's Right to Counsel (HRA / Office of Civil Justice)",
-                snippet=("tenants facing eviction in Housing Court or NYCHA administrative proceedings "
-                         "have access to free legal representation or advice, in every ZIP code, "
-                         "regardless of immigration status; call Housing Court Answers at "
-                         "718-557-1379 or 212-962-4795, Monday to Friday, 9am to 5pm, or call 311 "
-                         "and ask for the Tenant Helpline"),
                 body=("NYC's Right-to-Counsel (Universal Access) law means tenants facing eviction in "
                       "Housing Court or NYCHA administrative proceedings have access to free legal "
                       "representation or advice, in every ZIP code, regardless of immigration status. "
@@ -370,10 +364,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nycourts.gov/courts/12th-judicial-district/new-york-city-housing-court-bronx-county-branch/bronx-county-housing-court-directory",
                 title="Bronx County Housing Court Directory, New York Courts",
-                snippet=("Bronx Housing Court is at 1118 Grand Concourse, Bronx, NY 10456; the Help "
-                         "Center phone is 718-466-3022; landlord-tenant offices for the Commercial "
-                         "Part, NYCHA, and illegal lockouts involving unrepresented litigants are at "
-                         "851 Grand Concourse, Bronx, NY 10451, phone 718-466-3025"),
                 body=("The Bronx Housing Court is at 1118 Grand Concourse, Bronx, NY 10456. The Help "
                       "Center phone is 718-466-3022. Landlord-tenant offices for the Commercial Part, "
                       "NYCHA, and illegal lockouts involving unrepresented litigants are at 851 Grand "
@@ -393,10 +383,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/hpd/services-and-information/tenants-rights-and-responsibilities.page",
                 title="Tenants' Rights and Responsibilities, NYC HPD",
-                snippet=("in New York City building owners must provide and maintain heat, hot and cold "
-                         "water; no cold water or no running water is a failure to provide an essential "
-                         "service; keep a record and if service is not restored file a complaint, and a "
-                         "tenant can bring a case in Housing Court to get an order to correct"),
                 body=("This is a water-service problem, not the hot-water temperature standard. In New "
                       "York City building owners must provide and maintain heat, hot and cold water, and "
                       "good lighting, so no cold water, or no running water at all, is a failure to "
@@ -415,12 +401,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page",
                 title="Heat and Hot Water Information, NYC HPD",
-                snippet=("Heat season October 1 through May 31: indoor at least 68 degrees when below "
-                         "55 degrees outside between 6am and 10pm, at least 62 degrees between 10pm and "
-                         "6am; hot water year-round at 120 degrees; file a complaint by calling 311; "
-                         "HPD inspects, a no-heat condition in "
-                         "season is an immediately hazardous class C violation, and HPD can take the "
-                         "landlord to Housing Court"),
                 body=("Heat season runs October 1 through May 31. During heat season, when it is below 55 "
                       "degrees outside between 6am and 10pm the indoor temperature must be at least 68 "
                       "degrees; between 10pm and 6am it must be at least 62 degrees regardless of the "
@@ -436,15 +416,12 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-60410",
                 title="NYC Housing Maintenance Code section 27-2029 (Heat and Hot Water), American Legal Publishing",
-                snippet="the minimum indoor temperature rule is section 27-2029 in Article 8 (Heat and Hot Water)",
                 body=("The minimum indoor temperature rule is section 27-2029 of New York City's "
                       "Housing Maintenance Code, Article 8 (Heat and Hot Water)."),
             ),
             _Fact(
                 url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-236495",
                 title="NYC Housing Maintenance Code section 27-2031 (Supply of Hot Water), American Legal Publishing",
-                snippet=("section 27-2031 is the year-round hot-water rule and generally requires "
-                         "a constant minimum of 120 degrees Fahrenheit"),
                 body=("Section 27-2031 of New York City's Housing Maintenance Code is the year-round "
                       "hot-water rule and generally requires a constant minimum of 120 degrees "
                       "Fahrenheit."),
@@ -458,8 +435,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
                 title="Families with Children: Applying for Temporary Housing Assistance, NYC DHS (PATH)",
-                snippet=("Families with children or a pregnant person apply at PATH intake: 151 East 151st "
-                         "Street, the Bronx, open 24 hours a day, 718-503-6400"),
                 body=("Families with children or a pregnant person apply for shelter at DHS' PATH intake "
                       "center: Prevention Assistance and Temporary Housing (PATH), 151 East 151st Street, "
                       "the Bronx. PATH is open 24 hours a day, including weekends and holidays; the main "
@@ -468,9 +443,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-applying.page",
                 title="Single Adults: Applying for Temporary Housing Assistance, NYC DHS",
-                snippet=("Single adults apply at a DHS intake center: men at the 30th Street Intake Center, "
-                         "400-430 East 30th Street, Manhattan; women at the Franklin Shelter, 1122 Franklin "
-                         "Avenue, the Bronx; you can also call 311"),
                 body=("Single adults apply at a DHS intake center: single adult men go to the 30th Street "
                       "Intake Center, 400-430 East 30th Street, Manhattan; single adult women go to the "
                       "Franklin Shelter, 1122 Franklin Avenue, the Bronx. (Note: beginning August 1, 2026, "
@@ -490,12 +462,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
             _Fact(
                 url="https://www.nyc.gov/site/cchr/media/source-of-income.page",
                 title="Source of Income Discrimination, NYC Commission on Human Rights",
-                snippet=("In New York City it is illegal for a landlord, broker, or their agent to "
-                         "refuse to rent to you because you would pay part of the rent with a housing "
-                         "voucher or another lawful source of income; lawful source of income includes "
-                         "Section 8, CityFHEPS, SSI, HASA; illegal since 2008; covers most NYC rental "
-                         "housing; to file a complaint, call the NYC Commission on Human Rights at "
-                         "212-416-0197"),
                 body=("In New York City it is illegal for a landlord, broker, or their agent to refuse "
                       "to rent to you, or to treat you differently, because you would pay part of the "
                       "rent with a housing voucher or another lawful source of income. Lawful source of "
@@ -510,9 +476,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
                 url="https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-219879",
                 title=("NYC Administrative Code section 8-107(5) (Unlawful discriminatory practices, "
                        "housing), American Legal Publishing"),
-                snippet=("the New York City Human Rights Law makes source-of-income discrimination in "
-                         "housing an unlawful discriminatory practice under Administrative Code section "
-                         "8-107(5), and \"lawful source of income\" is defined in section 8-102"),
                 body=("This protection is in law: the New York City Human Rights Law makes "
                       "source-of-income discrimination in housing an unlawful discriminatory practice "
                       "under Administrative Code section 8-107(5), and \"lawful source of income\" is "
@@ -565,15 +528,11 @@ def _shelter_facts(as_of: date | None = None) -> tuple[_Fact, ...]:
         _Fact(
             url="https://www.nyc.gov/site/dhs/shelter/families/adult-families-applying.page",
             title="Adult Families: Applying for Temporary Housing Assistance, NYC DHS",
-            snippet=adult_family,
             body=adult_family,
         ),
         _Fact(
             url="https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-applying.page",
             title="Single Adults: Applying for Temporary Housing Assistance, NYC DHS",
-            snippet=(f"Single adult men apply at {men}; women can apply at the Franklin Shelter, "
-                     "1122 Franklin Avenue, the Bronx, or Help Women's Center, 114 Snediker Avenue, "
-                     "Brooklyn; you can also call 311"),
             body=(f"Single adult men apply at {men}; single adult women apply at the Franklin Shelter, "
                   "1122 Franklin Avenue, the Bronx, or Help Women's Center, 114 Snediker Avenue, "
                   "Brooklyn. You can also call 311 for the current intake site."),
@@ -610,7 +569,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     cite_ids = []
     for fact in facts:
         cite = ctx.citations.register(
-            fact.url, snippet=fact.snippet, title=fact.title, kind="DOC", valid_as_of=fact.valid_as_of,
+            fact.url, snippet=fact.body, title=fact.title, kind="DOC", valid_as_of=fact.valid_as_of,
         )
         cite_ids.append(cite)
         lines.append(f"- {fact.body} {{cite:{cite}}}")

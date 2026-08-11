@@ -573,6 +573,16 @@ async def test_guidance_citation_snippets_are_backed_by_the_returned_facts():
             assert overlap >= 0.6, f"{topic}/{cid} snippet under-backed by output ({overlap:.0%})"
 
 
+async def test_static_guidance_preserves_every_exposed_fact_as_citation_evidence():
+    for topic in ("right_to_counsel", "bronx_housing_court", "no_heat", "no_water",
+                  "shelter", "source_of_income"):
+        out, citations = await _run_guidance(topic)
+        for body, cid in re.findall(r"^- (.+) \{cite:(S\d+)\}$", out, re.MULTILINE):
+            if body.startswith("CURRENT APPLICABILITY"):
+                continue
+            assert body in citations.mapping()[cid]["snippet"], f"{topic}/{cid} loses evidence"
+
+
 # --- 5. the shipped module stays valid -------------------------------------
 
 def test_housing_module_loads_with_tool_and_eval():
