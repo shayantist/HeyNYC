@@ -47,6 +47,8 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    ToolSearchCallPart,
+    ToolSearchReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models import ModelRequestContext
@@ -58,11 +60,7 @@ from heynyc.core import config, events
 from heynyc.core.agent import (
     AgentResult,
     _delivered_notify_titles,
-    _emergency_backstop_result,
     _ground_emergency_backstop,
-    _internal_config_backstop,
-    _reply_script_feedback,
-    _sensitive_identifier_backstop,
     _unknown_citation_ids,
 )
 from heynyc.core.citations import (
@@ -75,7 +73,6 @@ from heynyc.core.crisis_lines import (
     crisis_response,
 )
 from heynyc.core.freshness import attach_temporal_provenance
-from heynyc.core.grounding import check_grounding
 from heynyc.core.localization import localize, localized_source_limit
 from heynyc.core.memory import (
     CompactFn,
@@ -90,11 +87,13 @@ from heynyc.core.memory import (
     request_tokens,
 )
 from heynyc.core.nli import NLIInput
+from heynyc.core.pii_redaction import redact_sensitive_identifiers
 from heynyc.core.registry import Registry
 from heynyc.core.spend import SpendGuard
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 
 from .projection import (
+    _CITATION_MARKUP_RE,
     NONFACTUAL_OUTCOME_TEXT,
     ClarificationRequest,
     GroundedAnswer,
@@ -128,14 +127,16 @@ _GROUNDED_OUTPUT_TOOL = "grounded_answer"
 _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
 _CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 _INTERNAL_TEMPLATE_TOKEN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
-_SEMANTIC_EVIDENCE_CHARS = 1_200
+_RESIDUAL_CITATION_MARKUP = re.compile(r"[{}]|\bS\d+\b", re.IGNORECASE)
+_SEMANTIC_EVIDENCE_CHARS = 4_000
 _SEMANTIC_RETRY_ITEMS = 8
 _SEMANTIC_LABELS = {"supported", "partial", "unsupported", "contradicted"}
 _GROUNDED_HANDOFF_REQUIREMENT = "requires a grounded handoff"
 _STRUCTURED_GROUNDING_SYSTEM_PROMPT = (
     "For the final GroundedAnswer output, do not write inline citation markers. "
     "Put retrieved source IDs only in citation_ids. The runtime renders citation "
-    "markers after validation."
+    "markers and structured source limitations after validation. Do not restate "
+    "a source limitation in grounded block text."
 )
 _MULTI_TOOL_SCOPE_REMINDER = (
     "Keep each tool result within that tool call's own scope. "
@@ -190,53 +191,28 @@ class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"]
 
 
-# F156: per-turn language, the standard multilingual-chat pattern (Agentforce, Fin)
-# The crisis screen already labels every turn, so detection is on the INPUT, never the output
-# Below the length gate we KEEP the previous language: "ok gracias" is the classic misfire
-_MIN_LETTERS_TO_SWITCH_LANGUAGE = 12
 _REPLY_LANGUAGE_INSTRUCTION = (
     "Reply in {language}. The resident's latest message is in that language, detected per turn. "
     "Keep official names, addresses, phone numbers, and links exact and untranslated."
 )
+_PII_REDACTION_INSTRUCTION = (
+    "Sensitive identifiers in the latest message were redacted before model processing. "
+    "Do not ask the resident to resend them. Explain only the public process and direct them "
+    "to the official secure form when identifiers are required."
+)
 
 
 def _reply_language(safety_run: Any, user_turns: Sequence[str]) -> str:
-    """Language NAME for this turn, sticky when the message is too short to read.
+    """Language name from the typed per-turn safety result.
 
     The screen returns an ISO code. "Reply in ht" asks the model to decode an abbreviation;
     "Reply in Haitian Creole" does not, and Creole was the language it drifted out of.
     """
+    del user_turns
     code = getattr(safety_run, "language", None)
     if not code:
         return ""
-    latest = user_turns[-1] if user_turns else ""
-    if len([c for c in latest if c.isalpha()]) < _MIN_LETTERS_TO_SWITCH_LANGUAGE:
-        return ""
     return LL30_LANGUAGES.get(code, "English" if code == "en" else code)
-
-
-# F155: 0.5 was unreachable for a grounded answer
-# Addresses and org names stay ASCII, so an all-Bengali reply measured 0.41
-# Calibrated both ways: 0.41 wrong-language, 0.04 English quoting a Chinese name
-_WRONG_SCRIPT_SHARE = 0.15
-
-
-# F158: a 30-letter gate skipped follow-ups entirely
-# "is it open on Saturday?" is 18 letters, and drew a 67% non-ASCII answer
-# 12 still reads a script, while skipping "ok" and "yes"
-_MIN_QUERY_LETTERS = 12
-
-
-def _output_language_mismatch(query: str, answer: str) -> bool:
-    query_letters = [character for character in query if character.isalpha()]
-    answer_letters = [character for character in answer if character.isalpha()]
-    if len(query_letters) < _MIN_QUERY_LETTERS or len(answer_letters) < 30:
-        return False
-    query_is_ascii = all(character.isascii() for character in query_letters)
-    non_ascii_answer_share = (
-        sum(not character.isascii() for character in answer_letters) / len(answer_letters)
-    )
-    return query_is_ascii and non_ascii_answer_share > _WRONG_SCRIPT_SHARE
 
 
 def _caused_by(error: BaseException, expected: type[BaseException]) -> bool:
@@ -325,53 +301,6 @@ def _safe_semantic_error(error: str | None) -> str | None:
     return "SemanticVerifierError"
 
 
-def _misowned_proper_nouns(
-    output: GroundedAnswer,
-    citations: dict[str, dict],
-    query: str,
-) -> list[dict[str, Any]]:
-    """Find names supported by a registered source, but not the block's cited sources."""
-    findings: list[dict[str, Any]] = []
-    for index, block in enumerate(output.grounded_blocks):
-        verdict = check_grounding(
-            _render_grounded_answer(GroundedAnswer(grounded_blocks=[block])),
-            citations,
-            query,
-        )
-        if verdict is None:
-            continue
-        for mismatch in verdict.soft_failures:
-            if mismatch.kind != "proper_noun":
-                continue
-            for citation_id in citations.keys() - set(block.citation_ids):
-                if (
-                    citations[citation_id].get("provenance") or {}
-                ).get("evidence_grade") == "discovery":
-                    continue
-                alternative = block.model_copy(update={"citation_ids": [citation_id]})
-                alternative_verdict = check_grounding(
-                    _render_grounded_answer(
-                        GroundedAnswer(grounded_blocks=[alternative])
-                    ),
-                    {
-                        citation_id: {
-                            "title": citations[citation_id].get("title", ""),
-                            "snippet": "",
-                            "provenance": {},
-                        }
-                    },
-                    query,
-                )
-                if alternative_verdict is not None and any(
-                    location["kind"] == mismatch.kind
-                    and location["token"] == mismatch.text
-                    for location in alternative_verdict.locations
-                ):
-                    findings.append({"block": index, "kind": mismatch.kind})
-                    break
-    return findings
-
-
 def _notify_titles_from_result(result: AgentResult) -> frozenset:
     return _delivered_notify_titles([
         {
@@ -397,7 +326,7 @@ def _missing_source_limits(
             or ""
         ).strip()
         localized = localized_source_limit(limitation, language)
-        if localized and localized not in text:
+        if localized:
             limits.setdefault(localized, citation_id)
     return limits
 
@@ -607,22 +536,33 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
     ) -> ModelResponse:
         started = time.perf_counter()
         try:
-            # One retry: a stalled stream usually succeeds on a fresh connection, and losing the
-            # resident's whole turn to a single bad socket is the worse outcome. Worst case is
-            # 2x the bound, still well inside the run wall
-            for attempt in (1, 2):
-                try:
-                    async with asyncio.timeout(self.request_timeout_s):
-                        return await handler(request_context)
-                except TimeoutError:
-                    self.stalled_requests += 1
-                    if attempt == 2:
-                        raise
-            raise AssertionError("unreachable")
+            async with asyncio.timeout(self.request_timeout_s):
+                return await handler(request_context)
+        except TimeoutError:
+            self.stalled_requests += 1
+            raise
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.elapsed_ms += elapsed_ms
             self.request_ms.append(round(elapsed_ms, 3))
+
+
+class _ReserveFinalRequestCapability(AbstractCapability[ToolContext]):
+    """Hide function tools when only the final model request remains."""
+
+    async def prepare_tools(
+        self,
+        ctx: RunContext[ToolContext],
+        tool_defs: list[ToolDefinition],
+    ) -> list[ToolDefinition]:
+        limit = ctx.usage_limits.request_limit
+        return (
+            []
+            if limit is not None
+            and ctx.usage.requests > 0
+            and ctx.usage.requests >= limit - 1
+            else tool_defs
+        )
 
 
 class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
@@ -670,8 +610,9 @@ class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
 class _CoolingTerminalCapability(AbstractCapability[ToolContext]):
     """End a definitive current cooling absence before another retrieval request."""
 
-    def __init__(self, structured_grounding: bool) -> None:
+    def __init__(self, structured_grounding: bool, tool_names: set[str]) -> None:
         self.structured_grounding = structured_grounding
+        self.tool_names = frozenset(tool_names)
 
     async def before_model_request(
         self,
@@ -680,6 +621,25 @@ class _CoolingTerminalCapability(AbstractCapability[ToolContext]):
     ) -> ModelRequestContext:
         result = ctx.deps.cooling_terminal_result
         if result is None:
+            return request_context
+        messages = request_context.messages
+        turn_start = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if isinstance(message, ModelRequest)
+                and any(isinstance(part, UserPromptPart) for part in message.parts)
+            ),
+            default=0,
+        )
+        returned_tools = {
+            part.tool_name
+            for message in messages[turn_start:]
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name in self.tool_names
+        }
+        if len(returned_tools) > 1:
             return request_context
         result = localize(result, ctx.deps.language)
         if self.structured_grounding:
@@ -756,9 +716,9 @@ class PydanticRuntimeAdapter:
         self._structured_grounding = structured_grounding
         # F154: attaching an event handler is what makes PydanticAI stream the model request
         # A structured run already DISCARDS its text deltas (`include_text` below), so when
-        # nothing consumes events -- production SMS and eval both pass no sink -- streaming buys
-        # nothing and exposes the final answer request to mid-stream stalls, which is where every
-        # observed stall happened. The REPL passes a sink and still streams for tool progress
+        # nothing consumes validated text deltas, so streaming buys nothing and exposes the final
+        # answer request to mid-stream stalls, which is where every observed stall happened.
+        # Callers may still opt into streaming explicitly for a future unstructured web surface
         self._streams_without_a_sink = stream_model_requests and not structured_grounding
         self._context_budget = (
             context_capacity(answer_model_route, None, True)
@@ -788,8 +748,9 @@ class PydanticRuntimeAdapter:
             capabilities=[
                 ReinjectSystemPrompt(),
                 Hooks(tool_execute_error=_recover_upstream_tool_error),
+                _ReserveFinalRequestCapability(),
                 _PreserveToolScopesCapability(set(self.tools)),
-                _CoolingTerminalCapability(structured_grounding),
+                _CoolingTerminalCapability(structured_grounding, set(self.tools)),
                 *(
                     [PrepareOutputTools(_authoritative_output_tools)]
                     if structured_grounding and guard_grounding
@@ -934,6 +895,12 @@ class PydanticRuntimeAdapter:
                     "Do not expose internal template markup. Write ordinary "
                     "resident-facing text.",
                 )
+            if any(_RESIDUAL_CITATION_MARKUP.search(text) for text in authored):
+                reject(
+                    "citation_marker",
+                    "Do not write citation IDs or citation punctuation in grounded block text. "
+                    "Put source IDs only in citation_ids.",
+                )
             unknown = sorted({
                 citation_id
                 for block in output.grounded_blocks
@@ -959,20 +926,14 @@ class PydanticRuntimeAdapter:
                 for text in authored
                 for citation_id in _legacy_citation_ids(text)
             ]
-            if leftover_markers:
+            if leftover_markers or any(
+                _CITATION_MARKUP_RE.search(text) for text in authored
+            ):
                 reject(
                     "citation_marker",
                     "Do not write citation markers. Put source IDs in citation_ids; "
                     "the runtime renders markers.",
                     citation_ids=sorted(set(leftover_markers))[:_SEMANTIC_RETRY_ITEMS],
-                )
-            if misowned := _misowned_proper_nouns(output, mapping, ctx.deps.query):
-                reject(
-                    "citation_ownership",
-                    "A named program or organization is supported by a different "
-                    "retrieved source than the block declares. Split the claims or add "
-                    "every source that supports the whole block.",
-                    items=misowned[:_SEMANTIC_RETRY_ITEMS],
                 )
             rendered = _render_grounded_answer(output)
         elif isinstance(output, ClarificationRequest):
@@ -992,12 +953,6 @@ class PydanticRuntimeAdapter:
                 "internal_markup",
                 "Do not expose internal template markup. Write ordinary resident-facing text.",
             )
-        if _output_language_mismatch(ctx.deps.query, rendered):
-            reject(
-                "response_language",
-                "Reply in the same language as the resident's current message. Keep official "
-                "names, addresses, phone numbers, and links unchanged.",
-            )
         if _unknown_citation_ids(rendered, mapping):
             reject(
                 "unknown_citation",
@@ -1009,70 +964,6 @@ class PydanticRuntimeAdapter:
                 "Search snippets are discovery only. Fetch the relevant authoritative source "
                 "with official_sources and cite that evidence, or omit the unverified claim.",
                 citation_ids=sorted(discovery_ids)[:_SEMANTIC_RETRY_ITEMS],
-            )
-        verdict = check_grounding(
-            rendered,
-            mapping,
-            # F160: the guard counts resident words as a source, but only saw the current turn
-            # Once F159 allowed an earlier-turn origin, restating it false-failed
-            ctx.deps.user_history or ctx.deps.query,
-        )
-        if verdict is not None and verdict.blocking:
-            details = {
-                "mismatches": [
-                    {"kind": mismatch.kind, "cited": mismatch.cited}
-                    for mismatch in verdict.hard_failures[:_SEMANTIC_RETRY_ITEMS]
-                ]
-            }
-            if isinstance(output, GroundedAnswer) and ctx.retry >= ctx.max_retries:
-                def remaining_text(block: Any) -> str:
-                    text = _grounded_block_text(block)
-                    block_verdict = check_grounding(
-                        _render_grounded_answer(
-                            GroundedAnswer(grounded_blocks=[block])
-                        ),
-                        mapping,
-                        ctx.deps.query,
-                    )
-                    rejected_claims = (
-                        {
-                            mismatch.claim.strip()
-                            for mismatch in block_verdict.hard_failures
-                        }
-                        if block_verdict is not None and block_verdict.blocking
-                        else set()
-                    )
-                    for claim in rejected_claims:
-                        text = text.replace(claim, " ")
-                    return " ".join(text.split())
-
-                recovered = output.model_copy(update={
-                    "grounded_blocks": [
-                        block.model_copy(update={"text": remaining})
-                        for block in output.grounded_blocks
-                        if (remaining := remaining_text(block))
-                    ]
-                })
-                if recovered.grounded_blocks:
-                    recovered_verdict = check_grounding(
-                        _render_grounded_answer(recovered),
-                        mapping,
-                        ctx.deps.query,
-                    )
-                    if recovered_verdict is None or not recovered_verdict.blocking:
-                        ctx.deps.validation_rejections.append({
-                            "attempt": len(ctx.deps.validation_rejections) + 1,
-                            "stage": "deterministic_grounding",
-                            **details,
-                        })
-                        return recovered
-            reject(
-                "deterministic_grounding",
-                "Return a complete replacement answer to the resident's full request, "
-                "not a correction or addendum. Preserve all still-supported requested "
-                "outcomes from prior tool results, omit unsupported details, and cite every "
-                "factual claim. A deterministic grounding check rejected at least one claim.",
-                **details,
             )
         if isinstance(output, GroundedAnswer) and self._semantic_verifier is not None:
             mapping = ctx.deps.citations.mapping()
@@ -1150,8 +1041,6 @@ class PydanticRuntimeAdapter:
                     "grounded_blocks": supported_blocks,
                 })
                 rendered = _render_grounded_answer(output)
-        if feedback := _reply_script_feedback(ctx.deps.query, rendered):
-            reject("reply_script", feedback)
         return output
 
     async def _apply_output_guard(
@@ -1315,6 +1204,7 @@ class PydanticRuntimeAdapter:
         status: str,
         text: str = TEMPORARY_FAILURE_FALLBACK,
         language: str | None = None,
+        citation_ids: set[str] | None = None,
     ) -> AgentResult:
         result = self._project_result(
             messages,
@@ -1323,6 +1213,7 @@ class PydanticRuntimeAdapter:
                 localize(text, language),
                 citations,
                 language,
+                citation_ids,
             ),
             citations,
             started,
@@ -1411,7 +1302,10 @@ class PydanticRuntimeAdapter:
         DeferredToolRequests | None,
     ]:
         citations = citations if citations is not None else CitationRegistry()
-        user_turns = (*prior_user_turns, user_message)
+        prior_citation_ids = set(citations.mapping())
+        safe_user_message = redact_sensitive_identifiers(user_message)
+        pii_redacted = safe_user_message != user_message
+        user_turns = (*prior_user_turns, safe_user_message)
         started = time.perf_counter()
         message_id = f"pydantic-{time.monotonic_ns()}"
         _emit(
@@ -1419,25 +1313,16 @@ class PydanticRuntimeAdapter:
             events.SessionInit(session_id=message_id, model=self.model),
         )
         _emit(event_sink, events.MessageStart(message_id=message_id))
-        emergency = _emergency_backstop_result(user_message)
-        non_medical_backstop = (
-            _sensitive_identifier_backstop(user_message)
-            or _internal_config_backstop(user_message)
-        )
-        backstop = (
-            (emergency.text if emergency is not None else None) or non_medical_backstop
-        )
-        # The trigger carries the risk label and the evidence it needs. Recovering either by
-        # searching the response for English phrases dropped both for every other language (F145)
-        safety_risk = emergency.risk if emergency is not None else None
-        backstop_sources = emergency.sources if emergency is not None else frozenset()
+        backstop = None
+        safety_risk = None
+        backstop_sources = frozenset()
         safety_run = None
         safety_error = None
         language = None
         # F146: screen runs on ALL traffic; the regex no longer short-circuits it
         # Owner ruling: the backstop is a last-resort catch UNDER the semantic layer
         # Negligible cost, the regex fires on ~2% of turns
-        if self._crisis_screen is not None and non_medical_backstop is None:
+        if self._crisis_screen is not None:
             try:
                 safety_run = await self._crisis_screen(user_turns)
             except Exception as exc:
@@ -1462,18 +1347,10 @@ class PydanticRuntimeAdapter:
                     safety_risk = screened_risk
                     backstop = crisis_response(screened_risk, language)
                     backstop_sources = frozenset()
-                elif safety_risk == "self_harm" and emergency is not None:
-                    # The screen read the whole message and found no crisis where the phrase
-                    # match did. It is the better classifier, so it clears the false positive
-                    # An explicit `imminent_self_harm` phrase is NOT clearable: that is the
-                    # highest-confidence signal we have and it stays a hard floor
-                    safety_risk = None
-                    backstop = None
-                    backstop_sources = frozenset()
         if backstop is not None:
             backstop = _ground_emergency_backstop(backstop, citations, backstop_sources)
             new_messages: list[ModelMessage] = [
-                ModelRequest(parts=[UserPromptPart(user_message)]),
+                ModelRequest(parts=[UserPromptPart(safe_user_message)]),
                 ModelResponse(parts=[TextPart(backstop)]),
             ]
             result = AgentResult(
@@ -1523,19 +1400,7 @@ class PydanticRuntimeAdapter:
                 ),
                 **(
                     {"safety_response_source": "deterministic"}
-                    if (
-                        safety_risk in {"self_harm", "imminent_self_harm"}
-                        or emergency is not None and bool(emergency.sources)
-                    )
-                    else {}
-                ),
-                **(
-                    {
-                        "deterministic_evidence_citations": sorted(
-                            used_citations(backstop, citations.mapping())
-                        )
-                    }
-                    if emergency is not None and emergency.sources
+                    if safety_risk in {"self_harm", "imminent_self_harm"}
                     else {}
                 ),
             }
@@ -1548,7 +1413,7 @@ class PydanticRuntimeAdapter:
         deps = ToolContext(
             citations=citations,
             registry=self.registry,
-            query=user_message,
+            query=safe_user_message,
             user_history="\n".join(user_turns),
             user_turns=user_turns,
             toolbox=self.tools,
@@ -1564,6 +1429,8 @@ class PydanticRuntimeAdapter:
             language=language,
         )
         instructions = list(reminders or ())
+        if pii_redacted:
+            instructions.append(_PII_REDACTION_INSTRUCTION)
         reply_language = _reply_language(safety_run, user_turns)
         if reply_language:
             instructions.append(_REPLY_LANGUAGE_INSTRUCTION.format(language=reply_language))
@@ -1577,7 +1444,7 @@ class PydanticRuntimeAdapter:
             with capture_run_messages() as captured:
                 async with asyncio.timeout(self._run_timeout_s):
                     native = await self._agent.run(
-                        user_message,
+                        safe_user_message,
                         message_history=message_history or None,
                         instructions=_dynamic_instructions(instructions),
                         deps=deps,
@@ -1594,7 +1461,13 @@ class PydanticRuntimeAdapter:
                                     ),
                                 )
                             )
-                            if event_sink is not None or self._streams_without_a_sink
+                            if (
+                                event_sink is not None
+                                and (
+                                    not self._structured_grounding
+                                    or self._stream_model_requests
+                                )
+                            ) or self._streams_without_a_sink
                             else None
                         ),
                         capabilities=(
@@ -1616,7 +1489,7 @@ class PydanticRuntimeAdapter:
                     if isinstance(message, ModelRequest)
                     and any(
                         isinstance(part, UserPromptPart)
-                        and part.content == user_message
+                        and part.content == safe_user_message
                         for part in message.parts
                     )
                 ),
@@ -1652,6 +1525,7 @@ class PydanticRuntimeAdapter:
                     else TEMPORARY_FAILURE_FALLBACK
                 ),
                 language=language,
+                citation_ids=set(citations.mapping()) - prior_citation_ids,
             )
             self._merge_safety_usage(result, safety_run)
             if safety_error:
@@ -1728,6 +1602,7 @@ class PydanticRuntimeAdapter:
                 if safety_run is not None
                 else {}
             ),
+            **({"pii_redacted": True} if pii_redacted else {}),
         }
         _finish_events(event_sink, message_id, result)
         pending = (
@@ -1778,6 +1653,7 @@ class PydanticRuntimeAdapter:
             if isinstance(message, ModelResponse)
             for part in message.parts
             if isinstance(part, ToolCallPart)
+            and not isinstance(part, ToolSearchCallPart)
             and part.tool_name not in {
                 _GROUNDED_OUTPUT_TOOL,
                 _CLARIFICATION_OUTPUT_TOOL,
@@ -1801,6 +1677,7 @@ class PydanticRuntimeAdapter:
             if isinstance(message, ModelRequest)
             for part in message.parts
             if isinstance(part, ToolReturnPart)
+            and not isinstance(part, ToolSearchReturnPart)
             and part.tool_name not in {
                 _GROUNDED_OUTPUT_TOOL,
                 _CLARIFICATION_OUTPUT_TOOL,
@@ -1808,7 +1685,7 @@ class PydanticRuntimeAdapter:
             }
         ]
         pending = isinstance(output, DeferredToolRequests)
-        iterations = sum(isinstance(message, ModelResponse) for message in new_messages)
+        iterations = usage.requests
         cost, cost_source = _complete_cost(self.model, new_messages, usage)
         text = ""
         if not pending:
@@ -2234,6 +2111,7 @@ class _PydanticConversation:
             )
         query = self._user_turns[-1] if self._user_turns else ""
         citations = self._citations
+        prior_citation_ids = set(citations.mapping())
         deps = ToolContext(
             citations=citations,
             registry=self.runtime.registry,
@@ -2277,8 +2155,13 @@ class _PydanticConversation:
                                     ),
                                 )
                             )
-                            if event_sink is not None
-                            or self.runtime._streams_without_a_sink
+                            if (
+                                event_sink is not None
+                                and (
+                                    not self.runtime._structured_grounding
+                                    or self.runtime._stream_model_requests
+                                )
+                            ) or self.runtime._streams_without_a_sink
                             else None
                         ),
                     )
@@ -2298,6 +2181,7 @@ class _PydanticConversation:
                     else "error"
                 ),
                 language=self._safety_language,
+                citation_ids=set(citations.mapping()) - prior_citation_ids,
             )
             if self._safety_language is not None:
                 result.diagnostics["safety_language"] = self._safety_language

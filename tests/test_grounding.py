@@ -34,6 +34,17 @@ def test_grounded_answer_passes_and_is_not_blocking():
     assert not res.hard_failures
 
 
+def test_clock_claim_is_not_semantically_parsed():
+    snapshot = {"estimated_return": "08/31/2026 11:59:00 PM"}
+
+    result = check_grounding(
+        "Estimated return is 11:59 PM. {cite:S1}",
+        {"S1": _data_cite(snapshot)},
+    )
+
+    assert result is None
+
+
 def test_fabricated_structured_fact_is_a_blocking_hard_failure():
     snap = {"name": "New York Common Pantry", "phone": "(917) 720-9700"}
     res = check_grounding("Call them at (212) 555-0100 {cite:S1}.", {"S1": _data_cite(snap)})
@@ -247,6 +258,31 @@ def test_exact_resident_money_and_date_may_be_repeated():
         "date",
         "money",
     }
+
+
+def test_resident_weekday_is_not_semantically_parsed():
+    citation = _data_cite({}, snippet="A landlord needs a court order to evict a tenant.")
+
+    res = check_grounding(
+        "A demand to leave by Friday is not a court order. {cite:S1}",
+        {"S1": citation},
+        query="My landlord says I have to leave by Friday.",
+    )
+
+    assert res is None
+
+
+def test_current_weekday_is_not_semantically_parsed():
+    citation = _data_cite({}, snippet="A landlord needs a court order to evict a tenant.")
+
+    res = check_grounding(
+        "Tuesday is the deadline. {cite:S1}",
+        {"S1": citation},
+        query="My landlord says I have to leave by Friday.",
+        current_date=date(2026, 8, 11),
+    )
+
+    assert res is None
 
 
 def test_measured_unit_requires_the_same_unit_category():

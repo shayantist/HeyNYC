@@ -60,26 +60,30 @@ def test_configured_runtime_keeps_uncalibrated_output_moderation_off(monkeypatch
     assert captured["output_guard"] is None
 
 
-def test_configured_runtime_enables_the_citation_checker_for_provider_models(
+def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_runtime",
+        lambda _registry, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_crisis_screen",
+        lambda _model, *, model_name: object(),
+    )
+
+    build_configured_runtime(Registry([]), model=TestModel())
+
+    assert captured["stream_model_requests"] is False
+
+
+def test_configured_runtime_keeps_candidate_semantic_checker_out_of_public_path(
     monkeypatch,
 ):
     captured = {}
     configured = []
-    citation_checker = object()
-
-    monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.config.HEYNYC_CITATION_CHECK_MODEL",
-        "anthropic/claude-sonnet-4-6",
-        raising=False,
-    )
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.configured_model",
         lambda model, **_kwargs: configured.append(model) or object(),
-    )
-    monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.PromptedNLI",
-        lambda model: citation_checker if model == "anthropic/claude-sonnet-4-6" else None,
-        raising=False,
     )
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.build_crisis_screen",
@@ -92,7 +96,7 @@ def test_configured_runtime_enables_the_citation_checker_for_provider_models(
 
     build_configured_runtime(Registry([]), model="openai/gpt-5.6-luna")
 
-    assert captured["semantic_verifier"] is citation_checker
+    assert captured.get("semantic_verifier") is None
     assert "openai/gpt-5.6-luna" in configured
 
 

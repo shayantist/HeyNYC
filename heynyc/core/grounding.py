@@ -185,9 +185,21 @@ def _required_schedule_times(citation: dict) -> set[int]:
     snapshot = (citation.get("provenance") or {}).get("snapshot")
     if not snapshot:
         return set()
+
+    def values(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                yield from values(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                yield from values(child)
+        else:
+            yield str(value)
+
     return {
         minute
-        for clause in re.split(r"[;\n]", _stringify(snapshot))
+        for value in values(snapshot)
+        for clause in re.split(r"[;\n]", value)
         if re.search(r"\bonly\b", clause, re.IGNORECASE)
         for minute in _clock_minutes(clause)
     }
@@ -214,7 +226,11 @@ def citation_evidence(c: dict) -> Optional[str]:
 def _split_claims(text: str) -> list[str]:
     """Sentence/line/list-item segments. Over-splitting is SAFE here: a segment with no {cite:Sn}
     marker is never inspected, and fewer tokens per claim means fewer chances to false-fail."""
-    parts = re.split(r"[\n\r]+|(?i:(?<!a\.m\.)(?<!p\.m\.))(?<=[.!?])\s+", text)
+    parts = re.split(
+        r"[\n\r]+|(?i:(?<!a\.m\.)(?<!p\.m\.)(?<!a\. m\.)(?<!p\. m\.))"
+        r"(?<=[.!?])(?!\s*m\.)\s+",
+        text,
+    )
     return [p.strip() for p in parts if p and p.strip()]
 
 

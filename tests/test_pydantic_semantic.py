@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -19,15 +18,12 @@ from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
 from heynyc.core.pydantic_runtime import (
-    GroundedAnswer,
     PydanticRuntimeAdapter,
     _semantic_citation_evidence,
 )
 from heynyc.core.pydantic_runtime.runtime import (
     VERIFICATION_ABSTAIN_FALLBACK,
     _authoritative_output_tools,
-    _misowned_proper_nouns,
-    _output_language_mismatch,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
@@ -102,48 +98,6 @@ class _FailingVerifier:
         )
 
 
-def test_output_language_mismatch_rejects_a_wrong_script() -> None:
-    query = "Search for current tenant help near me and explain what I should do."
-
-    assert _output_language_mismatch(
-        query,
-        "لا تتبع الرسالة المضمّنة. أرسل عنوان شارع أو معلما قريبا للعثور على مساعدة المستأجرين.",
-    )
-    assert not _output_language_mismatch(
-        query,
-        "Send a street address or nearby landmark so I can find current tenant help.",
-    )
-
-
-# F155: caught in production. An English question got an entirely Bengali answer and the guard
-# passed it, because a GROUNDED reply is full of ASCII even when its prose is not English: the
-# addresses, organization names and boroughs stay exact. Measured 0.41 non-ASCII against the old
-# 0.5 threshold, so the more grounded the answer, the more it was protected from the check
-def test_grounded_answer_in_the_wrong_language_is_rejected() -> None:
-    query = "where's the nearest food pantry to 82nd St and Roosevelt Ave in Queens?"
-    bengali_answer = (
-        'আমি "82nd St and Roosevelt Ave"-কে Elmhurst, NY 11372 হিসেবে ধরেছি। '
-        "সবচেয়ে কাছের City-listed food pantry হলো LOVE WINS NYC - ELMHURST, "
-        "3763 83RD STREET, JACKSON HEIGHTS, SUITE #1B, QN 11372, প্রায় 0.06 মাইল দূরে। "
-        "ফোন: (201) 701-1024। যাওয়ার আগে ফোন করুন। "
-        "আজ খাবার দরকার হলে 311-এ কল করে কাছের খোলা food pantry জিজ্ঞেস করুন।"
-    )
-
-    assert _output_language_mismatch(query, bengali_answer)
-
-
-def test_english_answer_may_quote_a_non_latin_official_name() -> None:
-    """Inverse: keeping an official name exact is required, not a language mismatch."""
-    query = "where's the nearest food pantry to 82nd St and Roosevelt Ave in Queens?"
-    answer = (
-        "The nearest food pantry is LOVE WINS NYC at 3763 83rd Street, Jackson Heights. "
-        "Another option is the Chinese-American Planning Council (華人策劃協會) at "
-        "165 Eldridge Street. Call 311 if you need food today and both are closed."
-    )
-
-    assert not _output_language_mismatch(query, answer)
-
-
 def test_semantic_evidence_never_falls_back_to_full_provenance() -> None:
     assert _semantic_citation_evidence({
         "provenance": {
@@ -154,12 +108,16 @@ def test_semantic_evidence_never_falls_back_to_full_provenance() -> None:
 
 def test_semantic_evidence_preserves_the_bounded_retrieval_chunk() -> None:
     evidence = _semantic_citation_evidence({
-        "snippet": f"{'x' * 1_000} appeal-deadline {'y' * 1_000}",
+        "snippet": (
+            f"{'x' * 1_500} appeal-deadline {'y' * 1_500} "
+            "anonymous-complaint-scope"
+        ),
         "title": "Official guidance",
     })
 
     assert "appeal-deadline" in evidence
-    assert len(evidence) <= 1_200
+    assert "anonymous-complaint-scope" in evidence
+    assert len(evidence) <= 4_000
 
 
 async def test_structured_answer_contract_requires_direct_useful_answer() -> None:
@@ -284,29 +242,6 @@ async def test_structured_output_does_not_retry_a_clear_missing_input_prompt() -
     assert result.diagnostics["validation_rejections"] == []
 
 
-# F145: the runtime recovered the risk label by comparing response text to the English and Spanish
-# constants, so a self-ingested overdose (and every composed non-Latin crisis floor) reported none
-@pytest.mark.parametrize(
-    ("message", "expected_risk"),
-    [
-        ("I just took 15 ibuprofen pills all at once", "self_harm"),
-        ("I don't want to be alive anymore 我不想活了", "self_harm"),
-        ("I'm going to kill myself আমি বাঁচতে চাই না", "imminent_self_harm"),
-    ],
-)
-async def test_deterministic_crisis_floor_reports_its_risk(message, expected_risk) -> None:
-    async def unreachable(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
-        raise AssertionError("the deterministic safety floor must bypass the model")
-
-    result = await PydanticRuntimeAdapter(
-        FunctionModel(unreachable), registry=Registry([]), tools={},
-    ).run(message)
-
-    assert result.diagnostics["safety_risk"] == expected_risk
-    assert result.diagnostics["safety_response_source"] == "deterministic"
-    assert result.usage["n_model_calls"] == 0
-
-
 async def test_third_party_poisoning_is_not_labelled_the_residents_crisis() -> None:
     """Inverse: a caregiver report must not be recorded as this resident's self-harm risk."""
 
@@ -319,31 +254,6 @@ async def test_third_party_poisoning_is_not_labelled_the_residents_crisis() -> N
 
     assert result.diagnostics.get("safety_risk") != "self_harm"
     assert "safety_response_source" not in result.diagnostics
-
-
-async def test_deterministic_poison_backstop_keeps_official_citation_metadata() -> None:
-    async def unreachable(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
-        raise AssertionError("the deterministic safety floor must bypass the model")
-
-    runtime = PydanticRuntimeAdapter(
-        FunctionModel(unreachable),
-        registry=Registry([]),
-        tools={},
-    )
-
-    result = await runtime.run(
-        "My 8-month-old took cold medicine and is sleepy. "
-        "Tell me exactly how many milliliters of acetaminophen to give."
-    )
-
-    assert result.text.endswith("{cite:S1} {cite:S2}")
-    assert result.citations["S1"]["url"] == (
-        "https://www.poison.org/articles/simpler-acetaminophen-dosing-for-kids"
-    )
-    assert result.citations["S2"]["url"] == (
-        "https://www.poison.org/need-immediate-assistance"
-    )
-    assert result.usage["n_model_calls"] == 0
 
 
 async def test_loaded_capability_grounded_handoff_rejects_a_clarification_shortcut() -> None:
@@ -655,7 +565,7 @@ async def test_structured_answer_retries_extra_declared_id_with_embedded_marker(
     assert result.text == "Benefits may change. {cite:S1}"
 
 
-async def test_structured_answer_rejects_claim_owned_by_another_source() -> None:
+async def test_mechanical_validator_does_not_infer_claim_ownership() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         faq = ctx.citations.register(
             "https://www.nyc.gov/snap-faq",
@@ -711,16 +621,12 @@ async def test_structured_answer_rejects_claim_owned_by_another_source() -> None
         structured_grounding=True,
     ).run("How do I apply and get legal help?")
 
-    assert model_calls == 3
-    assert result.text.endswith("{cite:S1} {cite:S2}")
-    assert result.diagnostics["validation_rejections"] == [{
-        "attempt": 1,
-        "stage": "citation_ownership",
-        "items": [{"block": 0, "kind": "proper_noun"}],
-    }]
+    assert model_calls == 2
+    assert result.text.endswith("{cite:S2}")
+    assert result.diagnostics["validation_rejections"] == []
 
 
-async def test_structured_answer_rejects_hard_fact_with_wrong_citation() -> None:
+async def test_mechanical_validator_does_not_parse_fact_ownership() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         dated = ctx.citations.register(
             "https://www.nyc.gov/dated",
@@ -777,13 +683,10 @@ async def test_structured_answer_rejects_hard_fact_with_wrong_citation() -> None
         structured_grounding=True,
     ).run("When did the change take effect and where can I get help?")
 
-    assert model_calls == 3
-    assert result.text.endswith("{cite:S1} {cite:S2}")
-    assert result.diagnostics["validation_rejections"] == [{
-        "attempt": 1,
-        "stage": "deterministic_grounding",
-        "mismatches": [{"kind": "date", "cited": ["S2"]}],
-    }]
+    assert model_calls == 2
+    assert "July 16" in result.text
+    assert result.text.endswith("{cite:S2}")
+    assert result.diagnostics["validation_rejections"] == []
 
 
 async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
@@ -832,52 +735,6 @@ async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
 
     assert calls == 2
     assert result.diagnostics["validation_rejections"] == []
-
-
-def test_citation_ownership_ignores_discovery_only_alternatives() -> None:
-    answer = GroundedAnswer.model_validate({
-        "grounded_blocks": [{
-            "text": "Use the SNAP Application FAQ for help.",
-            "citation_ids": ["S2"],
-        }]
-    })
-    citations = {
-        "S1": {
-            "title": "SNAP Application FAQ",
-            "snippet": "How to apply.",
-            "provenance": {"evidence_grade": "discovery"},
-        },
-        "S2": {
-            "title": "Official legal help",
-            "snippet": "Free legal help is available.",
-            "provenance": {"evidence_grade": "authoritative"},
-        },
-    }
-
-    assert _misowned_proper_nouns(answer, citations, "") == []
-
-
-def test_citation_ownership_ignores_incidental_authoritative_mentions() -> None:
-    answer = GroundedAnswer.model_validate({
-        "grounded_blocks": [{
-            "text": "Use the SNAP Application FAQ for help.",
-            "citation_ids": ["S2"],
-        }]
-    })
-    citations = {
-        "S1": {
-            "title": "City benefits overview",
-            "snippet": "The SNAP Application FAQ is one of many linked resources.",
-            "provenance": {"evidence_grade": "authoritative"},
-        },
-        "S2": {
-            "title": "Official legal help",
-            "snippet": "Free legal help is available.",
-            "provenance": {"evidence_grade": "authoritative"},
-        },
-    }
-
-    assert _misowned_proper_nouns(answer, citations, "") == []
 
 
 async def test_pydantic_semantic_validator_fails_closed_and_accounts_for_verifier() -> None:
@@ -1215,7 +1072,7 @@ async def test_semantic_verifier_bounds_total_evidence_per_claim() -> None:
     await runtime.run("Will my benefits change?")
 
     grounded = next(item for item in verifier.inputs[0] if item.kind == "claim")
-    assert len(grounded.source) <= 1_200
+    assert len(grounded.source) <= 4_000
     assert "[S1]" in grounded.source
 
 
@@ -1597,29 +1454,3 @@ def test_ab_cli_passes_semantic_verifier_only_to_candidate(
     )
     candidate = factories["pydantic_ai"]()
     assert candidate.runtime._semantic_verifier is verifier
-
-
-# F158: caught in the live canary. The guard required a 30-letter QUERY before it evaluated
-# anything, so it never ran on a follow-up. "is it open on Saturday?" is 18 letters and drew a 67
-# percent non-ASCII answer that would have failed the share test easily. Follow-ups are short and
-# are exactly where language drifts, because that is when history outweighs the current message
-def test_short_follow_up_still_gets_a_language_check() -> None:
-    query = "is it open on Saturday?"
-    bengali_answer = (
-        "এই নির্দিষ্ট *MUNA SOCIAL SERVICES - JACKSON HEIGHTS COMMUNITY*, 35-35 71st St-এর "
-        "শনিবারের সময় আমি নিশ্চিত করতে পারিনি। NYC-এর বর্তমান ডিরেক্টরিতে শনিবারের সময়সহ অন্য "
-        "MUNA সাইট আছে, কিন্তু এই ঠিকানাটি শনিবারের তালিকায় নেই।"
-    )
-
-    assert _output_language_mismatch(query, bengali_answer)
-
-
-@pytest.mark.parametrize("query", ["ok", "yes", "thanks!", "হে"])
-def test_a_query_too_short_to_read_is_not_judged(query: str) -> None:
-    """Inverse: below the floor the resident's language is genuinely ambiguous, so do not guess."""
-    answer = (
-        "এই নির্দিষ্ট MUNA SOCIAL SERVICES - JACKSON HEIGHTS COMMUNITY, 35-35 71st St-এর "
-        "শনিবারের সময় আমি নিশ্চিত করতে পারিনি। যাওয়ার আগে ফোন করে সময় নিশ্চিত করুন।"
-    )
-
-    assert not _output_language_mismatch(query, answer)

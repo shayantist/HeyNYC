@@ -41,9 +41,13 @@ _OUTPUT_TOOLS = {
     _NONFACTUAL_OUTPUT_TOOL,
     _CLARIFICATION_OUTPUT_TOOL,
 }
-_SEMANTIC_CITATION_CHARS = 1_200
+_SEMANTIC_CITATION_CHARS = 4_000
 _LEGACY_CITATION_RE = re.compile(
     r"\{\s*cite\s*:\s*(S\d+)(?:\s*\}|(?=\s|$))",
+    re.IGNORECASE,
+)
+_CITATION_MARKUP_RE = re.compile(
+    r"\{\s*cit(?:e|ation)[_a-z]*\s*:",
     re.IGNORECASE,
 )
 
@@ -53,13 +57,17 @@ class GroundedBlock(BaseModel):
         description=(
             "One factual or procedural claim directly supported by its cited evidence, without "
             "citation markers. Do not turn a cited prohibition into an unsupported positive "
-            "instruction."
+            "instruction. If another sentence needs different evidence, put it in a separate "
+            "block."
         ),
     )
     citation_ids: list[str] = Field(
         min_length=1,
         max_length=8,
-        description="IDs of retrieved sources that support the whole claim.",
+        description=(
+            "All sources needed to support every factual detail in this block. If different "
+            "details use different sources, include all sources or use separate blocks."
+        ),
     )
 
 
@@ -91,11 +99,18 @@ def _legacy_citation_ids(text: str) -> list[str]:
 
 
 def _semantic_citation_evidence(citation: dict) -> str:
-    """Prefer the tool's bounded evidence chunk; keep full snapshots for deterministic audit."""
-    return " ".join(
-        str(citation.get(field) or "").strip()
-        for field in ("snippet", "title")
-    ).strip()[:_SEMANTIC_CITATION_CHARS]
+    """Project bounded public evidence without exposing private provenance."""
+    parts = [citation.get("snippet"), citation.get("title")]
+    provenance = citation.get("provenance") or {}
+    if citation.get("kind") == "DATA" and provenance.get("record_id"):
+        parts += [
+            json.dumps(provenance.get("snapshot") or {}, ensure_ascii=False),
+            json.dumps(provenance.get("derivation") or {}, ensure_ascii=False),
+            citation.get("valid_as_of"),
+        ]
+    return " ".join(str(part).strip() for part in parts if part).strip()[
+        :_SEMANTIC_CITATION_CHARS
+    ]
 
 
 def _render_grounded_answer(answer: GroundedAnswer) -> str:

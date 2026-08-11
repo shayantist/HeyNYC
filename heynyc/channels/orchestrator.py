@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from heynyc.core import config, outcomes, pii_crypto
-from heynyc.core.agent import _emergency_backstop
 from heynyc.core.drafts import DraftStore
 from heynyc.core.localization import welcome_footer as _localized_welcome_footer
 from heynyc.core.memory import ContextCapacityError
@@ -44,9 +43,10 @@ _FLAG_NOTHING_MSG = "Nothing to flag yet, ask me something first."
 _HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
 _RATE_LIMIT_MSG = "You're sending a lot at once, give me a moment and try again shortly. 🙏"
-_MEDIA_UNSUPPORTED_MSG = (
-    "I received the attachment, but this pilot can't read attachments yet. "
-    "Please type the text or question you want help with."
+_MEDIA_REMINDER = (
+    "An attachment was received, but its contents are unavailable to you. Answer only the typed "
+    "message. If the answer depends on the attachment, say that plainly and ask the resident to "
+    "type the relevant text."
 )
 _SCREEN_TOOL = "screen_eligibility"
 _SCREEN_REMINDER = (
@@ -91,7 +91,8 @@ _NEW_MESSAGE = (
 )
 _DAILY_CAP_MSG = (
     "You've reached today's usage limit for this number, so I have to pause until midnight. "
-    "For city help right now call 311, or 911 in an emergency, and I'll be ready again tomorrow."
+    "For city help right now call 311. For a mental health crisis call or text 988, or call 911 "
+    "in an immediate emergency. I'll be ready again tomorrow."
 )
 
 
@@ -256,13 +257,6 @@ async def handle(
                     _confirm_flag(msg, key, session, staged_flag, deps)
                     await replier.send_text(_FLAG_SENT_MSG)
                     return
-            if msg.media:
-                emergency_response = _emergency_backstop(msg.text)
-                if emergency_response:
-                    await replier.send_text(emergency_response)
-                    return
-                await replier.send_text(_MEDIA_UNSUPPORTED_MSG)
-                return
             if is_flag(msg.text):
                 await _handle_flag(msg, key, session, replier, deps)
                 return
@@ -300,7 +294,6 @@ async def handle(
             # crisis message always reaches the zero-cost emergency path.
             if (
                 deps.user_daily_spend_cap is not None
-                and _emergency_backstop(msg.text) is None
                 and deps.store.daily_spend(key, _nyc_day()) >= deps.user_daily_spend_cap
             ):
                 await replier.send_text(_DAILY_CAP_MSG)
@@ -311,6 +304,8 @@ async def handle(
                 user_drafts = deps.drafts.for_user(key) if deps.drafts else None
                 screen_requested = is_screen(msg.text)
                 reminders = _reminders() + ([_SCREEN_REMINDER] if screen_requested else [])
+                if msg.media:
+                    reminders.append(_MEDIA_REMINDER)
                 try:
                     if approval_pending:
                         from heynyc.core.pydantic_runtime import PydanticApprovalFlow

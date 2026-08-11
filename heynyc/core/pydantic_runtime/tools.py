@@ -246,39 +246,31 @@ class ResponsePriorityCapability(AbstractCapability[ToolContext]):
         priority = ctx.deps.response_priority_citation_ids
         if not priority or isinstance(output, DeferredToolRequests):
             return output
-        first_citations = set(output.grounded_blocks[0].citation_ids) if isinstance(
-            output, GroundedAnswer
-        ) else set()
-        anchors = {
-            str(anchor).casefold()
-            for citation_id in priority
-            for anchor in (
-                (
-                    (ctx.deps.citations.mapping().get(citation_id, {}).get("provenance") or {})
-                    .get("derivation", {})
-                    .get("response_priority_anchors", [])
-                )
-            )
-            if isinstance(anchor, str) and anchor.strip()
-        }
-        first_text = (
-            output.grounded_blocks[0].text.casefold()
-            if isinstance(output, GroundedAnswer)
-            else ""
+        if isinstance(output, GroundedAnswer):
+            def is_priority(block: Any) -> bool:
+                return bool(set(block.citation_ids).intersection(priority))
+
+            if is_priority(output.grounded_blocks[0]):
+                return output
+            for index, block in enumerate(output.grounded_blocks[1:], 1):
+                if is_priority(block):
+                    return output.model_copy(update={
+                        "grounded_blocks": [
+                            block,
+                            *output.grounded_blocks[:index],
+                            *output.grounded_blocks[index + 1:],
+                        ]
+                    })
+        ctx.deps.validation_rejections.append({
+            "attempt": len(ctx.deps.validation_rejections) + 1,
+            "stage": "response_priority",
+        })
+        raise ModelRetry(
+            "Lead with an exact immediate action from the priority tool result, such as "
+            "its official URL or phone number, before lower-priority workflows. Keep facts "
+            "from a different source in a separate grounded block with that source's "
+            "citation ID."
         )
-        if (
-            not first_citations.intersection(priority)
-            or (anchors and not any(anchor in first_text for anchor in anchors))
-        ):
-            ctx.deps.validation_rejections.append({
-                "attempt": len(ctx.deps.validation_rejections) + 1,
-                "stage": "response_priority",
-            })
-            raise ModelRetry(
-                "Lead with an exact immediate action from the priority tool result, such as "
-                "its official URL or phone number, before lower-priority workflows."
-            )
-        return output
 
 
 def _fact_leaves(value: object, path: str) -> list[tuple[str, object]]:
@@ -469,7 +461,7 @@ def resident_fact_confirmation_tool(tool: Tool) -> Tool:
 def build_module_capabilities(
     registry: Registry,
     tools: dict[str, Tool],
-) -> tuple[list[PydanticTool], list[Capability[ToolContext]]]:
+) -> tuple[list[PydanticTool], list[AbstractCapability[ToolContext]]]:
     """Derive deferred runtime capabilities from authoritative module manifests."""
     modules = {module.name: module for module in registry.modules}
 
@@ -574,7 +566,7 @@ def build_module_capabilities(
 
         tool.prepare = focus
 
-    capabilities: list[Capability[ToolContext]] = []
+    capabilities: list[AbstractCapability[ToolContext]] = []
     for module in registry.modules:
         if module.parent:
             continue
@@ -652,14 +644,12 @@ def build_module_capabilities(
                     )
                     if part
                 )
-                capabilities.append(
-                    Capability(
-                        id=f"{module.name}-{hint_id}",
-                        description=hint.definition,
-                        instructions=instructions,
-                        defer_loading=True,
-                    )
-                )
+                capabilities.append(Capability[ToolContext](
+                    id=f"{module.name}-{hint_id}",
+                    description=hint.definition,
+                    instructions=instructions,
+                    defer_loading=True,
+                ))
     for (module_name, tool_name), available_tools in governed_tools.items():
         tool = governed[tool_name]
         capability_id = f"{module_name}-{tool_name.replace('_', '-')}"

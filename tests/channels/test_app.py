@@ -38,6 +38,15 @@ def test_build_agent_can_select_pydantic_runtime(monkeypatch):
     assert appmod.build_agent() is built
 
 
+def test_public_startup_rejects_legacy_runtime(monkeypatch):
+    from heynyc.channels import app as appmod
+
+    monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "legacy")
+
+    with pytest.raises(RuntimeError, match="Pydantic"):
+        appmod.build_agent()
+
+
 def test_legacy_startup_invalidates_pending_native_approvals(monkeypatch, tmp_path):
     appmod, store = _store_with_pending_approval(tmp_path, monkeypatch)
     monkeypatch.setattr(appmod.config, "HEYNYC_AGENT_RUNTIME", "legacy")

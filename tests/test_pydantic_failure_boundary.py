@@ -322,7 +322,7 @@ def test_history_projection_discards_sibling_plain_text() -> None:
     ]
 
 
-async def test_verification_retry_exhaustion_returns_an_honest_abstention() -> None:
+async def test_mechanical_boundary_does_not_parse_phone_semantics() -> None:
     async def retrieve(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -374,6 +374,5 @@ async def test_verification_retry_exhaustion_returns_an_honest_abstention() -> N
     ).run("Can you verify the number?")
 
     assert result.status == "success"
-    assert "couldn't verify" in result.text
-    assert "212-555-1212" not in result.text
-    assert result.diagnostics["validation_rejections"]
+    assert result.text == "Call the unsupported number 212-555-1212. {cite:S1}"
+    assert result.diagnostics["validation_rejections"] == []

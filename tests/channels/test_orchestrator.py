@@ -241,11 +241,8 @@ async def test_media_is_acknowledged_without_claiming_the_model_received_it(tmp_
 
     await handle(msg, replier, deps)
 
-    assert replier.typed == 0
-    assert replier.sent == [
-        "I received the attachment, but this pilot can't read attachments yet. "
-        "Please type the text or question you want help with."
-    ]
+    assert replier.typed == 1
+    assert _answers(replier) == ["Here you go."]
 
 
 async def test_media_with_imminent_self_harm_text_uses_emergency_backstop_first(tmp_path):
@@ -255,8 +252,8 @@ async def test_media_with_imminent_self_harm_text_uses_emergency_backstop_first(
 
     await handle(msg, replier, deps)
 
-    assert replier.typed == 0
-    assert replier.sent == [_IMMINENT_SELF_HARM_RESPONSE_EN]
+    assert replier.typed == 1
+    assert _answers(replier)[0].startswith(_IMMINENT_SELF_HARM_RESPONSE_EN)
 
 
 async def test_spanish_crisis_short_circuits_before_media_and_model(tmp_path):
@@ -271,9 +268,10 @@ async def test_spanish_crisis_short_circuits_before_media_and_model(tmp_path):
 
     await handle(msg, replier, deps)
 
-    assert replier.typed == 0
-    assert "911" in replier.sent[0] and "988" in replier.sent[0]
-    assert "adjunto" not in replier.sent[0].lower()
+    assert replier.typed == 1
+    answer = _answers(replier)[0]
+    assert "911" in answer and "988" in answer
+    assert "adjunto" not in answer.lower()
 
 
 async def test_duplicate_message_is_ignored(tmp_path):
@@ -1154,8 +1152,8 @@ async def test_user_over_daily_cap_gets_fixed_copy_and_no_agent_call(tmp_path):
     assert "usage limit" not in replier.sent[-1].lower()
 
 
-async def test_emergency_text_bypasses_the_daily_cap(tmp_path):
-    from heynyc.channels.orchestrator import _nyc_day
+async def test_daily_cap_message_includes_emergency_routes_without_text_classification(tmp_path):
+    from heynyc.channels.orchestrator import _DAILY_CAP_MSG, _nyc_day
 
     deps, replier = _deps(tmp_path), FakeReplier()
     deps.user_daily_spend_cap = 0.50
@@ -1165,7 +1163,9 @@ async def test_emergency_text_bypasses_the_daily_cap(tmp_path):
 
     await handle(message, replier, deps)
 
-    assert any("911" in text for text in replier.sent)
+    assert replier.sent == [_DAILY_CAP_MSG]
+    assert "988" in _DAILY_CAP_MSG and "911" in _DAILY_CAP_MSG
+    assert replier.typed == 0
 
 
 async def test_turn_cost_accrues_to_the_daily_tally(tmp_path):

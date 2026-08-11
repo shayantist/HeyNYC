@@ -40,6 +40,27 @@ def test_same_url_with_different_evidence_does_not_reuse_stale_citation():
     assert reg.mapping()[second]["snippet"].endswith("new detail")
 
 
+def test_f197_same_data_summary_with_a_new_snapshot_gets_a_new_citation() -> None:
+    reg = CitationRegistry()
+    snippet = "5 nearby sites had weekly hours"
+    sunset = data_provenance(
+        {"origin_label": "Sunset Park", "scheduled_open_nearby": 5},
+        record_id="availability-summary",
+        field_pointer="/",
+    )
+    queens = data_provenance(
+        {"origin_label": "82nd Street and Roosevelt Avenue", "scheduled_open_nearby": 5},
+        record_id="availability-summary",
+        field_pointer="/",
+    )
+
+    first = reg.register("https://data.nyc.gov/food", snippet=snippet, kind="DATA", provenance=sunset)
+    second = reg.register("https://data.nyc.gov/food", snippet=snippet, kind="DATA", provenance=queens)
+
+    assert first != second
+    assert reg.mapping()[second]["provenance"]["snapshot"]["origin_label"].startswith("82nd")
+
+
 def test_same_url_different_kind_is_distinct():
     reg = CitationRegistry()
     a = reg.register("https://a.gov", snippet="x", kind="DATA")

@@ -66,6 +66,26 @@ async def test_pydantic_plain_output_rejects_discovery_citation_id():
         )
 
 
+async def test_pydantic_plain_output_accepts_authoritative_excerpt_citation_id():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://www.nba.com/knicks/news/jalen-brunson-named-captain",
+        title="Jalen Brunson named captain",
+        snippet="Jalen Brunson was named the 36th captain in Knicks history.",
+        kind="WEB",
+        provenance={"evidence_grade": "authoritative_excerpt"},
+    )
+    runtime = object.__new__(PydanticRuntimeAdapter)
+    runtime._semantic_verifier = None
+    context = SimpleNamespace(
+        deps=ToolContext(citations=citations, registry=None)
+    )
+
+    output = f"Jalen Brunson is the Knicks captain. {{cite:{citation_id}}}"
+
+    assert await runtime._validate_grounding(context, output) == output
+
+
 async def test_eval_rejects_unknown_citation_id():
     result = CaseResult(
         case=EvalCase(id="unknown-citation", module="test", query="Where is it?"),
@@ -106,6 +126,27 @@ async def test_eval_rejects_discovery_citation_id():
     assert check.passed is False
     assert check.blocking is True
     assert check.detail == "discovery-only citation ids: S1"
+
+
+async def test_eval_accepts_authoritative_excerpt_citation_id():
+    result = CaseResult(
+        case=EvalCase(id="official-excerpt", module="test", query="Who is captain?"),
+        text="Jalen Brunson is the Knicks captain. {cite:S1}",
+        citations={
+            "S1": {
+                "kind": "WEB",
+                "provenance": {"evidence_grade": "authoritative_excerpt"},
+            },
+        },
+    )
+
+    checks = await run_checks(result, link_checker=lambda _: None)
+    check = next(
+        candidate for candidate in checks
+        if candidate.name == "citation_references"
+    )
+
+    assert check.passed is True
 
 
 async def test_eval_rejects_malformed_citation_id():

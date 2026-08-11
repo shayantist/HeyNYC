@@ -115,3 +115,13 @@ def test_hot_water_situation_points_to_parent_that_owns_its_module_tool():
     assert "load the parent `housing` capability" in "\n".join(
         situation.get_instructions()
     )
+
+
+def test_active_lockout_uses_native_deferred_capability_selection():
+    registry = Registry.discover(Path("heynyc/modules"))
+    _adapted, capabilities = build_module_capabilities(registry, {})
+    capability = next(
+        item for item in capabilities if item.id == "housing-active-lockout"
+    )
+    assert capability.defer_loading is True
+    assert capability.id == "housing-active-lockout"

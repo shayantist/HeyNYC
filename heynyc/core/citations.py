@@ -123,15 +123,16 @@ class CitationRegistry:
     ) -> str:
         """Register a source, returning its semantic id (S1, S2, ...).
 
-        Dedupes on (kind, url, exact snippet, evidence grade) so the same evidence reused
-        across tool calls maps to one id without conflating discovery and authoritative text.
+        Dedupes on kind, URL, exact snippet, evidence grade, and DATA content hash so the same
+        evidence reused across tool calls maps to one id without conflating changing snapshots.
         `provenance` carries structured DATA provenance or a WEB evidence grade.
         """
         # F056: the city 301s its legacy host to www.nyc.gov (verified live); store the
         # canonical host so replies and the liveness check never ride a deprecated hostname.
         url = canonical_source_url(url)
         evidence_grade = (provenance or {}).get("evidence_grade", "")
-        key = (kind, url, snippet, evidence_grade)
+        data_hash = (provenance or {}).get("content_hash", "") if kind == "DATA" else ""
+        key = (kind, url, snippet, evidence_grade, data_hash)
         existing = self._by_key.get(key)
         if existing is not None:
             return existing.id
@@ -173,7 +174,12 @@ class CitationRegistry:
                 raise ValueError(f"Invalid citation state id: {cite_id!r}")
             citation = Citation(**{**raw, "url": canonical_source_url(raw["url"])})
             evidence_grade = citation.provenance.get("evidence_grade", "")
-            key = (citation.kind, citation.url, citation.snippet, evidence_grade)
+            data_hash = (
+                citation.provenance.get("content_hash", "")
+                if citation.kind == "DATA"
+                else ""
+            )
+            key = (citation.kind, citation.url, citation.snippet, evidence_grade, data_hash)
             if key in registry._by_key:
                 raise ValueError(f"Duplicate citation state key: {cite_id!r}")
             registry._by_key[key] = citation

@@ -60,21 +60,15 @@ def build_agent() -> Agent:
         config.NEWS_ALLOWLIST,
     )
     index = _load_retriever()
-    if config.HEYNYC_AGENT_RUNTIME == "pydantic":
-        from heynyc.core.pydantic_runtime import build_configured_runtime
+    if config.HEYNYC_AGENT_RUNTIME != "pydantic":
+        raise RuntimeError("Public channels require the Pydantic runtime")
+    from heynyc.core.pydantic_runtime import build_configured_runtime
 
-        return build_configured_runtime(
-            registry,
-            model=config.HEYNYC_MODEL,
-            index=index,
-            current_awareness=current_awareness,
-        )
-    return Agent(
+    return build_configured_runtime(
         registry,
         model=config.HEYNYC_MODEL,
         index=index,
-        notify_awareness=current_awareness,
-        scope_gate=True,
+        current_awareness=current_awareness,
     )
 
 
