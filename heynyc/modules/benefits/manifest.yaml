@@ -99,10 +99,6 @@ seeds:
   - https://www.nyc.gov/site/hra/about/immigration-faqs.page
   - https://www.nyc.gov/site/hra/help/legal-services-for-immigrant-new-yorkers.page
   - https://access.nyc.gov/snap-work-requirements/
-  - https://otda.ny.gov/programs/snap/work-requirements.asp
-  - https://otda.ny.gov/policy/directives/2017/
-  - https://otda.ny.gov/hearings/request/
-  - https://otda.ny.gov/oah/
   - https://opendata.cityofnewyork.us/
 allowlist:
   - access.nyc.gov

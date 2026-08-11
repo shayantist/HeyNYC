@@ -1,10 +1,10 @@
-"""Embedders. Default is keyless/local (fastembed); a deterministic hashing
-embedder is used as a dependency-free fallback and in tests."""
+"""Embedders. Default is keyless/local FastEmbed; deterministic hashing is for tests."""
 from __future__ import annotations
 
 import hashlib
 import math
 import re
+from functools import lru_cache
 from typing import Protocol, runtime_checkable
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -26,8 +26,7 @@ class HashEmbedder:
     """Deterministic bag-of-words hashing embedder. No deps, stable across runs.
 
     Not semantically rich, but exercises the full retrieval path and gives usable
-    keyword-ish recall, a safe fallback when fastembed isn't available, and the
-    default in unit tests (fast, offline)."""
+    keyword-ish recall for fast, offline unit tests."""
 
     def __init__(self, dim: int = 256):
         self.dim = dim
@@ -59,9 +58,7 @@ class FastEmbedEmbedder:
         return [list(map(float, vec)) for vec in self._model.embed(texts, batch_size=32)]
 
 
+@lru_cache(maxsize=1)
 def default_embedder() -> Embedder:
-    """fastembed if importable, else the dependency-free HashEmbedder."""
-    try:
-        return FastEmbedEmbedder()
-    except Exception:
-        return HashEmbedder()
+    """Return the installed production embedder, failing if it cannot initialize."""
+    return FastEmbedEmbedder()

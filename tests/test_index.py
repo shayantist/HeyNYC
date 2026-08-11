@@ -4,11 +4,12 @@ import sys
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.index import IndexRetriever
 from heynyc.core.index.corpus import build_index, chunk_text, clean_html
-from heynyc.core.index.embedder import FastEmbedEmbedder, HashEmbedder
+from heynyc.core.index.embedder import FastEmbedEmbedder, HashEmbedder, default_embedder
 from heynyc.core.index.store import IndexDoc, InMemoryVectorStore, LanceVectorStore
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
@@ -57,6 +58,47 @@ def test_fastembed_uses_a_memory_bounded_batch(monkeypatch):
 
     assert FastEmbedEmbedder().embed(["one", "two"]) == [[1.0], [1.0]]
     assert seen == {"batch_size": 32}
+
+
+def test_default_embedder_does_not_silently_change_dimensions(monkeypatch):
+    default_embedder.cache_clear()
+
+    class BrokenTextEmbedding:
+        def __init__(self, **kwargs):
+            raise RuntimeError("model unavailable")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "fastembed",
+        SimpleNamespace(TextEmbedding=BrokenTextEmbedding),
+    )
+
+    with pytest.raises(RuntimeError, match="model unavailable"):
+        default_embedder()
+
+
+def test_default_embedder_reuses_the_initialized_production_model(monkeypatch):
+    created = []
+
+    class FakeTextEmbedding:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "fastembed",
+        SimpleNamespace(TextEmbedding=FakeTextEmbedding),
+    )
+
+    default_embedder.cache_clear()
+    try:
+        first = default_embedder()
+        second = default_embedder()
+
+        assert first is second
+        assert len(created) == 1
+    finally:
+        default_embedder.cache_clear()
 
 
 def test_inmemory_store_ranks_relevant_first():
@@ -118,6 +160,25 @@ async def test_build_index_reports_failures_without_publishing_a_partial_corpus(
     assert len(summary["failed"]) == 1  # the dead seed
     assert summary["chunks"] >= 1
     assert store.count() == 0
+
+
+async def test_build_index_names_an_exception_with_an_empty_message():
+    url = "https://example.test/reset"
+    registry = Registry([ServiceModule(name="current", seeds=[url])])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    summary = await build_index(
+        registry,
+        InMemoryVectorStore(),
+        HashEmbedder(dim=64),
+        client=client,
+    )
+    await client.aclose()
+
+    assert summary["failed"] == [{"url": url, "error": "ReadError"}]
 
 
 async def test_build_index_replaces_the_existing_persistent_corpus(tmp_path):

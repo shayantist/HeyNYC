@@ -103,7 +103,6 @@ seeds:
   - https://ag.ny.gov/publications/residential-tenants-rights-guide
   - https://ag.ny.gov/resources/individuals/tenants-homeowners/legal-services-and-code-enforcement
   - https://www.nyc.gov/site/fairhousing/rights-responsibilities/what-are-the-protected-classes.page
-  - https://home4.nyc.gov/site/cchr/help/residents.page
   - https://www.nyc.gov/site/animalwelfare/resources/service-and-emotional-support-animals.page
   - https://www.nyc.gov/site/cchr/law/disability-discrimination-legal-guidance.page
   - https://home4.nyc.gov/site/hpd/services-and-information/tenant-harassment.page
@@ -112,11 +111,8 @@ seeds:
   - https://www.nyc.gov/site/dhs/about/frequently-asked-questions.page
   - https://www.nyc.gov/site/dhs/shelter/singleadults/single-adults-shelter.page
   - https://hcr.ny.gov/rent-control
-  - https://www.nycourts.gov/new-york-city-housing-court/stopping-eviction
-  - https://www.nycourts.gov/new-york-city-housing-court/nyc-housing-court-orders-show-cause
   - https://www.nyc.gov/site/cchr/media/source-of-income.page
   - https://www.nycourts.gov/reporter/3dseries/2026/2026_01253.htm
-  - https://www.nycourts.gov/ctapps/Decisions/2026/May26/DecisionList052126.pdf
 allowlist:
   - access.nyc.gov
   - nyc.gov

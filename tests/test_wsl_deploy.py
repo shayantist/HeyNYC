@@ -324,6 +324,16 @@ def test_wsl_deploy_builds_and_probes_a_fresh_index_before_stopping() -> None:
     assert '"$ROOT/to-delete"' in text
 
 
+def test_wsl_deploy_announces_the_long_index_phase(tmp_path: Path) -> None:
+    env, _, _, _ = _deploy_fixture(tmp_path)
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "Building fresh retrieval index before downtime" in result.stdout
+    assert "This can take several minutes" in result.stdout
+
+
 def test_wsl_deploy_quarantines_the_old_index_and_activates_the_fresh_one(
     tmp_path: Path,
 ) -> None:

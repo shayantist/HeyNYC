@@ -42,6 +42,29 @@ def test_advisories_declares_current_official_notify_cost_sources():
     ) in module.seeds
 
 
+def test_index_seeds_exclude_sources_the_target_cannot_ingest():
+    registry = Registry.discover(config.MODULES_DIR)
+    seeds = {url for module in registry.modules for url in module.seeds}
+
+    blocked = {
+        "https://otda.ny.gov/programs/snap/work-requirements.asp",
+        "https://otda.ny.gov/policy/directives/2017/",
+        "https://otda.ny.gov/hearings/request/",
+        "https://otda.ny.gov/oah/",
+        "https://home4.nyc.gov/site/cchr/help/residents.page",
+        "https://www.nycourts.gov/new-york-city-housing-court/stopping-eviction",
+        "https://www.nycourts.gov/new-york-city-housing-court/nyc-housing-court-orders-show-cause",
+        "https://www.nycourts.gov/ctapps/Decisions/2026/May26/DecisionList052126.pdf",
+        "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/host-cities/new-york-new-jersey",
+    }
+    assert seeds.isdisjoint(blocked)
+    assert (
+        "https://inside.fifa.com/tournaments/mens/worldcup/"
+        "canadamexicousa2026/media-releases/"
+        "fifa-world-cup-26-tm-final-to-be-held-in-new-york-new-jersey-mexico-city-to"
+    ) in seeds
+
+
 def test_public_restroom_binding_uses_the_operational_city_dataset():
     registry = Registry.discover(config.MODULES_DIR)
     binding = registry.dataset_bindings()["public_restroom"]

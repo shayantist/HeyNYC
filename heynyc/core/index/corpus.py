@@ -86,7 +86,10 @@ async def build_index(
                 try:
                     title, text = await fetch_clean(url, client)
                 except Exception as exc:  # dead/blocked seed, record and move on
-                    summary["failed"].append({"url": url, "error": str(exc)})
+                    summary["failed"].append({
+                        "url": url,
+                        "error": str(exc) or type(exc).__name__,
+                    })
                     continue
                 chunks = chunk_text(text)
                 if not chunks:

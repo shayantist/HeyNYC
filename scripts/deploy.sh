@@ -219,6 +219,8 @@ fresh_index="$index_build_data/index.lance"
 command -v shasum >/dev/null 2>&1 || { echo "shasum is required" >&2; exit 69; }
 mkdir -p "$index_build_data"
 build_log="$index_quarantine/index-build.log"
+echo "Building fresh retrieval index before downtime"
+echo "This can take several minutes; detailed output will follow"
 if ! HEYNYC_DATA_DIR="$index_build_data" "$python" -m heynyc index-build >"$build_log" 2>&1; then
     cat "$build_log"
     echo "index build failed; evidence preserved at $index_quarantine" >&2

@@ -45,7 +45,7 @@ class ToolContext:
     user_turns: tuple[str, ...] = ()  # structured resident turns; avoids stale-location substring matches
     toolbox: Optional[dict[str, Any]] = None  # existing sibling tools for bounded module coordinators
     http: Optional[Any] = None  # httpx.AsyncClient; None → tools create their own
-    embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse it (None → default/Hash)
+    embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse the production default
     output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
     event_turn: Optional[str] = None  # semantic scope-preflight tri-state: none|discovery|preparation (None → tool falls back to its regexes)
