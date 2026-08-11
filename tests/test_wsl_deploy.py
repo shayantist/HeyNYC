@@ -308,6 +308,16 @@ def test_wsl_deploy_prepares_before_the_short_stopped_window() -> None:
     assert text.index("prestart_recovery=1") < stop
 
 
+def test_wsl_deploy_installs_only_the_headless_browser_fallback() -> None:
+    text = SCRIPT.read_text()
+
+    assert "--extra browser" in text
+    assert "playwright install --with-deps --only-shell chromium" in text
+    assert text.index("playwright install --with-deps --only-shell chromium") < text.index(
+        'systemctl stop "$SERVICE"'
+    )
+
+
 def test_wsl_deploy_builds_and_probes_a_fresh_index_before_stopping() -> None:
     text = SCRIPT.read_text()
 

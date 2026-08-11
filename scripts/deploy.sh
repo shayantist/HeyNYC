@@ -175,7 +175,12 @@ else
     fi
     git -C "$SOURCE" worktree add --detach "$release" "$sha"
     ln -s "$SHARED/.env" "$release/.env"
-    (cd "$release" && "$uv_command" sync --frozen --extra whatsapp --extra pydantic-ai)
+    (
+        cd "$release"
+        "$uv_command" sync --frozen --extra whatsapp --extra pydantic-ai --extra browser
+        echo "Installing the headless browser fallback"
+        "$uv_command" run playwright install --with-deps --only-shell chromium
+    )
     : > "$release/.heynyc-ready"
     validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
     if [ "$("$release/scripts/deploy.sh" --protocol 2>/dev/null)" != "$DEPLOY_PROTOCOL" ]; then
