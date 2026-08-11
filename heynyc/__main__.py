@@ -647,6 +647,11 @@ def _eval_run_metadata(
 ) -> dict:
     from heynyc.eval.bench import _candidate_cost
 
+    usage_results = [
+        turn
+        for result in results
+        for turn in (getattr(result, "turn_results", None) or [result])
+    ]
     cost, input_tokens, output_tokens = _candidate_cost(model, results)
     metadata = {
         "model": model,
@@ -654,9 +659,9 @@ def _eval_run_metadata(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "candidate_cost_usd": cost,
-        "latency_ms": sum(float(result.usage.get("latency_ms", 0) or 0) for result in results),
-        "n_model_calls": sum(int(result.usage.get("n_model_calls", 0) or 0) for result in results),
-        "n_tool_calls": sum(int(result.usage.get("n_tool_calls", 0) or 0) for result in results),
+        "latency_ms": sum(float(result.usage.get("latency_ms", 0) or 0) for result in usage_results),
+        "n_model_calls": sum(int(result.usage.get("n_model_calls", 0) or 0) for result in usage_results),
+        "n_tool_calls": sum(int(result.usage.get("n_tool_calls", 0) or 0) for result in usage_results),
     }
     if repeat_summary is not None:
         metadata["repeat"] = repeat_summary
@@ -805,10 +810,10 @@ async def _cmd_eval(
             billed_results,
             repeat_summary=repeat_summary,
         ),
-        overall_passed=report.passed and repeat_gate_passed,
+        overall_passed=report.promotion_ready and repeat_gate_passed,
     )
     print(f"\nRun written to {run_dir}")
-    raise SystemExit(0 if report.passed and repeat_gate_passed else 1)
+    raise SystemExit(0 if report.promotion_ready and repeat_gate_passed else 1)
 
 
 async def _cmd_bench(models: list[str], module: str | None, use_api_judge: bool, out: str | None) -> None:
