@@ -36,6 +36,9 @@ allowlist:
   - access.nyc.gov
   - myschools.nyc
   - schools.nyc.gov
+source_tiers:
+  authoritative:
+    - myschools.nyc
 prompt: |
   For child care questions (day care / daycare, preschool, nursery, infant or toddler care, "where
   can I find child care / who can watch my kid near me"), call
