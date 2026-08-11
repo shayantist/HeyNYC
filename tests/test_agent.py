@@ -2305,9 +2305,9 @@ async def test_active_lockout_forces_current_official_housing_search():
         return "current official illegal-lockout guidance"
 
     tools = {
-        "web_search": Tool(
-            name="web_search", description="x",
-            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        "official_sources": Tool(
+            name="official_sources", description="x",
+            parameters={"type": "object", "properties": {}},
             handler=search,
         ),
         "housing_guidance": Tool(name="housing_guidance", description="x", parameters={},
@@ -2318,7 +2318,7 @@ async def test_active_lockout_forces_current_official_housing_search():
     agent = Agent(registry, tools=tools)
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("official_sources", {"query": "ignored"})]),
         _assistant(content="Call 911 now and say your landlord locked you out."),
     ]
 
@@ -2329,8 +2329,8 @@ async def test_active_lockout_forces_current_official_housing_search():
     agent._litellm_stream = fake_litellm
     result = await agent.run("My landlord changed the locks and I'm outside with my children.")
 
-    assert result.tool_calls_made == ["web_search"]
-    assert calls[0][0] == "web_search"
+    assert result.tool_calls_made == ["official_sources"]
+    assert calls[0][0] == "official_sources"
     assert "illegal lockout" in seen["query"]
     assert "housing_guidance" in calls[0][1]
     assert "benefits_search" not in calls[0][1]
@@ -3702,8 +3702,8 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
         return "current official illegal-lockout guidance"
 
     tools = {
-        "web_search": Tool("web_search", "x",
-                           {"type": "object", "properties": {"query": {"type": "string"}}},
+        "official_sources": Tool("official_sources", "x",
+                           {"type": "object", "properties": {}},
                            search),
         "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
         "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
@@ -3717,7 +3717,7 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
 
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("official_sources", {"query": "ignored"})]),
         _assistant(content="Call 911 now."),
     ]
 
@@ -3731,8 +3731,8 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
     # Deliberately NO lockout keywords: the semantic signal alone must carry it.
     result = await agent.run("mi casera me dejo afuera esta noche")
 
-    assert result.tool_calls_made == ["web_search"]
-    assert calls[0][0] == "web_search"
+    assert result.tool_calls_made == ["official_sources"]
+    assert calls[0][0] == "official_sources"
     assert "lockout" in seen["query"]
     assert "housing_guidance" in calls[0][1]
     assert "benefits_search" not in calls[0][1]  # single-module turn keeps the manifest focus
