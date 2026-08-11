@@ -1,7 +1,6 @@
 """Live lookup for NYC cooling centers and other Cool Options."""
 from __future__ import annotations
 
-import re
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -17,7 +16,6 @@ from heynyc.core.tools.geo import (
     geocode,
     haversine_m,
     miles,
-    resident_supplied_location,
 )
 
 COOL_OPTIONS_URL = (
@@ -32,6 +30,11 @@ _AUDIENCES = ("any", "not_age_restricted")
 _SELECTED_SITE_FACT = "/cooling/site"
 _OFFERED_SITE_FACT = "/cooling/offered"
 _INDOOR_NEXT_STEP = "Other indoor Cool Options can be checked."
+_HEAT_HELP_URL = "https://portal.311.nyc.gov/article/?kanumber=KA-02663"
+_HEAT_HELP = (
+    "Call 311 for help finding a currently open place to cool down. "
+    "If anyone has trouble breathing, call 911."
+)
 
 
 def _nyc_now() -> datetime:
@@ -136,7 +139,7 @@ def _edit_date(record: dict) -> str:
     return datetime.fromtimestamp(value / 1000, tz=UTC).date().isoformat()
 
 
-def _citation(ctx: ToolContext, item: dict) -> str:
+def _citation(ctx: ToolContext, item: dict, origin: GeoPoint) -> str:
     record = item["record"]
     record_id = str(record.get("OBJECTID", ""))
     url = feature_query_url(item["source"], record_id) if record_id else item["source"]
@@ -146,7 +149,12 @@ def _citation(ctx: ToolContext, item: dict) -> str:
         title="NYC Emergency Management Cool Options",
         kind="DATA",
         valid_as_of=_edit_date(record),
-        provenance=data_provenance(record, record_id=record_id, field_pointer="/"),
+        provenance=data_provenance(
+            record,
+            record_id=record_id,
+            field_pointer="/",
+            derivation={"origin": [origin.lat, origin.lon]},
+        ),
     )
 
 
@@ -179,6 +187,17 @@ def _terminal_citation(ctx: ToolContext, items: list[dict], now: datetime, snipp
                 ],
             },
         ),
+    )
+
+
+def _heat_help_citation(ctx: ToolContext) -> str:
+    return ctx.citations.register(
+        _HEAT_HELP_URL,
+        snippet=_HEAT_HELP,
+        title="Cooling Centers, NYC311",
+        kind="DOC",
+        valid_as_of="2026-08-11",
+        provenance={"snapshot": {"verified_fact": _HEAT_HELP}},
     )
 
 
@@ -219,52 +238,23 @@ def _site_key(item: dict) -> str:
     return str(record.get("NYCEM_ID") or f"{item['name']}|{item['address']}").casefold()
 
 
-def _site_tokens(value: object) -> list[str]:
-    return re.findall(r"[^\W_]+", str(value or "").casefold())
-
-
-def _contains_tokens(haystack: list[str], needle: list[str]) -> bool:
-    return any(
-        haystack[start:start + len(needle)] == needle
-        for start in range(len(haystack) - len(needle) + 1)
-    )
+def _site_name(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
 
 
 def _match_site(
-    items: list[dict], turn: str, requested: str = "", near: str = ""
+    items: list[dict], requested: str = ""
 ) -> tuple[dict | None, set[str]]:
-    turn_tokens = _site_tokens(turn)
-    requested_tokens = _site_tokens(requested)
-    near_tokens = _site_tokens(near)
-    matches: list[dict] = []
-    excluded: set[str] = set()
-
-    for item in items:
-        name_tokens = _site_tokens(item.get("name"))
-        if not name_tokens:
-            continue
-        exact = _contains_tokens(turn_tokens, name_tokens) and (
-            not requested_tokens or requested_tokens == name_tokens
-        )
-        proof = name_tokens if exact else requested_tokens or name_tokens[:1]
-        if requested_tokens and not _contains_tokens(turn_tokens, proof):
-            proof = requested_tokens[:1]
-        if (
-            (not exact and requested_tokens and name_tokens[:len(requested_tokens)] != requested_tokens)
-            or not _contains_tokens(turn_tokens, proof)
-            or _contains_tokens(near_tokens, proof)
-        ):
-            continue
-        if resident_supplied_location(" ".join(proof), turn, (turn,)):
-            matches.append(item)
-        else:
-            excluded.add(_site_key(item))
-
-    return (matches[0] if len(matches) == 1 else None), excluded
+    requested_name = _site_name(requested)
+    if not requested_name:
+        return None, set()
+    matches = [item for item in items if _site_name(item.get("name")) == requested_name]
+    return (matches[0] if len(matches) == 1 else None), set()
 
 
 def _site_from_turn(items: list[dict], turn: str, requested: str = "") -> dict | None:
-    return _match_site(items, turn, requested)[0]
+    del turn
+    return _match_site(items, requested)[0]
 
 
 def _decode_site_fact(
@@ -346,7 +336,6 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             )
         return "No matching NYC Cool Options were found near that location."
 
-    turn = ctx.user_turns[-1] if ctx.user_turns else ""
     origin_value = [origin.lat, origin.lon]
     offered_fact = ctx.resident_facts.get(_OFFERED_SITE_FACT)
     offered_state = (
@@ -374,11 +363,19 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     else:
         offered_keys = offered_state[0]
     offered_items = [item for item in unique if _site_key(item) in offered_keys]
-    selected, excluded = _match_site(
-        offered_items,
-        turn,
+    excluded_names = {
+        _site_name(name)
+        for name in args.get("exclude_sites", [])
+        if _site_name(name)
+    }
+    excluded = {
+        _site_key(item)
+        for item in offered_items
+        if _site_name(item.get("name")) in excluded_names
+    }
+    selected, _ = _match_site(
+        [item for item in offered_items if _site_key(item) not in excluded],
         str(args.get("site") or "").strip(),
-        near,
     )
     selected_item = None
     if selected:
@@ -448,10 +445,12 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             if kind == "cooling_center":
                 return f"No activated cooling center is confirmed open now. {_INDOOR_NEXT_STEP}"
             label = "indoor Cool Options" if kind == "indoor" else "Cool Options"
-            result = f"No current {label} are confirmed open now. I cannot safely recommend a destination."
+            absence = f"No current {label} are confirmed open now. I cannot safely recommend a destination."
+            result = f"{absence} {_HEAT_HELP}"
             ctx.cooling_terminal_result = result
             ctx.cooling_terminal_citation_ids = (
-                _terminal_citation(ctx, current_items, now, result),
+                _terminal_citation(ctx, current_items, now, absence),
+                _heat_help_citation(ctx),
             )
             return result
         if selected_item is None:
@@ -477,7 +476,11 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
     nearest_open = (
         None
         if planning_ahead
-        else next((item for item in current_items if item["open_now"] is True), None)
+        else min(
+            (item for item in current_items if item["open_now"] is True),
+            key=lambda item: item["distance_m"],
+            default=None,
+        )
     )
     closer_closed = (
         [
@@ -515,7 +518,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             note += f"; the soonest reopens {min(reopenings)[2]}"
         lines.append(note + ".")
     for index, item in enumerate(selected, 1):
-        cite = _citation(ctx, item)
+        cite = _citation(ctx, item, origin)
         distance = format_distance(
             near,
             origin,
@@ -566,6 +569,10 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
             flags.append(f"Pet friendly: {item['pet_friendly']}")
         if flags:
             lines.append(f"   {', '.join(flags)}")
+        if item["accessible"]:
+            lines.append(
+                "   Step-free entrance: not confirmed by the City accessibility field"
+            )
         if item["phone"]:
             lines.append(f"   Phone: {item['phone']}")
         destination = GeoPoint(item["lat"], item["lon"], item["name"])
@@ -599,6 +606,14 @@ def get_tools() -> list[Tool]:
                         "description": (
                             "Optional exact facility name when checking hours for a site already "
                             "selected in the conversation; preserves that destination instead of reranking."
+                        ),
+                    },
+                    "exclude_sites": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 10,
+                        "description": (
+                            "Exact facility names the resident rejected in this turn"
                         ),
                     },
                     "kind": {

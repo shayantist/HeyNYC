@@ -11,3 +11,9 @@ msgstr "No pude verificarlo con las fuentes confiables que encontré, así que n
 
 msgid "Official pages I did reach before the problem:"
 msgstr "Páginas oficiales que sí pude consultar antes del problema:"
+
+msgid "No current indoor Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
+msgstr "No se confirmó que haya Cool Options interiores abiertos ahora. No puedo recomendar un lugar con seguridad. Llama al 311 para que te ayuden a encontrar un lugar abierto donde refrescarte. Si alguien tiene dificultad para respirar, llama al 911."
+
+msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
+msgstr "No se confirmó que haya Cool Options abiertos ahora. No puedo recomendar un lugar con seguridad. Llama al 311 para que te ayuden a encontrar un lugar abierto donde refrescarte. Si alguien tiene dificultad para respirar, llama al 911."

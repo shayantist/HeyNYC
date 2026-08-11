@@ -79,12 +79,7 @@ def test_f176_projection_does_not_leak_english_without_a_locale_message() -> Non
 
 
 @pytest.mark.asyncio
-async def test_f176_missing_localized_limit_is_added_without_a_model_retry(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.runtime.check_grounding",
-        lambda *_args, **_kwargs: None,
-    )
-
+async def test_f176_missing_localized_limit_is_added_without_a_model_retry() -> None:
     async def nearest(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://data.cityofnewyork.us/resource/tc6u-8rnp/S1.json",

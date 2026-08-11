@@ -114,23 +114,48 @@ async def test_exact_full_generic_leading_facility_name_is_selectable(monkeypatc
     )
     ctx = _context(f"Please take me to {name}")
 
-    output = await lookup({"near": "Flushing, Queens", "kind": "cooling_center"}, ctx)
+    output = await lookup(
+        {"near": "Flushing, Queens", "kind": "cooling_center", "site": name}, ctx
+    )
 
     assert output.splitlines()[2].startswith(f"1. {name}")
     assert ctx.resident_facts["/cooling/site"].value["key"] == "chosen"
 
 
-def test_partial_site_requires_a_unique_resident_authored_identifier():
+@pytest.mark.asyncio
+async def test_resident_description_does_not_select_a_facility(monkeypatch):
+    lookup = _patch_lookup(
+        monkeypatch,
+        [
+            {
+                **_site_row("senior", "Senior Center at St Peter's", lat=40.8500),
+                **_KNOWN_WEDNESDAY_HOURS,
+            },
+            {
+                **_site_row("library", "Brooklyn Central Library", 2, 40.7581),
+                **_KNOWN_WEDNESDAY_HOURS,
+            },
+        ],
+    )
+    ctx = _context("I'm a senior using a walker. Where can I cool down?")
+
+    output = await lookup({"near": "Crown Heights", "kind": "all"}, ctx)
+
+    assert output.splitlines()[2].startswith("1. Brooklyn Central Library")
+    assert "/cooling/site" not in ctx.resident_facts
+
+
+def test_site_selection_requires_the_exact_tool_argument():
     items = [
         {"name": "Raices Times Square"},
         {"name": "Closer Cooling Site"},
     ]
 
-    assert cooling._site_from_turn(items, "Raices", requested="Raices") == items[0]
-    assert cooling._site_from_turn(items, "What are my hours?", requested="Raices") is None
     assert cooling._site_from_turn(
-        items + [{"name": "Raices Queens"}], "Raices", requested="Raices"
-    ) is None
+        items, "What are its hours?", requested="Raices Times Square"
+    ) == items[0]
+    assert cooling._site_from_turn(items, "Raices", requested="Raices") is None
+    assert cooling._site_from_turn(items, "I'm a senior") is None
 
 
 @pytest.mark.asyncio
@@ -233,7 +258,12 @@ async def test_same_origin_scope_change_replaces_offered_and_selected_state(
     ctx = _context("Old Cooling Center")
 
     await lookup(
-        {"near": "Flushing, Queens", "kind": "cooling_center", "audience": "any"},
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "audience": "any",
+            "site": "Old Cooling Center",
+        },
         ctx,
     )
     assert ctx.resident_facts["/cooling/site"].value["key"] == "old"
@@ -326,7 +356,7 @@ async def test_negated_model_site_cannot_select_or_retain_prior_site(lookup):
         {
             "near": "Flushing, Queens",
             "kind": "cooling_center",
-            "site": "Raices Times Square",
+            "exclude_sites": ["Raices Times Square"],
         },
         ctx,
     )
@@ -403,10 +433,15 @@ async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypat
     assert "Resolved 'Rockefeller Center'" in output
     assert "Wednesday: 8a-10p" in output
     assert "Accessible: Yes" in output
+    assert "Step-free entrance: not confirmed by the City accessibility field" in output
     assert output.count("https://www.google.com/maps/dir/?api=1&origin=40.75800,-73.97800") == 2
     assert "destination=40.75920,-73.97610" in output
     assert "destination=40.75690,-73.96770" in output
     assert len(ctx.citations.mapping()) == 2
+    assert all(
+        citation["provenance"]["derivation"]["origin"] == [40.758, -73.978]
+        for citation in ctx.citations.mapping().values()
+    )
     assert calls == [(cooling.COOL_OPTIONS_URL, "Finder_status='OPEN'")]
 
 
@@ -759,7 +794,11 @@ async def test_negated_open_alternative_does_not_claim_current_options_exist(mon
     }
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "exclude_sites": ["Other Open Center"],
+        },
         _context("Is Selected Center open now? Not Other Open Center.", facts),
     )
 
@@ -912,6 +951,37 @@ async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch
     assert "2 closer" in output
     assert "closed right now" in output
     assert "Sunday 09:00 AM" in output
+
+
+@pytest.mark.asyncio
+async def test_closer_closed_summary_uses_nearest_open_not_feed_order(monkeypatch):
+    rows = [
+        {
+            **_site_row("far", "Far Open Center", lat=40.7870),
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "05:00 PM",
+        },
+        {
+            **_site_row("closed", "Closed Center", 2, 40.7600),
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "12:00 PM",
+            "cc_thu_open1": "09:30 AM",
+            "cc_thu_close1": "05:00 PM",
+        },
+        {
+            **_site_row("nearest", "Nearest Open Center", 3, 40.7585),
+            "cc_wed_open1": "09:00 AM",
+            "cc_wed_close1": "05:00 PM",
+        },
+    ]
+    lookup = _patch_lookup(monkeypatch, rows)
+    ctx = _context("Where can I cool down?")
+
+    output = await lookup({"near": "Times Square", "kind": "cooling_center"}, ctx)
+
+    assert "Nearest Open Center" in output
+    assert "closer option" not in output
+    assert "soonest reopens" not in output
 
 
 @pytest.mark.asyncio

@@ -14,3 +14,9 @@ msgstr "目前没有确认开放的室内 Cool Options。我无法安全地推�
 
 msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination."
 msgstr "目前没有确认开放的 Cool Options。我无法安全地推荐目的地。"
+
+msgid "No current indoor Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
+msgstr "目前没有确认开放的室内 Cool Options。我无法安全地推荐目的地。请拨打 311，寻求帮助查找目前开放的避暑场所。如果有人呼吸困难，请拨打 911。"
+
+msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
+msgstr "目前没有确认开放的 Cool Options。我无法安全地推荐目的地。请拨打 311，寻求帮助查找目前开放的避暑场所。如果有人呼吸困难，请拨打 911。"
