@@ -314,16 +314,28 @@ def _explicitly_free(events: list[Event], query: str) -> list[Event]:
     ]
 
 
-def _matches_keyword(event: Event, keyword: str) -> bool:
+_GENERIC_EVENT_WORDS = {
+    "a", "activities", "activity", "any", "anything", "around", "city", "do",
+    "event", "events", "find", "for", "free", "going", "happen", "happening",
+    "in", "me", "new", "nyc", "on", "show", "stuff", "thing", "things", "this",
+    "to", "today", "tonight", "week", "weekend", "what", "whats", "york",
+}
+
+
+def _keyword_terms(keyword: str) -> set[str]:
     raw_terms = {
         term
         for term in re.findall(r"[a-z0-9]+", keyword.lower())
-        if len(term) >= 3 and term not in {"event", "events", "nyc", "new", "york", "city"}
+        if len(term) >= 3 and term not in _GENERIC_EVENT_WORDS
     }
-    terms = {
+    return {
         term[:-1] if len(term) > 4 and term.endswith("s") else term
         for term in raw_terms
     }
+
+
+def _matches_keyword(event: Event, keyword: str) -> bool:
+    terms = _keyword_terms(keyword)
     blob = " ".join((event.name, event.venue, event.audience, event.free_evidence)).lower()
     return not terms or any(term in blob for term in terms)
 
@@ -503,6 +515,8 @@ def _referenced_ids(text: str) -> set[str]:
 async def _handler(args: dict, ctx: ToolContext) -> str:
     pre_existing_ids = set(ctx.citations.mapping())
     keyword = (args.get("keyword") or "").strip() or None
+    if keyword and not _keyword_terms(keyword):
+        keyword = None
     classification = (args.get("classification") or "").strip() or None
     borough = (args.get("borough") or "").strip().lower()
     audience = (args.get("audience") or "").strip().lower()
@@ -822,7 +836,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         no_results += (
             f" Official indexes the resident can check directly: NYC Parks {PARKS_SOURCE_URL} "
             f"{{cite:{parks_cite}}} and NYC Permitted Events {PERMITTED_SOURCE_URL} "
-            f"{{cite:{permitted_cite}}}."
+            f"{{cite:{permitted_cite}}}. Use the resident's own time wording in the answer. "
+            "Do not convert a relative window such as this weekend into exact dates or weekdays "
+            "because these index citations do not evidence that calendar conversion."
         )
     if not events and keyword:
         catalog_scope = (
@@ -956,22 +972,25 @@ def get_tools() -> list[Tool]:
         Tool(
             name="whats_on_events",
             description=(
-                "THE source for what's on in NYC: upcoming concerts, sports, festivals, free park "
-                "events, watch parties, plus street fairs, farmers markets, block parties, parades, "
-                "and plaza events (from live Ticketmaster, NYC Parks, the NYC Permitted Events feed, "
-                "current editorial guides, and trusted web sources). Pass `keyword` (e.g. 'world "
-                "cup', 'jazz'), optional `classification` (Music/Sports/Arts & Theatre), and "
-                "optional `borough` or source-backed `audience`. Returns grounded, dated, linked "
-                "listings, future events only; "
-                "it never invents events and already coordinates the event retrieval lanes. Use it "
-                "for 'what's happening' / 'events this weekend' AND for every follow-up inside an "
-                "events thread (another borough, a different date, more like these, cheaper ones): "
-                "stay in this tool for NYC event listings rather than switching to web_search."
+                "Find structured NYC event listings by date, borough, audience, topic, or category. "
+                "It combines live Ticketmaster, NYC Parks, NYC Permitted Events, current editorial "
+                "guides, and web context into grounded, dated, linked listings. Use it when the "
+                "resident wants event choices or wants to filter earlier choices. Do not use it for "
+                "general facts merely because they concern sports, music, or entertainment. "
+                "web_search remains available for fresh context, named-event details, and gaps the "
+                "structured listings do not cover. Pass `keyword` for a specific event topic, plus "
+                "optional `classification`, `borough`, source-backed `audience`, and date window."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "keyword": {"type": "string", "description": "Topic/keyword, e.g. 'world cup', 'jazz', 'free'."},
+                    "keyword": {
+                        "type": "string",
+                        "description": (
+                            "Specific event topic, e.g. 'world cup' or 'jazz'. Omit for broad "
+                            "requests such as 'things to do', 'events', or 'free events'."
+                        ),
+                    },
                     "classification": {"type": "string", "description": "Optional Ticketmaster segment: Music, Sports, Arts & Theatre, etc."},
                     "borough": {
                         "type": "string",
@@ -988,5 +1007,6 @@ def get_tools() -> list[Tool]:
             },
             handler=_handler,
             open_world=True,  # hits live Ticketmaster + Socrata
+            title="Find NYC events",
         )
     ]

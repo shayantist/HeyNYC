@@ -1,9 +1,8 @@
 name: events
 category: events
 description: >-
-  What's on in NYC, concerts, sports, festivals, free park events, pop-ups, and
-  watch parties, grounded in live sources (Ticketmaster + NYC Parks) and trusted
-  editorial event guides, with links back to every official page.
+  Find current NYC event choices by date, place, audience, or topic, grounded in
+  live structured listings and current web sources with direct links.
 keywords:
   - events
   - what's on
@@ -35,12 +34,14 @@ allowlist:
   - eater.com
   - cntraveler.com
   - bkmag.com
+  - nba.com
 source_tiers:
   authoritative:
     - nyc.gov
     - nycgovparks.org
     - nyctourism.com
     - cityofnewyork.us
+    - nba.com
   editorial:
     - timeout.com
     - secretnyc.co
@@ -52,13 +53,15 @@ source_tiers:
   community:
     - eventbrite.com
 prompt: |
-  For "what's on" / events / festivals / "things to do this weekend" questions, call
-  whats_on_events first. It coordinates live Ticketmaster and NYC Parks listings and, for
-  broad time-sensitive questions, concurrently adds current official, editorial-guide, and news
-  context. Pass `keyword` (the topic), optional `classification`
+  For requests for event choices, such as "what's on," festivals, or things to do this weekend,
+  call whats_on_events. It coordinates live Ticketmaster, NYC Parks, and NYC Permitted Events
+  listings and, for broad time-sensitive questions, adds current official, editorial-guide, and
+  news context. Do not use it for general facts merely because they concern sports, music, or
+  entertainment. web_search remains available for current context, named-event details, and gaps
+  the structured listings do not cover. Pass `keyword` (the topic), optional `classification`
   (Music/Sports/Arts & Theatre), `borough`, and `audience="kids"` when the resident asks for
   children's events. The audience filter returns only rows with a source-backed kids label. Do not
-  make the model repeat those coordinator calls separately. When the user asks for free events, do not call an
+  repeat the coordinator's searches unless a requested detail is still missing. When the user asks for free events, do not call an
   event free unless the retrieved source explicitly establishes its cost; the NYC Parks feed
   itself has no price field. Say when cost could not be confirmed. Every normal turn already has
   a compact index of today's Notify NYC titles. If one materially affects the requested plan, call

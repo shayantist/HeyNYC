@@ -19,23 +19,29 @@ def test_domain_allowed_matches_subdomains_only():
     assert not _domain_allowed("https://notnyc.gov/x", ALLOW)  # suffix-spoof guard
 
 
-async def test_web_search_filters_to_allowlist_and_cites():
+async def test_web_search_keeps_unlisted_results_and_marks_them_unverified():
     async def fake_search(query, domains, recency=None):
         return [
             {"title": "Official", "url": "https://www.nyc.gov/worldcup", "snippet": "official info"},
-            {"title": "Spam", "url": "https://spam.com/x", "snippet": "junk"},  # off-allowlist → dropped
+            {"title": "Unlisted", "url": "https://example.com/x", "snippet": "lead"},
         ]
 
     tool = web_search_tools(ALLOW, search_fn=fake_search)[0]
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
     out = await tool.handler({"query": "world cup nyc"}, ctx)
     assert "Official" in out
-    assert "Spam" not in out
+    assert "Unlisted" in out
+    assert "unverified source" in out.lower()
     assert ctx.citations.mapping()["S1"]["kind"] == "WEB"
     assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "discovery",
+        "evidence_grade": "authoritative_excerpt",
+        "source_tier": "authoritative",
     }
-    assert len(ctx.citations) == 1
+    assert ctx.citations.mapping()["S2"]["provenance"] == {
+        "evidence_grade": "discovery",
+        "source_tier": "unverified",
+    }
+    assert len(ctx.citations) == 2
 
 
 async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
@@ -56,7 +62,33 @@ async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
 
     assert "decisive detail" in ctx.citations.mapping()["S1"]["snippet"]
     assert "call official_sources" in out
-    assert "beyond these snippets" in out
+    assert "details beyond an excerpt" in out
+
+
+async def test_web_search_marks_an_official_excerpt_as_bounded_answer_evidence():
+    async def fake_search(query, domains, recency=None):
+        return [
+            {
+                "title": "Knicks Name Jalen Brunson Team Captain",
+                "url": "https://www.nba.com/knicks/news/team-captain",
+                "snippet": "The New York Knicks named Jalen Brunson the 36th captain in franchise history.",
+            },
+        ]
+
+    tool = web_search_tools(
+        ["nba.com"],
+        source_tiers={"nba.com": ("authoritative", "events")},
+        search_fn=fake_search,
+    )[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await tool.handler({"query": "current Knicks captain"}, ctx)
+
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "authoritative_excerpt",
+        "source_tier": "authoritative",
+    }
+    assert "only claims directly supported by an official excerpt" in out.lower()
 
 
 async def test_web_search_marks_archived_results_as_not_current():
@@ -106,6 +138,36 @@ async def test_tavily_transport_failure_degrades_to_no_results(monkeypatch):
     monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
 
     assert await web_search_mod._tavily("query", ["nyc.gov"]) == []
+
+
+async def test_tavily_basic_search_does_not_restrict_results_to_known_domains(monkeypatch):
+    request_json = {}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **kwargs):
+            request_json.update(kwargs["json"])
+            return _Response()
+
+    monkeypatch.setattr(web_search_mod.config, "TAVILY_API_KEY", "configured")
+    monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    await web_search_mod._tavily("things to do in NYC today", ["nyc.gov"])
+
+    assert request_json["search_depth"] == "basic"
+    assert "include_domains" not in request_json
 
 
 async def test_tavily_http_status_failure_is_not_reported_as_no_results(monkeypatch):
@@ -198,17 +260,21 @@ async def test_web_search_ranks_by_tier_and_disclaims_community():
     assert "⚠️" in out
     assert "confirm before you go" in out.lower()
     citations = ctx.citations.mapping()
-    assert citations["S1"]["provenance"] == {"evidence_grade": "discovery"}
+    assert citations["S1"]["provenance"] == {
+        "evidence_grade": "authoritative_excerpt",
+        "source_tier": "authoritative",
+    }
     assert citations["S2"]["provenance"] == {"evidence_grade": "discovery"}
 
 
-async def test_web_search_still_hard_gates_ugc_off_allowlist():
+async def test_web_search_keeps_ugc_off_allowlist_as_an_unverified_lead():
     async def fake_search(query, allowed, recency=None):
         return [{"title": "Luma party", "url": "https://lu.ma/x", "snippet": "s"}]
 
     tool = web_search_tools(["nycgovparks.org"], source_tiers={}, search_fn=fake_search)[0]
     out = await _run(tool, "house party")
-    assert "lu.ma" not in out  # off-allowlist domain dropped (defense in depth)
+    assert "lu.ma" in out
+    assert "unverified source" in out.lower()
 
 
 async def test_web_search_prefer_boosts_domain():
@@ -230,8 +296,7 @@ def _by_name(allow, tiers=None, news=None, search_fn=None):
     return {t.name: t for t in web_search_tools(allow, source_tiers=tiers, news_tier=news, search_fn=search_fn)}
 
 
-async def test_default_web_search_stays_allowlist_only_no_news():
-    """Regression guard: the default web_search never unions in the news tier."""
+async def test_default_web_search_keeps_trust_domains_as_ranking_metadata():
     seen: dict[str, list[str]] = {}
 
     async def spy(query, domains, recency=None):
@@ -240,8 +305,7 @@ async def test_default_web_search_stays_allowlist_only_no_news():
 
     tools = _by_name(["nyc.gov"], news=["gothamist.com", "nytimes.com"], search_fn=spy)
     await _run(tools["web_search"], "q")
-    assert seen["q"] == ["nyc.gov"]                 # exactly the allowlist
-    assert "gothamist.com" not in seen["q"]         # news tier NOT visible to default search
+    assert seen["q"] == ["nyc.gov"]
 
 
 async def test_recent_developments_unions_news_tier():
@@ -272,14 +336,14 @@ async def test_recent_developments_ranks_news_below_gov():
     assert "📰 news" in out                                    # developing-news label present
 
 
-async def test_web_search_drops_news_domain_defense_in_depth():
-    """Even if the backend slips a news URL into a default web_search, it's dropped."""
+async def test_web_search_keeps_an_unlisted_news_result_as_unverified():
     async def fake(query, domains, recency=None):
         return [{"title": "Gothamist", "url": "https://gothamist.com/a", "snippet": "s"}]
 
     tools = _by_name(["nyc.gov"], news=["gothamist.com"], search_fn=fake)
     out = await _run(tools["web_search"], "q")
-    assert "gothamist.com" not in out  # off the (news-free) allowlist → filtered
+    assert "gothamist.com" in out
+    assert "unverified source" in out.lower()
 
 
 # --- Agent-settable recency window: what time_range reaches the Tavily backend ---
@@ -401,17 +465,13 @@ async def test_handler_does_not_annotate_unchanged_queries():
     assert "Searched as" not in out
 
 
-def test_web_search_defers_nyc_event_listings_to_the_catalog():
-    """7/8 tool-choice fix (convo_event_followup_keeps_thread): an events follow-up must route to
-    whats_on_events, not web_search. web_search stays the orientation / identity-resolution /
-    long-tail tool and hands NYC event listings to the catalog by name; the orientation-first rule
-    is preserved."""
+def test_web_search_stays_available_for_fresh_event_context():
     tools = {t.name: t for t in web_search_tools(["nyc.gov"])}
     desc = tools["web_search"].description.lower()
     assert "orientation" in desc and "first" in desc      # orientation-first rule intact
     assert "long-tail" in desc                            # long-tail facts stay here
-    assert "whats_on_events" in desc                      # defers NYC event listings to the catalog
-    assert "a specific event this weekend" not in desc    # no longer advertises event listings
+    assert "events" in desc
+    assert "always available" in desc
 
 
 def test_web_search_description_caps_repeated_search_for_one_missing_fact():

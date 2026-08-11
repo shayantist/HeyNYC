@@ -50,6 +50,21 @@
   notes: Ticketmaster status and NYC Parks cancellation-title signals must be honored before
     results are ranked. Cancelled or postponed records must not be recommended as happening.
 
+- id: events_f236_what_to_do_today
+  query: "what to do in nyc today"
+  expect_tools: [whats_on_events]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [F236, general-chat, must-win]
+  utility_criterion: >-
+    Give a useful short list of distinct NYC events the resident can still attend today, with
+    grounded start times and direct links. Do not return a verification abstention after the live
+    event tool returned usable current listings, duplicate the same attraction as separate choices,
+    or recommend an event whose known start time has passed.
+  notes: Exact public-channel query that abstained after a successful live events lookup.
+
 - id: events_private_excluded
   query: "Find me a house party in Bushwick tonight — DM for address type thing."
   abstain: true
@@ -104,6 +119,19 @@
   abstain: true
   capability: scope
   notes: A prediction with no practical NYC event-planning need remains out of scope.
+
+- id: events_f230_knicks_captain_and_next_game
+  query: "Who is the Knicks captain right now and when is their next game?"
+  expect_tools: [official_sources]
+  expect_cite_kinds: [WEB]
+  abstain: false
+  capability: grounding
+  tags: [F230, must-win]
+  utility_criterion: >-
+    Answer both questions from current official Knicks or NBA pages. Distinguish the New York
+    Knicks from the Westchester Knicks, state the next game's local date and time only when the
+    official schedule supports them, and do not use a ticket seller or tourism page as the primary
+    source.
 
 - id: events_off_topic_refuse
   query: "Who's going to win the next mayoral election?"

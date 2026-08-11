@@ -18,6 +18,7 @@ dependencies = [
     "lancedb>=0.13.0",
     "fastembed>=0.4.0",
     "pypdf>=6.15.0",
+    "trafilatura>=2.0.0",
     "reportlab>=5.0.0",
     "pdfplumber>=0.11.10",
     "cryptography>=43.0.0",
@@ -50,6 +51,9 @@ nli = [
     "torch>=2.0",
     "transformers>=4.40",
     "minicheck @ git+https://github.com/Liyan06/MiniCheck.git@b58b9fa69acbd1015ec970fa65dd752413a053d2",
+]
+browser = [
+    "playwright>=1.62.0",
 ]
 
 [build-system]

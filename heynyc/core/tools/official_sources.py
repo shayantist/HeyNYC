@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import unicodedata
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from pypdf import PdfReader
+from trafilatura import html2txt
 
 from ..citations import canonical_source_url
 from ..index.corpus import chunk_text, clean_html
@@ -18,6 +20,46 @@ _STOPWORDS = {
     "and", "are", "can", "current", "for", "from", "how", "new", "nyc", "official",
     "the", "their", "this", "what", "with", "york",
 }
+_ACCESS_WALL_MARKERS = (
+    "access denied",
+    "complete the security challenge",
+    "enable javascript and cookies to continue",
+    "javascript is required",
+)
+_BROWSER_EXECUTABLE_CANDIDATES = (
+    Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+)
+
+
+class _RenderedFetchNeeded(Exception):
+    pass
+
+
+def _browser_launch_options() -> dict:
+    options = {"headless": True}
+    executable = next(
+        (path for path in _BROWSER_EXECUTABLE_CANDIDATES if path.is_file()),
+        None,
+    )
+    if executable is not None:
+        options["executable_path"] = str(executable)
+    return options
+
+
+def _browser_context_options() -> dict:
+    return {
+        "java_script_enabled": True,
+        "timezone_id": "America/New_York",
+        "user_agent": "Mozilla/5.0 (compatible; HeyNYC/0.1; +https://reach4help.org)",
+    }
+
+
+def _rendered_page_text(html: str, visible_text: str) -> tuple[str, str]:
+    title, text = clean_html(html)
+    if visible_text.strip():
+        return title, visible_text.strip()
+    full_text = html2txt(html).strip()
+    return title, full_text if full_text and full_text != text else text
 
 
 def _words(text: str) -> list[str]:
@@ -85,6 +127,59 @@ def _url_approved(url: str, seeded: set[str], domains: set[str]) -> bool:
     return _approval_key(url) in seeded or _host_matches(host, domains)
 
 
+def _is_access_wall(title: str, text: str) -> bool:
+    source_text = f"{title}\n{text}".lower()
+    return any(marker in source_text for marker in _ACCESS_WALL_MARKERS)
+
+
+async def _fetch_rendered_official(
+    url: str,
+    seeded: set[str],
+    domains: set[str],
+) -> tuple[str, str, str]:
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(**_browser_launch_options())
+        try:
+            context = await browser.new_context(**_browser_context_options())
+            page = await context.new_page()
+
+            async def allow_approved_requests(route, request):
+                parts = urlsplit(request.url)
+                if parts.scheme in {"about", "blob", "data"}:
+                    await route.continue_()
+                elif _url_approved(request.url, seeded, domains):
+                    await route.continue_()
+                else:
+                    await route.abort()
+
+            await page.route("**/*", allow_approved_requests)
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+            if response is not None and response.status >= 400:
+                raise ValueError(f"rendered official source returned HTTP {response.status}")
+            try:
+                await page.wait_for_function(
+                    "document.body && document.body.innerText.trim().length > 80",
+                    timeout=3_000,
+                )
+            except PlaywrightTimeoutError:
+                pass
+            final_url = page.url
+            if not _url_approved(final_url, seeded, domains):
+                raise ValueError("rendered official source left the curated sources")
+            visible_text = await page.locator("body").inner_text()
+            html = await page.content()
+        finally:
+            await browser.close()
+
+    title, text = _rendered_page_text(html, visible_text)
+    if not text.strip() or _is_access_wall(title, text):
+        raise ValueError("rendered official source did not expose usable text")
+    return final_url, title, text
+
+
 async def _fetch_official(
     url: str,
     client,
@@ -109,6 +204,8 @@ async def _fetch_official(
                 raise ValueError("official source redirected outside the curated sources")
             current = target
             continue
+        if getattr(response, "status_code", 200) == 403:
+            raise _RenderedFetchNeeded
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").lower()
         if "application/pdf" in content_type or response.content.startswith(b"%PDF"):
@@ -116,8 +213,25 @@ async def _fetch_official(
             text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
             return current, "Official PDF", text
         title, text = clean_html(response.text)
+        full_text = html2txt(response.text).strip()
+        if full_text and full_text != text:
+            text = f"{text}\n{full_text}"
+        if not text.strip() or _is_access_wall(title, text):
+            raise _RenderedFetchNeeded
         return current, title, text
     raise ValueError("official source redirected too many times")
+
+
+async def _fetch_official_with_browser(
+    url: str,
+    client,
+    seeded: set[str],
+    domains: set[str],
+) -> tuple[str, str, str]:
+    try:
+        return await _fetch_official(url, client, seeded, domains)
+    except _RenderedFetchNeeded:
+        return await _fetch_rendered_official(url, seeded, domains)
 
 
 def official_source_tools() -> list[Tool]:
@@ -148,11 +262,12 @@ def official_source_tools() -> list[Tool]:
             if domain.lower().endswith(".gov")
             and not _host_matches(domain.lower(), non_authoritative_domains)
         )
-        urls = list(dict.fromkeys(args["urls"]))[:4]
+        requested_urls = list(dict.fromkeys(args["urls"]))[:4]
         rejected = [
-            url for url in urls if not _url_approved(url, approved, domains)
+            url for url in requested_urls if not _url_approved(url, approved, domains)
         ]
-        if rejected:
+        urls = [url for url in requested_urls if url not in rejected]
+        if not urls:
             return "That URL is not an approved official source declared by a HeyNYC module."
 
         own_client = ctx.http is None
@@ -160,7 +275,7 @@ def official_source_tools() -> list[Tool]:
         try:
             fetched = await asyncio.gather(
                 *(
-                    _fetch_official(url, client, approved, domains)
+                    _fetch_official_with_browser(url, client, approved, domains)
                     for url in urls
                 ),
                 return_exceptions=True,
@@ -175,15 +290,7 @@ def official_source_tools() -> list[Tool]:
             if isinstance(result, Exception):
                 continue
             final_url, title, text = result
-            source_text = f"{title}\n{text}".lower()
-            if any(
-                marker in source_text
-                for marker in (
-                    "access denied",
-                    "complete the security challenge",
-                    "enable javascript and cookies to continue",
-                )
-            ):
+            if _is_access_wall(title, text):
                 continue
             chunks = _relevant_chunks(text, args["query"])
             if not chunks:
@@ -214,6 +321,8 @@ def official_source_tools() -> list[Tool]:
                 "verified results and state which requested claim could not be verified; route to "
                 "the relevant official service when no useful result remains."
             )
+        if rejected:
+            blocks.insert(0, "One requested URL was not approved and was not fetched.")
         return "\n\n".join(blocks)
 
     return [

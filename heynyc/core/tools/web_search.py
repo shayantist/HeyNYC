@@ -1,10 +1,8 @@
-"""Scoped web search, the long-tail / fresh-info fallback.
+"""Web search for fresh and long-tail information.
 
-Restricted to an allowlist of trusted NYC domains so the agent can't wander onto
-random sources. Results are double-checked against the allowlist (defense in depth)
-and registered as WEB citations. The search backend is injectable for tests; the
-default uses Tavily (which supports include_domains) and degrades gracefully to
-"unavailable" when no key is set, so the agent falls back to the index or abstains.
+Known domains are trust metadata, not a retrieval filter. The search backend is
+injectable for tests; production uses Tavily Basic and marks unknown sources as
+unverified leads rather than silently discarding them.
 """
 from __future__ import annotations
 
@@ -102,7 +100,6 @@ async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]
                 json={
                     "api_key": config.TAVILY_API_KEY,
                     "query": query,
-                    "include_domains": allowed_domains,
                     "max_results": 5,
                     "search_depth": "basic",
                     **extra,
@@ -120,7 +117,7 @@ async def _duckduckgo(
     allowed_domains: list[str],
     recency: Optional[str] = None,
 ) -> list[dict]:
-    """Local search fallback for a Tavily plan-limit response; allowlisting remains downstream."""
+    """Local search fallback for a Tavily plan-limit response."""
     from ddgs import DDGS
 
     timelimit = {"day": "d", "week": "w", "month": "m", "year": "y"}.get(recency)
@@ -140,7 +137,7 @@ async def _duckduckgo(
             "snippet": result.get("body", ""),
         }
         for result in results
-        if result.get("href") and _domain_allowed(result["href"], allowed_domains)
+        if result.get("href")
     ][:5]
 
 
@@ -197,7 +194,7 @@ def _tier_of(
 ) -> str:
     """Best tier for a URL's host: an explicit source_tiers match (highest wins), else a default,
     gov domains are authoritative, a curated news-tier domain is `news` (subordinate), and
-    everything else allowlisted is editorial. Gov always outranks news so an official page can
+    everything else is unverified. Gov always outranks news so an official page can
     never be demoted by also appearing in the recency check."""
     host = (urlparse(url).hostname or "").lower()
     best: Optional[str] = None
@@ -211,7 +208,7 @@ def _tier_of(
         return "authoritative"
     if any(host == d.lower() or host.endswith("." + d.lower()) for d in news_tier):
         return "news"
-    return "editorial"
+    return "unverified"
 
 
 def _prefers(url: str, prefer: list[str]) -> bool:
@@ -223,6 +220,7 @@ def _prefers(url: str, prefer: list[str]) -> bool:
 _TIER_LABELS = {
     "community": "⚠️ community-posted, confirm before you go",
     "news": "📰 news, recent/developing, verify against the official source",
+    "unverified": "⚠️ unverified source, check before relying on it",
 }
 
 
@@ -242,8 +240,7 @@ def _make_handler(
         # `recency` only exists on the recent_developments schema; web_search never sets it (None),
         # and its untimed backend ignores it regardless.
         results = await search(query, domains, recency=args.get("recency"))
-        # Defense in depth: drop anything outside this tool's domain set even if the provider slipped it in.
-        results = [r for r in results if r.get("url") and _domain_allowed(r["url"], domains)]
+        results = [r for r in results if r.get("url")]
         if not results:
             return abstain_msg
         # Tag with trust tier, then rank: preferred domains first, then authoritative→…→community.
@@ -253,14 +250,23 @@ def _make_handler(
         blocks = []
         for r, tier in tagged:
             snippet = r.get("snippet", "")[:400]
-            if warning := archive_warning(r["url"], f"{r.get('title', '')}\n{snippet}"):
+            warning = archive_warning(r["url"], f"{r.get('title', '')}\n{snippet}")
+            if warning:
                 snippet = f"{warning}\n\n{snippet}"
+            provenance = {"evidence_grade": "discovery"}
+            if tier == "authoritative" and not warning:
+                provenance = {
+                    "evidence_grade": "authoritative_excerpt",
+                    "source_tier": "authoritative",
+                }
+            elif tier == "unverified":
+                provenance["source_tier"] = "unverified"
             cite = ctx.citations.register(
                 r["url"],
                 snippet=snippet,
                 title=r.get("title", ""),
                 kind="WEB",
-                provenance={"evidence_grade": "discovery"},
+                provenance=provenance,
             )
             label = _TIER_LABELS.get(tier, tier)
             blocks.append(
@@ -270,8 +276,9 @@ def _make_handler(
         # so the model can refine its next search instead of re-sending the same sentence.
         header = f'Searched as: "{query}".\n\n' if query != raw_query else ""
         guidance = (
-            "\n\nSearch results are discovery snippets. To make claims beyond these snippets "
-            "from an authoritative result, call official_sources with its URL and a focused query."
+            "\n\nYou may cite only claims directly supported by an official excerpt. "
+            "For details beyond an excerpt, call official_sources with its URL and a focused query. "
+            "Editorial, news, community, and archived results remain discovery only."
             if any(tier == "authoritative" for _result, tier in tagged)
             else ""
         )
@@ -333,20 +340,20 @@ def web_search_tools(
         Tool(
             name="web_search",
             description=(
-                "Search trusted NYC web sources (nyc.gov, nyctourism.com, etc.) for fresh or "
-                "long-tail info not in the index, and for IDENTITY RESOLUTION. "
+                "Search the live web for fresh or long-tail information and identity resolution. "
+                "This tool is always available, including for current events and details that a "
+                "structured NYC data tool may not cover. Known sources rank by trust; unlisted "
+                "sources remain visible as unverified leads. "
                 "Your ORIENTATION tool: when a resident reference is ambiguous or abbreviated, call "
                 "this FIRST with a short noun-phrase query (the reference plus at most a date or "
                 "NYC, never their whole sentence) to identify what they mean before choosing other "
                 "tools. "
-                "For NYC event listings, what's on, or any follow-up inside an events thread, use "
-                "whats_on_events instead: that catalog is the source for NYC events, not this tool. "
                 "For the same missing fact, make one focused search and, when an authoritative result "
                 "needs its page checked, one `official_sources` call. If that still does not support "
                 "the fact, say you could not confirm it instead of issuing another search. "
-                "Restricted to an allowlist and ranked by source trust; results are tagged "
-                "authoritative/editorial/community. Treat community-tagged (⚠️) results as unconfirmed "
-                "and tell the user to verify. Pass `prefer` to boost the active topic's official "
+                "Results are tagged authoritative, editorial, news, community, or unverified. "
+                "Treat community and unverified results as leads and tell the user to verify. "
+                "Pass `prefer` to boost the active topic's official "
                 "domains. Cite every result; if nothing comes back, abstain."
             ),
             parameters={

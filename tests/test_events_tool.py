@@ -281,6 +281,71 @@ def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
     assert "Details: u1" in _event_block(listed_free, "S1")
 
 
+def test_free_is_a_cost_filter_not_an_event_keyword():
+    free_yoga = Event(
+        "Free Yoga", "2026-07-18", "9:00 AM", "Park", "Queens", "u1",
+        "NYC Parks", "authoritative", free_evidence="This program is free",
+    )
+    free_movie = Event(
+        "Movies Under the Stars", "2026-07-18", "8:00 PM", "Park", "Queens", "u2",
+        "NYC Parks", "authoritative", free_evidence="This program is free",
+    )
+
+    assert not events._matches_keyword(free_yoga, "free music or outdoor movies")
+    assert events._matches_keyword(free_movie, "free music or outdoor movies")
+
+
+async def test_broad_event_intent_is_not_sent_as_a_catalog_keyword(monkeypatch):
+    keywords_seen = []
+
+    async def fake_ticketmaster(**kwargs):
+        keywords_seen.append(("ticketmaster", kwargs.get("keyword")))
+        return []
+
+    async def fake_query(dataset_id, **kwargs):
+        keywords_seen.append((dataset_id, kwargs.get("q")))
+        if dataset_id == events.PARKS_DATASET_ID:
+            return [{
+                "title": "Evening Concert",
+                "startdate": "2099-08-11",
+                "starttime": "7:00 PM",
+                "parknames": "Central Park",
+                "link": {"url": "https://www.nycgovparks.org/events/evening-concert"},
+            }]
+        return []
+
+    async def quiet_editorial(ctx, window_start, window_end):
+        return "Current editorial event guides unavailable for this lookup."
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", fake_query)
+    monkeypatch.setattr(events, "_editorial_context", quiet_editorial)
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="what to do in nyc today",
+        event_turn="discovery",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "things to do",
+            "window_start": "2099-08-11",
+            "window_end": "2099-08-11",
+        },
+        ctx,
+    )
+
+    assert set(keywords_seen) == {
+        ("ticketmaster", None),
+        (events.PARKS_DATASET_ID, None),
+        (events.PERMITTED_DATASET_ID, None),
+    }
+    assert "Evening Concert" in output
+    assert "BROADENED" not in output
+
+
 def test_event_block_flags_a_today_event_whose_start_time_already_passed():
     """F065: a today-dated event whose local start time is already past `now` gets a deterministic,
     language-independent 'already started or ended' note in the tool line, so a finished event is
@@ -375,7 +440,13 @@ async def test_whats_on_events_grounds_the_official_indexes_when_no_event_matche
     )
 
     output = await get_tools()[0].handler(
-        {"keyword": "2030 World Cup watch parties", "classification": "Sports"},
+        {
+            "keyword": "2030 World Cup watch parties",
+            "classification": "Sports",
+            "borough": "Queens",
+            "window_start": "2030-07-20",
+            "window_end": "2030-07-21",
+        },
         ctx,
     )
 
@@ -388,6 +459,8 @@ async def test_whats_on_events_grounds_the_official_indexes_when_no_event_matche
         events.PARKS_SOURCE_URL,
         events.PERMITTED_SOURCE_URL,
     }
+    assert {citation["kind"] for citation in citations.mapping().values()} == {"WEB"}
+    assert "Use the resident's own time wording" in output
 
 
 def test_whats_on_events_borough_schema_keeps_citywide_requests_citywide():
@@ -763,6 +836,11 @@ async def test_empty_keyworded_catalog_retries_unkeyworded(monkeypatch):
 
     monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
     monkeypatch.setattr(events, "query_dataset", fake_parks)
+    monkeypatch.setattr(
+        events,
+        "_editorial_context",
+        lambda *args, **kwargs: asyncio.sleep(0, result=""),
+    )
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query="events tomorrow",
     )
@@ -1493,16 +1571,14 @@ async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
     } == {events.PARKS_SOURCE_URL, events.PERMITTED_SOURCE_URL}
 
 
-def test_whats_on_events_owns_listings_and_thread_followups():
-    """7/8 tool-choice fix: whats_on_events is THE source for what's on in NYC (listings, watch
-    parties, street events) INCLUDING follow-ups within an events thread, so the model does not
-    drift to web_search mid-thread."""
+def test_whats_on_events_is_a_structured_catalog_not_a_web_search_replacement():
     from heynyc.modules.events.tools import get_tools
 
     desc = get_tools()[0].description.lower()
-    assert "watch part" in desc                # watch parties are in-scope for the catalog
-    assert "follow-up" in desc                 # follow-ups inside an events thread stay here
-    assert "web_search" in desc                # explicitly tells the model to stay, not switch
+    assert "structured" in desc
+    assert "listings" in desc
+    assert "web_search remains available" in desc
+    assert "the source" not in desc
 
 
 # --- F085: the window generalizes and the named keyword gets a parallel scoped search ---

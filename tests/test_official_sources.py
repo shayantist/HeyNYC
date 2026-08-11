@@ -4,6 +4,7 @@ from io import BytesIO
 
 from reportlab.pdfgen import canvas
 
+import heynyc.core.tools.official_sources as official_sources_module
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import ServiceModule
@@ -137,6 +138,126 @@ async def test_official_sources_rejects_access_wall_content():
     assert ctx.citations.mapping() == {}
 
 
+async def test_official_sources_uses_browser_after_an_access_wall(monkeypatch):
+    url = "https://www.nba.com/knicks/news/team-captain"
+    registry = Registry([
+        ServiceModule(
+            name="events",
+            allowlist=["nba.com"],
+            source_tiers={"authoritative": ["nba.com"]},
+        )
+    ])
+    client = _Client({
+        url: "<title>Access Denied</title><p>Enable JavaScript and cookies to continue.</p>",
+    })
+    browser_calls: list[str] = []
+
+    async def fake_browser_fetch(requested_url, approved, domains):
+        browser_calls.append(requested_url)
+        assert requested_url == url
+        assert "nba.com" in domains
+        return (
+            url,
+            "Knicks Name Jalen Brunson Team Captain",
+            "The New York Knicks named Jalen Brunson the 36th captain in franchise history.",
+        )
+
+    monkeypatch.setattr(
+        official_sources_module,
+        "_fetch_rendered_official",
+        fake_browser_fetch,
+        raising=False,
+    )
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {"urls": [url], "query": "current Knicks captain Jalen Brunson"},
+        ctx,
+    )
+
+    assert browser_calls == [url]
+    assert "Jalen Brunson" in out
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "authoritative",
+    }
+
+
+def test_browser_fallback_uses_an_installed_brave_executable(monkeypatch, tmp_path):
+    brave = tmp_path / "Brave Browser"
+    brave.touch()
+    monkeypatch.setattr(
+        official_sources_module,
+        "_BROWSER_EXECUTABLE_CANDIDATES",
+        (brave,),
+        raising=False,
+    )
+
+    assert official_sources_module._browser_launch_options() == {
+        "headless": True,
+        "executable_path": str(brave),
+    }
+
+
+def test_browser_fallback_uses_new_york_time():
+    assert official_sources_module._browser_context_options()["timezone_id"] == (
+        "America/New_York"
+    )
+
+
+def test_rendered_page_prefers_visible_text_over_hidden_responsive_markup():
+    _title, text = official_sources_module._rendered_page_text(
+        "<title>Schedule</title><p>Time (PDT): 7:00 PM vs. 76ers</p>",
+        "Tuesday Oct 20 7:00 PM EDT Philadelphia 76ers Madison Square Garden",
+    )
+
+    chunks = _relevant_chunks(text, "Knicks 76ers game date time", limit=1)
+
+    assert "7:00 PM EDT" in chunks[0]
+    assert "PDT" not in text
+
+
+async def test_official_sources_keeps_article_body_when_navigation_dominates_extraction(
+    monkeypatch,
+):
+    url = "https://portal.311.nyc.gov/article/?kanumber=KA-02518"
+    navigation = " ".join(
+        f"<a href='/help/{index}'>Browser settings and navigation help {index}</a>"
+        for index in range(120)
+    )
+    client = _Client({
+        url: (
+            "<html><head><title>Illegal Eviction or Lockout</title></head><body>"
+            f"<nav>{navigation}</nav>"
+            "<div id='offlineNotificationBar'>You're offline. This is a read only version.</div>"
+            "<div class='panel-expand'><div class='divTableCell1'>Call 911</div>"
+            "<div class='divTableCell2'>Call 911 to report landlords who lock out tenants. "
+            "Only a City Marshal or Sheriff may carry out a Warrant of Eviction.</div></div>"
+            "</body></html>"
+        ),
+    })
+    monkeypatch.setattr(
+        official_sources_module,
+        "clean_html",
+        lambda _html: (
+            "Illegal Eviction or Lockout",
+            "You're offline. Browser settings and navigation help.",
+        ),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([ServiceModule(name="housing", seeds=[url])]),
+        http=client,
+    )
+
+    out = await official_source_tools()[0].handler(
+        {"urls": [url], "query": "landlord lock out tenant call 911 warrant eviction"},
+        ctx,
+    )
+
+    assert "Call 911 to report landlords who lock out tenants" in out
+    assert "City Marshal or Sheriff" in ctx.citations.mapping()["S1"]["snippet"]
+
+
 async def test_official_sources_marks_archived_content_in_the_evidence():
     url = "https://www.uscis.gov/archive/current-guidance"
     registry = Registry([ServiceModule(name="immigration", seeds=[url])])
@@ -210,6 +331,27 @@ async def test_official_sources_rejects_a_url_not_declared_by_a_module():
 
     assert "not an approved official source" in out
     assert client.urls == []
+
+
+async def test_official_sources_rejects_only_the_unapproved_url_in_a_batch():
+    approved = "https://www.nyc.gov/allowed"
+    rejected = "https://evil.example/page"
+    registry = Registry([ServiceModule(name="law", seeds=[approved])])
+    client = _Client({approved: "Official cash assistance guidance."})
+    ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
+
+    out = await official_source_tools()[0].handler(
+        {
+            "urls": [rejected, approved],
+            "query": "cash assistance guidance",
+        },
+        ctx,
+    )
+
+    assert client.urls == [approved]
+    assert "Official cash assistance guidance" in out
+    assert rejected not in out
+    assert "one requested url was not approved" in out.lower()
 
 
 async def test_official_sources_rejects_editorial_allowlist_domains():
@@ -358,7 +500,8 @@ async def test_discovered_result_can_be_fetched_into_answer_grade_evidence():
     assert "call official_sources" in search_out
     assert "Current SNAP recertification" in source_out
     assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "discovery",
+        "evidence_grade": "authoritative_excerpt",
+        "source_tier": "authoritative",
     }
     assert ctx.citations.mapping()["S2"]["url"] == url
     assert ctx.citations.mapping()["S2"]["provenance"] == {
@@ -367,7 +510,7 @@ async def test_discovered_result_can_be_fetched_into_answer_grade_evidence():
     assert "Current SNAP recertification" in ctx.citations.mapping()["S2"]["snippet"]
 
 
-async def test_failed_source_fetch_preserves_discovery_history():
+async def test_failed_source_fetch_preserves_official_excerpt_history():
     url = "https://otda.ny.gov/hearings/faq.asp"
 
     async def fake_search(query, domains, recency=None):
@@ -398,7 +541,8 @@ async def test_failed_source_fetch_preserves_discovery_history():
     assert "could not be retrieved" in out
     assert "preserve other verified results" in out.lower()
     assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "discovery",
+        "evidence_grade": "authoritative_excerpt",
+        "source_tier": "authoritative",
     }
 
 
