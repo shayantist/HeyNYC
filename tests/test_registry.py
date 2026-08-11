@@ -160,6 +160,47 @@ def test_benefits_manifest_declares_mixed_status_snap_situation():
     assert "call `official_sources` with every official pages url" in instructions.lower()
 
 
+def test_benefits_manifest_declares_generic_snap_denial_situation():
+    from heynyc.core.pydantic_runtime.tools import build_module_capabilities
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["snap_denial_fair_hearing"]
+
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert any("LDSS_4826A.pdf" in url for url in hint.urls)
+    assert "food assistance is additional" in hint.reminder.lower()
+    assert hint.focus_tools == ["official_sources"]
+    _, capabilities = build_module_capabilities(registry, {})
+    capability = next(
+        item for item in capabilities if item.id == "benefits-snap-denial-fair-hearing"
+    )
+    instructions = "\n".join(capability.get_instructions())
+    assert "call `official_sources` with every official pages url" in instructions.lower()
+
+
+def test_benefits_manifest_declares_medicaid_termination_hearing_situation():
+    from heynyc.core.pydantic_runtime.tools import build_module_capabilities
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["medicaid_termination_fair_hearing"]
+
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert any("final_iad_ac" in url for url in hint.urls)
+    assert any("final_fad_ac" in url for url in hint.urls)
+    assert any("medicaid/how_do_i_apply" in url for url in hint.urls)
+    assert "otda decides" in hint.reminder.lower()
+    assert "resident's language" in hint.reminder.lower()
+    assert hint.focus_tools == ["official_sources"]
+    _, capabilities = build_module_capabilities(registry, {})
+    capability = next(
+        item for item in capabilities if item.id == "benefits-medicaid-termination-fair-hearing"
+    )
+    instructions = "\n".join(capability.get_instructions()).lower()
+    assert "call `official_sources` with every official pages url" in instructions
+
+
 def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
     """RULED 2026-07-18: retrieval pools are stakes-tiered, and the stakes declaration lives in
     each module's OWN manifest (`official_only`, default true), enforced by the schema at load —
