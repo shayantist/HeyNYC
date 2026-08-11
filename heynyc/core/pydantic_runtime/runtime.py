@@ -164,6 +164,7 @@ def _degraded_failure_text(
     text: str,
     citations: CitationRegistry,
     language: str | None = None,
+    citation_ids: set[str] | None = None,
 ) -> str:
     """Hand back the official pages already retrieved instead of stranding the resident.
 
@@ -175,7 +176,8 @@ def _degraded_failure_text(
     """
     official = [
         citation
-        for citation in citations.mapping().values()
+        for citation_id, citation in citations.mapping().items()
+        if (citation_ids is None or citation_id in citation_ids)
         if (citation.get("provenance") or {}).get("evidence_grade") == "authoritative"
         and citation.get("url")
     ]
