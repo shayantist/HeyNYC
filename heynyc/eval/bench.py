@@ -61,6 +61,11 @@ def _candidate_cost(model: str, results) -> tuple[Optional[float], int, int]:
 
     Returns (cost_usd, input_tokens, output_tokens). None means at least one call could not be priced,
     so the run must not be presented as free."""
+    results = [
+        turn
+        for result in results
+        for turn in (getattr(result, "turn_results", None) or [result])
+    ]
     in_tok = sum(int(r.usage.get("input_tokens", 0)) for r in results)
     out_tok = sum(int(r.usage.get("output_tokens", 0)) for r in results)
     total = 0.0

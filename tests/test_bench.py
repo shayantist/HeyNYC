@@ -163,6 +163,26 @@ def test_candidate_cost_uses_per_turn_multi_model_cost():
     assert cost == 0.0042
 
 
+def test_candidate_cost_sums_every_turn_in_a_conversation():
+    from heynyc.eval.bench import _candidate_cost
+    from heynyc.eval.runner import CaseResult
+
+    result = CaseResult(
+        case=EvalCase(id="multi", module="m", query="q"),
+        usage={"input_tokens": 20, "output_tokens": 2, "cost_usd": 0.02},
+        turn_results=[
+            SimpleNamespace(
+                usage={"input_tokens": 10, "output_tokens": 1, "cost_usd": 0.01}
+            ),
+            SimpleNamespace(
+                usage={"input_tokens": 20, "output_tokens": 2, "cost_usd": 0.02}
+            ),
+        ],
+    )
+
+    assert _candidate_cost("openai/gpt-5.6-luna", [result]) == (0.03, 30, 3)
+
+
 def test_render_bench_surfaces_candidate_cost():
     rows = [BenchRow(model="gpt-5", report=_report([("a", True)]), cost_usd=0.0123)]
     out = render_bench(rows, safety_case_ids=set())
