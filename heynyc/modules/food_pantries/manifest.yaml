@@ -34,6 +34,9 @@ prompt: |
   this turn resolves that resident-named place to an exact address, pass the exact address with its
   citation ID as near_source_citation and the resident's exact named place as near_source_place.
   Never expand a named area from a discovery snippet or your own inference.
+  If a follow-up asks about "that place", "the place you gave me", or otherwise refers to one
+  previously returned site, pass that site's FoodHelp citation ID as site_citation. Do not rerank
+  nearby sites or silently answer about a different location.
   If the resident has not supplied an NYC address or neighborhood, ask for one before calling.
   Exception: for a broad citywide starting-point question such as "where do I start?" with no
   location, first call official_sources for https://finder.nyc.gov/foodhelp/ or the official NYC

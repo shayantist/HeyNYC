@@ -215,7 +215,7 @@ def _day_slots(record: dict, prefix: str, day: str) -> list[tuple[int, int]]:
     for n in ("1", "2", "3"):
         opened = _parse_time(record.get(f"{prefix}_{day}_open{n}"))
         closed = _parse_time(record.get(f"{prefix}_{day}_close{n}"))
-        if opened is not None and closed is not None and closed != opened:
+        if opened is not None and closed is not None and opened < closed:
             slots.append((opened, closed))
     return slots
 
@@ -331,7 +331,13 @@ def _listed_hours(record: dict, weekday: int) -> str:
     for n in ("1", "2", "3"):
         opened = _clean(record.get(f"{prefix}_{day}_open{n}"))
         closed = _clean(record.get(f"{prefix}_{day}_close{n}"))
-        if opened and closed:
+        if (
+            opened
+            and closed
+            and (opened_minutes := _parse_time(opened)) is not None
+            and (closed_minutes := _parse_time(closed)) is not None
+            and opened_minutes < closed_minutes
+        ):
             slots.append(f"{opened}-{closed}")
     return ", ".join(slots)
 
@@ -456,8 +462,13 @@ def _availability_citation(
     pantries: list[FoodPantry],
     nearby: list[FoodPantry],
     now: datetime,
+    origin_query: str,
+    origin_label: str,
+    origin_lat: float,
+    origin_lon: float,
     requested: date | None = None,
     service_window: tuple[int, int] | None = None,
+    referenced_site: FoodPantry | None = None,
 ) -> str:
     if service_window:
         requested = requested or now.date()
@@ -480,12 +491,18 @@ def _availability_citation(
         basis = "weekly hours indicating open"
     snapshot = {
         "lookup_at": now.isoformat(),
+        "origin_query": origin_query,
+        "origin_label": origin_label,
+        "origin_point": [origin_lat, origin_lon],
         "status_filter": WHERE_OPEN,
         "nearby_records_checked": len(nearby),
         "citywide_records_checked": len(pantries),
         "scheduled_open_nearby": scheduled_open_nearby,
         "scheduled_open_citywide": scheduled_open_citywide,
     }
+    if referenced_site is not None:
+        snapshot["referenced_site"] = referenced_site.raw
+        snapshot["referenced_site_valid_as_of"] = referenced_site.valid_as_of
     return ctx.citations.register(
         FOODHELP_QUERY_URL,
         snippet=(
@@ -578,6 +595,21 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     near = (args.get("near") or "").strip()
     if not near:
         return NO_LOCATION
+    site_citation = str(args.get("site_citation") or "").strip()
+    site_record_id = ""
+    if site_citation:
+        citation = ctx.citations.mapping().get(site_citation, {})
+        provenance = citation.get("provenance") or {}
+        if (
+            citation.get("kind") != "DATA"
+            or not str(citation.get("url") or "").startswith(FOODHELP_URL)
+            or not provenance.get("record_id")
+        ):
+            return (
+                "That citation does not identify a prior NYC FoodHelp site. Do not guess or "
+                "substitute a different site."
+            )
+        site_record_id = str(provenance["record_id"])
     service_type = str(args.get("service_type") or "any")
     if service_type not in {"pantry", "soup_kitchen", "any"}:
         return "The requested service type is invalid. Use pantry, soup_kitchen, or any."
@@ -679,6 +711,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             pantries=[],
             nearby=[],
             now=now,
+            origin_query=near,
+            origin_label=origin.label,
+            origin_lat=origin.lat,
+            origin_lon=origin.lon,
         )
         if urgent:
             ctx.response_priority_citation_ids.add(cite)
@@ -697,6 +733,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             continue
         seen.add(key)
         unique.append(pantry)
+    if site_record_id:
+        referenced = [
+            pantry
+            for pantry in unique
+            if pantry.global_id.casefold() == site_record_id.casefold()
+        ]
+        if not referenced:
+            return (
+                "The previously cited NYC FoodHelp site is not in the current open-site feed. "
+                "Do not substitute another site without telling the resident. Point them to "
+                f"{OFFICIAL}, and ask whether they want a new nearby option. "
+                f"Prior site: {{cite:{site_citation}}}"
+            )
+        rank_pool = referenced
+    else:
+        rank_pool = unique
     if service_window:
         def requested_window_rank(pantry: FoodPantry) -> tuple[float, float]:
             scheduled = _scheduled_during(
@@ -710,7 +762,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon),
             )
 
-        unique.sort(key=requested_window_rank)
+        rank_pool.sort(key=requested_window_rank)
     elif future_schedule:
         def requested_day_rank(pantry: FoodPantry) -> tuple[float, float]:
             scheduled = _scheduled_on(pantry.raw, requested)
@@ -719,8 +771,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon),
             )
 
-        unique.sort(key=requested_day_rank)
-    ranked = unique[:k]
+        rank_pool.sort(key=requested_day_rank)
+    ranked = rank_pool[:k]
     if service_window:
         def availability(pantry: FoodPantry) -> bool | None:
             return _scheduled_during(
@@ -745,8 +797,13 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             pantries=unique,
             nearby=ranked,
             now=now,
+            origin_query=near,
+            origin_label=origin.label,
+            origin_lat=origin.lat,
+            origin_lon=origin.lon,
             requested=requested_day,
             service_window=service_window,
+            referenced_site=ranked[0] if site_record_id else None,
         )
         if urgent
         else ""
@@ -757,7 +814,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f" {{cite:{availability_citation}}}" if availability_citation else ""
     )
     displayed = (
-        scheduled_open[:1]
+        ranked[:1]
+        if site_record_id
+        else scheduled_open[:1]
         if urgent and service_window
         else scheduled_open or citywide_open[:1] or unknown_hours
         if urgent
@@ -777,18 +836,30 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     ]
     if source_origin:
         lines.insert(2, f"Origin address came from the official source {{cite:{source_id}}}.")
+    if availability_citation:
+        lines.append(
+            f"Lookup time: {now.strftime('%Y-%m-%d %H:%M')} America/New_York "
+            f"{{cite:{availability_citation}}}"
+        )
     if future_schedule:
         lines.append(
             f"Results are ranked for the weekly schedule on "
             f"{requested.strftime('%A, %Y-%m-%d')}; this does not confirm service that day."
         )
-    if urgent and service_window and scheduled_open:
+    if urgent and site_record_id and not scheduled_open:
+        lines.append(
+            "The previously cited site's weekly schedule does not establish service in the "
+            f"requested {window_start}-{window_end} window. Do not substitute another site. "
+            "Tell the resident to call the site before traveling, and use 311 or "
+            f"https://finder.nyc.gov/foodhelp for immediate help.{availability_marker}"
+        )
+    elif urgent and service_window and scheduled_open:
         lines.append(
             f"Immediate food need in the requested {window_start}-{window_end} service window: "
             "the listed weekly schedule overlaps that window but does not confirm food "
             "availability. Lead with call 311 or https://finder.nyc.gov/foodhelp for immediate "
-            "help, then give the single nearest weekly-schedule lead and tell the resident to "
-            f"call the listed site before traveling.{availability_marker}"
+            "help, then give one nearest weekly-schedule lead, not the only nearby option, and "
+            f"tell the resident to call the listed site before traveling.{availability_marker}"
         )
     elif urgent and service_window:
         lines.append(
@@ -894,6 +965,8 @@ def get_tools() -> list[Tool]:
                 "When they need service during a named same-day time window, also pass "
                 "`service_window_start` and `service_window_end` as 24-hour HH:MM values. For "
                 "example, tonight is 17:00-23:59 unless the resident gives narrower times. "
+                "When a follow-up refers to one site returned earlier, pass that site's citation "
+                "ID as `site_citation` so the lookup does not silently switch locations. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
                 "The source has no language info and eligibility notes are often blank, don't invent."
             ),
@@ -916,6 +989,14 @@ def get_tools() -> list[Tool]:
                         "description": (
                             "The resident's exact named place resolved by near_source_citation. "
                             "The place and `near` address must occur together in that source."
+                        ),
+                    },
+                    "site_citation": {
+                        "type": "string",
+                        "pattern": r"^S\d+$",
+                        "description": (
+                            "The prior NYC FoodHelp DATA citation for the exact site a follow-up "
+                            "refers to. Omit for a new nearby search."
                         ),
                     },
                     "k": {"type": "integer",

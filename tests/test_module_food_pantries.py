@@ -117,15 +117,21 @@ def test_open_now_none_when_no_hours_at_all():
     assert _open_now({"program_type": "FP"}, now) is None  # honest unknown, never a guess
 
 
-def test_open_now_handles_cross_midnight_hours():
+def test_f194_open_now_rejects_foodhelp_cross_midnight_hours():
     late = datetime(2026, 7, 1, 23, 30)
     late_day = _DAYS[late.weekday()]
-    overnight = _hours_record(late_day, "10:00 PM", "2:00 AM")
-    assert _open_now(overnight, late) is True
+    overnight = _hours_record(
+        late_day,
+        "9:00 AM",
+        "5:00 AM",
+        fp_days_orig="TUE-FRI",
+        fp_hours_orig="11AM-3PM",
+    )
+    assert _open_now(overnight, late) is None
 
     early = datetime(2026, 7, 2, 1, 30)
-    assert _open_now(overnight, early) is True
-    assert _open_now(overnight, datetime(2026, 7, 2, 3, 0)) is False
+    assert _open_now(overnight, early) is None
+    assert fp._listed_hours(overnight, late.weekday()) == ""
 
 
 def test_source_date_preserves_valid_values_and_rejects_invalid_values():
@@ -727,6 +733,7 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     await client.aclose()
 
     assert out.index("Immediate food need") < out.index("Nearby Pantry")
+    assert "Lookup time: 2026-07-17 12:00 America/New_York {cite:S1}" in out
     assert "does not confirm food availability" in out
     assert "call the listed site before traveling" in out
     assert "call 311" in out
@@ -808,6 +815,7 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     assert "weekly schedule overlaps that window" in out
     assert "does not confirm food availability" in out
     assert "Lead with call 311 or https://finder.nyc.gov/foodhelp" in out
+    assert "one nearest weekly-schedule lead, not the only nearby option" in out
     schema = get_tools()[0].parameters["properties"]
     assert schema["service_window_start"]["pattern"] == r"^\d{2}:\d{2}$"
     assert schema["service_window_end"]["pattern"] == r"^\d{2}:\d{2}$"
@@ -845,6 +853,12 @@ async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_no
     assert "{cite:S1}" in out
     assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_citywide"] == 0
     assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_nearby"] == 0
+    assert citations["S1"]["provenance"]["snapshot"]["origin_query"] == "Union Square"
+    assert citations["S1"]["provenance"]["snapshot"]["origin_label"] == "Union Square, Manhattan"
+    assert citations["S1"]["provenance"]["snapshot"]["origin_point"] == [
+        40.743312,
+        -73.988975,
+    ]
 
 
 async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
@@ -1044,6 +1058,99 @@ async def test_nearest_food_pantry_filters_source_service_type():
         "soup_kitchen",
         "any",
     ]
+
+
+async def test_f199_follow_up_keeps_the_previously_cited_pantry():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Closer Different Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="closer-site",
+        ),
+        _pantry_feature(
+            -73.9800,
+            40.7600,
+            program="Previously Cited Pantry",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="prior-site",
+            EditDate="2026-08-10",
+            fp_tue_open1="10:00 AM",
+            fp_tue_close1="06:00 PM",
+        ),
+    ]
+    citations = CitationRegistry()
+    prior_id = citations.register(
+        f"{fp.FOODHELP_URL}/query?where=GlobalID%3D%27prior-site%27",
+        snippet="Previously Cited Pantry, 9 Example Street",
+        title="NYC FoodHelp (Food Help Programs)",
+        kind="DATA",
+        provenance={"record_id": "prior-site", "snapshot": {}},
+    )
+    client = _routed_client(features)
+    query = "What hours does the place you just gave me have today?"
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        http=client,
+        query=query,
+        user_turns=("I am near Union Square.", query),
+    )
+
+    out = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "site_citation": prior_id,
+            "urgent": True,
+            "service_window_start": "17:00",
+            "service_window_end": "23:59",
+        },
+        ctx,
+    )
+    await client.aclose()
+
+    assert "Previously Cited Pantry" in out
+    assert "Closer Different Pantry" not in out
+    availability = next(
+        citation
+        for citation in citations.mapping().values()
+        if citation["title"] == "NYC FoodHelp availability lookup"
+    )
+    snapshot = availability["provenance"]["snapshot"]
+    assert snapshot["referenced_site"]["GlobalID"] == "prior-site"
+    assert snapshot["referenced_site_valid_as_of"] == "2026-08-10"
+
+
+async def test_f199_rejects_a_non_foodhelp_site_reference(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("invalid site reference reached geocoder")
+
+    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    citations = CitationRegistry()
+    unrelated_id = citations.register(
+        "https://example.org/not-foodhelp",
+        snippet="Unrelated place",
+        title="Unrelated source",
+        kind="DATA",
+        provenance={"record_id": "prior-site", "snapshot": {}},
+    )
+    query = "What hours does the place you just gave me have today?"
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query=query,
+        user_turns=("I am near Union Square.", query),
+    )
+
+    out = await get_tools()[0].handler(
+        {"near": "Union Square", "site_citation": unrelated_id},
+        ctx,
+    )
+
+    assert "does not identify a prior NYC FoodHelp site" in out
 
 
 async def test_nearest_food_pantry_labels_soup_kitchen_results_as_soup_kitchens():
@@ -1294,3 +1401,26 @@ def test_a_newly_named_location_is_preferred_over_the_earlier_one():
     assert fp._resident_supplied_origin(
         "the Bronx", "what about a food pantry in the Bronx?", turns
     ) == "the Bronx"
+
+
+def test_f195_multilingual_intersection_survives_identity_preserving_model_wording():
+    query = (
+        "Ya me mudé cerca de la calle 82 y Roosevelt Avenue en Queens. "
+        "¿Qué opciones tengo aquí?"
+    )
+
+    assert fp._resident_supplied_origin(
+        "near 82nd Street and Roosevelt Avenue, Queens, NY",
+        query,
+        (query,),
+    ) == "near 82nd Street and Roosevelt Avenue, Queens, NY"
+
+
+def test_f195_multilingual_intersection_rejects_a_model_changed_borough():
+    query = "Estoy en la calle 82 y Roosevelt Avenue en Queens."
+
+    assert fp._resident_supplied_origin(
+        "82nd Street and Roosevelt Avenue, Brooklyn, NY",
+        query,
+        (query,),
+    ) == ""

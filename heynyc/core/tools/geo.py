@@ -21,19 +21,19 @@ from .arcgis import feature_query_url, query_feature_service
 from .base import Tool, ToolContext
 from .datasets import dataset_url, normalize, query_dataset, row_url
 
-_INTERSECTION_RE = re.compile(r"(?:\band\b|&|/)", re.IGNORECASE)
+_INTERSECTION_RE = re.compile(r"(?:\band\b|\by\b|&|/)", re.IGNORECASE)
 _NUMBERED_AT_RE = re.compile(r"\bat\b", re.IGNORECASE)
 _STREET_SUFFIX_RE = re.compile(
-    r"\b(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|parkway|pkwy|way)\b",
+    r"\b(?:street|st|calle|avenue|ave|avenida|road|rd|boulevard|blvd|lane|ln|drive|dr|parkway|pkwy|way)\b",
     re.IGNORECASE,
 )
-_INTERSECTION_SPLIT_RE = re.compile(r"(?:\band\b|&|/|\bat\b)", re.IGNORECASE)
+_INTERSECTION_SPLIT_RE = re.compile(r"(?:\band\b|\by\b|&|/|\bat\b)", re.IGNORECASE)
 _DIRECTIONS = {
     "north": "n", "n": "n", "south": "s", "s": "s",
     "east": "e", "e": "e", "west": "w", "w": "w",
 }
 _STREET_SUFFIXES = {
-    "street", "st", "avenue", "ave", "road", "rd", "boulevard", "blvd",
+    "street", "st", "calle", "avenue", "ave", "avenida", "road", "rd", "boulevard", "blvd",
     "lane", "ln", "drive", "dr", "parkway", "pkwy", "way",
 }
 _COORDINATE_RE = re.compile(
@@ -201,6 +201,15 @@ def resident_supplied_location(
                 if not semantically_confirmed(candidate, turn):
                     continue
                 return turn[raw_start:raw_end]
+        if (
+            _looks_like_intersection(proposed)
+            and _intersection_identity_matches(turn, proposed)
+            and not _LOCATION_NEGATION_RE.search(turn)
+            and not _LOCATION_STALE_RE.search(turn)
+        ):
+            proposed_borough = _detect_borough(proposed)
+            if proposed_borough is None or proposed_borough == _detect_borough(turn):
+                return proposed
     return ""
 
 
