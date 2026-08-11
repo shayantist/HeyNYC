@@ -10,6 +10,7 @@ from heynyc.channels.orchestrator import Deps, flag_note, handle, is_flag
 from heynyc.channels.store import ChannelStore
 from heynyc.core import config, pii_crypto
 from heynyc.core.agent import Agent
+from heynyc.core.pii_redaction import redact_sensitive_identifiers
 from heynyc.core.registry import Registry
 
 # ---- PII redaction (write-time) ------------------------------------------------
@@ -51,6 +52,16 @@ def test_redact_pii_keeps_ordinary_text():
     assert analytics.redact_pii("") == ""
     # ordinary short numbers and an 'a' before a small number are NOT swept up
     assert analytics.redact_pii("apartment 350 has 2 rooms") == "apartment 350 has 2 rooms"
+
+
+def test_sensitive_identifier_redaction_preserves_location_and_phone_context():
+    text = "My SSN is 123-45-6789. I am near 350 Jay Street. Call me at 212-555-1234."
+
+    redacted = redact_sensitive_identifiers(text)
+
+    assert "123-45-6789" not in redacted
+    assert "350 Jay Street" in redacted
+    assert "212-555-1234" in redacted
 
 
 # ---- The recorder redacts free text at write time, keeps the user_key ----------

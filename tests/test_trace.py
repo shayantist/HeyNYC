@@ -38,7 +38,7 @@ def test_build_trace_extracts_tool_and_retriever_spans():
     nearest = next(s for s in trace.spans if s.name == "nearest")
     assert nearest.input == {"address": "X"}
     assert nearest.output == "120 Broadway, 0.2mi"
-    assert trace.outcome == "answered"
+    assert trace.outcome == "unclassified"
 
 
 def test_serialized_spans_use_openinference_attributes():
@@ -84,9 +84,9 @@ def test_retriever_span_uses_document_attributes():
 
 def test_classify_outcome():
     assert classify_outcome("", "error") == "error"
-    assert classify_outcome("I couldn't find that on official sources.", "success") == "abstained"
-    assert classify_outcome("I help with NYC services and events.", "success") == "redirected"
-    assert classify_outcome("The nearest center is 120 Broadway.", "success") == "answered"
+    assert classify_outcome("I couldn't find that on official sources.", "success") == "unclassified"
+    assert classify_outcome("I help with NYC services and events.", "success") == "unclassified"
+    assert classify_outcome("The nearest center is 120 Broadway.", "success") == "unclassified"
 
 
 def test_trace_write_roundtrip(tmp_path: Path):
@@ -96,7 +96,7 @@ def test_trace_write_roundtrip(tmp_path: Path):
     assert path.exists()
     data = json.loads(path.read_text())
     assert data["case_id"] == "c"
-    assert data["outcome"] in {"answered", "abstained", "redirected", "error"}
+    assert data["outcome"] == "unclassified"
     assert isinstance(data["spans"], list)
 
 
@@ -172,3 +172,21 @@ def test_trace_persists_every_conversation_turn_for_qualitative_review():
     assert turns[0]["text"] == "First answer {cite:S1}"
     assert turns[0]["tool_calls"] == ["lookup"]
     assert turns[1]["citations"] == {"S1": {"url": "https://nyc.gov/one"}}
+
+
+def test_trace_redacts_sensitive_identifiers_from_resident_metadata():
+    cr = _cr(
+        case=EvalCase(
+            id="pii",
+            module="m",
+            query="my SSN is 123-45-6789",
+            turns=["my SSN is 123-45-6789"],
+        ),
+        text="Use the secure form",
+        turn_results=[AgentResult(text="Use the secure form", citations={})],
+    )
+
+    serialized = json.dumps(build_trace(cr).to_dict())
+
+    assert "123-45-6789" not in serialized
+    assert "[redacted]" in serialized

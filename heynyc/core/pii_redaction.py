@@ -30,3 +30,15 @@ def redact_pii(text: str) -> str:
     ):
         text = pattern.sub(_REDACTION, text)
     return text
+
+
+def redact_sensitive_identifiers(text: str) -> str:
+    """Mask identifiers that should never be needed for conversational guidance.
+
+    Phone numbers and street addresses remain available for location and callback questions.
+    """
+    if not text:
+        return text or ""
+    for pattern in (_CARD_RE, _ACCOUNT_RE, _ANUMBER_RE, _PASSPORT_RE, _SSN_RE):
+        text = pattern.sub(_REDACTION, text)
+    return text
