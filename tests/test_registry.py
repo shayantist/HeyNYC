@@ -100,7 +100,16 @@ def test_housing_manifest_declares_the_active_lockout_situation():
     assert "lockout" in hint.query
     assert any("311" in url or "nyc.gov" in url for url in hint.urls)
     assert "911" in hint.reminder
+    assert "every recommended action" in hint.reminder.lower()
+    assert "retrieved official text" in hint.reminder.lower()
+    assert "distinct lease and occupancy conditions" in hint.reminder.lower()
     assert "housing_guidance" in hint.focus_tools
+    assert "threatened future" in hint.definition
+    assert "not" in hint.definition
+    assert "recent_developments" not in hint.focus_tools
+    assert "web_search" not in hint.focus_tools
+    assert "geocode" not in hint.focus_tools
+    assert "nearest" not in hint.focus_tools
     assert len(hint.definition.split()) >= 8  # meaning, not a keyword
 
 
@@ -235,11 +244,51 @@ def test_events_editorial_pool_covers_nyc_lifestyle_press():
         assert domain in registry.allowlist()
 
 
+def test_events_keeps_known_source_trust_separate_from_catalog_scope():
+    registry = Registry.discover(Path("heynyc/modules"))
+    events = next(module for module in registry.modules if module.name == "events")
+
+    assert registry.source_tiers()["nba.com"][0] == "authoritative"
+    assert "nba.com" in events.allowlist
+    prompt = " ".join(events.prompt.lower().split())
+    assert "requests for event choices" in prompt
+    assert "web_search remains available" in prompt
+    assert "professional-team" not in prompt
+
+
+def test_libraries_declares_each_nyc_library_system_as_authoritative():
+    registry = Registry.discover(Path("heynyc/modules"))
+    libraries = next(module for module in registry.modules if module.name == "libraries")
+
+    assert libraries.seeds == []
+    assert set(libraries.allowlist) == {
+        "bklynlibrary.org",
+        "nypl.org",
+        "queenslibrary.org",
+    }
+    for domain in libraries.allowlist:
+        assert registry.source_tiers()[domain][0] == "authoritative"
+    prompt = " ".join(libraries.prompt.lower().split())
+    assert "current branch page" in prompt
+    assert "systemwide technology page" in prompt
+
+
+def test_workers_separates_informal_guidance_from_a_formal_complaint():
+    registry = Registry.discover(Path("heynyc/modules"))
+    workers = next(module for module in registry.modules if module.name == "workers")
+    prompt = " ".join(workers.prompt.lower().split())
+
+    assert "informal inquiry" in prompt
+    assert "formal complaint" in prompt
+    assert "employer notice" in prompt
+
+
 def test_transit_manifest_declares_current_mta_accessibility_sources():
     registry = Registry.discover(Path("heynyc/modules"))
     transit = next(module for module in registry.modules if module.name == "transit")
 
     assert "mta.info" in transit.allowlist
+    assert registry.source_tiers()["mta.info"][0] == "authoritative"
     assert any("accessibility" in seed for seed in transit.seeds)
     prompt = " ".join(transit.prompt.lower().split())
     assert "accessible trip" in prompt
@@ -248,6 +297,15 @@ def test_transit_manifest_declares_current_mta_accessibility_sources():
     assert "requested day" in prompt
     assert "requires a grounded handoff" in prompt
     assert "ask that exact endpoint question in the grounded handoff" in prompt
+    assert "call official_sources directly" in prompt
+    assert "do not use web_search" in prompt
+    assert "do not suggest a candidate address or entrance" in prompt
+
+
+def test_childcare_marks_the_official_myschools_service_authoritative():
+    registry = Registry.discover(Path("heynyc/modules"))
+
+    assert registry.source_tiers()["myschools.nyc"][0] == "authoritative"
 
 
 def test_benefits_discovery_does_not_claim_an_unloaded_screening_workflow():
