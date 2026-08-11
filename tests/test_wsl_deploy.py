@@ -3,7 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "deploy_wsl.sh"
+SCRIPT = Path(__file__).parents[1] / "scripts" / "deploy.sh"
+LOCAL_DEPLOY_SCRIPT = Path(__file__).parents[1] / "scripts" / "deploy_via_ssh.sh"
 NEW_SHA = "2" * 40
 OLD_SHA = "1" * 40
 
@@ -63,7 +64,7 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         f"echo \"git $*\" >> {log}\n"
         "if [ \"${1:-}\" = -C ]; then worktree=$2; shift 2; fi\n"
         "case \"$1 $2\" in\n"
-        "  'worktree add') target=$4; mkdir -p \"$target/.venv/bin\" \"$target/scripts\"; if [ \"${TARGET_OLD_CONTROLLER:-0}\" = 1 ]; then printf '#!/bin/sh\\n# HEYNYC_PREPARED_RELEASE\\nexit 0\\n' > \"$target/scripts/deploy_wsl.sh\"; else cp \"$DEPLOY_SCRIPT\" \"$target/scripts/deploy_wsl.sh\"; fi; chmod +x \"$target/scripts/deploy_wsl.sh\"; cat > \"$target/.venv/bin/python\" <<'PY'\n"
+        "  'worktree add') target=$4; mkdir -p \"$target/.venv/bin\" \"$target/scripts\"; if [ \"${TARGET_OLD_CONTROLLER:-0}\" = 1 ]; then printf '#!/bin/sh\\n# HEYNYC_PREPARED_RELEASE\\nexit 0\\n' > \"$target/scripts/deploy.sh\"; else cp \"$DEPLOY_SCRIPT\" \"$target/scripts/deploy.sh\"; fi; chmod +x \"$target/scripts/deploy.sh\"; cat > \"$target/.venv/bin/python\" <<'PY'\n"
         "#!/bin/sh\n"
         f"echo \"python $*\" >> {log}\n"
         "case \"$*\" in *'state_snapshot.py restore'*) while [ \"$#\" -gt 0 ]; do if [ \"$1\" = --target ]; then mkdir -p \"$2\"; break; fi; shift; done ;; esac\n"
@@ -74,6 +75,7 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "PY\n"
         "chmod +x \"$target/.venv/bin/python\" ;;\n"
         "  'rev-parse --is-inside-work-tree') echo true ;;\n"
+        "  'rev-parse refs/remotes/origin/main') echo \"$DEFAULT_DEPLOY_SHA\" ;;\n"
         "  'rev-parse HEAD') basename \"$worktree\" | cut -c1-40 ;;\n"
         "  'status --porcelain') echo '?? .heynyc-ready' ;;\n"
         "  'show-ref --verify') [ \"$4\" = \"$EXPECTED_DEPLOY_REF\" ] ;;\n"
@@ -116,16 +118,142 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "STOP_COUNT": str(tmp_path / "stop-count"),
         "SIGNAL_SENT": str(tmp_path / "signal-sent"),
         "EXPECTED_DEPLOY_REF": "refs/remotes/origin/main",
+        "DEFAULT_DEPLOY_SHA": NEW_SHA,
         "HEYNYC_TMPFILES_CONFIG": str(tmp_path / "heynyc-backups.conf"),
         "DEPLOY_SCRIPT": str(SCRIPT),
     }
     return env, root, previous, log
 
 
-def _run_deploy(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run_deploy(
+    env: dict[str, str], sha: str | None = NEW_SHA
+) -> subprocess.CompletedProcess[str]:
+    command = ["sh", SCRIPT]
+    if sha is not None:
+        command.append(sha)
     return subprocess.run(
-        ["sh", SCRIPT, NEW_SHA], env=env, capture_output=True, text=True, check=False
+        command, env=env, capture_output=True, text=True, check=False
     )
+
+
+def test_wsl_deploy_defaults_to_fetched_origin_main(tmp_path: Path) -> None:
+    env, _, _, log = _deploy_fixture(tmp_path)
+
+    result = _run_deploy(env, sha=None)
+
+    assert result.returncode == 0, result.stderr
+    commands = log.read_text()
+    assert "fetch --prune origin" in commands
+    assert f"cat-file -e {NEW_SHA}^{{commit}}" in commands
+    assert "worktree add --detach" in commands
+    assert NEW_SHA in commands
+
+
+def test_deploy_via_ssh_uses_only_a_local_ssh_alias(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "ssh.log"
+    _executable(
+        fake_bin / "ssh",
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$SSH_LOG\"\n",
+    )
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "SSH_LOG": str(log),
+    }
+
+    result = subprocess.run(
+        ["sh", LOCAL_DEPLOY_SCRIPT, NEW_SHA],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = log.read_text().splitlines()
+    assert commands == [
+        "heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec git -C projects/HeyNYC pull --ff-only origin main",
+        f"-tt heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec ./projects/HeyNYC/scripts/deploy.sh {NEW_SHA}",
+    ]
+    text = LOCAL_DEPLOY_SCRIPT.read_text()
+    assert "HostName " not in text
+    assert "User " not in text
+    assert "IdentityFile" not in text
+    assert "StrictHostKeyChecking" not in text
+    assert ".env" not in text
+    assert "pwd" not in text
+    assert "wsl_home" not in text
+    assert LOCAL_DEPLOY_SCRIPT.stat().st_mode & 0o100
+
+
+def test_deploy_via_ssh_deploys_latest_main_without_a_sha(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "ssh.log"
+    _executable(fake_bin / "ssh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSH_LOG\"\n")
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "SSH_LOG": str(log),
+    }
+
+    result = subprocess.run(
+        ["sh", LOCAL_DEPLOY_SCRIPT],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines()[-1] == (
+        "-tt heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec "
+        "./projects/HeyNYC/scripts/deploy.sh"
+    )
+
+
+def test_deploy_via_ssh_rejects_an_ssh_option_as_the_host(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "HEYNYC_DEPLOY_SSH_HOST": "-oProxyCommand=unexpected",
+    }
+
+    result = subprocess.run(
+        ["sh", LOCAL_DEPLOY_SCRIPT],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 64
+    assert "HEYNYC_DEPLOY_SSH_HOST must be one SSH host or alias" in result.stderr
+
+
+def test_deploy_via_ssh_rejects_command_text_as_the_sha(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "ssh.log"
+    _executable(fake_bin / "ssh", f"#!/bin/sh\necho reached >> {log}\n")
+    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path)}
+
+    result = subprocess.run(
+        ["sh", LOCAL_DEPLOY_SCRIPT, f"{NEW_SHA};whoami"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 64
+    assert "SHA must be 40 lowercase hexadecimal characters" in result.stderr
+    assert not log.exists()
 
 
 def test_wsl_deploy_is_exact_sha_locked_and_uses_shared_state() -> None:
@@ -220,8 +348,8 @@ def test_wsl_deploy_hands_control_to_the_prepared_target_release() -> None:
     text = SCRIPT.read_text()
 
     assert 'HEYNYC_PREPARED_RELEASE' in text
-    assert 'exec "$release/scripts/deploy_wsl.sh" "$sha"' in text
-    assert '"$release/scripts/deploy_wsl.sh" --protocol' in text
+    assert 'exec "$release/scripts/deploy.sh" "$sha"' in text
+    assert '"$release/scripts/deploy.sh" --protocol' in text
     assert '"$ROOT/deploy.lock" -ef /proc/self/fd/9' in text
     assert 'flock -n 9' in text
     assert 'mktemp -d "$ROOT/to-delete/' in text
@@ -425,6 +553,7 @@ def test_wsl_deploy_rejects_a_dangling_retention_config_symlink(tmp_path: Path) 
 def test_wsl_deploy_fails_closed_and_parses_as_posix_shell() -> None:
     text = SCRIPT.read_text()
 
+    assert "sudo -v" in text
     assert "sudo -n true" in text
     assert "Automatic state rollback is intentionally disabled" in text
     assert text.count('systemctl stop "$SERVICE"') >= 2

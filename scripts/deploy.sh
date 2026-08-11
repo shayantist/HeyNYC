@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manual, exact-SHA deployment for the single-host WSL pilot.
+# Deploy an exact release on the target Linux host
 set -eu
 
 DEPLOY_PROTOCOL="heynyc-deploy-v2"
@@ -7,19 +7,24 @@ if [ "$#" -eq 1 ] && [ "$1" = --protocol ]; then
     echo "$DEPLOY_PROTOCOL"
     exit 0
 fi
-[ "$#" -eq 1 ] || { echo "usage: $0 <40-character pushed SHA>" >&2; exit 64; }
+[ "$#" -le 1 ] || { echo "usage: $0 [40-character pushed SHA]" >&2; exit 64; }
 deploy_locked="${HEYNYC_DEPLOY_LOCKED:-0}"
 prepared_release="${HEYNYC_PREPARED_RELEASE:-}"
+requested_sha="${1:-}"
 unset HEYNYC_DEPLOY_LOCKED HEYNYC_PREPARED_RELEASE
 [ -z "$prepared_release" ] || [ "$deploy_locked" = 1 ] || {
     echo "prepared release requires inherited deployment state" >&2
     exit 64
 }
-sha="$1"
-case "$sha" in
-    *[!0-9a-f]*|'') echo "deployment SHA must be lowercase hexadecimal" >&2; exit 64 ;;
-esac
-[ "${#sha}" -eq 40 ] || { echo "deployment SHA must contain 40 characters" >&2; exit 64; }
+if [ -n "$requested_sha" ]; then
+    case "$requested_sha" in
+        *[!0-9a-f]*) echo "deployment SHA must be lowercase hexadecimal" >&2; exit 64 ;;
+    esac
+    [ "${#requested_sha}" -eq 40 ] || {
+        echo "deployment SHA must contain 40 characters" >&2
+        exit 64
+    }
+fi
 
 ROOT="${HEYNYC_DEPLOY_ROOT:-$HOME/services/heynyc}"
 SOURCE="${HEYNYC_SOURCE_REPO:-$HOME/projects/HeyNYC}"
@@ -30,7 +35,7 @@ BACKUPS="$ROOT/backups"
 TMPFILES_CONFIG="${HEYNYC_TMPFILES_CONFIG:-/etc/tmpfiles.d/heynyc-backups.conf}"
 SERVICE="${HEYNYC_SYSTEMD_SERVICE:-heynyc}"
 PORT="${HEYNYC_PORT:-8791}"
-readonly DEPLOY_PROTOCOL deploy_locked prepared_release sha ROOT SOURCE SHARED RELEASES CURRENT
+readonly DEPLOY_PROTOCOL deploy_locked prepared_release requested_sha ROOT SOURCE SHARED RELEASES CURRENT
 readonly BACKUPS TMPFILES_CONFIG SERVICE PORT
 
 mkdir -p "$ROOT" "$RELEASES" "$BACKUPS"
@@ -43,16 +48,22 @@ else
     exec 9>"$ROOT/deploy.lock"
     flock -n 9 || { echo "another deployment holds $ROOT/deploy.lock" >&2; exit 75; }
 fi
-sudo -n true 2>/dev/null || {
-    echo "sudo authorization is not cached; run sudo -v interactively, then retry" >&2
-    exit 77
-}
+if [ -t 0 ]; then
+    sudo -v
+else
+    sudo -n true 2>/dev/null || {
+        echo "sudo authorization is not cached; run this deployment from an interactive terminal" >&2
+        exit 77
+    }
+fi
 [ -f "$SHARED/.env" ] || { echo "missing shared .env at $SHARED/.env" >&2; exit 66; }
 [ -d "$SHARED/data" ] || { echo "missing shared data at $SHARED/data" >&2; exit 66; }
 
+unset sha
 set -a
 . "$SHARED/.env"
 set +a
+[ -z "${sha+x}" ] || { echo "shared .env cannot set internal variable sha" >&2; exit 78; }
 deploy_ref="${HEYNYC_DEPLOY_REF:-origin/main}"
 case "$deploy_ref" in
     origin/*) ;;
@@ -115,11 +126,21 @@ case "$exec_start" in
 esac
 
 git -C "$SOURCE" fetch --prune origin
-git -C "$SOURCE" cat-file -e "$sha^{commit}"
 git -C "$SOURCE" show-ref --verify --quiet "$remote_ref" || {
     echo "$deploy_ref is not a fetched remote ref" >&2
     exit 65
 }
+if [ -n "$requested_sha" ]; then
+    sha="$requested_sha"
+else
+    sha="$(git -C "$SOURCE" rev-parse "$remote_ref")"
+fi
+case "$sha" in
+    *[!0-9a-f]*|'') echo "resolved deployment SHA must be lowercase hexadecimal" >&2; exit 65 ;;
+esac
+[ "${#sha}" -eq 40 ] || { echo "resolved deployment SHA must contain 40 characters" >&2; exit 65; }
+readonly sha
+git -C "$SOURCE" cat-file -e "$sha^{commit}"
 git -C "$SOURCE" merge-base --is-ancestor "$sha" "$remote_ref" || {
     echo "$sha is not contained in $deploy_ref" >&2
     exit 65
@@ -149,13 +170,13 @@ else
     (cd "$release" && uv sync --frozen --extra whatsapp --extra pydantic-ai)
     : > "$release/.heynyc-ready"
     validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
-    if [ "$("$release/scripts/deploy_wsl.sh" --protocol 2>/dev/null)" != "$DEPLOY_PROTOCOL" ]; then
+    if [ "$("$release/scripts/deploy.sh" --protocol 2>/dev/null)" != "$DEPLOY_PROTOCOL" ]; then
         echo "target deploy controller does not support prepared releases" >&2
         exit 78
     fi
     export HEYNYC_PREPARED_RELEASE="$release"
     export HEYNYC_DEPLOY_LOCKED=1
-    exec "$release/scripts/deploy_wsl.sh" "$sha"
+    exec "$release/scripts/deploy.sh" "$sha"
 fi
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 snapshot="$BACKUPS/$timestamp-$sha-$$"

@@ -80,17 +80,21 @@ approved.
 
 The WSL pilot keeps `.env` and resident state outside versioned release directories. Each release links the shared `.env`, and `HEYNYC_DATA_DIR` points at the shared data directory. This keeps one encryption identity and one resident-data store across exact-SHA releases.
 
-[`scripts/deploy_wsl.sh`](../../scripts/deploy_wsl.sh) is the one manual deployment path. It accepts only a full commit contained in the pushed `origin/main` ref by default; a supervised candidate can name another pushed `origin/*` ref through `HEYNYC_DEPLOY_REF`. It takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then hands control to the target release's deploy script. The target builds an isolated retrieval index, requires successful Notify NYC source probes, and preserves the prior index with an inventory and SHA-256 checksums under `to-delete`. It configures native [systemd temporary-file cleanup](https://www.freedesktop.org/software/systemd/man/systemd-tmpfiles.html) for expired snapshots, then stops writes once for a resident-state snapshot, application-level verification, and the index and release-pointer swaps. It rejects modified or extra tracked release content, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
+[`scripts/deploy_via_ssh.sh`](../../scripts/deploy_via_ssh.sh) is the command to run on the Mac. It connects through the operator's local `heynyc-wsl` SSH alias, uses WSL's native [`--cd ~` home-directory option](https://learn.microsoft.com/en-us/windows/wsl/basic-commands#change-directory-to-home), fast-forwards the WSL checkout, and opens an interactive terminal for the target deployment. The repository contains no private address or connection details; those stay in the operator's local [OpenSSH configuration](https://man.openbsd.org/ssh_config).
 
-Run it only after CI passes for the exact pushed SHA:
+[`scripts/deploy.sh`](../../scripts/deploy.sh) runs inside the target Linux host, which is WSL for the current pilot. It fetches and pins the head of the configured pushed `origin/*` ref; an optional full commit selects an earlier exact release. It takes a deployment lock, rebuilds that release from a fresh detached worktree while the old release serves, then hands control to the target release's `deploy.sh`. The target builds an isolated retrieval index, requires successful Notify NYC source probes, and preserves the prior index with an inventory and SHA-256 checksums under `to-delete`. It configures native [systemd temporary-file cleanup](https://www.freedesktop.org/software/systemd/man/systemd-tmpfiles.html) for expired snapshots, then stops writes once for a resident-state snapshot, application-level verification, and the index and release-pointer swaps. It rejects modified or extra tracked release content, requires local and public health, and compares recent provider-side inbound SIDs with the local inbox using Twilio's [Messages resource](https://www.twilio.com/docs/messaging/api/message-resource). Reconciliation reports counts and missing SIDs, never message bodies, and never replays a resident message automatically. A provider record without either Twilio timestamp is included conservatively and counted separately for operator review.
+
+Configure the local alias with private values outside this repository, then run only after CI passes:
 
 ```bash
-sudo -v
-./scripts/deploy_wsl.sh <40-character-sha>
+./scripts/deploy_via_ssh.sh
 
-# Supervised candidate:
+# Optional exact rollback or supervised pin:
+./scripts/deploy_via_ssh.sh <40-character-sha>
+
+# Directly on the WSL host, including a supervised candidate:
 HEYNYC_DEPLOY_REF=origin/codex/pydantic-ai-refactor \
-  ./scripts/deploy_wsl.sh <40-character-sha>
+  ./scripts/deploy.sh
 ```
 
 [`scripts/state_snapshot.py`](../../scripts/state_snapshot.py) copies SQLite through Python's [online backup API](https://docs.python.org/3.11/library/sqlite3.html#sqlite3.Connection.backup), copies the rest of the data directory while writes are stopped, and records file sizes, SHA-256 hashes, the application commit, SQLite schema version, and the current deletion generation. The generation marker is not copied into snapshot data. A confirmed deletion advances the live marker first, so verification and restore reject any older snapshot. Verification also rejects snapshots past `HEYNYC_PII_RETENTION_DAYS`. Application verification opens the schema read-only and authenticates encrypted inbox, session, draft, and feedback records with the configured key without printing their content. `restore` refuses a nonempty destination. Recovery therefore restores into a new directory, verifies it against the live generation marker, and uses an operator-controlled directory switch instead of overwriting live state:
