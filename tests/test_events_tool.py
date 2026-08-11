@@ -841,6 +841,7 @@ async def test_empty_keyworded_catalog_retries_unkeyworded(monkeypatch):
         "_editorial_context",
         lambda *args, **kwargs: asyncio.sleep(0, result=""),
     )
+    monkeypatch.setattr(events, "_context_tools", lambda ctx: ())
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query="events tomorrow",
     )
