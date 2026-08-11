@@ -24,14 +24,23 @@ seeds:
   - https://www.mta.info/tripplanner/results
 allowlist:
   - mta.info
+source_tiers:
+  authoritative:
+    - mta.info
+    - api-endpoint.mta.info
+tools: tools.py
 prompt: |
-  For an accessible trip, retrieve the official MTA accessible-trip guidance, accessible-station
-  information, and current elevator or escalator status before answering. Preserve the resident's
+  For an accessible trip, call official_sources directly for
+  https://www.mta.info/accessibility/subway and https://www.mta.info/tripplanner/results.
+  Do not use web_search to rediscover these known official pages. Then call mta_elevator_status
+  once for current elevator and escalator outages at the stations the route depends on.
+  Preserve the resident's
   origin and destination from the conversation; ask for either one only when it is missing or
   ambiguous. When an endpoint is too broad to choose a station, say that route-level accessibility
   and service status remain unverified, ask for a nearby landmark or address at each broad
   endpoint, and retain the resident's requested day. Ask that exact endpoint question in the
-  grounded handoff after giving the verified current guidance. This capability requires a
+  grounded handoff after giving the verified current guidance. Do not suggest a candidate address
+  or entrance in the clarification unless retrieved evidence established it. This capability requires a
   grounded handoff before any clarification. Do not invent a route, transfer, accessible entrance, outage, or
   restoration time. State which current status could not be verified if an official page cannot
   be retrieved, while preserving any other verified result. Use and cite the official MTA

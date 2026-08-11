@@ -10,3 +10,20 @@
     Preserve the trip destination from the conversation, ask for the origin only if it is missing,
     and use current official MTA accessibility and elevator-status information. Do not invent an
     accessible route, entrance, outage, or restoration time.
+
+- id: transit_f234_flushing_met_wheelchair
+  tags: [F234, must-win]
+  query: "My dad uses a wheelchair. We need to go from Flushing-Main St to the Metropolitan Museum of Art this Saturday. Which route actually has working elevators?"
+  expect_tools: [mta_elevator_status]
+  abstain: false
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Use line-qualified station identities when checking the current official MTA outage feed. Do not
+    invent a route, transfer, intermediate station, accessible entrance, future elevator status, or
+    restoration time. If no supported accessible itinerary is available, say that directly, link to
+    an official wheelchair-capable trip planner, report only verified current outages, and tell the
+    resident to recheck before leaving.
+  notes: Regression floor for F234. The typed outage lookup and station filtering are fixed, while
+    programmatic wheelchair-itinerary retrieval remains open.
