@@ -30,22 +30,41 @@ allowlist:
   - access.nyc.gov
   - nyc.gov
 seeds:
-  - https://a069-access.nyc.gov/accesshra/
-  - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
+  - https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page
+  - https://www.nyc.gov/site/hra/help/access-hra-resources.page
+  - https://www.nyc.gov/site/hra/help/snap-interview-instructions.page
+  - https://www.nyc.gov/site/hra/about/contact.page
 focus_tools:
   - nearest
   - official_sources
 prompt: |
   For "where do I apply for SNAP / food stamps in person" or "SNAP center/office near me",
-  call nearest(category="snap_center", near=<the user's address>, k=1). Report ONLY the center the
-  tool returns and cite each one, these are the ~13 HRA SNAP application/enrollment centers.
+  call nearest(category="snap_center", near=<the resident's supplied location>, k=1). An address,
+  landmark, neighborhood, or borough is enough to run a rough search. Disclose when a broad origin
+  makes distance approximate and offer to refine afterward. Do not block urgent help on a more
+  precise origin. Report ONLY the center the tool returns and cite each one, these are the ~13 HRA
+  SNAP application/enrollment centers.
 
-  After nearest, call official_sources once with both declared SNAP pages to verify the online
-  application and help options. Add the supported ACCESS HRA online option without making the
+  After nearest, call official_sources once with these exact current pages:
+  https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page,
+  https://www.nyc.gov/site/hra/help/access-hra-resources.page, and
+  https://www.nyc.gov/site/hra/help/snap-interview-instructions.page, and
+  https://www.nyc.gov/site/hra/about/contact.page. Use them to verify the online
+  in-person and online application options and help options. Add the supported ACCESS HRA online option without making the
   resident visit a center. Include a phone handoff only when the retrieved page explicitly supports
   it. A phone handoff is for general SNAP help, never schedule confirmation, unless the retrieved
-  page explicitly says it confirms center hours. Pass through every service-specific hours qualifier
-  and the row update date. The center source does NOT surface a phone number, so label its schedule
-  as regular hours and warn that holiday or temporary exceptions may exist. NEVER invent phone
-  numbers or eligibility rules. If retrieval or geocoding fails, don't guess.
+  page explicitly says it confirms center hours. Report the row update date.
+  The runtime appends the structured dataset limitation, so do not restate its holiday or temporary-hours warning. The center
+  source does NOT surface a phone number. NEVER invent phone numbers or eligibility rules. If
+  retrieval or geocoding fails, don't guess.
+
+  For a failed upload or near deadline, lead with the resident's urgent submission problem before
+  distance. Separate the official options for submitting an application or recertification from
+  the ACCESS HRA option for submitting supporting documents. If the contact page was retrieved,
+  give the DSS OneNumber and its SNAP menu option as the immediate route to ask HRA how to submit
+  the documents after the failed upload. State which action each retrieved page supports. A SNAP
+  center is an in-person interview and help option, not a confirmed document-upload channel. Never
+  say the interview right fixes an upload. Say when the source does not establish how a failed
+  upload affects the deadline. Never promise a deadline extension or claim that visiting a center
+  preserves the deadline unless retrieved evidence says so.
 eval: eval.yaml

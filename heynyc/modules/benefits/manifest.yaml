@@ -22,6 +22,8 @@ keywords:
   - do i qualify
   - what am i eligible for
   - eligibility
+  - medicaid termination
+  - medicaid fair hearing
 examples:
   - "I'm struggling to afford groceries, what can I get?"
   - "Am I eligible for SNAP?"
@@ -30,6 +32,35 @@ examples:
 tools: tools.py
 eval: eval.yaml
 situations:
+  - name: medicaid_termination_fair_hearing
+    definition: >-
+      A resident says Medicaid coverage, medical assistance, or an already authorized Medicaid
+      service is ending, stopping, suspended, or reduced and asks what to do, whether care can
+      continue, how to challenge the notice, or how to get language help. This includes a family
+      member helping the person and follow-up questions in any language about a previously
+      mentioned Medicaid termination notice.
+    high_stakes: true
+    query: >-
+      New York Medicaid termination notice fair hearing aid continuing request phone language
+      assistance current official
+    urls:
+      - https://regs.health.ny.gov/content/section-358-36-right-aid-continuing
+      - https://www.health.ny.gov/health_care/medicaid/how_do_i_apply.htm
+      - https://www.health.ny.gov/health_care/managed_care/plans/appeals/
+      - https://www.health.ny.gov/health_care/managed_care/plans/appeals/guidance/final_iad_ac.htm
+      - https://www.health.ny.gov/health_care/managed_care/plans/appeals/guidance/final_fad_ac.htm
+    reminder: >-
+      Start with the general Medicaid hearing page, aid-continuing regulation, and current DOH
+      notice pages just retrieved. Use the general Medicaid page to distinguish an HRA or local
+      eligibility decision from a NY State of Health decision and give its supported request phone.
+      Explain that requesting before the notice's effective date may preserve aid-continuing rights, but OTDA
+      decides and sends an acknowledgement saying whether benefits will continue. Do not promise
+      that coverage or a particular medical visit will continue, because rules differ for coverage
+      termination and reduction of an already authorized managed-care service. Ask what exact
+      action and effective date the notice states, without requesting identifiers. Preserve the
+      resident's language in the answer. If these pages answer the question, stop searching.
+    focus_tools:
+      - official_sources
   - name: mixed_status_snap
     definition: >-
       A resident asks whether an undocumented parent or another ineligible household member can
@@ -88,6 +119,25 @@ situations:
       - official_sources
       - web_search
       - nearest_food_pantry
+  - name: snap_denial_fair_hearing
+    definition: >-
+      A resident says a SNAP application or case was denied, stopped, reduced, or decided
+      incorrectly and asks how to challenge the decision, without identifying a work-rule reason.
+      This includes requests for an appeal, conference, hearing, or a person who can review the
+      decision, in any language.
+    high_stakes: true
+    query: >-
+      NYC HRA SNAP denial challenge fair hearing how to request current official
+    urls:
+      - https://www.nyc.gov/assets/hra/ACCESSNYC/pdf/SNAPKit/english/LDSS_4826A.pdf
+    reminder: >-
+      Answer the challenge question from the current official SNAP notice retrieved. Explain the
+      fair-hearing path and give a usable request or human-contact route. Do not guess a deadline;
+      tell the resident to read the date and instructions on their own notice. Food assistance is
+      additional immediate help, never a replacement for challenging the decision. If the official
+      source answers the question, stop searching.
+    focus_tools:
+      - official_sources
 seeds:
   - https://access.nyc.gov
   - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
@@ -98,6 +148,7 @@ seeds:
   - https://www.nyc.gov/site/hra/help/snap-application-frequently-asked-questions.page
   - https://www.nyc.gov/site/hra/about/immigration-faqs.page
   - https://www.nyc.gov/site/hra/help/legal-services-for-immigrant-new-yorkers.page
+  - https://www.nyc.gov/assets/hra/ACCESSNYC/pdf/SNAPKit/english/LDSS_4826A.pdf
   - https://access.nyc.gov/snap-work-requirements/
   - https://opendata.cityofnewyork.us/
 allowlist:
