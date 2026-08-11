@@ -386,6 +386,7 @@ class _Fact:
     title: str    # citation title
     snippet: str  # short cite label, a subset of `body`
     body: str     # the grounded coverage fact to report, cited
+    valid_as_of: str = COVERAGE_VERIFIED_ON
 
 
 _COVERAGE: dict[str, _Fact] = {
@@ -427,7 +428,7 @@ _COVERAGE: dict[str, _Fact] = {
               "Medicaid rules for income, identity, and New York State residence. It covers the "
               "treatment of a sudden, serious medical condition, including emergency labor and "
               "delivery and kidney dialysis. You can apply up to three months after the emergency "
-              "care. In NYC, apply through HRA."),
+              "care."),
     ),
     # Volatile legal-review item, verified 2026-07-13. Re-check the MOIA page before trusting it.
     "public_charge": _Fact(
@@ -447,6 +448,16 @@ _COVERAGE: dict[str, _Fact] = {
               "MOIA immigration hotline at 800-354-0365 before you decide."),
     ),
 }
+
+EMERGENCY_MEDICAID_APPLICATION = _Fact(
+    url="https://www.health.ny.gov/health_care/medicaid/how_do_i_apply.htm",
+    title="How to Apply for NY Medicaid, New York State Department of Health",
+    snippet=("NYC residents can call the HRA Medicaid Helpline at (888) 692-6116 for help "
+             "applying for Medicaid"),
+    body=("For help applying in NYC, call the HRA Medicaid Helpline at (888) 692-6116. "
+          "Representatives can help make sure you apply in the correct place."),
+    valid_as_of="2026-08-11",
+)
 
 PUBLIC_CHARGE_FINAL_RULE = _Fact(
     url=("https://www.federalregister.gov/documents/2026/07/20/2026-14539/"
@@ -498,19 +509,28 @@ async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
                 "immigration status). To find a specific clinic use find_clinic; for anything else, "
                 "point the user to 311 or 646-NYC-CARE (646-692-2273).")
     facts = (_COVERAGE[topic],)
+    if topic == "emergency_medicaid":
+        facts += (EMERGENCY_MEDICAID_APPLICATION,)
     if topic == "public_charge":
         facts += (PUBLIC_CHARGE_FINAL_RULE,)
     lines = [COVERAGE_INTRO]
     for fact in facts:
-        cite = ctx.citations.register(fact.url, snippet=fact.snippet, title=fact.title, kind="DOC",
-                                      valid_as_of=COVERAGE_VERIFIED_ON)
+        cite = ctx.citations.register(
+            fact.url,
+            snippet=fact.snippet,
+            title=fact.title,
+            kind="DOC",
+            valid_as_of=fact.valid_as_of,
+            provenance={"snapshot": {"verified_fact": fact.body}},
+        )
         lines.append(f"- {fact.body} {{cite:{cite}}}")
     lines.extend([
         COVERAGE_CLOSING,
         "Report ONLY these grounded facts with their {cite:Sn} and the ActionNYC routing line above. Do "
         "not add or change a phone number, a dollar figure, or an eligibility rule, and do not state "
-        "a public-charge conclusion of your own; if the user needs more, that's 311 / 646-NYC-CARE / "
-        "ActionNYC.",
+        "a public-charge conclusion of your own. Do not add an application office, counselor, "
+        "screening step, or hospital instruction that is not in a cited fact; if the user needs "
+        "more, that's 311 / 646-NYC-CARE / ActionNYC.",
     ])
     return "\n".join(lines)
 

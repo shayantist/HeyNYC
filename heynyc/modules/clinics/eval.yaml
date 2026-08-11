@@ -60,12 +60,16 @@
 # These answer "what coverage can I get / is it safe", now answered-with-citation instead of a safe
 # abstention. The immigration-law (public-charge) question is ROUTED to ActionNYC, never asserted.
 - id: clinic_coverage_emergency_medicaid_cited
-  tags: [must-win]
+  tags: [F192, must-win]
   query: "I'm undocumented and pregnant with no insurance. How will I pay for the delivery?"
   capability: scope
   test_type: MFT
   expect_tools: [health_coverage_guidance]
   invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Explain the grounded delivery-coverage path, preserve the limit that individual eligibility is
+    decided by the program, and give a usable application or human-help route. Fail a generic
+    verification fallback when the official coverage evidence supports an answer.
   notes: >-
     Emergency Medicaid covers emergency labor and delivery regardless of immigration status; must
     call health_coverage_guidance(topic="emergency_medicaid") and report only its cited facts plus
