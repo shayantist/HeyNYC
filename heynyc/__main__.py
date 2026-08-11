@@ -214,6 +214,9 @@ def _cmd_index_search(query: str, urls_only: bool = False) -> None:
 
 def _record_agent_turn(session_id: str, model: str, result) -> None:
     from heynyc.core import telemetry
+    from heynyc.core.citations import used_citations
+
+    used = used_citations(result.text, result.citations)
 
     telemetry.record_turn(
         telemetry.default_path(config.HEYNYC_DATA_DIR),
@@ -223,6 +226,11 @@ def _record_agent_turn(session_id: str, model: str, result) -> None:
         n_tool_calls=len(result.tool_calls_made),
         tool_names=result.tool_calls_made,
         status=result.status,
+        extra={
+            "used_doc_citations": sum(
+                citation.get("kind") == "DOC" for citation in used.values()
+            )
+        },
     )
 
 
@@ -278,6 +286,12 @@ def _render_stats(path) -> None:
     table.add_row("iterations total", str(summary["iterations"]))
     table.add_row("error rate", f"{summary['error_rate'] * 100:.0f}%")
     table.add_row("tool mix", ", ".join(f"{k}×{v}" for k, v in summary["tool_mix"].items()) or "-")
+    table.add_row(
+        "index used / contributed / then web",
+        f"{summary['index_search_turns']} / {summary['index_contributing_turns']} / "
+        f"{summary['index_and_web_turns']}",
+    )
+    table.add_row("index contribution rate", f"{summary['index_contribution_rate'] * 100:.0f}%")
     table.add_row(
         "outcome mix",
         ", ".join(f"{k}×{v}" for k, v in summary["outcome_mix"].items()) or "-",

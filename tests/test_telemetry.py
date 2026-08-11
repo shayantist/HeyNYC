@@ -171,6 +171,26 @@ def test_summarize_aggregates():
     assert 100.0 <= s["latency_p50_ms"] <= 300.0  # numpy.percentile (linear interp) of [100, 300]
 
 
+def test_summarize_reports_index_use_and_final_answer_contribution():
+    records = [
+        {"cost_usd": 0.0, "latency_ms": 1, "tool_names": ["index_search"],
+         "used_doc_citations": 1, "status": "success"},
+        {"cost_usd": 0.0, "latency_ms": 1,
+         "tool_names": ["index_search", "web_search"], "used_doc_citations": 0,
+         "status": "success"},
+        {"cost_usd": 0.0, "latency_ms": 1, "tool_names": ["web_search"],
+         "status": "success"},
+    ]
+
+    summary = telemetry.summarize(records)
+
+    assert summary["index_search_turns"] == 2
+    assert summary["web_search_turns"] == 2
+    assert summary["index_and_web_turns"] == 1
+    assert summary["index_contributing_turns"] == 1
+    assert summary["index_contribution_rate"] == 0.5
+
+
 def test_summarize_empty():
     s = telemetry.summarize([])
     assert s["turns"] == 0 and s["total_cost_usd"] == 0.0

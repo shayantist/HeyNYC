@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from heynyc.core import pii_crypto, telemetry
+from heynyc.core.citations import used_citations
 from heynyc.core.pii_redaction import redact_pii
 from heynyc.eval.trace import classify_outcome
 
@@ -17,11 +18,18 @@ def record_interaction(*, telemetry_path: Path, model: str, user_key: str, chann
     outcome = classify_outcome(
         result.text, "error" if result.status == "error" else "success", grounded=grounded
     )
+    used = used_citations(result.text, result.citations)
+    used_doc_citations = sum(citation.get("kind") == "DOC" for citation in used.values())
     return telemetry.record_turn(
         telemetry_path, session_id=user_key, model=model, usage=result.usage,
         n_tool_calls=len(result.tool_calls_made), tool_names=result.tool_calls_made,
         status=result.status,
-        extra={"channel": channel, "outcome": outcome, "n_citations": len(result.citations)},
+        extra={
+            "channel": channel,
+            "outcome": outcome,
+            "n_citations": len(result.citations),
+            "used_doc_citations": used_doc_citations,
+        },
     )
 
 

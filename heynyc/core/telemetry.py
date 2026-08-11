@@ -125,12 +125,24 @@ def summarize(records: list[dict]) -> dict:
                 "safety_cost_usd": 0.0, "safety_time_ms": 0.0,
                 "n_model_calls": 0, "n_tool_calls": 0, "iterations": 0,
                 "tool_mix": {}, "error_rate": 0.0,
+                "index_search_turns": 0, "web_search_turns": 0,
+                "index_and_web_turns": 0, "index_contributing_turns": 0,
+                "index_contribution_rate": 0.0,
                 "outcome_mix": {}, "scope_module_mix": {}, "scope_situation_mix": {}}
     turns = len(records)
     total_cost = sum(float(r["cost_usd"]) for r in records if r.get("cost_usd") is not None)
     unpriced_turns = sum(1 for r in records if r.get("cost_usd") is None)
     latencies = [float(r.get("latency_ms", 0.0)) for r in records]
     tool_mix = Counter(t for r in records for t in r.get("tool_names", []))
+    index_search_turns = sum("index_search" in r.get("tool_names", []) for r in records)
+    web_search_turns = sum("web_search" in r.get("tool_names", []) for r in records)
+    index_and_web_turns = sum(
+        {"index_search", "web_search"}.issubset(set(r.get("tool_names", [])))
+        for r in records
+    )
+    index_contributing_turns = sum(
+        int(r.get("used_doc_citations", 0) or 0) > 0 for r in records
+    )
     errors = sum(
         1
         for r in records
@@ -176,6 +188,13 @@ def summarize(records: list[dict]) -> dict:
         "iterations": sum(int(r.get("iterations", 0) or 0) for r in records),
         "tool_mix": dict(tool_mix),
         "error_rate": errors / turns,
+        "index_search_turns": index_search_turns,
+        "web_search_turns": web_search_turns,
+        "index_and_web_turns": index_and_web_turns,
+        "index_contributing_turns": index_contributing_turns,
+        "index_contribution_rate": (
+            index_contributing_turns / index_search_turns if index_search_turns else 0.0
+        ),
         # Passive routing-drift visibility: what the checklist marked and how turns resolved.
         "outcome_mix": dict(Counter(
             r["outcome"] for r in records if r.get("outcome")
