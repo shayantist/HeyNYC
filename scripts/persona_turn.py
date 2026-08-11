@@ -22,11 +22,8 @@ import sys
 import uuid
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
-
-from heynyc.channels.base import InboundMessage
-from heynyc.channels.console import build_console_deps
-from heynyc.channels.orchestrator import handle
 
 
 class _CapturingReplier:
@@ -46,21 +43,75 @@ class _CapturingReplier:
         return None
 
 
-async def _run(user: str, text: str, data_dir: Path | None) -> dict:
+def _trace_result(result: object | None) -> dict:
+    if result is None:
+        return {}
+    return {
+        key: getattr(result, key)
+        for key in (
+            "text",
+            "status",
+            "citations",
+            "tool_calls_made",
+            "iterations",
+            "messages",
+            "usage",
+            "diagnostics",
+        )
+    }
+
+
+async def _run(
+    user: str,
+    text: str,
+    data_dir: Path | None,
+    trace_dir: Path | None = None,
+) -> dict:
+    from heynyc.channels.base import InboundMessage
+    from heynyc.channels.console import build_console_deps
+    from heynyc.channels.orchestrator import handle
+    from heynyc.core.events import Done
+
     console = Console(quiet=True, file=open("/dev/null", "w"))
     deps = build_console_deps(console=console, data_dir=data_dir)
+    index_enabled = "index_search" in getattr(getattr(deps, "agent", None), "tools", {})
     replier = _CapturingReplier()
+    events: list[dict] = []
+    result = None
+
+    def capture(event: object) -> None:
+        nonlocal result
+        events.append({"type": event.type, **event.sse_data()})
+        if isinstance(event, Done):
+            result = event.result
+
+    deps.event_sink = capture
     inbound = InboundMessage(
         channel="console", sender=user, text=text, message_id=str(uuid.uuid4()),
     )
-    await handle(inbound, replier, deps)
-    return {
+    error = None
+    try:
+        await handle(inbound, replier, deps)
+    except Exception as exc:
+        error = {"type": type(exc).__name__, "message": str(exc)[:500]}
+    output = {
         "user": user,
         "sent": text,
         "reply": "\n\n".join(replier.texts),
         "documents": replier.documents,
         "reply_count": len(replier.texts),
+        "index_enabled": index_enabled,
+        "events": events,
+        "agent_result": _trace_result(result),
     }
+    if error is not None:
+        output["error"] = error
+    if trace_dir is not None:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        path = trace_dir / f"{uuid.uuid4()}.json"
+        path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
+        output["trace_path"] = str(path)
+    return output
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,12 +119,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("text", help="what the resident says this turn")
     parser.add_argument("--user", required=True, help="stable persona id; same id continues the thread")
     parser.add_argument("--data-dir", default=None, help="isolate a persona's state from the default")
+    parser.add_argument(
+        "--trace-dir",
+        default=None,
+        help="save the complete observable turn trace here; defaults to DATA_DIR/traces",
+    )
     args = parser.parse_args(argv)
 
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     data_dir = Path(args.data_dir) if args.data_dir else None
-    result = asyncio.run(_run(args.user, args.text, data_dir))
+    trace_dir = Path(args.trace_dir) if args.trace_dir else data_dir / "traces" if data_dir else None
+    result = asyncio.run(_run(args.user, args.text, data_dir, trace_dir))
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return int("error" in result)
 
 
 if __name__ == "__main__":
