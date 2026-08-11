@@ -1,0 +1,31 @@
+name: libraries
+category: community
+description: >-
+  Current branch hours, locations, computers, printing, and other public-library services from
+  New York City's three official library systems.
+keywords:
+  - library
+  - libraries
+  - print homework
+  - printing
+  - public computer
+  - computer access
+  - late library
+examples:
+  - "Is a library near me open late, and can I print homework there?"
+allowlist:
+  - bklynlibrary.org
+  - nypl.org
+  - queenslibrary.org
+source_tiers:
+  authoritative:
+    - bklynlibrary.org
+    - nypl.org
+    - queenslibrary.org
+prompt: |
+  For a current library request, use web_search to find the official system's current branch page,
+  then call official_sources on that page. For computers, printing, or another systemwide service,
+  also retrieve the official systemwide technology page. Keep branch hours separate from general
+  system availability. If the current branch page does not confirm a detail, say so and give the
+  branch's official contact instead of relying on an old event, class, or partner listing.
+eval: eval.yaml

@@ -1,0 +1,17 @@
+- id: libraries_f229_sunset_park_late_printing
+  query: "Is there a library open late near Sunset Park where my kid can print homework tonight?"
+  expect_tools: [official_sources]
+  expect_cite_kinds: [WEB]
+  abstain: false
+  capability: grounding
+  tags: [F229, must-win]
+  utility_criterion: >-
+    Use Brooklyn Public Library's current Sunset Park branch page for tonight's hours and its
+    current systemwide technology page for printing. Give the official branch address and contact,
+    distinguish branch-specific from systemwide facts, and do not rely on a stale class listing.
+
+- id: libraries_unverified_branch_service
+  query: "Does every Queens library branch notarize documents tonight?"
+  abstain: true
+  tags: [F229, must-win]
+  notes: Do not generalize a service or tonight's availability across every branch.
