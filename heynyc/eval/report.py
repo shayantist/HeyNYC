@@ -157,17 +157,14 @@ async def evaluate(
         if judge is not None:
             judgment = await judge(cr)
             checks.append(judgment)
-            if cr.case.utility_criterion or cr.case.safety_criterion:
-                qualitative_review = judgment
+            qualitative_review = judgment
         reports.append(
             CaseReport(
                 case_id=cr.case.id,
                 module=cr.case.module,
                 checks=checks,
                 trace=trace,
-                qualitative_review_required=bool(
-                    cr.case.utility_criterion or cr.case.safety_criterion
-                ),
+                qualitative_review_required=True,
                 qualitative_review=qualitative_review,
             )
         )
@@ -195,13 +192,24 @@ def progress_writer(directory: Path):
 
     def on_case(result) -> None:
         usage = getattr(result, "usage", {}) or {}
+        turn_usages = [
+            getattr(turn, "usage", {}) or {}
+            for turn in getattr(result, "turn_results", [])
+        ]
+
+        def total(key: str):
+            if not turn_usages:
+                return usage.get(key)
+            values = [turn_usage.get(key) for turn_usage in turn_usages]
+            return sum(values) if all(isinstance(value, (int, float)) for value in values) else None
+
         row = {
             "case_id": getattr(result.case, "id", "?"),
             "outcome": getattr(result, "outcome", ""),
             "error": str(getattr(result, "error", "") or ""),
-            "cost_usd": usage.get("cost_usd"),
-            "latency_ms": usage.get("latency_ms"),
-            "stalled_model_requests": usage.get("stalled_model_requests"),
+            "cost_usd": total("cost_usd"),
+            "latency_ms": total("latency_ms"),
+            "stalled_model_requests": total("stalled_model_requests"),
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")

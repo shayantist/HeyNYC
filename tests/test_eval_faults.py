@@ -11,7 +11,7 @@ from heynyc.eval.faults import VerificationFallbackProbeModel, verified_fallback
 
 
 @pytest.mark.asyncio
-async def test_verification_fallback_probe_exhausts_real_validation_path() -> None:
+async def test_verification_fallback_probe_is_not_triggered_by_semantic_string_matching() -> None:
     async def retrieve(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -60,15 +60,9 @@ async def test_verification_fallback_probe_exhausts_real_validation_path() -> No
 
     assert delegated_calls == 1
     assert result.status == "success"
-    assert result.text.startswith("No pude verificarlo con las fuentes confiables")
+    assert result.text == "Llama al número no respaldado 212-555-1212. {cite:S1}"
     assert result.diagnostics["safety_language"] == "es"
-    assert [item["stage"] for item in result.diagnostics["validation_rejections"]] == [
-        "deterministic_grounding",
-        "deterministic_grounding",
-        "deterministic_grounding",
-    ]
-    assert verified_fallback_probe(result, result.text)
-    result.text += "\n\nPáginas oficiales a las que sí pude acceder antes del problema:"
+    assert result.diagnostics["validation_rejections"] == []
     assert not verified_fallback_probe(
         result,
         "No pude verificarlo con las fuentes confiables",

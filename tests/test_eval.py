@@ -15,7 +15,7 @@ from heynyc.eval.checks import (
     check_link_liveness,
     looks_like_abstention,
 )
-from heynyc.eval.report import evaluate
+from heynyc.eval.report import evaluate, progress_writer
 from heynyc.eval.runner import CaseResult, run_all
 
 
@@ -27,6 +27,26 @@ def _case(**kw) -> EvalCase:
 
 def _result(case, text="", tools=None, citations=None):
     return CaseResult(case=case, text=text, tool_calls_made=tools or [], citations=citations or {})
+
+
+def test_progress_writer_sums_every_turn_usage(tmp_path):
+    result = _result(_case(id="multi"))
+    result.usage = {"cost_usd": 0.02, "latency_ms": 200, "stalled_model_requests": 2}
+    result.turn_results = [
+        SimpleNamespace(
+            usage={"cost_usd": 0.01, "latency_ms": 100, "stalled_model_requests": 1}
+        ),
+        SimpleNamespace(
+            usage={"cost_usd": 0.02, "latency_ms": 200, "stalled_model_requests": 2}
+        ),
+    ]
+
+    progress_writer(tmp_path)(result)
+
+    row = __import__("json").loads((tmp_path / "progress.jsonl").read_text())
+    assert row["cost_usd"] == 0.03
+    assert row["latency_ms"] == 300
+    assert row["stalled_model_requests"] == 3
 
 
 # --- case loading ---------------------------------------------------------
@@ -63,6 +83,46 @@ def test_eval_run_metadata_persists_repeat_outcomes():
     metadata = _eval_run_metadata("model", [result], repeat_summary=repeat_summary)
 
     assert metadata["repeat"] == repeat_summary
+
+
+def test_eval_run_metadata_sums_every_turn():
+    from heynyc.__main__ import _eval_run_metadata
+
+    result = SimpleNamespace(
+        case=SimpleNamespace(id="multi"),
+        usage={"cost_usd": 0.02, "input_tokens": 20, "output_tokens": 2},
+        turn_results=[
+            SimpleNamespace(
+                usage={
+                    "cost_usd": 0.01,
+                    "input_tokens": 10,
+                    "output_tokens": 1,
+                    "latency_ms": 100,
+                    "n_model_calls": 2,
+                    "n_tool_calls": 3,
+                }
+            ),
+            SimpleNamespace(
+                usage={
+                    "cost_usd": 0.02,
+                    "input_tokens": 20,
+                    "output_tokens": 2,
+                    "latency_ms": 200,
+                    "n_model_calls": 4,
+                    "n_tool_calls": 5,
+                }
+            ),
+        ],
+    )
+
+    metadata = _eval_run_metadata("openai/gpt-5.6-luna", [result])
+
+    assert metadata["candidate_cost_usd"] == 0.03
+    assert metadata["input_tokens"] == 30
+    assert metadata["output_tokens"] == 3
+    assert metadata["latency_ms"] == 300
+    assert metadata["n_model_calls"] == 6
+    assert metadata["n_tool_calls"] == 8
 
 
 def test_explicit_eval_cases_are_repeat_targets_even_when_not_safety_critical():
@@ -447,7 +507,8 @@ async def test_evaluate_runs_invariants_and_writes_run(tmp_path):
 
     report = await evaluate([cr], link_checker=no_links)
     names = {c.name for r in report.reports for c in r.checks}
-    assert "grounding" in names and "faithfulness" in names
+    assert "grounding" in names
+    assert "faithfulness" not in names
     assert report.reports[0].trace is not None
 
     write_run(tmp_path, report, metadata={"candidate_model": "test-model", "commit": "abc123"})
@@ -625,7 +686,7 @@ async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, m
 
     import pytest
 
-    with pytest.raises(SystemExit, match="0"):
+    with pytest.raises(SystemExit, match="1"):
         await cli._cmd_eval(
             use_api_judge=False,
             repeat=3,
@@ -646,6 +707,7 @@ async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, m
     assert metadata["latency_ms"] == 300
     assert metadata["n_model_calls"] == 6
     assert metadata["n_tool_calls"] == 3
+    assert json.loads((tmp_path / "report.json").read_text())["promotion_ready"] is False
     assert writes[-1] == tmp_path
 
 
@@ -838,13 +900,13 @@ async def test_nonblocking_judge_cannot_satisfy_required_qualitative_review():
     assert not report.promotion_ready
 
 
-async def test_case_without_utility_criterion_keeps_existing_pass_behavior():
+async def test_case_without_utility_criterion_still_requires_trace_review():
     report = await evaluate([_result(_case(id="ordinary"), text="A valid answer")])
 
     assert report.passed
-    assert report.qualitative_pending_count == 0
-    assert report.promotion_ready
-    assert "(PASS)" in report.render()
+    assert report.qualitative_pending_count == 1
+    assert not report.promotion_ready
+    assert "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED" in report.render()
 
 
 def test_looks_like_abstention_recognizes_scope_and_prediction_declines():
@@ -879,7 +941,7 @@ def test_check_abstention_allows_refusal_with_grounded_alternative():
     assert result.blocking is False
 
 
-async def test_failed_abstention_invariant_fails_gate():
+async def test_abstention_semantics_require_qualitative_review():
     async def no_links(url):
         return 200
 
@@ -888,9 +950,10 @@ async def test_failed_abstention_invariant_fails_gate():
     results = await run_all(lambda: agent, [case])
     report = await evaluate(results, link_checker=no_links)
     failed = {c.name for c in report.reports[0].checks if not c.passed}
-    assert "abstention" in failed
-    assert "abstain_or_redirect" in failed
-    assert not report.passed
+    assert "abstention" not in failed
+    assert "abstain_or_redirect" not in failed
+    assert report.passed
+    assert not report.promotion_ready
 
 
 # --- readability (soft plain-language warning) ----------------------------
@@ -941,8 +1004,7 @@ def test_check_readability_skips_non_english_text():
     assert check_readability(_result(_case(language="es"), text=spanish)) is None
 
 
-async def test_readability_warning_does_not_fail_gate():
-    # A dense but otherwise-valid answer: the readability check warns but must not block the gate.
+async def test_readability_is_left_to_qualitative_review():
     dense = ("Notwithstanding the aforementioned determinations, the administrative adjudication of "
              "supplemental assistance necessitates comprehensive documentation substantiating the "
              "compositional characteristics and corresponding income verification methodologies of "
@@ -955,8 +1017,9 @@ async def test_readability_warning_does_not_fail_gate():
     results = await run_all(lambda: agent, [_case(id="rd")])
     report = await evaluate(results, link_checker=no_links)
     flagged = {c.name for c in report.reports[0].checks if not c.passed}
-    assert "readability" in flagged
+    assert "readability" not in flagged
     assert report.passed
+    assert not report.promotion_ready
 
 
 # --- data grounding (Part C: row-addressed DATA citations) ----------------

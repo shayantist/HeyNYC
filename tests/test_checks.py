@@ -17,6 +17,7 @@ from heynyc.eval.checks import (
     check_cited_claim_grounding,
     check_link_liveness,
     check_turn_completion,
+    run_checks,
 )
 from heynyc.eval.runner import CaseResult
 
@@ -193,6 +194,21 @@ def test_fabricated_phone_fails_and_blocks():
     assert res is not None and not res.passed
     assert "phone" in res.detail and "S1" in res.detail
     assert res.blocking is _CITED_CLAIM_GROUNDING_BLOCKING  # a verbatim fact → blocks the gate
+
+
+async def test_semantic_string_matcher_is_not_a_release_gate() -> None:
+    async def live(_url: str) -> int:
+        return 200
+
+    snap = {"name": "New York Common Pantry", "phone": "(917) 720-9700"}
+    cr = _result(
+        "Call them at (212) 555-0100 {cite:S1}.",
+        citations={"S1": _data_cite(snap)},
+    )
+
+    checks = await run_checks(cr, link_checker=live)
+
+    assert "cited_claim_grounding" not in {check.name for check in checks}
 
 
 def test_fabricated_address_fails_and_blocks():

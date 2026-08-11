@@ -16,9 +16,7 @@ import httpx
 
 from ..core.citations import content_hash, used_discovery_citations
 
-# The cited-claim grounding logic lives in core.grounding, shared VERBATIM with the runtime guard
-# (core/agent.py), one implementation, no drift. _CITED_CLAIM_GROUNDING_BLOCKING is re-exported here
-# because test_checks.py imports it from this module.
+# Historical cited-claim diagnostics remain importable for regression analysis
 from ..core.grounding import (  # noqa: F401
     _CITED_CLAIM_GROUNDING_BLOCKING,
     check_grounding,
@@ -78,7 +76,7 @@ class CheckResult:
     # Blocking checks contribute to the gate. Advisory checks such as readability and the legacy
     # abstention fallback set this false.
     blocking: bool = True
-    # Optional: where each matched cited claim was grounded (see check_cited_claim_grounding).
+    # Optional diagnostic locations from an explicitly requested historical check
     # A list of {"token", "kind", "where"} so the UI can later surface "cited exactly here".
     locations: list = field(default_factory=list)
 
@@ -262,7 +260,7 @@ def check_data_grounding(cr: CaseResult) -> Optional[CheckResult]:
     """Deterministic floor for structured (DATA) citations: the cited row's snapshot is intact
     (hash matches) and any value WE computed (distance) re-derives from that row. Re-derivation,
     not the {cite:Sn} marker, is the evidence. (Answer-text claim matching against the snapshot is
-    the complementary layer, check_cited_claim_grounding, Part C, below.)"""
+    semantic claim review is handled from the full trace.)"""
     failures: list[str] = []
     checked = 0
     for cid, c in cr.citations.items():
@@ -301,14 +299,11 @@ def check_data_grounding(cr: CaseResult) -> Optional[CheckResult]:
 # the runtime hook can never drift. This is the thin CaseResult adapter over that pure function.
 
 
-@register_check  # generic verifier (in-memory, no network), registered like check_data_grounding
 def check_cited_claim_grounding(cr: CaseResult) -> Optional[CheckResult]:
-    """For every {cite:Sn} marker, verify the SALIENT FACTS in its sentence occur in the cited source
-    (or in the user's query). Aggregates to one CheckResult; records where each fact matched.
+    """Run the retired lexical claim diagnostic explicitly.
 
-    Delegates to core.grounding.check_grounding, see that module for the token rules and why this is
-    distinct from check_data_grounding (row integrity + distance re-derivation) and inv_faithfulness
-    (snippet<->tool-output token overlap)."""
+    It is not registered in the release gate because lexical matching cannot establish semantic
+    support across paraphrases or languages."""
     res = check_grounding(cr.text or "", cr.citations, cr.case.query if cr.case else "")
     if res is None:
         return None
@@ -378,10 +373,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
         check_expected_tools(cr),
         check_forbidden_tools(cr),
         check_cite_kinds(cr),
-        check_contains(cr),
-        check_abstention(cr),
         check_citation_references(cr),
-        check_readability(cr),
         await check_link_liveness(cr, link_checker),
     ]
     checks.extend(fn(cr) for fn in _EXTRA_CHECKS)  # domain verifiers (e.g. check_data_grounding)

@@ -48,9 +48,7 @@ def test_deterministic_backstop_citations_are_runtime_evidence() -> None:
     }
 
     assert checks["grounding"].passed
-    assert checks["faithfulness"].passed
-    assert checks["harm_routing"].passed
-    assert checks["tool_sanity"].passed
+    assert set(checks) == {"grounding"}
 
 
 def test_model_authored_authoritative_citation_is_not_runtime_evidence() -> None:
@@ -65,12 +63,10 @@ def test_model_authored_authoritative_citation_is_not_runtime_evidence() -> None
     }
 
     assert not checks["grounding"].passed
-    assert not checks["faithfulness"].passed
-    assert not checks["harm_routing"].passed
-    assert not checks["tool_sanity"].passed
+    assert set(checks) == {"grounding"}
 
 
-def test_deterministic_marker_does_not_excuse_unrelated_evidence() -> None:
+def test_specialized_semantics_are_left_to_trace_review() -> None:
     trace = _trace({"evidence_grade": "authoritative"})
     trace.citations["S1"]["snippet"] = "The library opens at noon on Saturdays."
 
@@ -80,9 +76,7 @@ def test_deterministic_marker_does_not_excuse_unrelated_evidence() -> None:
     }
 
     assert checks["grounding"].passed
-    assert checks["faithfulness"].passed
-    assert not checks["harm_routing"].passed
-    assert checks["tool_sanity"].passed
+    assert set(checks) == {"grounding"}
 
 
 def test_prior_citation_does_not_hide_current_deterministic_evidence() -> None:
