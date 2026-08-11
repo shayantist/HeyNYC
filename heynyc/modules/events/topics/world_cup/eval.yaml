@@ -9,7 +9,7 @@
   notes: Must surface grounded watch parties/fan events with links + the free-ticket caveat.
 
 - id: wc_official_fan_events
-  tags: [general-chat, must-win]
+  tags: [F189, general-chat, must-win]
   query: "What are the official FIFA fan events for the World Cup around NYC?"
   expect_tools: [index_search]
   expect_cite_kinds: [DOC]
