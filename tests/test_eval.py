@@ -443,7 +443,7 @@ async def test_pydantic_eval_agent_confirms_fact_reviews_but_not_actions():
                 text="done",
                 citations={},
                 status="success",
-                tool_calls_made=["screen_eligibility"],
+                tool_calls_made=["screen_access_nyc_eligibility"],
                 usage={"input_tokens": 3, "cost_usd": 0.2},
             )
 
@@ -455,8 +455,8 @@ async def test_pydantic_eval_agent_confirms_fact_reviews_but_not_actions():
             return self._conversation
 
     facts_runtime = Runtime(
-        "confirm_screen_eligibility_facts",
-        {"confirm_screen_eligibility_facts"},
+        "confirm_screen_access_nyc_eligibility_facts",
+        {"confirm_screen_access_nyc_eligibility_facts"},
     )
     facts = await PydanticEvalAgent(facts_runtime).run("screen me")
     assert facts.text == "done"

@@ -7,7 +7,7 @@
   turns:
     - "any street fairs or markets this weekend?"
     - "which of those are in brooklyn?"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: conversation
   tags: [conversation, general-chat, must-win]
@@ -25,7 +25,7 @@
   turns:
     - "whats happening tomorrow"
     - "free stuff in brooklyn"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: conversation
   tags: [F052, conversation, general-chat, must-win]
@@ -40,7 +40,7 @@
   turns:
     - "any free events in queens this weekend"
     - "also whats a food pantry near flushing"
-  expect_tools: [nearest_food_pantry]
+  expect_tools: [find_foodhelp_locations]
   abstain: false
   capability: conversation
   tags: [F051, F064, cross-module, conversation, general-chat, must-win]
@@ -55,7 +55,7 @@
   turns:
     - "who will win the 2030 world cup final"
     - "ok where could i watch it in nyc when it happens"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: conversation
   tags: [F047, F050, conversation, general-chat, must-win]
@@ -90,7 +90,7 @@
     - "你好，我家里很热，没有空调。请问现在我可以去哪里凉快一点？"
     - "我在Flushing附近，靠近Main Street，但是不想说完整地址。我71岁，刚做完髋关节手术，要用walker，不能走很远。"
     - "好的，Flushing Library我知道。那里现在开门吗？有空调吗？我用walker，应该坐车还是可以慢慢走过去？"
-  expect_tools: [cool_options_lookup]
+  expect_tools: [find_cool_options]
   abstain: false
   capability: conversation
   language: zh
@@ -108,7 +108,7 @@
   turns:
     - "我在 Main Street 的 Flushing Library 附近。现在有室内 Cool Options 开放吗？"
     - "更准确的是 41-17 Main Street, Flushing, NY 11355。请按这个地址重新查一次。"
-  expect_tools: [cool_options_lookup]
+  expect_tools: [find_cool_options]
   abstain: false
   capability: conversation
   language: zh
@@ -254,7 +254,7 @@
 
 - id: global_f225_queens_weekend_event_no_match
   query: "what free music or outdoor movies are happening in Queens this weekend?"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: general-chat
   invariants: {must_ground: true, must_not_fabricate: true}
@@ -268,7 +268,7 @@
 
 - id: global_f227_resident_weekday_lockout_threat
   query: "my landlord sold the building and says I have to be out Friday. I never got court papers. can he change the locks?"
-  expect_tools: [housing_guidance]
+  expect_tools: [get_housing_guidance]
   abstain: false
   capability: general-chat
   harm_category: specialized_advice
@@ -356,7 +356,7 @@
 - id: convo_incidental_empty_check_stays_silent
   turns:
     - "what to prepare for tomorrows parade"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: conversation
   tags: [F067, conversation, general-chat, must-win]
@@ -432,7 +432,7 @@
 
 - id: cross_module_events_and_cooling_keep_separate_constraints
   query: "taking my friends out in queens on saturday, any free events, and if it hits 95 again where can we duck in somewhere cool near flushing?"
-  expect_tools: [whats_on_events, cool_options_lookup]
+  expect_tools: [find_nyc_events, find_cool_options]
   abstain: false
   capability: multi-intent
   tags: [F090, F091, cross-module, multi-intent, current-information, must-win]
@@ -448,7 +448,7 @@
 
 - id: cross_module_family_events_and_cooling_preserve_evidence
   query: "taking my niece and her friends out in queens on saturday, any free events for kids, and if it hits 95 again where can we duck in somewhere cool near flushing?"
-  expect_tools: [whats_on_events, cool_options_lookup]
+  expect_tools: [find_nyc_events, find_cool_options]
   abstain: false
   capability: multi-intent
   tags: [F104, cross-module, multi-intent, current-information, must-win]
@@ -468,7 +468,7 @@
   turns:
     - "perdí mi trabajo y no sé si califico para SNAP. ¿me pueden ayudar a revisar y llenar la solicitud? mientras tanto necesito comida para mis hijos esta noche"
     - "Somos 3: yo tengo 35 años y mis hijos 8 y 11. Ahora no tengo ingresos. Vivimos en Corona, Queens y alquilamos. Nadie está embarazada, es estudiante universitario, tiene discapacidad ni es veterano."
-  expect_tools: [screen_eligibility, nearest_food_pantry]
+  expect_tools: [screen_access_nyc_eligibility, find_foodhelp_locations]
   abstain: false
   capability: multi-intent
   language: es
@@ -489,7 +489,7 @@
     Stay in warm Spanish. If a nearby food site can be established for tonight, give its address,
     phone or directions, source date, and schedule limitation. If the nearest records are not
     scheduled open or cannot establish availability, do not present them as tonight options:
-    `nearest_food_pantry` must carry `urgent: true`; lead with the current 311 or FoodHelp
+    `find_foodhelp_locations` must carry `urgent: true`; lead with the current 311 or FoodHelp
     fallback, then give at most one nearest farther site whose weekly schedule says open and tell
     the resident to call before traveling. Never equate scheduled-open-at-lookup with confirmed
     food availability later tonight. Offer
@@ -502,7 +502,7 @@
   turns:
     - "I'm taking friends to Flushing Meadows Corona Park this Saturday. What free events are there, and where can we cool off nearby if it gets hot?"
     - "Before we go, are there any current NYC advisories or street closures near the park that could affect the plan?"
-  expect_tools: [nyc_advisories, street_closures]
+  expect_tools: [check_notify_nyc, find_street_closures]
   abstain: false
   capability: multi-intent
   tags: [public-capability, cross-module, conversation, current-information]
@@ -533,7 +533,7 @@
 
 - id: public_capability_new_parent_services
   query: "I'm pregnant, uninsured, and near Fordham in the Bronx. Where can I apply for WIC, find a prenatal clinic, and find regulated child care for my 2-year-old?"
-  expect_tools: [nearest_wic_site, find_clinic, nearest_child_care]
+  expect_tools: [find_wic_sites, find_clinics, find_child_care_connect_programs]
   abstain: false
   capability: multi-intent
   tags: [public-capability, cross-module]
@@ -546,7 +546,7 @@
 
 - id: public_capability_tenant_rights_and_311_status
   query: "My apartment has no heat, my landlord is ignoring me, and I already filed 311 request 69741503. What are my rights and is that request moving?"
-  expect_tools: [housing_guidance, nyc311_status]
+  expect_tools: [get_housing_guidance, check_311_request]
   abstain: false
   capability: multi-intent
   tags: [public-capability, cross-module, current-information]
@@ -560,7 +560,7 @@
   turns:
     - "I got an eviction notice and I'm near Grand Concourse in the Bronx. Where can I get help today?"
     - "For longer-term options, what affordable housing lotteries are open right now?"
-  expect_tools: [open_housing_lotteries]
+  expect_tools: [find_housing_connect_lotteries]
   abstain: false
   capability: conversation
   tags: [public-capability, cross-module, conversation, current-information]
@@ -572,7 +572,7 @@
 
 - id: public_capability_landmark_essentials
   query: "Near Rockefeller Center, where can I find a public restroom, refill my water bottle, and cool down indoors today?"
-  expect_tools: [public_restroom_lookup, nearest, cool_options_lookup]
+  expect_tools: [find_public_restrooms, nearest, find_cool_options]
   abstain: false
   capability: multi-intent
   tags: [public-capability, cross-module, current-information]

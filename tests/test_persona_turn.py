@@ -69,7 +69,7 @@ async def test_persona_turn_saves_partial_trace_when_runtime_fails(
         text="",
         status="error",
         citations={},
-        tool_calls_made=["official_sources"],
+        tool_calls_made=["web_fetch"],
         iterations=1,
         messages=[{"role": "user", "content": "help"}],
         usage={"requests": 1},

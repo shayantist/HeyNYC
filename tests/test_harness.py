@@ -231,12 +231,12 @@ async def test_community_web_result_carries_disclaimer_to_model(empty_registry):
     no live Tavily. (The isolated tool is unit-tested in test_web_search.py.)"""
     from heynyc.core.tools.web_search import web_search_tools
 
-    async def fake_search(query, allowed, recency=None):
+    async def fake_search(query, allowed, published_after=None, published_before=None, count=5):
         return [{"title": "User meetup", "url": "https://eventbrite.com/e/x", "snippet": "posted by a user"}]
 
     ws = web_search_tools(
         ["eventbrite.com"], source_tiers={"eventbrite.com": ("community", "events")}, search_fn=fake_search
-    )[0]  # the default web_search (recent_developments is the sibling recency tool)
+    )[0]  # the default web_search, including its optional publication bounds
     sf = _scripted_stream(
         [_message(None, [_tool_call("web_search", {"query": "any meetups?"})])],
         [_text("Here's what I found"), _message("Here's what I found")],
@@ -322,7 +322,7 @@ def test_repl_screening_requires_explicit_command():
     assert _screen_turn_options("I need food help") == {
         "forced_tool": None,
         "forced_tool_args": None,
-        "excluded_tools": {"screen_eligibility"},
+        "excluded_tools": {"screen_access_nyc_eligibility"},
         "screen_reminder": None,
     }
     assert _screen_turn_options("/screen")["forced_tool_args"] == {"show_all": False}
@@ -377,7 +377,7 @@ def test_console_turn_records_pii_free_telemetry_tagged_console(tmp_path):
 
     result = SimpleNamespace(
         usage={"latency_ms": 250.0, "tool_time_ms": 40.0},
-        tool_calls_made=["screen_eligibility"],
+        tool_calls_made=["screen_access_nyc_eligibility"],
         citations={},
         status="success",
         text="here you go",
@@ -392,7 +392,7 @@ def test_console_turn_records_pii_free_telemetry_tagged_console(tmp_path):
     assert records[-1]["channel"] == "console"
     assert records[-1]["session_id"] == "consolekey"
     assert records[-1]["latency_ms"] == 250.0
-    assert records[-1]["tool_names"] == ["screen_eligibility"]
+    assert records[-1]["tool_names"] == ["screen_access_nyc_eligibility"]
 
 
 def test_to_sse_formats_frame():

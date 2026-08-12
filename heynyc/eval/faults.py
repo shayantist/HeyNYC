@@ -11,7 +11,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    ToolCallPart,
+    TextPart,
     ToolReturnPart,
 )
 from pydantic_ai.models import ModelRequestParameters, ModelSettings
@@ -21,7 +21,7 @@ _CITATION_RE = re.compile(r"\{cite:(S\d+)\}")
 
 
 class VerificationFallbackProbeModel(WrapperModel):
-    """Delegate retrieval to the live model, then force a rejected grounded answer."""
+    """Delegate retrieval to the live model, then force unsupported cited prose."""
 
     async def request(
         self,
@@ -48,14 +48,9 @@ class VerificationFallbackProbeModel(WrapperModel):
                 model_request_parameters,
             )
         return ModelResponse([
-            ToolCallPart(
-                "grounded_answer",
-                {
-                    "grounded_blocks": [{
-                        "text": "Llama al número no respaldado 212-555-1212.",
-                        "citation_ids": [citation_id],
-                    }]
-                },
+            TextPart(
+                "Llama al número no respaldado 212-555-1212. "
+                f"{{cite:{citation_id}}}"
             )
         ])
 
