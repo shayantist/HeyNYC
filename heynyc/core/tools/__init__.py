@@ -16,7 +16,7 @@ def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
     """
     from .about import about_tools
     from .geo import geo_tools
-    from .official_sources import official_source_tools
+    from .web_fetch import web_fetch_tools
     from .web_search import web_search_tools
 
     tools: dict[str, Tool] = {}
@@ -24,7 +24,7 @@ def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
         tools[tool.name] = tool
     for tool in web_search_tools(registry.allowlist(), registry.source_tiers(), registry.news_tier()):
         tools[tool.name] = tool
-    for tool in official_source_tools():
+    for tool in web_fetch_tools():
         tools[tool.name] = tool
     for tool in about_tools():
         tools[tool.name] = tool

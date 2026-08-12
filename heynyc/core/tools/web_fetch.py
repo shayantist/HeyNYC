@@ -1,13 +1,14 @@
-"""Direct retrieval from the official pages declared as module seeds."""
+"""Secure local retrieval for one known public URL."""
 from __future__ import annotations
 
-import asyncio
+import ipaddress
 import unicodedata
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
+from pydantic_ai._ssrf import safe_download, validate_and_resolve_url
 from pypdf import PdfReader
 from trafilatura import html2txt
 
@@ -29,6 +30,8 @@ _ACCESS_WALL_MARKERS = (
 _BROWSER_EXECUTABLE_CANDIDATES = (
     Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
 )
+_MAX_RESPONSE_BYTES = 5_000_000
+_MIN_STATIC_TEXT_CHARS = 200
 
 
 class _RenderedFetchNeeded(Exception):
@@ -119,12 +122,27 @@ def _host_matches(host: str, domains: set[str]) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
-def _url_approved(url: str, seeded: set[str], domains: set[str]) -> bool:
+def _url_safe_shape(url: str) -> bool:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or parts.username is not None or parts.password is not None:
+    if (
+        parts.scheme != "https"
+        or not host
+        or parts.username is not None
+        or parts.password is not None
+    ):
         return False
-    return _approval_key(url) in seeded or _host_matches(host, domains)
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return address.is_global
+
+
+async def _validate_public_url(url: str) -> None:
+    if not _url_safe_shape(url):
+        raise ValueError("URL must be public HTTPS without credentials")
+    await validate_and_resolve_url(url, allow_local=False)
 
 
 def _is_access_wall(title: str, text: str) -> bool:
@@ -132,30 +150,31 @@ def _is_access_wall(title: str, text: str) -> bool:
     return any(marker in source_text for marker in _ACCESS_WALL_MARKERS)
 
 
-async def _fetch_rendered_official(
+async def _route_public_request(route, request) -> None:
+    if urlsplit(request.url).scheme in {"about", "blob", "data"}:
+        await route.continue_()
+        return
+    try:
+        await _validate_public_url(request.url)
+    except ValueError:
+        await route.abort()
+    else:
+        await route.continue_()
+
+
+async def _fetch_rendered_page(
     url: str,
-    seeded: set[str],
-    domains: set[str],
 ) -> tuple[str, str, str]:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**_browser_launch_options())
+        page = None
         try:
             context = await browser.new_context(**_browser_context_options())
             page = await context.new_page()
-
-            async def allow_approved_requests(route, request):
-                parts = urlsplit(request.url)
-                if parts.scheme in {"about", "blob", "data"}:
-                    await route.continue_()
-                elif _url_approved(request.url, seeded, domains):
-                    await route.continue_()
-                else:
-                    await route.abort()
-
-            await page.route("**/*", allow_approved_requests)
+            await page.route("**/*", _route_public_request)
             response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
             if response is not None and response.status >= 400:
                 raise ValueError(f"rendered official source returned HTTP {response.status}")
@@ -167,11 +186,12 @@ async def _fetch_rendered_official(
             except PlaywrightTimeoutError:
                 pass
             final_url = page.url
-            if not _url_approved(final_url, seeded, domains):
-                raise ValueError("rendered official source left the curated sources")
+            await _validate_public_url(final_url)
             visible_text = await page.locator("body").inner_text()
             html = await page.content()
         finally:
+            if page is not None:
+                await page.unroute_all(behavior="ignoreErrors")
             await browser.close()
 
     title, text = _rendered_page_text(html, visible_text)
@@ -180,14 +200,44 @@ async def _fetch_rendered_official(
     return final_url, title, text
 
 
-async def _fetch_official(
+async def _fetch_page(
     url: str,
     client,
-    seeded: set[str],
-    domains: set[str],
 ) -> tuple[str, str, str]:
+    if not _url_safe_shape(url):
+        raise ValueError("URL must be public HTTPS without credentials")
+    if client is None:
+        response = await safe_download(
+            url,
+            allow_local=False,
+            timeout=20,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; HeyNYC/0.1; +https://reach4help.org)"
+                ),
+            },
+        )
+        current = str(getattr(response, "url", "") or url)
+        current_parts = urlsplit(current)
+        try:
+            ipaddress.ip_address(current_parts.hostname or "")
+        except ValueError:
+            pass
+        else:
+            request = getattr(response, "request", None)
+            logical_host = request.headers.get("host") if request is not None else ""
+            if logical_host:
+                current = urlunsplit(current_parts._replace(netloc=logical_host))
+        content_length = response.headers.get("content-length")
+        if content_length and int(content_length) > _MAX_RESPONSE_BYTES:
+            raise ValueError("page exceeds the fetch size limit")
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            raise ValueError("page exceeds the fetch size limit")
+        return _extract_response(current, response)
+
     current = url
     for _ in range(4):
+        await _validate_public_url(current)
         response = await client.get(
             current,
             follow_redirects=False,
@@ -200,153 +250,115 @@ async def _fetch_official(
         if getattr(response, "status_code", 200) in {301, 302, 303, 307, 308}:
             location = response.headers.get("location")
             target = urljoin(current, location or "")
-            if not location or not _url_approved(target, seeded, domains):
-                raise ValueError("official source redirected outside the curated sources")
+            if not location or not _url_safe_shape(target):
+                raise ValueError("page redirected outside the public web")
+            await _validate_public_url(target)
             current = target
             continue
         if getattr(response, "status_code", 200) == 403:
             raise _RenderedFetchNeeded
         response.raise_for_status()
-        content_type = response.headers.get("content-type", "").lower()
-        if "application/pdf" in content_type or response.content.startswith(b"%PDF"):
-            reader = PdfReader(BytesIO(response.content))
-            text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-            return current, "Official PDF", text
-        title, text = clean_html(response.text)
-        full_text = html2txt(response.text).strip()
-        if full_text and full_text != text:
-            text = f"{text}\n{full_text}"
-        if not text.strip() or _is_access_wall(title, text):
-            raise _RenderedFetchNeeded
-        return current, title, text
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            raise ValueError("page exceeds the fetch size limit")
+        return _extract_response(current, response)
     raise ValueError("official source redirected too many times")
 
 
-async def _fetch_official_with_browser(
+def _extract_response(url: str, response) -> tuple[str, str, str]:
+    content_type = response.headers.get("content-type", "").lower()
+    if "application/pdf" in content_type or response.content.startswith(b"%PDF"):
+        reader = PdfReader(BytesIO(response.content))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        return url, "Official PDF", text
+    title, text = clean_html(response.text)
+    full_text = html2txt(response.text).strip()
+    if full_text and full_text != text:
+        text = f"{text}\n{full_text}"
+    if not text.strip() or _is_access_wall(title, text):
+        raise _RenderedFetchNeeded
+    return url, title, text
+
+
+async def _fetch_page_with_browser(
     url: str,
     client,
-    seeded: set[str],
-    domains: set[str],
+    query: str,
 ) -> tuple[str, str, str]:
     try:
-        return await _fetch_official(url, client, seeded, domains)
+        fetched = await _fetch_page(url, client)
     except _RenderedFetchNeeded:
-        return await _fetch_rendered_official(url, seeded, domains)
+        return await _fetch_rendered_page(url)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 403:
+            raise
+        return await _fetch_rendered_page(url)
+    if (client is None and len(fetched[2].strip()) < _MIN_STATIC_TEXT_CHARS) or (
+        query and not _relevant_chunks(fetched[2], query)
+    ):
+        return await _fetch_rendered_page(url)
+    return fetched
 
 
-def official_source_tools() -> list[Tool]:
+def web_fetch_tools() -> list[Tool]:
     async def _handler(args: dict, ctx: ToolContext) -> str:
-        seeds = ctx.registry.seeds()
-        source_tiers = ctx.registry.source_tiers()
-        non_authoritative_domains = {
-            domain
-            for domain, (tier, _module) in source_tiers.items()
-            if tier != "authoritative"
-        }
-        approved = {
-            _approval_key(url)
-            for url in seeds
-            if not _host_matches(
-                (urlsplit(url).hostname or "").lower(),
-                non_authoritative_domains,
-            )
-        }
-        domains = {
-            domain
-            for domain, (tier, _module) in source_tiers.items()
-            if tier == "authoritative"
-        }
-        domains.update(
-            domain.lower()
-            for domain in ctx.registry.allowlist()
-            if domain.lower().endswith(".gov")
-            and not _host_matches(domain.lower(), non_authoritative_domains)
-        )
-        requested_urls = list(dict.fromkeys(args["urls"]))[:4]
-        rejected = [
-            url for url in requested_urls if not _url_approved(url, approved, domains)
-        ]
-        urls = [url for url in requested_urls if url not in rejected]
-        if not urls:
-            return "That URL is not an approved official source declared by a HeyNYC module."
-
-        own_client = ctx.http is None
-        client = ctx.http or httpx.AsyncClient(timeout=20.0)
+        url = str(args["url"]).strip()
+        query = str(args.get("query") or "").strip()
         try:
-            fetched = await asyncio.gather(
-                *(
-                    _fetch_official_with_browser(url, client, approved, domains)
-                    for url in urls
-                ),
-                return_exceptions=True,
+            final_url, title, text = await _fetch_page_with_browser(
+                url,
+                ctx.http,
+                query,
             )
-        finally:
-            if own_client:
-                await client.aclose()
-
-        blocks: list[str] = []
-        emitted: set[tuple[str, str]] = set()
-        for _url, result in zip(urls, fetched):
-            if isinstance(result, Exception):
-                continue
-            final_url, title, text = result
-            if _is_access_wall(title, text):
-                continue
-            chunks = _relevant_chunks(text, args["query"])
-            if not chunks:
-                continue
-            evidence = "\n\n".join(chunks)
-            warning = archive_warning(final_url, title)
-            if warning:
-                evidence = f"{warning}\n\n{evidence}"
-            block_key = (_approval_key(final_url), evidence)
-            if block_key in emitted:
-                continue
-            emitted.add(block_key)
-            cite = ctx.citations.register(
-                final_url,
-                snippet=evidence,
-                title=title or "Official source",
-                kind="WEB",
-                provenance={
-                    "evidence_grade": "discovery" if warning else "authoritative",
-                },
-            )
-            blocks.append(
-                f"{title or 'Official source'} ({final_url})\n{evidence} {{cite:{cite}}}"
-            )
-        if not blocks:
+        except Exception:
             return (
-                "The approved official pages could not be retrieved. Do not guess. Preserve other "
+                "The page could not be fetched. Do not guess. Preserve other "
                 "verified results and state which requested claim could not be verified; route to "
                 "the relevant official service when no useful result remains."
             )
-        if rejected:
-            blocks.insert(0, "One requested URL was not approved and was not fetched.")
-        return "\n\n".join(blocks)
+        chunks = _relevant_chunks(text, query) if query else chunk_text(text)[:2]
+        if not chunks:
+            return (
+                "The page was fetched but did not contain text relevant to the requested claim. "
+                "Do not guess from the page title or navigation."
+            )
+        evidence = "\n\n".join(chunks)
+        warning = archive_warning(final_url, title)
+        from .web_search import _tier_of
+
+        tier = _tier_of(
+            final_url, ctx.registry.source_tiers(), ctx.registry.news_tier(),
+        )
+        authoritative = tier == "authoritative" and not warning
+        if warning:
+            evidence = f"{warning}\n\n{evidence}"
+        provenance = {
+            "evidence_grade": "authoritative" if authoritative else "discovery",
+            "source_tier": tier,
+        }
+        cite = ctx.citations.register(
+            final_url,
+            snippet=evidence,
+            title=title or "Fetched page",
+            kind="WEB",
+            provenance=provenance,
+        )
+        return f"{title or 'Fetched page'} ({final_url})\n{evidence} {{cite:{cite}}}"
 
     return [
         Tool(
-            name="official_sources",
+            name="web_fetch",
             description=(
-                "Fetch current text directly from official module seeds or pages on curated official "
-                "domains. Use it when a known civic rule or workflow needs current source text without "
-                "relying on search ranking. Other URLs are rejected."
+                "Fetch and extract one known public web page. Use it after search when the page itself "
+                "is needed as evidence. Source trust is graded separately; fetching a page does not "
+                "make it authoritative."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "urls": {
-                        "type": "array", "items": {"type": "string"}, "minItems": 1,
-                        "maxItems": 4,
-                        "description": (
-                            "Official module seed URLs or discovered HTTPS pages on curated "
-                            "official domains to retrieve."
-                        ),
-                    },
-                    "query": {"type": "string", "description": "Claims to find on those pages."},
+                    "url": {"type": "string", "description": "Public HTTPS URL to fetch."},
+                    "query": {"type": "string", "description": "Optional claim or detail to find."},
                 },
-                "required": ["urls", "query"],
+                "required": ["url"],
             },
             handler=_handler,
             open_world=True,
