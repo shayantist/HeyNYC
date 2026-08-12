@@ -1,4 +1,4 @@
-"""childcare module tool: `nearest_child_care`, grounded in the DOHMH regulated child care list.
+"""childcare module tool: `find_child_care_connect_programs`, grounded in the DOHMH regulated child care list.
 
 Data source: the official NYC Open Data dataset "Active NYC Health Code Regulated Child Care
 Programs" (`gy3q-4tzp` on data.cityofnewyork.us). This is the same Health Department data that powers
@@ -284,7 +284,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="nearest_child_care",
+            name="find_child_care_connect_programs",
             description=(
                 "Find the nearest NYC regulated child care programs (day care / preschool) to an "
                 "address, grounded in the DOHMH 'Active NYC Health Code Regulated Child Care "

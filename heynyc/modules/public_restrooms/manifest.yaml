@@ -30,7 +30,7 @@ allowlist:
   - services6.arcgis.com
 tools: tools.py
 prompt: |
-  For public-restroom questions, call public_restroom_lookup(near=<user's location>). Pass limit
+  For public-restroom questions, call find_public_restrooms(near=<user's location>). Pass limit
   when the user requests a result count; otherwise use the tool default. Pass fully_accessible or
   changing_station only when the resident requests that feature. For several locations, call the
   tool once per location. Preserve the tool's ranking, citations, record date, scheduled hours,

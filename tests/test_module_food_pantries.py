@@ -167,7 +167,7 @@ def _routed_client(features) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_nearest_food_pantry_rejects_model_invented_origin(monkeypatch):
+async def test_find_foodhelp_locations_rejects_model_invented_origin(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("invented location reached geocoder")
 
@@ -204,7 +204,7 @@ async def test_urgent_food_requires_the_residents_service_window(monkeypatch):
         ctx,
     )
 
-    assert "requires service_window_start and service_window_end" in out
+    assert "requires service_window" in out
 
 
 @pytest.mark.parametrize(
@@ -214,7 +214,7 @@ async def test_urgent_food_requires_the_residents_service_window(monkeypatch):
         ("Brooklyn", "I need food today.", "I used to live in Brooklyn.\nI am in Queens.\nI need food today."),
     ],
 )
-async def test_nearest_food_pantry_rejects_partial_or_stale_origins(
+async def test_find_foodhelp_locations_rejects_partial_or_stale_origins(
     monkeypatch, near, query, history,
 ):
     async def should_not_geocode(*args, **kwargs):
@@ -235,7 +235,7 @@ async def test_nearest_food_pantry_rejects_partial_or_stale_origins(
 # Anti-hallucination (did the RESIDENT author it) is covered by rejects_model_invented_origin
 # Staleness is covered by the past-location and negation tests
 # "Current message only" proxied both, and the side effect was amnesia
-async def test_nearest_food_pantry_uses_a_location_the_resident_gave_in_a_prior_turn(monkeypatch):
+async def test_find_foodhelp_locations_uses_a_location_the_resident_gave_in_a_prior_turn(monkeypatch):
     seen = []
 
     async def geocode_then_stop(text, **kwargs):
@@ -254,7 +254,7 @@ async def test_nearest_food_pantry_uses_a_location_the_resident_gave_in_a_prior_
     assert seen == ["Jackson Heights"]
 
 
-async def test_nearest_food_pantry_rejects_past_location_in_current_turn(monkeypatch):
+async def test_find_foodhelp_locations_rejects_past_location_in_current_turn(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("stale location reached geocoder")
 
@@ -269,7 +269,7 @@ async def test_nearest_food_pantry_rejects_past_location_in_current_turn(monkeyp
     assert "proposed search origin was not supplied" in out
 
 
-async def test_nearest_food_pantry_rejects_negated_current_origin(monkeypatch):
+async def test_find_foodhelp_locations_rejects_negated_current_origin(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("negated location reached geocoder")
 
@@ -289,7 +289,7 @@ async def test_nearest_food_pantry_rejects_negated_current_origin(monkeypatch):
     "I am not located anywhere near Brooklyn.",
     "Brooklyn is not where I live.",
 ])
-async def test_nearest_food_pantry_rejects_extended_negation(monkeypatch, query):
+async def test_find_foodhelp_locations_rejects_extended_negation(monkeypatch, query):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("negated location reached geocoder")
 
@@ -303,7 +303,7 @@ async def test_nearest_food_pantry_rejects_extended_negation(monkeypatch, query)
     assert "proposed search origin was not supplied" in out
 
 
-async def test_nearest_food_pantry_preserves_resident_address_abbreviation(monkeypatch):
+async def test_find_foodhelp_locations_preserves_resident_address_abbreviation(monkeypatch):
     seen = []
 
     async def geocode_then_stop(text, **kwargs):
@@ -321,7 +321,7 @@ async def test_nearest_food_pantry_preserves_resident_address_abbreviation(monke
     assert seen == ["123 Main St, Brooklyn"]
 
 
-async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_resident_landmark(monkeypatch):
+async def test_find_foodhelp_locations_accepts_city_qualifiers_added_to_resident_landmark(monkeypatch):
     seen = []
 
     async def geocode_then_stop(text, **kwargs):
@@ -340,7 +340,7 @@ async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_resident_lan
     assert seen == ["Union Square"]
 
 
-async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_one_word_neighborhood(
+async def test_find_foodhelp_locations_accepts_city_qualifiers_added_to_one_word_neighborhood(
     monkeypatch,
 ):
     seen = []
@@ -370,7 +370,7 @@ async def test_nearest_food_pantry_accepts_city_qualifiers_added_to_one_word_nei
         ("authoritative", "999 Invented Street, Bronx, NY", []),
     ],
 )
-async def test_nearest_food_pantry_accepts_only_exact_authoritative_source_locations(
+async def test_find_foodhelp_locations_accepts_only_exact_authoritative_source_locations(
     monkeypatch,
     evidence_grade,
     near,
@@ -419,11 +419,11 @@ async def test_nearest_food_pantry_accepts_only_exact_authoritative_source_locat
         assert "Stop calling tools for this location" in out
         assert "exact NYC address or intersection" in out
     else:
-        assert "call official_sources" in out
+        assert "call web_fetch" in out
         assert "then retry with its new citation id" in out
 
 
-async def test_nearest_food_pantry_does_not_treat_place_name_as_resident_supplied_address(
+async def test_find_foodhelp_locations_does_not_treat_place_name_as_resident_supplied_address(
     monkeypatch,
 ):
     async def should_not_geocode(*args, **kwargs):
@@ -466,7 +466,7 @@ async def test_nearest_food_pantry_does_not_treat_place_name_as_resident_supplie
         ("discovery", []),
     ],
 )
-async def test_nearest_food_pantry_recovers_source_location_without_repeated_citation_id(
+async def test_find_foodhelp_locations_recovers_source_location_without_repeated_citation_id(
     monkeypatch,
     evidence_grade,
     expected,
@@ -506,7 +506,7 @@ async def test_nearest_food_pantry_recovers_source_location_without_repeated_cit
     if expected:
         assert f"{{cite:{source_id}}}" in out
     else:
-        assert "call official_sources" in out
+        assert "call web_fetch" in out
         assert f"{{cite:{source_id}}}" in out
 
 
@@ -523,7 +523,7 @@ async def test_nearest_food_pantry_recovers_source_location_without_repeated_cit
         ),
     ],
 )
-async def test_nearest_food_pantry_accepts_source_address_with_different_punctuation(
+async def test_find_foodhelp_locations_accepts_source_address_with_different_punctuation(
     monkeypatch,
     snippet,
 ):
@@ -562,7 +562,7 @@ async def test_nearest_food_pantry_accepts_source_address_with_different_punctua
     assert seen == ["151 East 151st Street, Bronx, NY"]
 
 
-async def test_nearest_food_pantry_rejects_an_unrelated_address_from_the_same_source(
+async def test_find_foodhelp_locations_rejects_an_unrelated_address_from_the_same_source(
     monkeypatch,
 ):
     async def should_not_geocode(*args, **kwargs):
@@ -602,7 +602,7 @@ async def test_nearest_food_pantry_rejects_an_unrelated_address_from_the_same_so
     assert "200 Example Street" not in out
 
 
-async def test_nearest_food_pantry_rejects_an_unrelated_address_in_the_same_sentence(
+async def test_find_foodhelp_locations_rejects_an_unrelated_address_in_the_same_sentence(
     monkeypatch,
 ):
     async def should_not_geocode(*args, **kwargs):
@@ -642,7 +642,7 @@ async def test_nearest_food_pantry_rejects_an_unrelated_address_in_the_same_sent
     assert "200 Example Street" not in out
 
 
-async def test_nearest_food_pantry_ranks_grounds_and_links(monkeypatch):
+async def test_find_foodhelp_locations_ranks_grounds_and_links(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
     features = [
@@ -725,8 +725,7 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
             "near": "Union Square",
             "k": 1,
             "urgent": True,
-            "service_window_start": "12:00",
-            "service_window_end": "12:01",
+            "service_window": {"start": "12:00", "end": "12:01"},
         },
         ctx,
     )
@@ -801,8 +800,7 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
             "near": "Union Square",
             "k": 3,
             "urgent": True,
-            "service_window_start": "17:00",
-            "service_window_end": "23:59",
+            "service_window": {"start": "17:00", "end": "23:59"},
         },
         ctx,
     )
@@ -817,11 +815,11 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     assert "Lead with call 311 or https://finder.nyc.gov/foodhelp" in out
     assert "one nearest weekly-schedule lead, not the only nearby option" in out
     schema = get_tools()[0].parameters["properties"]
-    assert schema["service_window_start"]["pattern"] == r"^\d{2}:\d{2}$"
-    assert schema["service_window_end"]["pattern"] == r"^\d{2}:\d{2}$"
+    assert schema["service_window"]["properties"]["start"]["pattern"] == r"^\d{2}:\d{2}$"
+    assert schema["service_window"]["properties"]["end"]["pattern"] == r"^\d{2}:\d{2}$"
 
 
-async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_now(monkeypatch):
+async def test_find_foodhelp_locations_does_not_present_closed_candidates_as_open_now(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     now_day = _DAYS[_Noon.now().weekday()]
     features = [
@@ -838,8 +836,7 @@ async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_no
         {
             "near": "Union Square",
             "urgent": True,
-            "service_window_start": "12:00",
-            "service_window_end": "12:01",
+            "service_window": {"start": "12:00", "end": "12:01"},
         },
         ctx,
     )
@@ -861,7 +858,7 @@ async def test_nearest_food_pantry_does_not_present_closed_candidates_as_open_no
     ]
 
 
-async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
+async def test_find_foodhelp_locations_distinguishes_unknown_hours_from_closed():
     features = [
         _pantry_feature(
             -73.9910, 40.7510, program="Unknown Hours Pantry", distadd="2 Near Ave",
@@ -875,8 +872,7 @@ async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
         {
             "near": "Union Square",
             "urgent": True,
-            "service_window_start": "12:00",
-            "service_window_end": "12:01",
+            "service_window": {"start": "12:00", "end": "12:01"},
         },
         ctx,
     )
@@ -887,7 +883,7 @@ async def test_nearest_food_pantry_distinguishes_unknown_hours_from_closed():
     assert "Unknown Hours Pantry" not in out
 
 
-async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fallback(
+async def test_find_foodhelp_locations_returns_farther_open_lead_after_immediate_fallback(
     monkeypatch,
 ):
     monkeypatch.setattr(fp, "datetime", _Noon)
@@ -919,8 +915,7 @@ async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fal
             "near": "Union Square",
             "k": 1,
             "urgent": True,
-            "service_window_start": "12:00",
-            "service_window_end": "12:01",
+            "service_window": {"start": "12:00", "end": "12:01"},
         },
         ctx,
     )
@@ -937,7 +932,7 @@ async def test_nearest_food_pantry_returns_farther_open_lead_after_immediate_fal
     assert len(ctx.citations.mapping()) == 2
 
 
-async def test_nearest_food_pantry_uses_the_residents_requested_date(monkeypatch):
+async def test_find_foodhelp_locations_uses_the_residents_requested_date(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     friday = _DAYS[_Noon.now().weekday()]
     saturday = _DAYS[(_Noon.now().weekday() + 1) % 7]
@@ -1023,7 +1018,7 @@ def test_f185_calendar_guard_rejects_wrong_monthly_weekday_occurrence():
     assert result.hard_failures[0].kind == "calendar_consistency"
 
 
-async def test_nearest_food_pantry_filters_source_service_type():
+async def test_find_foodhelp_locations_filters_source_service_type():
     features = [
         _pantry_feature(
             -73.9910,
@@ -1105,8 +1100,7 @@ async def test_f199_follow_up_keeps_the_previously_cited_pantry():
             "near": "Union Square",
             "site_citation": prior_id,
             "urgent": True,
-            "service_window_start": "17:00",
-            "service_window_end": "23:59",
+            "service_window": {"start": "17:00", "end": "23:59"},
         },
         ctx,
     )
@@ -1153,7 +1147,7 @@ async def test_f199_rejects_a_non_foodhelp_site_reference(monkeypatch):
     assert "does not identify a prior NYC FoodHelp site" in out
 
 
-async def test_nearest_food_pantry_labels_soup_kitchen_results_as_soup_kitchens():
+async def test_find_foodhelp_locations_labels_soup_kitchen_results_as_soup_kitchens():
     features = [
         _pantry_feature(
             -73.9910,
@@ -1207,7 +1201,7 @@ async def test_future_same_weekday_is_not_labeled_today(monkeypatch):
     assert "Today's listed weekly hours" not in out
 
 
-async def test_nearest_food_pantry_excludes_unknown_source_types_from_typed_request():
+async def test_find_foodhelp_locations_excludes_unknown_source_types_from_typed_request():
     features = [
         _pantry_feature(
             -73.9910,
@@ -1248,7 +1242,7 @@ async def test_nearest_food_pantry_excludes_unknown_source_types_from_typed_requ
     assert "Malformed Program" not in out
 
 
-async def test_nearest_food_pantry_rejects_past_service_date_before_lookup(monkeypatch):
+async def test_find_foodhelp_locations_rejects_past_service_date_before_lookup(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
 
     async def should_not_geocode(*args, **kwargs):
@@ -1265,7 +1259,7 @@ async def test_nearest_food_pantry_rejects_past_service_date_before_lookup(monke
     assert "cannot verify a past service date" in out
 
 
-async def test_nearest_food_pantry_flags_conflicting_schedule_fields(monkeypatch):
+async def test_find_foodhelp_locations_flags_conflicting_schedule_fields(monkeypatch):
     monkeypatch.setattr(fp, "datetime", _Noon)
     saturday = _DAYS[(_Noon.now().weekday() + 1) % 7]
     features = [
@@ -1297,7 +1291,7 @@ async def test_nearest_food_pantry_flags_conflicting_schedule_fields(monkeypatch
     assert "does not confirm service that day" in out
 
 
-async def test_nearest_food_pantry_cites_an_empty_official_feed():
+async def test_find_foodhelp_locations_cites_an_empty_official_feed():
     client = _routed_client([])
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
@@ -1305,8 +1299,7 @@ async def test_nearest_food_pantry_cites_an_empty_official_feed():
         {
             "near": "Union Square",
             "urgent": True,
-            "service_window_start": "12:00",
-            "service_window_end": "12:01",
+            "service_window": {"start": "12:00", "end": "12:01"},
         },
         ctx,
     )
@@ -1320,7 +1313,7 @@ async def test_nearest_food_pantry_cites_an_empty_official_feed():
     assert citation["provenance"]["snapshot"]["citywide_records_checked"] == 0
 
 
-async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):
+async def test_find_foodhelp_locations_abstains_when_geocode_fails(monkeypatch):
     async def fail(text, **kwargs):
         return None
     monkeypatch.setattr(fp, "geocode", fail)
@@ -1336,7 +1329,7 @@ async def test_nearest_food_pantry_abstains_when_geocode_fails(monkeypatch):
     assert "nyc" in low
 
 
-async def test_nearest_food_pantry_clarifies_on_low_confidence(monkeypatch):
+async def test_find_foodhelp_locations_clarifies_on_low_confidence(monkeypatch):
     async def ambiguous(text, **kwargs):
         return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
     monkeypatch.setattr(fp, "geocode", ambiguous)
@@ -1357,7 +1350,7 @@ def test_food_pantries_module_loads_with_tool_and_eval():
     assert module is not None
     assert module.category == "Food"
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "nearest_food_pantry" in tool_names
+    assert "find_foodhelp_locations" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "food_pantries"]

@@ -1011,12 +1011,19 @@ def geo_tools() -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "origin": {"type": "string"},
-                    "destination": {"type": "string"},
+                    "origin": {
+                        "type": "string",
+                        "description": "Starting NYC address or place name",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Destination NYC address or place name",
+                    },
                     "mode": {
                         "type": "string",
                         "enum": ["driving", "walking", "cycling", "transit"],
                         "default": "driving",
+                        "description": "Requested travel mode",
                     },
                 },
                 "required": ["origin", "destination"],

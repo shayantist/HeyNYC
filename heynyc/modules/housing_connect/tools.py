@@ -1,4 +1,4 @@
-"""housing_connect module tool: `open_housing_lotteries`, currently-open NYC
+"""housing_connect module tool: `find_housing_connect_lotteries`, currently-open NYC
 affordable-housing lotteries, plus a deep-link handoff to the login-gated portal.
 
 Grounded in one NYC Open Data (Socrata) dataset:
@@ -222,7 +222,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="open_housing_lotteries",
+            name="find_housing_connect_lotteries",
             description=(
                 "List NYC affordable-housing lotteries currently OPEN on Housing Connect (the "
                 "affordable-housing lottery), grounded in NYC Open Data (dataset vy5i-a666) and cited. "

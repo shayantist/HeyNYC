@@ -273,7 +273,7 @@ def test_wic_module_loads_with_tool_and_eval():
     module = next((m for m in registry.modules if m.name == "wic"), None)
     assert module is not None
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "nearest_wic_site" in tool_names
+    assert "find_wic_sites" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "wic"]

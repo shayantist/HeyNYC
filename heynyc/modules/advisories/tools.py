@@ -1,4 +1,4 @@
-"""advisories module tool: `nyc_advisories`, grounded in the live Notify NYC feed.
+"""advisories module tool: `check_notify_nyc`, grounded in the live Notify NYC feed.
 
 Sourcing is TIERED and fail-safe (see heynyc/core/tools/notify_nyc.py):
   1. The Everbridge RSS feed of CAP alerts is the STRUCTURED source (severity + "in effect until" +
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from time import monotonic
 from zoneinfo import ZoneInfo
 
@@ -30,6 +30,7 @@ from heynyc.core.citations import data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.notify_nyc import (
     Advisory,
+    RecentFeed,
     RecentNote,
     active_advisories,
     fetch_recent_advisories,
@@ -44,7 +45,8 @@ PLAN_RELEVANCE = (
     "you checked."
 )
 _AWARENESS_TTL_S = 60.0
-_awareness_cache: tuple[float, str] | None = None
+_AWARENESS_MAX_CHARS = 16_000
+_awareness_cache: tuple[float, dict[str, RecentNote]] | None = None
 _awareness_lock = asyncio.Lock()
 
 # CONFIRMED all-clear: the feed was reached and read, and nothing is currently in effect. Only this
@@ -139,13 +141,19 @@ def _recent_block(note: RecentNote, cite: str) -> str:
 
 
 def _recent_awareness(feed, today: date) -> str:
-    notes = [note for note in feed.notes if note.issued[:10] == today.isoformat()][:8]
+    cutoff = today - timedelta(days=6)
+    notes = [
+        note for note in feed.notes
+        if note.issued
+        and cutoff <= datetime.fromisoformat(note.issued).date() <= today
+    ]
     if not feed.confirmed or not notes:
         return ""
     lines = [
-        "Today's Notify NYC notifications (NYC Emergency Management), full text below. They are "
+        "Notify NYC notifications from the last seven days (NYC Emergency Management), full "
+        "text below. They are "
         "discovery hints, not evidence for a user-facing claim: if one materially affects the "
-        "resident's question, call `nyc_advisories` for its citable record. Judge each notice by "
+        "resident's question, call `check_notify_nyc` for its citable record. Judge each notice by "
         "its meaning:",
         "- A notice about immediate personal safety: surface it proactively even when you do not "
         "know where the resident is — state its area and let them judge (\"if you're in the "
@@ -155,10 +163,20 @@ def _recent_awareness(feed, today: date) -> str:
         "- Compare any end time a notice states against the current time; do not urge action on "
         "one that has already ended.",
     ]
-    for note in notes:
-        lines.append(f"- {note.issued_raw}: {note.title}")
+    omitted = 0
+    for index, note in enumerate(notes):
+        block = f"- {note.issued_raw}: {note.title}"
         if note.body:
-            lines.append(f"  {note.body[:300]}")
+            block += f"\n  {note.body}"
+        if len("\n".join((*lines, block))) > _AWARENESS_MAX_CHARS:
+            omitted = len(notes) - index
+            break
+        lines.append(block)
+    if omitted:
+        lines.append(
+            f"{omitted} older notification(s) remain cached but are omitted from this prompt. "
+            "Call `check_notify_nyc` if the resident asks for current advisory detail."
+        )
     return "\n".join(lines)
 
 
@@ -167,15 +185,39 @@ async def current_awareness() -> str:
 
     now = monotonic()
     if _awareness_cache is not None and now - _awareness_cache[0] < _AWARENESS_TTL_S:
-        return _awareness_cache[1]
+        notes = sorted(
+            _awareness_cache[1].values(), key=lambda note: note.issued, reverse=True,
+        )
+        return _recent_awareness(
+            RecentFeed(confirmed=bool(notes), notes=notes), datetime.now(NYC_TZ).date(),
+        )
     async with _awareness_lock:
         now = monotonic()
         if _awareness_cache is not None and now - _awareness_cache[0] < _AWARENESS_TTL_S:
-            return _awareness_cache[1]
+            notes = sorted(
+                _awareness_cache[1].values(), key=lambda note: note.issued, reverse=True,
+            )
+            return _recent_awareness(
+                RecentFeed(confirmed=bool(notes), notes=notes), datetime.now(NYC_TZ).date(),
+            )
         feed = await fetch_recent_advisories()
-        awareness = _recent_awareness(feed, datetime.now(NYC_TZ).date())
+        today = datetime.now(NYC_TZ).date()
+        cached = dict(_awareness_cache[1]) if _awareness_cache else {}
         if feed.confirmed:
-            _awareness_cache = (monotonic(), awareness)
+            cached.update((note.guid, note) for note in feed.notes)
+        cutoff = today - timedelta(days=6)
+        cached = {
+            guid: note for guid, note in cached.items()
+            if note.issued and cutoff <= datetime.fromisoformat(note.issued).date() <= today
+        }
+        if feed.confirmed or cached:
+            _awareness_cache = (monotonic(), cached)
+        notes = sorted(cached.values(), key=lambda note: note.issued, reverse=True)
+        awareness = _recent_awareness(
+            RecentFeed(confirmed=bool(notes), notes=notes), today,
+        )
+        if not feed.confirmed and awareness:
+            return "Notify NYC refresh failed; showing unexpired cached messages.\n" + awareness
         return awareness
 
 
@@ -253,7 +295,7 @@ _ALREADY_SHARED = (
     "Nothing new: the active advisories are unchanged since earlier in this conversation "
     "({titles}). Do not re-brief them; answer the resident's actual request, referring back "
     "briefly only if one is directly relevant. If the resident explicitly asks to see the "
-    "details again, call nyc_advisories with full_text=true."
+    "details again, call check_notify_nyc with full_text=true."
 )
 _STILL_ACTIVE = (
     "Also still active and already shared earlier in this conversation (do not re-brief): "
@@ -374,7 +416,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="nyc_advisories",
+            name="check_notify_nyc",
             description=(
                 "Report the NYC emergency advisories currently in effect, grounded in the live "
                 "Notify NYC / NYC Emergency Management feed (extreme heat, air quality, boil-water, "

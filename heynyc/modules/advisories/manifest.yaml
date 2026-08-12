@@ -27,7 +27,7 @@ allowlist:
   - everbridge.net
 prompt: |
   For "are there any advisories/alerts right now", "is it safe outside today", a heat or
-  air-quality warning, "is <beach> open", or a boil-water question, call nyc_advisories.
+  air-quality warning, "is <beach> open", or a boil-water question, call check_notify_nyc.
   Report ONLY the advisories the tool returns, cite each one {cite:Sn}, and ALWAYS state each
   advisory's time window: its "in effect until <expires>" when the tool gives one, or its ISSUE
   time when that is all the tool provides (the live fallback source has no structured expiry).

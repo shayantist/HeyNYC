@@ -42,7 +42,7 @@ source_tiers:
 prompt: |
   For child care questions (day care / daycare, preschool, nursery, infant or toddler care, "where
   can I find child care / who can watch my kid near me"), call
-  nearest_child_care(near=<the user's NYC address or neighborhood>). Report ONLY the programs the
+  find_child_care_connect_programs(near=<the user's NYC address or neighborhood>). Report ONLY the programs the
   tool returns and cite each {cite:Sn}. Each program carries a name, full address, phone, the age
   range served, the maximum licensed capacity, and the facility/program type (group vs. school-based
   child care, infant/toddler vs. preschool) - pass these through as given.

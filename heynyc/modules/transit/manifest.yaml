@@ -30,9 +30,9 @@ source_tiers:
     - api-endpoint.mta.info
 tools: tools.py
 prompt: |
-  For an accessible trip, call official_sources directly for
+  For an accessible trip, call web_fetch directly for
   https://www.mta.info/accessibility/subway and https://www.mta.info/tripplanner/results.
-  Do not use web_search to rediscover these known official pages. Then call mta_elevator_status
+  Do not use web_search to rediscover these known official pages. Then call check_mta_elevators
   once for current elevator and escalator outages at the stations the route depends on.
   Preserve the resident's
   origin and destination from the conversation; ask for either one only when it is missing or

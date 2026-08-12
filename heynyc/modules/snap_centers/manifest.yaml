@@ -36,7 +36,7 @@ seeds:
   - https://www.nyc.gov/site/hra/about/contact.page
 focus_tools:
   - nearest
-  - official_sources
+  - web_fetch
 prompt: |
   For "where do I apply for SNAP / food stamps in person" or "SNAP center/office near me",
   call nearest(category="snap_center", near=<the resident's supplied location>, k=1). An address,
@@ -45,7 +45,7 @@ prompt: |
   precise origin. Report ONLY the center the tool returns and cite each one, these are the ~13 HRA
   SNAP application/enrollment centers.
 
-  After nearest, call official_sources once with these exact current pages:
+  After nearest, call web_fetch once with these exact current pages:
   https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page,
   https://www.nyc.gov/site/hra/help/access-hra-resources.page, and
   https://www.nyc.gov/site/hra/help/snap-interview-instructions.page, and

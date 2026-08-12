@@ -1,4 +1,4 @@
-"""housing module tool: `hpd_building_lookup`, a building's OPEN HPD complaints + violations.
+"""housing module tools for HPD records and grounded housing guidance.
 
 Grounded in two NYC Open Data (Socrata) datasets, addressed by the building's tax-lot (BBL):
 
@@ -310,7 +310,7 @@ async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-# --- housing_guidance: static-but-OFFICIAL routing facts, each cited to its source page ----
+# --- get_housing_guidance: static-but-OFFICIAL routing facts, each cited to its source page ----
 #
 # The Right-to-Counsel legal-help facts, the no-heat temperature standard, and the shelter-intake
 # sites are STATIC, but they are official facts, not the model's memory. Stating them from the
@@ -555,12 +555,12 @@ def _resolve_topic(raw: str) -> str | None:
 async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
-        return ("I don't have grounded guidance for that topic. Use housing_guidance with topic = "
+        return ("I don't have grounded guidance for that topic. Use get_housing_guidance with topic = "
                 "'right_to_counsel' (free eviction legal help), 'no_heat' (no heat / no HOT water), "
                 "'no_water' (no COLD water / no running water at all), 'shelter' (shelter intake "
                 "tonight), 'bronx_housing_court' (the Bronx court location and direct contact), or "
                 "'source_of_income' (a landlord refusing a voucher, Section 8 / CityFHEPS). For a "
-                "building's HPD record use hpd_building_lookup; for anything else, point the user "
+                "building's HPD record use get_hpd_building_records; for anything else, point the user "
                 "to 311.")
     intro, facts = _GUIDANCE[topic]
     if topic == "shelter":
@@ -587,7 +587,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="hpd_building_lookup",
+            name="get_hpd_building_records",
             description=(
                 "Look up a specific NYC building's OPEN HPD complaints and violations (heat/hot-water, "
                 "safety, unsanitary conditions, etc.), grounded in NYC Open Data and cited. Pass "
@@ -614,7 +614,7 @@ def get_tools() -> list[Tool]:
             open_world=True,  # hits the live Socrata HPD datasets + geocoder
         ),
         Tool(
-            name="hpd_litigation_lookup",
+            name="get_hpd_litigation_records",
             description=(
                 "Look up a specific NYC building's HPD Housing Litigation record: whether HPD or a "
                 "tenant has taken the landlord to Housing Court, grounded in NYC Open Data (dataset "
@@ -625,7 +625,7 @@ def get_tools() -> list[Tool]:
                 "(no building BBL), the tool abstains and asks for a street address; it never guesses a "
                 "building. Empty results are reported as 'no cases on record', never 'the landlord is "
                 "clean'. Use for 'has my landlord been taken to court, does my building have an open "
-                "heat/hot-water court case or a harassment finding'. Complements hpd_building_lookup "
+                "heat/hot-water court case or a harassment finding'. Complements get_hpd_building_records "
                 "(open complaints + violations); to FILE a new complaint, route the user to 311."
             ),
             parameters={
@@ -643,7 +643,7 @@ def get_tools() -> list[Tool]:
             open_world=True,  # hits the live Socrata HPD Housing Litigations dataset + geocoder
         ),
         Tool(
-            name="housing_guidance",
+            name="get_housing_guidance",
             description=(
                 "Return NYC's official, grounded guidance for six high-stakes housing situations, "
                 "each WITH a citation to the official source page: `right_to_counsel` (free legal "
@@ -656,9 +656,8 @@ def get_tools() -> list[Tool]:
                 "source-of-income protection). Let the resident's OWN words pick the water topic: "
                 "heat or hot water -> `no_heat`; cold water or no water at all -> `no_water`. They are "
                 "different problems (the hot-water 120-degree standard vs. a water-service failure), so "
-                "never answer one with the other. Pass `topic` = one of those five (free text like "
-                "'landlord shut off the heat', 'need a lawyer for eviction', or 'they won't take my "
-                "voucher' is mapped to the right topic). ALWAYS use this instead of stating a shelter "
+                "never answer one with the other. Pass `topic` as one of those six values. ALWAYS use "
+                "this instead of stating a shelter "
                 "address, phone number, temperature standard, or eligibility figure from your own "
                 "knowledge, report only what it returns, cited."
             ),
@@ -667,9 +666,8 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": ("right_to_counsel | bronx_housing_court | no_heat | no_water "
-                                        "| shelter | source_of_income: the housing situation (free "
-                                        "text is mapped when possible)."),
+                        "enum": list(_GUIDANCE),
+                        "description": "High-stakes housing situation to retrieve",
                     },
                 },
                 "required": ["topic"],

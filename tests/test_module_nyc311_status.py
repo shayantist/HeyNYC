@@ -45,7 +45,7 @@ def _closed_sr() -> dict:
 
 def test_module_loads_custom_tool():
     names = {tool.name for tool in Registry.discover(config.MODULES_DIR).load_module_tools()}
-    assert "nyc311_status" in names
+    assert {"check_311_request", "search_311_complaints"} <= names
 
 
 def test_module_declares_the_311_dataset_binding():
@@ -133,7 +133,7 @@ async def test_sr_lookup_sends_only_the_digits_never_stray_text(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sr_number_takes_precedence_and_never_geocodes(monkeypatch):
+async def test_status_tool_never_geocodes(monkeypatch):
     captured: list[dict] = []
 
     async def fake_qd(dataset_id, **kwargs):
@@ -147,7 +147,7 @@ async def test_sr_number_takes_precedence_and_never_geocodes(monkeypatch):
     monkeypatch.setattr(nyc311, "geocode", boom_geocode)
 
     await nyc311.get_tools()[0].handler(
-        {"sr_number": "69741503", "about": "noise", "near": "here"}, _ctx()
+        {"sr_number": "69741503"}, _ctx()
     )
 
     assert captured[0]["where"] == "unique_key='69741503'"
@@ -195,7 +195,7 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
 
     ctx = _ctx()
-    out = await nyc311.get_tools()[0].handler({"about": "noise", "near": "Union Square"}, ctx)
+    out = await nyc311.get_tools()[1].handler({"about": "noise", "near": "Union Square"}, ctx)
 
     where = captured[0]["where"]
     assert "within_circle(location, 40.7359, -73.9911," in where
@@ -223,7 +223,7 @@ async def test_area_lookup_escapes_topic_quotes(monkeypatch):
     monkeypatch.setattr(nyc311, "geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
 
-    await nyc311.get_tools()[0].handler({"about": "o'brien's", "near": "here"}, _ctx())
+    await nyc311.get_tools()[1].handler({"about": "o'brien's", "near": "here"}, _ctx())
 
     # SoQL string literals escape a quote by doubling it, so the topic can't break the query.
     assert "upper('%o''brien''s%')" in captured[0]["where"]
@@ -236,7 +236,7 @@ async def test_area_lookup_low_confidence_location_asks_to_clarify(monkeypatch):
 
     monkeypatch.setattr(nyc311, "geocode", fake_geocode)
 
-    out = await nyc311.get_tools()[0].handler({"about": "noise", "near": "the park"}, _ctx())
+    out = await nyc311.get_tools()[1].handler({"about": "noise", "near": "the park"}, _ctx())
 
     assert "specific NYC address" in out
 
@@ -252,7 +252,7 @@ async def test_area_lookup_no_matches_is_honest_and_routes_to_311(monkeypatch):
     monkeypatch.setattr(nyc311, "geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
 
-    out = await nyc311.get_tools()[0].handler({"about": "noise", "near": "Union Square"}, _ctx())
+    out = await nyc311.get_tools()[1].handler({"about": "noise", "near": "Union Square"}, _ctx())
 
     assert "no" in out.lower()
     assert "311" in out
@@ -260,6 +260,6 @@ async def test_area_lookup_no_matches_is_honest_and_routes_to_311(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_needs_an_sr_number_or_topic_or_location():
-    out = await nyc311.get_tools()[0].handler({}, _ctx())
+    out = await nyc311.get_tools()[1].handler({}, _ctx())
 
     assert "service request number" in out.lower() or "SR number" in out

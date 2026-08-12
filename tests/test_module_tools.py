@@ -10,7 +10,34 @@ def test_build_toolbox_includes_module_and_websearch_tools():
     registry = Registry.discover(config.MODULES_DIR)
     tools = build_toolbox(registry)
     # geo + web_search always present; events ships a module tool
-    assert {"geocode", "nearest", "distance", "web_search", "whats_on_events"} <= set(tools)
+    assert {"geocode", "nearest", "distance", "web_search", "find_nyc_events"} <= set(tools)
+
+
+def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names():
+    tools = build_toolbox(Registry.discover(config.MODULES_DIR))
+
+    assert {
+        "web_search",
+        "web_fetch",
+        "find_nyc_events",
+        "check_notify_nyc",
+        "find_cool_options",
+        "find_child_care_connect_programs",
+        "find_foodhelp_locations",
+        "find_housing_connect_lotteries",
+        "screen_access_nyc_eligibility",
+    } <= set(tools)
+    assert {
+        "recent_developments",
+        "official_sources",
+        "whats_on_events",
+        "nyc_advisories",
+        "cool_options_lookup",
+        "nearest_child_care",
+        "nearest_food_pantry",
+        "open_housing_lotteries",
+        "screen_eligibility",
+    }.isdisjoint(tools)
 
 
 def test_events_module_discovered_and_tool_loads():
@@ -19,7 +46,7 @@ def test_events_module_discovered_and_tool_loads():
     assert events is not None
     assert "authoritative" in events.source_tiers
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "whats_on_events" in tool_names
+    assert "find_nyc_events" in tool_names
 
 
 def test_events_eval_cases_load():

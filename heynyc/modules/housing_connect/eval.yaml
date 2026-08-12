@@ -8,7 +8,7 @@
   query: "What affordable housing lotteries are open right now?"
   capability: dataset_grounding
   test_type: MFT
-  expect_tools: [open_housing_lotteries]
+  expect_tools: [find_housing_connect_lotteries]
   expect_cite_kinds: [DATA]
   abstain: false
   invariants:
@@ -21,7 +21,7 @@
   query: "How do I apply for an apartment through the housing lottery?"
   capability: handoff
   test_type: MFT
-  expect_tools: [open_housing_lotteries]
+  expect_tools: [find_housing_connect_lotteries]
   abstain: false
   invariants:
     must_not_fabricate: true
@@ -33,7 +33,7 @@
   query: "Any open affordable housing lotteries in the Bronx?"
   capability: dataset_grounding
   test_type: MFT
-  expect_tools: [open_housing_lotteries]
+  expect_tools: [find_housing_connect_lotteries]
   expect_cite_kinds: [DATA]
   abstain: false
   invariants:
@@ -45,6 +45,6 @@
   capability: scope
   test_type: MFT
   abstain: true
-  forbid_tools: [open_housing_lotteries]
+  forbid_tools: [find_housing_connect_lotteries]
   invariants:
     must_abstain_or_redirect: true

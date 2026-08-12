@@ -358,7 +358,7 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="public_restroom_lookup",
+            name="find_public_restrooms",
             description=(
                 "Find useful public restrooms near one NYC location. Cross-checks official "
                 "Cool Options access and hours when the same site appears there."

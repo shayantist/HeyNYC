@@ -212,10 +212,10 @@ async def test_find_clinic_degrades_to_seed_when_hrsa_down(monkeypatch):
     assert "unreachable" in out.lower()                  # honest degraded note
 
 
-# --- health_coverage_guidance: static-but-official coverage facts, each cited (no network) -----
+# --- get_health_coverage_guidance: official coverage facts, each cited (no network) -----
 
 def _coverage_tool():
-    return next(t for t in get_tools() if t.name == "health_coverage_guidance")
+    return next(t for t in get_tools() if t.name == "get_health_coverage_guidance")
 
 
 async def _run_coverage(topic: str):
@@ -315,8 +315,8 @@ def test_clinics_module_loads_with_tool_and_eval():
     assert "public charge" in discovery_summary
     assert "green card" in discovery_summary
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "find_clinic" in tool_names
-    assert "health_coverage_guidance" in tool_names
+    assert "find_clinics" in tool_names
+    assert "get_health_coverage_guidance" in tool_names
     # the FQHC dataset binding is declared + discoverable
     assert "fqhc_site" in registry.dataset_bindings()
 

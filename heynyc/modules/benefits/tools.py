@@ -328,7 +328,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "access.nyc.gov, 311, or intake fields unless the resident accepts that offer. Do not "
         "list screening questions or fields yet. Never claim a short starter list is everything "
         "the screener needs."
-        if "screen_eligibility" in (ctx.toolbox or {})
+        if "screen_access_nyc_eligibility" in (ctx.toolbox or {})
         else f"Route personalized eligibility questions to {OFFICIAL}."
     )
     oldest = (
@@ -358,7 +358,7 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
         return f"ERROR: {exc} Collect only age, household type, and income, never names/DOB/address."
     base, user, pw = config.screening_creds()
     if not (user and pw):
-        return ("ERROR: eligibility screening isn't configured. Use benefits_search and tell the "
+        return ("ERROR: eligibility screening isn't configured. Use search_benefits and tell the "
                 f"user to check {OFFICIAL}.")
 
     own = ctx.http is None
@@ -485,9 +485,9 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-def screen_eligibility_tool() -> Tool:
+def screen_access_nyc_eligibility_tool() -> Tool:
     return Tool(
-        name="screen_eligibility",
+        name="screen_access_nyc_eligibility",
         description=(
             "Estimate which NYC benefit programs a household is LIKELY eligible for, via the city's "
             "official Benefits Screening API (the ACCESS NYC rules engine). Pass a PII-FREE profile "
@@ -600,7 +600,7 @@ def prepare_application_tool() -> Tool:
 def get_tools() -> list[Tool]:
     tools = [
         Tool(
-            name="benefits_search",
+            name="search_benefits",
             description=(
                 "Search NYC benefit/assistance programs (SNAP, Fair Fares, HEAP, SCRIE/DRIE, "
                 "IDNYC, WIC, Cash Assistance, child care, etc.) in the city's live Benefits & "
@@ -623,7 +623,10 @@ def get_tools() -> list[Tool]:
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max programs to return (default 8).",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "default": 8,
+                        "description": "Maximum benefit programs to return",
                     },
                     "lang": {
                         "type": "string",
@@ -641,7 +644,7 @@ def get_tools() -> list[Tool]:
     ]
     _, user, pw = config.screening_creds()
     if user and pw:  # the screener only appears when its API creds are configured
-        tools.append(screen_eligibility_tool())
+        tools.append(screen_access_nyc_eligibility_tool())
     if _forms_enabled():  # the form-fill scribe appears only when HEYNYC_FORMS is set
         tools.append(prepare_application_tool())
     return tools

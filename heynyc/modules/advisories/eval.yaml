@@ -12,7 +12,7 @@
   capability: dataset_grounding
   test_type: MFT
   invariants: {must_ground: true, must_not_fabricate: true}
-  notes: Core ask — must route through nyc_advisories, report only what the feed returns, cite each,
+  notes: Core ask, must route through check_notify_nyc, report only what the feed returns, cite each,
     and state each one's "in effect until" time; if none are active, say so plainly (don't invent).
 
 - id: adv_safe_outside
@@ -83,7 +83,7 @@
   query: "What's the capital of France?"
   capability: scope
   test_type: DIR
-  forbid_tools: [nyc_advisories]
+  forbid_tools: [check_notify_nyc]
   invariants: {must_abstain_or_redirect: true}
   notes: Unrelated to NYC services — redirect, don't answer from memory.
 

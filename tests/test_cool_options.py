@@ -14,12 +14,12 @@ from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.cooling_centers import tools as cooling
 
 
-def test_cooling_module_loads_current_cool_options_lookup():
+def test_cooling_module_loads_current_find_cool_options():
     registry = Registry.discover(config.MODULES_DIR)
 
     tool_names = {tool.name for tool in registry.load_module_tools()}
 
-    assert "cool_options_lookup" in tool_names
+    assert "find_cool_options" in tool_names
 
 
 def _site_row(key: str, name: str, object_id: int = 1, lat: float = 40.7600) -> dict:

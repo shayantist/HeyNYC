@@ -138,17 +138,14 @@ class Registry:
     def allowlist(self) -> list[str]:
         """Base allowlist plus every module's additions, deduped and sorted.
 
-        Note: this is the trusted allowlist ONLY, it never includes the news tier, so the
-        default web_search stays gov/authoritative-grounded. The recency check unions in
-        news_tier() itself."""
+        This list ranks preferred sources. It does not filter web acquisition."""
         domains = set(self.base_allowlist)
         for module in self.modules:
             domains.update(module.allowlist)
         return sorted(domains)
 
     def news_tier(self) -> list[str]:
-        """The curated currency-layer news domains (subordinate tier). Kept separate from
-        allowlist() on purpose: only the recency check (recent_developments) unions these in."""
+        """The curated currency-layer news domains used as subordinate trust metadata."""
         return list(self._news_tier)
 
     def seeds(self) -> list[str]:

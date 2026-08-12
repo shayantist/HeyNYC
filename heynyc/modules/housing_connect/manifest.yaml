@@ -35,7 +35,7 @@ prompt: |
 
   WHAT LOTTERIES ARE OPEN / HOW DO I APPLY FOR AN APARTMENT ("affordable housing lottery, apply
   for an apartment, open lotteries, Housing Connect listings, low-income apartment") → call
-  open_housing_lotteries(borough=<a borough if the user named one, else omit>). It returns the
+  find_housing_connect_lotteries(borough=<a borough if the user named one, else omit>). It returns the
   lotteries currently accepting applications from NYC Open Data (dataset vy5i-a666), each with the
   borough, unit count + bedroom mix, income bands (AMI), set-aside preferences, and the application
   deadline, cited {cite:Sn}. Report ONLY what the tool returns and carry each citation. This is
@@ -52,6 +52,6 @@ prompt: |
 
   PROGRAM INFO → BENEFITS MODULE. For "what is Housing Connect / am I eligible / how does the
   affordable-housing lottery work / how is 'affordable' defined" (general program rules, not the live
-  list of open lotteries), call benefits_search with the user's need in plain words; that info is
+  list of open lotteries), call search_benefits with the user's need in plain words; that info is
   grounded in the benefits dataset / Access NYC. Do NOT restate eligibility rules or income
   thresholds here from your own knowledge.

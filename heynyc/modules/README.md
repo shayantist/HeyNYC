@@ -11,7 +11,7 @@ HeyNYC is built so that **adding a city service means adding a folder**, without
 
 A module is **a self-contained folder with a YAML manifest at its root**, the "one descriptor file per unit, in its own folder" idea behind [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: drop in a folder, the core stays untouched. (HeyNYC modules are plain MCP-style tools + a schema-validated manifest, deliberately **not** Anthropic Agent Skills, which are for reusable *techniques*, not project-specific data + config.)
 
-Optional nesting: a `data/` subfolder for bundled curated data, and a `topics/<topic>/` subfolder for a **submodule**, a light, self-contained sub-service that reuses the parent module's tool and owns only its own sources + eval (e.g. `events/topics/world_cup/`, deletable with `rm -rf`). Most modules are still a single `manifest.yaml`. 
+Optional nesting: a `data/` subfolder for bundled curated data, and a `topics/<topic>/` subfolder for a **submodule**, a light, self-contained sub-service that reuses the parent module's tool and owns only its own sources + eval (e.g. `events/topics/world_cup/`). Cleanup candidates move to the dated quarantine described in `AGENTS.md`; never delete them. Most modules are still a single `manifest.yaml`.
 
 ---
 
@@ -38,7 +38,7 @@ heynyc/modules/<name>/
   topics/<topic>/   # optional, a submodule (reuses the parent's tool; own sources + eval)
 ```
 
-The registry auto-discovers every folder under `modules/` at startup and wires it in: its keywords + capability blurb go into the agent's system prompt, its datasets become `nearest()` categories, its seeds get indexed, its allowlist extends web search, and its eval cases join the test gate.
+The registry auto-discovers every folder under `modules/` at startup and wires it in: its keywords + capability blurb go into the agent's system prompt, its datasets become `nearest()` categories, its seeds get indexed, its known domains guide web-search trust and ranking, and its eval cases join the test gate.
 
 ---
 
@@ -79,7 +79,7 @@ prompt: |                         # the behavior rules: how to help, what to cit
 eval: eval.yaml                   # OPTIONAL but recommended
 ```
 
-Everything except `name` is optional. A module with just `name`, `description`, `keywords`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group your `allowlist` domains by trust, `authoritative` / `editorial` / `community`, so `web_search` ranks and disclaims them) and a **`topics/`** folder for submodules. See `modules/events/` for both.
+Everything except `name` is optional. A module with just `name`, `description`, `keywords`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group known domains by trust, `authoritative` / `editorial` / `community`, so `web_search` ranks and disclaims them) and a **`topics/`** folder for submodules. See `modules/events/` for both.
 
 ### Finding a dataset + its column names (for "nearest X")
 1. Go to <https://data.cityofnewyork.us> and search (e.g. "senior centers").
@@ -97,8 +97,8 @@ You usually don't have to write the tools, but point the module at these shared 
   Enabled by adding a `datasets:` entry. Used for "where's the nearest …".
 - **`index_search(query)`**, semantic search over your `seeds:` pages. Used for
   "how do I…/am I eligible…/what do I bring".
-- **`web_search(query)`**, scoped to your `allowlist:` (+ the global allowlist) for fresh
-  or long-tail info. Always cited; abstains when nothing trusted is found.
+- **`web_search(query)`**, searches the live web for fresh or long-tail information. A module's
+  known domains guide trust and ranking without blocking discovery from unlisted sources.
 
 Tell the agent which to use in your `prompt:`.
 
@@ -137,7 +137,7 @@ That's a complete, grounded, cited service module, written entirely in YAML.
 
 ## When you need a custom tool (`tools.py`)
 
-Only when the generic tools don't fit, e.g. a live API or special logic. See `modules/benefits/` (`benefits_search` over the live Benefits & Programs API) or `modules/events/` (`whats_on_events` over Ticketmaster + NYC Parks) for worked examples. The contract:
+Only when the generic tools don't fit, e.g. a live API or special logic. See `modules/benefits/` (`search_benefits` over the live Benefits & Programs API) or `modules/events/` (`find_nyc_events` over Ticketmaster + NYC Parks) for worked examples. The contract:
 
 ```python
 # modules/<name>/tools.py

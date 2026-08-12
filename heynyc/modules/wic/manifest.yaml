@@ -31,7 +31,7 @@ allowlist:
 prompt: |
   For WIC questions (WIC office/clinic/center, "where do I sign up for WIC", "I'm pregnant / have
   a baby and need WIC food or formula", breastfeeding support through WIC), call
-  nearest_wic_site(near=<the user's NYC address or neighborhood>). Report ONLY the sites the tool
+  find_wic_sites(near=<the user's NYC address or neighborhood>). Report ONLY the sites the tool
   returns and cite each {cite:Sn}. Each site carries an agency name, full address, phone, a website
   when listed, and a site type (Permanent, or a Temporary/rotating site the tool flags) - pass
   these through as given.

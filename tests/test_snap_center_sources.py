@@ -13,7 +13,7 @@ def test_snap_center_handoffs_are_declared_retrieval_sources():
     assert "https://www.nyc.gov/site/hra/help/snap-interview-instructions.page" in module.seeds
     assert "https://www.nyc.gov/site/hra/about/contact.page" in module.seeds
     assert all(url in module.prompt for url in module.seeds)
-    assert "official_sources" in module.prompt
+    assert "web_fetch" in module.prompt
     assert 'nearest(category="snap_center", near=<the resident\'s supplied location>, k=1)' in module.prompt
     assert "call 311" not in module.prompt.casefold()
     assert "include a phone handoff only when the retrieved page explicitly supports" in module.prompt.casefold()

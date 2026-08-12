@@ -45,7 +45,7 @@ prompt: |
   For definitions or access-policy questions that do not include a resident location, retrieve
   the official NYC311 guidance before answering and ask for a neighborhood, address, or landmark
   before ranking nearby sites.
-  For heat-relief questions, call cool_options_lookup. Use kind="cooling_center" when the user
+  For heat-relief questions, call find_cool_options. Use kind="cooling_center" when the user
   specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
   and kind="all" for a general place to cool off. Pass `on` as an ISO date whenever the resident
   names a day or date; omit it only for a current right-now lookup. Pass limit when the user

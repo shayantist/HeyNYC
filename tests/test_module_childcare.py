@@ -131,7 +131,7 @@ def _routed_client(records, status: int = 200) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_nearest_child_care_ranks_grounds_and_links():
+async def test_find_child_care_connect_programs_ranks_grounds_and_links():
     records = [
         _record(program_name="Far Care", address="1 FAR ST", phone="(718) 555-0001",
                 latitude="40.8000", longitude="-73.9600", **{":id": "row-far"}),
@@ -166,7 +166,7 @@ async def test_nearest_child_care_ranks_grounds_and_links():
     assert mapping["S1"]["valid_as_of"]
 
 
-async def test_nearest_child_care_capacity_is_not_open_seats():
+async def test_find_child_care_connect_programs_capacity_is_not_open_seats():
     # Honesty: capacity is the MAX licensed number, never presented as open/available seats.
     records = [_record(latitude="40.6901", longitude="-73.9601")]
     client = _routed_client(records)
@@ -179,7 +179,7 @@ async def test_nearest_child_care_capacity_is_not_open_seats():
     assert "available" not in low or "open spot" in low  # never claims seats are available outright
 
 
-async def test_nearest_child_care_does_not_fake_missing_source_date():
+async def test_find_child_care_connect_programs_does_not_fake_missing_source_date():
     records = [_record(latitude="40.6901", longitude="-73.9601", **{":updated_at": None})]
     citations = CitationRegistry()
     client = _routed_client(records)
@@ -191,7 +191,7 @@ async def test_nearest_child_care_does_not_fake_missing_source_date():
     assert "Source date unavailable" in out
 
 
-async def test_nearest_child_care_omits_no_data_age():
+async def test_find_child_care_connect_programs_omits_no_data_age():
     records = [_record(age_range="NO DATA", latitude="40.6901", longitude="-73.9601")]
     client = _routed_client(records)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
@@ -200,7 +200,7 @@ async def test_nearest_child_care_omits_no_data_age():
     assert "NO DATA" not in out                          # sentinel never leaks to the user
 
 
-async def test_nearest_child_care_gives_official_fallback_when_phone_is_missing():
+async def test_find_child_care_connect_programs_gives_official_fallback_when_phone_is_missing():
     records = [_record(phone="", latitude="40.6901", longitude="-73.9601")]
     client = _routed_client(records)
     citations = CitationRegistry()
@@ -212,7 +212,7 @@ async def test_nearest_child_care_gives_official_fallback_when_phone_is_missing(
     assert any("child-care.page" in citation["url"] for citation in citations.mapping().values())
 
 
-async def test_nearest_child_care_abstains_when_geocode_fails(monkeypatch):
+async def test_find_child_care_connect_programs_abstains_when_geocode_fails(monkeypatch):
     async def fail(text, **kwargs):
         return None
     monkeypatch.setattr(childcare, "geocode", fail)
@@ -228,7 +228,7 @@ async def test_nearest_child_care_abstains_when_geocode_fails(monkeypatch):
     assert "nyc" in low
 
 
-async def test_nearest_child_care_clarifies_on_low_confidence(monkeypatch):
+async def test_find_child_care_connect_programs_clarifies_on_low_confidence(monkeypatch):
     async def ambiguous(text, **kwargs):
         return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
     monkeypatch.setattr(childcare, "geocode", ambiguous)
@@ -241,7 +241,7 @@ async def test_nearest_child_care_clarifies_on_low_confidence(monkeypatch):
     assert not any(l.startswith("- ") for l in out.splitlines())
 
 
-async def test_nearest_child_care_abstains_when_api_down():
+async def test_find_child_care_connect_programs_abstains_when_api_down():
     client = _routed_client([], status=503)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
@@ -250,7 +250,7 @@ async def test_nearest_child_care_abstains_when_api_down():
     assert "child care" in out.lower() or "childcare" in out.lower()
 
 
-async def test_nearest_child_care_abstains_when_no_programs():
+async def test_find_child_care_connect_programs_abstains_when_no_programs():
     client = _routed_client([])                          # source reachable but returns nothing
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
@@ -258,7 +258,7 @@ async def test_nearest_child_care_abstains_when_no_programs():
     assert not any(l.startswith("- ") for l in out.splitlines())
 
 
-async def test_nearest_child_care_asks_when_location_missing():
+async def test_find_child_care_connect_programs_asks_when_location_missing():
     client = _routed_client([])
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": ""}, ctx)
@@ -274,7 +274,7 @@ def test_childcare_module_loads_with_tool_and_eval():
     module = next((m for m in registry.modules if m.name == "childcare"), None)
     assert module is not None
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "nearest_child_care" in tool_names
+    assert "find_child_care_connect_programs" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "childcare"]

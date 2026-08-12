@@ -1,4 +1,4 @@
-"""wic module tool: `nearest_wic_site`, grounded in the NY State WIC site directory.
+"""WIC site finder grounded in the NY State WIC site directory.
 
 Data source: the public, tokenless Socrata dataset that powers Health Data NY's "Women, Infants,
 and Children (WIC) Program Site Information" map (`g4i5-r6zx` on health.data.ny.gov). WIC is
@@ -287,7 +287,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="nearest_wic_site",
+            name="find_wic_sites",
             description=(
                 "Find the nearest NYC WIC (Women, Infants, and Children) sites to an address, "
                 "grounded in the NY State WIC Program Site Information directory (Health Data NY). "

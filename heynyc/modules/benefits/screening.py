@@ -87,18 +87,33 @@ PERSON_BOOLEAN_DESCRIPTIONS = {
 }
 
 
-def _money_item_schema(types: tuple[str, ...], max_length: int, max_whole_digits: int) -> dict:
+def _money_item_schema(
+    types: tuple[str, ...],
+    max_length: int,
+    max_whole_digits: int,
+    description: str,
+) -> dict:
     return {
         "type": "object",
+        "description": description,
         "additionalProperties": False,
         "properties": {
             "amount": {
                 "type": "string",
                 "maxLength": max_length,
                 "pattern": rf"^\d{{1,{max_whole_digits}}}(?:\.\d{{1,2}})?$",
+                "description": "Numeric USD amount encoded as a string",
             },
-            "frequency": {"type": "string", "enum": list(FREQUENCIES)},
-            "type": {"type": "string", "enum": list(types)},
+            "frequency": {
+                "type": "string",
+                "enum": list(FREQUENCIES),
+                "description": "How often this amount is received or paid",
+            },
+            "type": {
+                "type": "string",
+                "enum": list(types),
+                "description": "Official City category for this amount",
+            },
         },
         "required": ["amount", "frequency", "type"],
     }
@@ -136,22 +151,49 @@ def request_schema() -> dict:
             "pattern": r"^\d{1,7}(?:\.\d{1,2})?$",
             "description": "Numeric USD amount encoded as a string, for example '500'.",
         },
-        "livingRentalType": {"type": "string", "enum": list(RENTAL_TYPES)},
+        "livingRentalType": {
+            "type": "string",
+            "enum": list(RENTAL_TYPES),
+            "description": "Official City rental or ownership category",
+        },
         **household_flags,
     }
     person_properties = {
-        "age": {"type": "number", "minimum": 0, "maximum": 999},
-        "householdMemberType": {"type": "string", "enum": list(HOUSEHOLD_MEMBER_TYPES)},
+        "age": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 999,
+            "description": "Person's age in completed years",
+        },
+        "householdMemberType": {
+            "type": "string",
+            "enum": list(HOUSEHOLD_MEMBER_TYPES),
+            "description": "Person's official City household relationship category",
+        },
         "incomes": {
             "type": "array",
             "minItems": 1,
-            "items": _money_item_schema(INCOME_TYPES, 15, 12),
+            "items": _money_item_schema(
+                INCOME_TYPES,
+                15,
+                12,
+                "One income amount reported for this person",
+            ),
             "description": (
                 "Reported income items only. Omit when the resident reports no income or the "
                 "amount is unknown; never add a zero placeholder."
             ),
         },
-        "expenses": {"type": "array", "items": _money_item_schema(EXPENSE_TYPES, 9, 6)},
+        "expenses": {
+            "type": "array",
+            "items": _money_item_schema(
+                EXPENSE_TYPES,
+                9,
+                6,
+                "One expense amount reported for this person",
+            ),
+            "description": "Reported expense items for this person",
+        },
         **person_flags,
     }
     return {
@@ -188,14 +230,20 @@ def request_schema() -> dict:
                 "minContains": 1,
                 "description": "1-8 people; at least one must be HeadOfHousehold.",
                 "items": {
-                    "type": "object", "additionalProperties": False,
+                    "type": "object",
+                    "description": "One PII-free household member profile",
+                    "additionalProperties": False,
                     "properties": person_properties,
                     "required": ["age", "householdMemberType"],
                 },
             },
             "interested_programs": {
                 "type": "array", "uniqueItems": True,
-                "items": {"type": "string", "pattern": PROGRAM_CODE_PATTERN},
+                "items": {
+                    "type": "string",
+                    "pattern": PROGRAM_CODE_PATTERN,
+                    "description": "One official City program code",
+                },
                 "description": (
                     "Optional official program-code filter such as S2R007. Never pass a program "
                     "name such as SNAP; omit this field when the exact code is unknown."

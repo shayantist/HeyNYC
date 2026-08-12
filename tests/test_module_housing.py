@@ -1,4 +1,4 @@
-"""Offline tests for the housing module's `hpd_building_lookup` tool.
+"""Offline tests for the housing module's HPD record tools.
 
 Grounded in two NYC Open Data (Socrata) HPD datasets — Housing Maintenance Code
 Complaints (ygpa-z7cr) and Violations (wvxf-dwi5) — but every HTTP call is
@@ -248,9 +248,9 @@ async def test_hpd_building_lookup_marks_1000_row_results_as_lower_bounds(monkey
     assert "at least 1,000" in citations.mapping()["S2"]["snippet"]
 
 
-# --- 3c. hpd_litigation_lookup: a building's HPD housing-court cases (59kj-x8nc) --------------
+# --- 3c. get_hpd_litigation_records: a building's HPD court cases (59kj-x8nc) --------------
 #
-# Sibling to hpd_building_lookup: whether HPD has taken the landlord to Housing Court, keyed by the
+# Sibling to get_hpd_building_records: whether HPD has taken the landlord to Housing Court, keyed by the
 # same BBL. Calls out 'Heat and Hot Water' cases (and which are still pending) plus any finding of
 # harassment. Empty is stated plainly ("no cases on record"), never "the landlord is clean".
 
@@ -264,7 +264,7 @@ def _litigation_client(cases: list[dict]) -> httpx.AsyncClient:
 
 
 def _litigation_tool():
-    return next(t for t in get_tools() if t.name == "hpd_litigation_lookup")
+    return next(t for t in get_tools() if t.name == "get_hpd_litigation_records")
 
 
 async def _run_litigation(monkeypatch, *, geopoint, cases):
@@ -347,7 +347,7 @@ async def test_hpd_litigation_lookup_abstains_without_bbl(monkeypatch):
     assert len(citations) == 0
 
 
-# --- 4. housing_guidance: static-but-official facts, each cited to nyc.gov ---
+# --- 4. get_housing_guidance: official facts, each cited to nyc.gov ---
 #
 # These are offline (no network): the tool bakes the facts + source URLs in and only touches the
 # citation registry. They lock in what the eval's tool_sanity / attribution / faithfulness checks
@@ -357,7 +357,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def _guidance_tool():
-    return next(t for t in get_tools() if t.name == "housing_guidance")
+    return next(t for t in get_tools() if t.name == "get_housing_guidance")
 
 
 async def _run_guidance(topic: str):
@@ -594,10 +594,10 @@ def test_housing_module_loads_with_tool_and_eval():
     assert "free legal representation or advice" in module.prompt
     assert "a free lawyer" not in module.prompt
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "hpd_building_lookup" in tool_names
-    assert "hpd_litigation_lookup" in tool_names
-    assert "housing_guidance" in tool_names
-    guidance = next(t for t in get_tools() if t.name == "housing_guidance")
+    assert "get_hpd_building_records" in tool_names
+    assert "get_hpd_litigation_records" in tool_names
+    assert "get_housing_guidance" in tool_names
+    guidance = next(t for t in get_tools() if t.name == "get_housing_guidance")
     assert "free legal representation or advice" in guidance.description
     assert "the FREE lawyer" not in guidance.description
 
@@ -616,5 +616,5 @@ def test_housing_module_loads_with_tool_and_eval():
         "housing_shelter_single_adult"}}
     assert len(routing) == 4
     for case in routing.values():
-        assert "housing_guidance" in case.expect_tools
+        assert "get_housing_guidance" in case.expect_tools
         assert case.invariants.get("must_cite_if_asserting")

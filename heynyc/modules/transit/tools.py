@@ -118,7 +118,7 @@ async def _mta_elevator_status(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="mta_elevator_status",
+            name="check_mta_elevators",
             description=(
                 "Check the current MTA subway elevator and escalator outage feed for up to six "
                 "named stations. Call this once after identifying the stations an accessible "
@@ -132,9 +132,13 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "stations": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {
+                            "type": "string",
+                            "description": "One MTA subway station name",
+                        },
                         "minItems": 1,
                         "maxItems": 6,
+                        "description": "MTA subway stations to check",
                     }
                 },
                 "required": ["stations"],

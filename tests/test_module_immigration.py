@@ -27,7 +27,7 @@ def test_immigration_situations_are_high_stakes_official_retrieval():
         assert situation.high_stakes
         assert situation.query
         assert situation.urls
-        assert "official_sources" in situation.focus_tools
+        assert "web_fetch" in situation.focus_tools
         for url in situation.urls:
             parsed = urlsplit(url)
             assert parsed.scheme == "https"
@@ -51,7 +51,7 @@ def test_immigration_eval_covers_languages_limits_and_reporting():
         "must_abstain_or_redirect"
     ]
     assert cases["immigration_out_of_scope_enforcement_locations"].abstain
-    assert cases["immigration_report_witnessed_enforcement"].expect_tools == ["official_sources"]
+    assert cases["immigration_report_witnessed_enforcement"].expect_tools == ["web_fetch"]
 
 
 def test_tps_status_requires_reconciling_later_official_actions():
@@ -73,7 +73,7 @@ def test_enforcement_rights_uses_the_claim_bearing_official_documents():
     assert "kyr_red_card_haitian_creole.pdf" in "\n".join(situation.urls)
     assert "KYR-with-ICE_February-2025_English.pdf" in "\n".join(situation.urls)
     assert "KYR-with-ICE-2026-Haitian-Creole.pdf" in "\n".join(situation.urls)
-    assert situation.focus_tools == ["official_sources"]
+    assert situation.focus_tools == ["web_fetch"]
 
 
 def test_tps_status_includes_current_new_york_support_source():

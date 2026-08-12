@@ -567,15 +567,65 @@ def build_module_capabilities(
         tool.prepare = focus
 
     capabilities: list[AbstractCapability[ToolContext]] = []
+
+    def situation_instructions(module: Any, hint: Any, available_names: set[str]) -> str:
+        module_prefix = module.name.replace("_", "-")
+        hint_id = hint.name.replace("_", "-").removeprefix(f"{module_prefix}-")
+        situation_id = f"{module.name}-{hint_id}"
+        owned_focus_tools = [
+            name for name in hint.focus_tools if name in available_names
+        ]
+        return "\n".join(
+            part
+            for part in (
+                f"Situation: {situation_id}",
+                hint.definition,
+                (
+                    "Retrieve a current official source before answering."
+                    if hint.high_stakes else ""
+                ),
+                f"Current-source query: {hint.query}" if hint.query else "",
+                "Official pages: " + ", ".join(hint.urls) if hint.urls else "",
+                (
+                    "Use module tools: "
+                    + ", ".join(f"`{name}`" for name in owned_focus_tools)
+                    if owned_focus_tools else ""
+                ),
+                (
+                    "Call `web_fetch` once for each Official pages URL needed to support "
+                    "the answer."
+                    if hint.high_stakes and hint.urls and "web_fetch" in hint.focus_tools
+                    else ""
+                ),
+                (
+                    "Prioritize tools: " + ", ".join(hint.focus_tools)
+                    if hint.focus_tools else ""
+                ),
+                hint.reminder,
+            )
+            if part
+        )
+
     for module in registry.modules:
         if module.parent:
             continue
+        governed_entries = [
+            (tool_name, available)
+            for (module_name, tool_name), available in governed_tools.items()
+            if module_name == module.name
+        ]
+        governed_available_tools = [
+            tool
+            for _tool_name, available in governed_entries
+            for tool in available
+        ]
         instructions = "\n\n".join(
             member.prompt
             for member in descendants[module.name]
             if member.prompt.strip()
         )
-        available_tools = module_tools.get(module.name, ())
+        guidance_tools = module_tools.get(module.name, ())
+        available_tools = [*guidance_tools, *governed_available_tools]
         availability = (
             "Enabled module action tools: "
             + ", ".join(f"`{tool.name}`" for tool in available_tools)
@@ -587,124 +637,69 @@ def build_module_capabilities(
             " Other workflows may be available through the deferred capability catalog. "
             "Do not collect inputs for or claim to perform an action unless its tool is loaded."
         )
-        instructions = "\n\n".join(part for part in (instructions, availability) if part)
+        available_tool_names = {tool.name for tool in guidance_tools}
+        situations = "\n\n".join(
+            situation_instructions(module, hint, available_tool_names)
+            for member in descendants[module.name]
+            for hint in member.situations
+        )
+        governed_workflows = "\n\n".join(
+            (
+                f"The resident explicitly asked for or accepted {governed[tool_name].title or tool_name}. "
+                "This workflow requires a grounded handoff before any clarification: "
+                "retrieve current official guidance and explain the workflow's limits "
+                "before asking for missing facts. "
+                "If they ask for guaranteed approval, a determination, or the current "
+                "official path before the required facts are complete, use "
+                + (
+                    ", ".join(f"`{tool.name}`" for tool in guidance_tools)
+                    if guidance_tools
+                    else "the parent module's current official guidance"
+                )
+                + ". Explain that this workflow gives an estimate, not a determination, "
+                "before continuing the intake. Complete this workflow's first grounded "
+                "handoff before loading capabilities for non-urgent secondary concerns. "
+                "Address an immediate safety need first. Acknowledge other concerns and "
+                "offer to continue with them next. Do not enumerate possible results or "
+                "application documents before the check. End the first handoff with only "
+                "the next few required questions. Keep the data-minimization warning uncited "
+                "unless the retrieved source directly supports it. Preserve each person as "
+                "the resident described them. Do not calculate a household count or infer who "
+                "belongs in the workflow before confirmation. Ask for observable facts, not "
+                "legal or program classifications. Gather only the schema's required resident "
+                "facts, a few at a time. Omit unknown optional facts. Do not ask follow-up "
+                "questions only to replace them. Run the check as soon as required facts are "
+                "supported. Never describe optional fields as missing or required; after the "
+                "first result, offer them only as an optional refinement. Once the required "
+                "facts are present, use the confirmation tool. Its native approval request is "
+                "the resident's structured review. Do not ask for a separate prose confirmation "
+                "before calling it. After approval it runs the governed read-only check."
+            )
+            for tool_name, _available in governed_entries
+        )
+        instructions = "\n\n".join(
+            part
+            for part in (instructions, situations, governed_workflows, availability)
+            if part
+        )
+        description = module.description or f"NYC {module.category} help"
+        if governed_entries:
+            description += (
+                " Includes: "
+                + "; ".join(
+                    governed[tool_name].description.partition(". ")[0].rstrip(".")
+                    for tool_name, _available in governed_entries
+                )
+                + ". Load when the resident explicitly "
+                "requests it, accepts an offer to use it, or requested it in a prior turn and "
+                "the current turn supplies or completes its required inputs. Do not load merely "
+                "to offer it."
+            )
         capabilities.append(
             Capability(
                 id=module.name,
-                description=module.description or f"NYC {module.category} help",
+                description=description,
                 instructions=instructions,
-                tools=available_tools,
-                defer_loading=True,
-            )
-        )
-        available_tool_names = {tool.name for tool in available_tools}
-        for member in descendants[module.name]:
-            for hint in member.situations:
-                normalized_module = module.name.replace("_", "-")
-                hint_id = hint.name.replace("_", "-").removeprefix(
-                    f"{normalized_module}-"
-                )
-                owned_focus_tools = [
-                    name for name in hint.focus_tools if name in available_tool_names
-                ]
-                instructions = "\n".join(
-                    part
-                    for part in (
-                        f"Situation: {hint.name}",
-                        hint.definition,
-                        (
-                            "Retrieve a current official source before answering."
-                            if hint.high_stakes else ""
-                        ),
-                        f"Current-source query: {hint.query}" if hint.query else "",
-                        (
-                            "Official pages: " + ", ".join(hint.urls)
-                            if hint.urls else ""
-                        ),
-                        (
-                            f"To use its module-owned tools, load the parent "
-                            f"`{module.name}` capability before calling: "
-                            + ", ".join(f"`{name}`" for name in owned_focus_tools)
-                            if owned_focus_tools
-                            else ""
-                        ),
-                        (
-                            "Call `official_sources` with every Official pages URL "
-                            "before answering; do not omit a listed source."
-                            if hint.high_stakes
-                            and hint.urls
-                            and "official_sources" in hint.focus_tools
-                            else ""
-                        ),
-                        (
-                            "Prioritize tools: " + ", ".join(hint.focus_tools)
-                            if hint.focus_tools else ""
-                        ),
-                        hint.reminder,
-                    )
-                    if part
-                )
-                capabilities.append(Capability[ToolContext](
-                    id=f"{module.name}-{hint_id}",
-                    description=hint.definition,
-                    instructions=instructions,
-                    defer_loading=True,
-                ))
-    for (module_name, tool_name), available_tools in governed_tools.items():
-        tool = governed[tool_name]
-        capability_id = f"{module_name}-{tool_name.replace('_', '-')}"
-        purpose = tool.description.partition(". ")[0].rstrip(".")
-        guidance_tools = ", ".join(
-            f"`{candidate.name}`"
-            for candidate in module_tools.get(module_name, ())
-        )
-        guidance_instruction = (
-            f"load the parent `{module_name}` capability, then use `search_tools` to "
-            "discover and call its current "
-            f"read-only guidance tool ({guidance_tools}). "
-            if guidance_tools
-            else "retrieve the parent module's current official guidance. "
-        )
-        capabilities.append(
-            Capability(
-                id=capability_id,
-                description=(
-                    f"{purpose}. Use when the resident requests this workflow, asks for "
-                    "its result, or accepts an offer to use it. If the resident requested "
-                    "or accepted this workflow in a prior turn and the current turn "
-                    "supplies or completes its required inputs, load this capability now. "
-                    "Load before collecting its inputs; do not load merely to offer it."
-                ),
-                instructions=(
-                    f"The resident explicitly asked for or accepted {tool.title or tool.name}. "
-                    "This workflow requires a grounded handoff before any clarification: "
-                    "retrieve current official guidance and explain the workflow's limits "
-                    "before asking for missing facts. "
-                    "If they ask for guaranteed approval, a determination, or the current "
-                    "official path before the required facts are complete, "
-                    f"{guidance_instruction}"
-                    "Explain that this workflow gives an estimate, not a determination, "
-                    "before continuing the intake. "
-                    "Complete this workflow's first grounded handoff before loading capabilities "
-                    "for non-urgent secondary concerns. Address an immediate safety need first. "
-                    "Acknowledge other concerns and offer to continue with them next. "
-                    "Do not enumerate possible results or application documents before the check. "
-                    "End the first handoff with only the next few required questions. "
-                    "Keep the data-minimization warning uncited unless the retrieved source "
-                    "directly supports it. "
-                    "Preserve each person as the resident described them. Do not calculate a "
-                    "household count or infer who belongs in the workflow before confirmation. "
-                    "Ask for observable facts, not legal or program classifications. "
-                    "Gather only the schema's required resident facts, a few at a time. "
-                    "Omit unknown optional facts. Do not ask follow-up questions only to "
-                    "replace them. Run the check as soon as required facts are supported. "
-                    "Never describe optional fields as missing or required; after the first "
-                    "result, offer them only as an optional refinement. "
-                    "Once the required facts are present, use the confirmation tool. Its native "
-                    "approval request is the resident's structured review. Do not ask for a "
-                    "separate prose confirmation before calling it. After approval it runs the "
-                    "governed read-only check."
-                ),
                 tools=available_tools,
                 defer_loading=True,
             )

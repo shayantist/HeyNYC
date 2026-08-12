@@ -1,4 +1,4 @@
-"""clinics module tool: `find_clinic`, the nearest NYC safety-net clinics that will see you
+"""Clinics module tools for safety-net locations and grounded coverage guidance.
 regardless of insurance or immigration status.
 
 Two source CLASSES, merged and ranked by distance:
@@ -354,11 +354,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-# --- health_coverage_guidance: static-but-OFFICIAL coverage facts, each cited to its source page ---
+# --- get_health_coverage_guidance: official coverage facts, each cited to its source page ---
 #
-# `find_clinic` answers "where can I get seen"; this answers "what coverage can I get, and is it
+# `find_clinics` answers "where can I get seen"; this answers "what coverage can I get, and is it
 # safe" for an uninsured or undocumented New Yorker. The facts are STATIC but official (a program's
-# guarantee, a state coverage rule), so, like housing_guidance, they live here as grounded _Fact
+# guarantee, a state coverage rule), so they live here as grounded _Fact
 # records returned WITH a DOC citation to the official page each one comes from, never stated from
 # the model's memory. Verified 2026-07-12 against the linked pages (see
 # docs/internal/eval/redteam-coverage-gap-closure-2026-07-12.md); `snippet` is a subset of `body`'s wording
@@ -503,10 +503,10 @@ def _resolve_coverage_topic(raw: str) -> str | None:
 async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_coverage_topic(args.get("topic", ""))
     if topic is None:
-        return ("I don't have grounded coverage guidance for that. Use health_coverage_guidance with "
+        return ("I don't have grounded coverage guidance for that. Use get_health_coverage_guidance with "
                 "topic = 'emergency_care' (ER screening and stabilizing care), 'nyc_care' (low/no-cost care at NYC Health + Hospitals, no immigration "
                 "questions) or 'emergency_medicaid' (coverage for a medical emergency regardless of "
-                "immigration status). To find a specific clinic use find_clinic; for anything else, "
+                "immigration status). To find a specific clinic use find_clinics; for anything else, "
                 "point the user to 311 or 646-NYC-CARE (646-692-2273).")
     facts = (_COVERAGE[topic],)
     if topic == "emergency_medicaid":
@@ -538,7 +538,7 @@ async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="find_clinic",
+            name="find_clinics",
             description=(
                 "Find the nearest NYC safety-net clinics that will see someone regardless of "
                 "insurance or immigration status, grounded + cited. Merges two sources: live HRSA "
@@ -566,17 +566,16 @@ def get_tools() -> list[Tool]:
             open_world=True,  # hits the live HRSA ArcGIS service + geocoder (NYC Care seed is bundled)
         ),
         Tool(
-            name="health_coverage_guidance",
+            name="get_health_coverage_guidance",
             description=(
-                "Answer WHAT health coverage an uninsured or undocumented New Yorker can get, and "
-                "whether it's SAFE to use, grounded + cited to the official page. Topics: `nyc_care` "
+                "Return official, cited guidance for four high-stakes health coverage situations. "
+                "Topics: `nyc_care` "
                 "(low/no-cost care at NYC Health + Hospitals, sliding-scale fees from $0, doesn't ask "
                 "immigration status, enroll at 646-NYC-CARE) and `emergency_medicaid` (Medicaid for a "
                 "medical emergency, including emergency labor and delivery, regardless of immigration "
                 "status), `emergency_care` (ER screening and stabilizing care regardless of ability "
                 "to pay), and `public_charge` (MOIA public-charge guidance). Pass `topic` = one of "
-                "those (free text like 'undocumented and pregnant, how "
-                "do I pay for the delivery' is mapped to the right topic). find_clinic answers WHERE "
+                "those four values. find_clinics answers WHERE "
                 "to go; this answers WHAT coverage / IS IT SAFE. It appends an ActionNYC routing line "
                 "for public-charge questions; never state a coverage rule or a public-charge conclusion "
                 "from your own knowledge; report only what it returns, cited."
@@ -586,8 +585,8 @@ def get_tools() -> list[Tool]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": ("emergency_care | nyc_care | emergency_medicaid | public_charge: the coverage "
-                                        "situation (free text is mapped to one of these three)."),
+                        "enum": list(_COVERAGE),
+                        "description": "Health coverage situation to retrieve",
                     },
                 },
                 "required": ["topic"],

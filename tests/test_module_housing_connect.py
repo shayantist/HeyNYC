@@ -1,4 +1,4 @@
-"""Offline tests for the housing_connect module's `open_housing_lotteries` finder.
+"""Offline tests for the housing_connect module's `find_housing_connect_lotteries` finder.
 
 Grounded in one NYC Open Data (Socrata) dataset, Advertised Lotteries on Housing
 Connect by Lottery (vy5i-a666), filtered to the currently-open slice
@@ -172,7 +172,7 @@ def test_housing_connect_module_loads_with_tool_and_eval():
     module = next((m for m in registry.modules if m.name == "housing_connect"), None)
     assert module is not None
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "open_housing_lotteries" in tool_names
+    assert "find_housing_connect_lotteries" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "housing_connect"]

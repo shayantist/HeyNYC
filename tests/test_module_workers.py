@@ -1,7 +1,7 @@
-"""Offline tests for the workers module's `worker_rights_guidance` tool.
+"""Offline tests for the workers module's `get_worker_rights_guidance` tool.
 
 Static-but-official facts (NY Labor Law section 196-d + the NYS DOL tips FAQ) are baked in and
-returned WITH a DOC citation - no network. Mirrors the housing_guidance tests: a grounding tool
+returned WITH a DOC citation - no network. Mirrors the housing guidance tests: a grounding tool
 call, a DOC citation whose snippet is backed by the returned fact, free-text topic resolution, and
 that the shipped module loads with its tool + eval cases.
 """
@@ -19,7 +19,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def _tool():
-    return next(t for t in get_tools() if t.name == "worker_rights_guidance")
+    return next(t for t in get_tools() if t.name == "get_worker_rights_guidance")
 
 
 async def _run(topic: str):
@@ -89,10 +89,10 @@ def test_workers_module_loads_with_tool_and_eval():
     assert module is not None
     assert module.category == "workers"
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "worker_rights_guidance" in tool_names
+    assert "get_worker_rights_guidance" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "workers"]
     assert cases, "workers should ship eval cases"
     # the tip-theft case now expects the grounding tool (answered-with-citation, not abstained)
-    assert any("worker_rights_guidance" in c.expect_tools for c in cases)
+    assert any("get_worker_rights_guidance" in c.expect_tools for c in cases)

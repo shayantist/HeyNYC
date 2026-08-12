@@ -97,7 +97,7 @@ class ServiceModule(BaseModel):
     # matches the stakes. Enforced at load: no opt-out, no editorial/community tiers.
     official_only: bool = True
     # Submodule hint (events topics): the Ticketmaster `keyword` the agent should pass to
-    # whats_on_events for this topic. Advisory metadata; the prompt blurb drives the call.
+    # find_nyc_events for this topic. Advisory metadata; the prompt blurb drives the call.
     ticketmaster_keyword: Optional[str] = None
     # Module-owned high-stakes situations for the scope preflight checklist.
     situations: list[SituationHint] = Field(default_factory=list)

@@ -12,7 +12,7 @@
   capability: geocoding
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
-  notes: Plain address — must route through find_clinic and return grounded, cited safety-net clinics.
+  notes: Plain address - must route through find_clinics and return grounded, cited safety-net clinics.
 
 - id: clinic_nearest_neighborhood
   tags: [must-win]
@@ -56,7 +56,7 @@
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   notes: Each clinic must carry a DATA citation grounded in the facility source (HRSA row / H+H page).
 
-# --- Coverage guidance: served by health_coverage_guidance, cited to the program page ------
+# --- Coverage guidance: served by get_health_coverage_guidance, cited to the program page ------
 # These answer "what coverage can I get / is it safe", now answered-with-citation instead of a safe
 # abstention. The immigration-law (public-charge) question is ROUTED to ActionNYC, never asserted.
 - id: clinic_coverage_emergency_medicaid_cited
@@ -64,7 +64,7 @@
   query: "I'm undocumented and pregnant with no insurance. How will I pay for the delivery?"
   capability: scope
   test_type: MFT
-  expect_tools: [health_coverage_guidance]
+  expect_tools: [get_health_coverage_guidance]
   invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
   utility_criterion: >-
     Explain the grounded delivery-coverage path, preserve the limit that individual eligibility is
@@ -72,7 +72,7 @@
     verification fallback when the official coverage evidence supports an answer.
   notes: >-
     Emergency Medicaid covers emergency labor and delivery regardless of immigration status; must
-    call health_coverage_guidance(topic="emergency_medicaid") and report only its cited facts plus
+    call get_health_coverage_guidance(topic="emergency_medicaid") and report only its cited facts plus
     the ActionNYC public-charge routing line, never assert a public-charge conclusion from memory.
 
 - id: clinic_cross_module_pregnancy_care
@@ -80,7 +80,7 @@
   query: "I do not have insurance, I am pregnant, and I need to know how to pay for delivery. Where can I receive care near Jackson Heights, Queens?"
   capability: dataset_grounding
   test_type: MFT
-  expect_tools: [health_coverage_guidance, find_clinic]
+  expect_tools: [get_health_coverage_guidance, find_clinics]
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   notes: >-
     Coordinate grounded Emergency Medicaid guidance with a grounded clinic search. Cite coverage and
@@ -91,11 +91,11 @@
   query: "Can I get health coverage in NYC if I'm undocumented, and is it safe to sign up?"
   capability: scope
   test_type: MFT
-  expect_tools: [health_coverage_guidance]
+  expect_tools: [get_health_coverage_guidance]
   invariants: {must_cite_if_asserting: true, must_not_fabricate: true}
   notes: >-
     NYC Care gives low/no-cost care at NYC Health + Hospitals and doesn't ask immigration status;
-    must call health_coverage_guidance(topic="nyc_care") and carry its citation plus the ActionNYC
+    must call get_health_coverage_guidance(topic="nyc_care") and carry its citation plus the ActionNYC
     public-charge routing line, never a public-charge conclusion from memory.
 
 - id: clinic_public_charge_health_coverage_cited
@@ -171,7 +171,7 @@
   query: "What's the capital of France?"
   capability: scope
   test_type: DIR
-  forbid_tools: [find_clinic, geocode]
+  forbid_tools: [find_clinics, geocode]
   invariants: {must_abstain_or_redirect: true}
   notes: Unrelated to NYC services — redirect, don't answer from memory.
 

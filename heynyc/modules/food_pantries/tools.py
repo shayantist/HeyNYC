@@ -1,4 +1,4 @@
-"""food_pantries module tool: `nearest_food_pantry`, grounded in the city's FoodHelp backend.
+"""food_pantries module tool: `find_foodhelp_locations`, grounded in the city's FoodHelp backend.
 
 Data source: the public, tokenless ArcGIS Feature Service that powers finder.nyc.gov/foodhelp
 (Food_Help_Programs_PROD_view, ~522 open sites). We fetch the whole layer once (generic ArcGIS
@@ -59,7 +59,7 @@ NO_LOCATION = (
     "neighborhood, so the next search can return nearby options. Never guess their location."
 )
 SOURCE_LOCATION_NEEDS_FETCH = (
-    "The cited search result is not enough to establish that origin. First call official_sources on "
+    "The cited search result is not enough to establish that origin. First call web_fetch on "
     "the cited page for a source span containing both the resident-named place and exact address, "
     "then retry with its new citation id. If the fetched page does not contain both together, ask "
     "the resident for their NYC address or neighborhood."
@@ -629,10 +629,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             "NYC FoodHelp provides current weekly schedules, so I cannot verify a past "
             "service date. Ask for today or a future date."
         )
-    window_start = str(args.get("service_window_start") or "").strip()
-    window_end = str(args.get("service_window_end") or "").strip()
-    if bool(window_start) != bool(window_end):
-        return "Pass both service_window_start and service_window_end, or omit both."
+    window = args.get("service_window") or {}
+    window_start = str(window.get("start") or "").strip()
+    window_end = str(window.get("end") or "").strip()
     service_window = None
     if window_start:
         start = _parse_time(window_start)
@@ -648,8 +647,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     urgent = args.get("urgent") is True and not future_schedule
     if args.get("urgent") is True and not future_schedule and service_window is None:
         return (
-            "urgent=true requires service_window_start and service_window_end. Preserve the "
-            "resident's requested same-day timeframe and pass it as NYC-local 24-hour HH:MM."
+                "urgent=true requires service_window. Preserve the resident's requested same-day "
+                "timeframe and pass its start and end as NYC-local 24-hour HH:MM."
         )
     source_id = str(args.get("near_source_citation") or "")
     source_place = str(args.get("near_source_place") or "")
@@ -948,7 +947,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="nearest_food_pantry",
+            name="find_foodhelp_locations",
             description=(
                 "Find the nearest City-listed NYC food pantries / soup kitchens to an address, grounded in "
                 "the city's official FoodHelp data (finder.nyc.gov/foodhelp). Pass `near` = the "
@@ -963,7 +962,7 @@ def get_tools() -> list[Tool]:
                 "Set `urgent=true` when the resident needs food now, today, or tonight so the "
                 "result leads with the immediate fallback and does not overstate weekly hours. "
                 "When they need service during a named same-day time window, also pass "
-                "`service_window_start` and `service_window_end` as 24-hour HH:MM values. For "
+                "`service_window` with start and end as 24-hour HH:MM values. For "
                 "example, tonight is 17:00-23:59 unless the resident gives narrower times. "
                 "When a follow-up refers to one site returned earlier, pass that site's citation "
                 "ID as `site_citation` so the lookup does not silently switch locations. "
@@ -1017,21 +1016,25 @@ def get_tools() -> list[Tool]:
                             "a specific future date or day."
                         ),
                     },
-                    "service_window_start": {
-                        "type": "string",
-                        "pattern": r"^\d{2}:\d{2}$",
+                    "service_window": {
+                        "type": "object",
+                        "additionalProperties": False,
                         "description": (
-                            "Start of the resident's requested same-day service window in local "
-                            "NYC 24-hour HH:MM time. Pass together with service_window_end."
+                            "Resident's requested same-day service window in NYC local time"
                         ),
-                    },
-                    "service_window_end": {
-                        "type": "string",
-                        "pattern": r"^\d{2}:\d{2}$",
-                        "description": (
-                            "End of the resident's requested same-day service window in local "
-                            "NYC 24-hour HH:MM time. Pass together with service_window_start."
-                        ),
+                        "properties": {
+                            "start": {
+                                "type": "string",
+                                "pattern": r"^\d{2}:\d{2}$",
+                                "description": "Window start in 24-hour HH:MM time",
+                            },
+                            "end": {
+                                "type": "string",
+                                "pattern": r"^\d{2}:\d{2}$",
+                                "description": "Window end in 24-hour HH:MM time",
+                            },
+                        },
+                        "required": ["start", "end"],
                     },
                     "service_type": {
                         "type": "string",

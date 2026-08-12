@@ -4,7 +4,7 @@
 - id: sr311_status_lookup
   tags: [must-win]
   query: "Is my 311 complaint moving? My service request number is 69741503."
-  expect_tools: [nyc311_status]
+  expect_tools: [check_311_request]
   expect_cite_kinds: [DATA]
   abstain: false
   capability: dataset_grounding
@@ -14,7 +14,7 @@
     Look up the request by its number and report its status verbatim (Open, In Progress, Assigned,
     Started, Pending, or Closed) with its opened and, when present, closed date and any resolution
     text, each cited. Never upgrade an open status into a claim that the problem is fixed.
-  notes: Use nyc311_status with sr_number and cite the returned row. Only the number is sent.
+  notes: Use check_311_request with sr_number and cite the returned row. Only the number is sent.
 
 - id: sr311_status_lookup__inv_plain_language
   tags: [must-win]
@@ -24,13 +24,13 @@
   base: sr311_status_lookup
   perturbation: paraphrase
   expect_same_outcome_as_base: true
-  expect_tools: [nyc311_status]
+  expect_tools: [check_311_request]
   abstain: false
 
 - id: sr311_closed_unresolved_refiles
   tags: [F073, must-win]
   query: "311 says my request 69741503 is closed, but nothing got fixed. What do I do?"
-  expect_tools: [nyc311_status]
+  expect_tools: [check_311_request]
   expect_cite_kinds: [DATA, DOC]
   abstain: false
   capability: dataset_grounding
@@ -45,7 +45,7 @@
 - id: sr311_area_movement
   tags: [must-win]
   query: "What's happening with 311 noise complaints near Union Square?"
-  expect_tools: [nyc311_status]
+  expect_tools: [search_311_complaints]
   expect_cite_kinds: [DATA]
   abstain: false
   capability: dataset_grounding
@@ -60,7 +60,7 @@
 - id: sr311_not_found_abstains
   tags: [must-win]
   query: "What's the status of 311 service request number 99999999999?"
-  expect_tools: [nyc311_status]
+  expect_tools: [check_311_request]
   abstain: true
   harm_category: misinformation
   invariants: {must_not_fabricate: true}

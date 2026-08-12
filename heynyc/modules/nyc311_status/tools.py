@@ -1,7 +1,4 @@
-"""Read-only 311 service-request status lane, grounded in NYC Open Data erm2-nwe9.
-
-Two resident intents, one tool, no keyword routing: the model picks arguments by
-meaning and the handler branches on which structured argument is present.
+"""Read-only 311 service-request tools grounded in NYC Open Data erm2-nwe9.
 
   - "is my complaint moving?"  -> sr_number: look up one row by its own unique_key
     (the SR number). ONLY the number is sent; a resident's address is never geocoded
@@ -206,11 +203,11 @@ async def _lookup_area(about: str, near: str, limit: int, ctx: ToolContext) -> s
     return "\n".join(lines)
 
 
-async def _nyc311_status(args: dict, ctx: ToolContext) -> str:
-    sr_number = str(args.get("sr_number", "") or "").strip()
-    if sr_number:  # most specific intent wins; this path never geocodes
-        return await _lookup_sr(sr_number, ctx)
+async def _check_311_request(args: dict, ctx: ToolContext) -> str:
+    return await _lookup_sr(str(args.get("sr_number", "") or "").strip(), ctx)
 
+
+async def _search_311_complaints(args: dict, ctx: ToolContext) -> str:
     about = str(args.get("about", "") or "").strip()
     near = str(args.get("near", "") or "").strip()
     if not about and not near:
@@ -229,14 +226,10 @@ async def _nyc311_status(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="nyc311_status",
+            name="check_311_request",
             description=(
-                "Check an EXISTING NYC 311 service request or recent 311 activity, grounded in the "
-                "city's 311 Service Requests data. Pass sr_number to look up one request's status "
-                "by its service-request number (send only the number). Or pass about (the problem, "
-                "in the resident's words, e.g. 'noise', 'heat', 'illegal parking') and/or near (one "
-                "NYC address or landmark) to see recent matching complaints and how they're moving. "
-                "Read-only: it reports status, it cannot file, update, or close a 311 request."
+                "Check one existing NYC 311 service request by its number. Send only the number. "
+                "Read-only: reports status and cannot file, update, or close a request."
             ),
             parameters={
                 "type": "object",
@@ -245,25 +238,42 @@ def get_tools() -> list[Tool]:
                         "type": "string",
                         "description": "The resident's 311 service request number (digits only).",
                     },
+                },
+                "required": ["sr_number"],
+            },
+            handler=_check_311_request,
+            open_world=True,  # hits live Socrata
+            title="Check 311 request status",
+        ),
+        Tool(
+            name="search_311_complaints",
+            description=(
+                "Search recent NYC 311 complaints by problem and optional NYC location. Use for "
+                "area activity, not for checking one known service request. Read-only."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
                     "about": {
                         "type": "string",
-                        "description": "Complaint topic to match, e.g. 'noise', 'heat', 'illegal parking'.",
+                        "description": "Complaint topic to match, such as noise or illegal parking",
                     },
                     "near": {
                         "type": "string",
-                        "description": "One NYC address or landmark to bound recent complaints.",
+                        "description": "Optional NYC address or landmark to bound the search",
                     },
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 10,
                         "default": 5,
-                        "description": "Max recent complaints to list (area lookup).",
+                        "description": "Maximum recent complaints to list",
                     },
                 },
+                "required": ["about"],
             },
-            handler=_nyc311_status,
-            open_world=True,  # hits live Socrata
-            title="Check 311 request status",
-        )
+            handler=_search_311_complaints,
+            open_world=True,
+            title="Search recent 311 complaints",
+        ),
     ]

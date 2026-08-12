@@ -189,7 +189,7 @@ async def test_fetch_advisories_english_default_ignores_other_languages():
     assert not any("active-es" in p for p in seen)  # Spanish CAP never requested by default
 
 
-async def test_nyc_advisories_tool_passes_language_through():
+async def test_check_notify_nyc_tool_passes_language_through():
     # The module tool threads a `lang` arg to the feed and surfaces the official translation.
 
     citations = CitationRegistry()
@@ -253,7 +253,7 @@ async def test_fetch_advisories_returns_empty_on_rss_failure():
 
 # --- the module tool -------------------------------------------------------
 
-async def test_nyc_advisories_grounds_and_cites_active():
+async def test_check_notify_nyc_grounds_and_cites_active():
     citations = CitationRegistry()
     client = _client(RSS_MAIN, CAPS_MAIN)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
@@ -274,7 +274,7 @@ async def test_nyc_advisories_grounds_and_cites_active():
     assert mapping["S1"]["provenance"]["record_id"] == "NYC-ACTIVE-1"
 
 
-async def test_nyc_advisories_abstains_when_none_active():
+async def test_check_notify_nyc_abstains_when_none_active():
     # Feed carries only an already-expired advisory → nothing active → clean abstention.
     rss = _rss(_item("Old (English)", "NYCEM [English]", "g-old", "expired.xml"))
     citations = CitationRegistry()
@@ -297,7 +297,7 @@ async def test_nyc_advisories_abstains_when_none_active():
 # unreachable, errored, empty, or unreadable is NOT a confirmed all-clear. It must say we COULD NOT
 # confirm the advisories and route to the official live source + 311 (+ 911 for a life-threat).
 
-async def test_nyc_advisories_failsafe_on_empty_feed():
+async def test_check_notify_nyc_failsafe_on_empty_feed():
     # RSS reached (HTTP 200) but carries ZERO <item>s, the exact live failure. Must not claim clear.
     empty_rss = _rss()  # a well-formed RSS with no items at all
     citations = CitationRegistry()
@@ -318,7 +318,7 @@ async def test_nyc_advisories_failsafe_on_empty_feed():
     assert len(citations) == 0  # nothing fabricated/cited
 
 
-async def test_nyc_advisories_failsafe_on_fetch_error():
+async def test_check_notify_nyc_failsafe_on_fetch_error():
     # RSS fetch fails outright (HTTP 500 / non-200). Same fail-safe: never a confident "no advisories".
     citations = CitationRegistry()
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
@@ -554,16 +554,69 @@ def test_recent_awareness_carries_full_text_and_fail_open_safety_policy():
 
     assert "Air Quality Health Advisory" in text
     assert "FDNY Activity" in text
-    assert "Old notice" not in text
+    assert "Old notice" in text
     assert "unhealthy for everyone in all or part of NYC" in text  # full text, model judges meaning
-    assert "call `nyc_advisories`" in text                         # cite discipline survives
+    assert "call `check_notify_nyc`" in text                         # cite discipline survives
     assert "immediate personal safety" in text                     # safety notices fail open
     assert "hasn't shared a location" in text
     assert "known location" in text                                # narrow class keeps overlap rule
     assert "already ended" in text                                 # expiry checked against now
 
 
-async def test_nyc_advisories_falls_back_to_recent_when_cap_empty():
+def test_recent_awareness_keeps_seven_days_without_truncating_bodies():
+    long_body = "A" * 450
+    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
+        notify_nyc.RecentNote(
+            title="Two day old notice", body=long_body,
+            issued="2026-07-14T08:00:00-04:00", issued_raw="07/14/2026 08:00:00",
+            source_url=RECENT_MESSAGES_URL, guid="recent-2d",
+        ),
+        notify_nyc.RecentNote(
+            title="Eight day old notice", body="expired",
+            issued="2026-07-08T08:00:00-04:00", issued_raw="07/08/2026 08:00:00",
+            source_url=RECENT_MESSAGES_URL, guid="recent-8d",
+        ),
+    ])
+
+    text = advisory_tools._recent_awareness(feed, date(2026, 7, 16))
+
+    assert "Two day old notice" in text
+    assert long_body in text
+    assert "Eight day old notice" not in text
+
+
+async def test_current_awareness_retains_recent_cache_when_refresh_degrades(monkeypatch):
+    good = notify_nyc.RecentFeed(confirmed=True, notes=[
+        notify_nyc.RecentNote(
+            title="Cached notice", body="Exact cached message body",
+            issued=datetime.now(advisory_tools.NYC_TZ).isoformat(),
+            issued_raw="08/12/2026 01:00:00",
+            source_url=RECENT_MESSAGES_URL, guid="cached-notice",
+        )
+    ])
+    degraded = notify_nyc.RecentFeed(confirmed=False, notes=[])
+    feeds = iter((good, degraded))
+
+    async def fake_fetch():
+        return next(feeds)
+
+    monkeypatch.setattr(advisory_tools, "fetch_recent_advisories", fake_fetch)
+    monkeypatch.setattr(advisory_tools, "_awareness_cache", None)
+    first = await advisory_tools.current_awareness()
+    cached_at, notes = advisory_tools._awareness_cache
+    monkeypatch.setattr(
+        advisory_tools, "_awareness_cache",
+        (cached_at - advisory_tools._AWARENESS_TTL_S - 1, notes),
+    )
+
+    second = await advisory_tools.current_awareness()
+
+    assert "Exact cached message body" in first
+    assert "Exact cached message body" in second
+    assert "refresh failed" in second.lower()
+
+
+async def test_check_notify_nyc_falls_back_to_recent_when_cap_empty():
     # THE production scenario: the CAP/Everbridge feed is EMPTY, but Notify NYC IS carrying today's
     # flood alerts. The tool must surface them (grounded + cited), never fail safe or go silent.
     citations = CitationRegistry()
@@ -602,7 +655,7 @@ async def test_recent_fallback_dedups_titles_already_delivered_this_conversation
     assert "Avoid flooded roadways" not in out
 
 
-async def test_nyc_advisories_prefers_cap_when_it_has_active():
+async def test_check_notify_nyc_prefers_cap_when_it_has_active():
     # When the CAP feed is working AND has an active advisory, it stays the source (structured,
     # with severity + expiry); the RecentMessages fallback is not needed.
     citations = CitationRegistry()
@@ -615,7 +668,7 @@ async def test_nyc_advisories_prefers_cap_when_it_has_active():
     assert "in effect until 2099-07-02T19:45:28-04:00" in out
 
 
-async def test_nyc_advisories_combines_cap_and_recent_without_exact_duplicates():
+async def test_check_notify_nyc_combines_cap_and_recent_without_exact_duplicates():
     fireworks_title = "Notify NYC - Fireworks - 7/17 - Coney Island Beach (BK)"
     rss = _rss(_item(fireworks_title, "NYCEM [English]", "g-fireworks", "fireworks.xml"))
     cap = _cap(
@@ -643,7 +696,7 @@ async def test_nyc_advisories_combines_cap_and_recent_without_exact_duplicates()
     assert out.count(fireworks_title) == 1
 
 
-async def test_nyc_advisories_reports_borough_notices_alongside_citywide():
+async def test_check_notify_nyc_reports_borough_notices_alongside_citywide():
     """F061 (RULED 2026-07-18): the tool never area-filters by parsing notice prose — today's
     borough-list flood warnings would have been filtered OUT of a "citywide" view. Every active
     notice returns, cited, and the model judges relevance from the full text."""
@@ -695,7 +748,7 @@ def test_advisories_module_loads_with_tool_and_eval():
     assert module is not None
     assert module.category == "alerts"
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "nyc_advisories" in tool_names
+    assert "check_notify_nyc" in tool_names
 
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "advisories"]
@@ -710,7 +763,7 @@ CAP_FLOOD = _cap("NYC-FLOOD-1", severity="Moderate", event="Flood Watch",
                  headline="Flood Watch for Queens", expires="2099-08-01T10:00:00-04:00")
 
 
-async def test_nyc_advisories_dedups_titles_already_delivered_this_conversation():
+async def test_check_notify_nyc_dedups_titles_already_delivered_this_conversation():
     """F080: luna re-fetched by choice and re-briefed a near-verbatim repeat. When every
     active advisory was already cited earlier in the conversation, the tool returns a
     compact already-shared marker instead of the payload, so there is nothing to re-brief."""
@@ -732,7 +785,7 @@ async def test_nyc_advisories_dedups_titles_already_delivered_this_conversation(
     assert citations.mapping()["S1"]["title"] == "Heat Advisory in effect for NYC"
 
 
-async def test_nyc_advisories_full_text_repeats_on_explicit_request():
+async def test_check_notify_nyc_full_text_repeats_on_explicit_request():
     citations = CitationRegistry()
     client = _client(RSS_MAIN, CAPS_MAIN)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
@@ -744,7 +797,7 @@ async def test_nyc_advisories_full_text_repeats_on_explicit_request():
     assert "{cite:S1}" in out
 
 
-async def test_nyc_advisories_delivers_only_the_new_advisory():
+async def test_check_notify_nyc_delivers_only_the_new_advisory():
     """A genuinely NEW advisory still arrives in full with its citation; the already-shared
     one shrinks to a do-not-re-brief mention."""
     rss = _rss(
@@ -771,7 +824,7 @@ async def test_nyc_advisories_delivers_only_the_new_advisory():
     assert "Heat Advisory in effect for NYC" in titles
 
 
-async def test_nyc_advisories_empty_delivered_set_changes_nothing():
+async def test_check_notify_nyc_empty_delivered_set_changes_nothing():
     citations = CitationRegistry()
     client = _client(RSS_MAIN, CAPS_MAIN)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)

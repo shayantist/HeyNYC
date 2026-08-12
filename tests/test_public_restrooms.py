@@ -19,7 +19,7 @@ def test_public_restrooms_module_loads_custom_lookup():
 
     tool_names = {tool.name for tool in registry.load_module_tools()}
 
-    assert "public_restroom_lookup" in tool_names
+    assert "find_public_restrooms" in tool_names
 
 
 def test_public_restrooms_scope_accessibility_and_311_claims():

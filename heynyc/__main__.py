@@ -236,12 +236,16 @@ def _record_agent_turn(session_id: str, model: str, result) -> None:
 
 async def _cmd_chat(question: str, model: str | None = None) -> None:
     # CLI --model wins when given; otherwise .env ALWAYS decides (owner rule 2026-07-21).
+    from heynyc.core.pydantic_runtime import build_configured_runtime
     from heynyc.modules.advisories.tools import current_awareness
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
-    agent = Agent(
-        registry, model=model or config.HEYNYC_MODEL, index=_load_retriever(required=False),
-        notify_awareness=current_awareness, scope_gate=True,
+    selected_model = model or config.HEYNYC_MODEL
+    agent = build_configured_runtime(
+        registry,
+        model=selected_model,
+        index=_load_retriever(required=False),
+        current_awareness=current_awareness,
     )
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
@@ -252,7 +256,7 @@ async def _cmd_chat(question: str, model: str | None = None) -> None:
         for cid, c in used.items():
             url = text_fragment_url(c["url"], c.get("snippet", ""), c.get("kind", ""))
             print(f"  [{cid}] {c['title'] or c['url']} - {url}")
-    _record_agent_turn("chat", agent.model, result)
+    _record_agent_turn("chat", selected_model, result)
 
 
 def _render_stats(path) -> None:
@@ -324,7 +328,7 @@ def _render_outcomes(telemetry_path, outcomes_path) -> None:
         return
     labels = {
         "turns": "turns",
-        "screened": "screened (screen_eligibility)",
+        "screened": "screened (screen_access_nyc_eligibility)",
         "eligible_shown": "eligible programs shown",
         "apply_started": "apply started (prepare_snap_application)",
         "form_ready": "filled form ready",

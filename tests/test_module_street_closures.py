@@ -51,7 +51,11 @@ def _closure_row() -> dict:
 
 def test_module_loads_custom_tool():
     names = {tool.name for tool in Registry.discover(config.MODULES_DIR).load_module_tools()}
-    assert "street_closures" in names
+    assert "find_street_closures" in names
+
+
+def test_street_closure_date_is_typed_in_the_tool_schema():
+    assert closures.get_tools()[0].parameters["properties"]["on"]["format"] == "date"
 
 
 def test_module_declares_the_closures_dataset_binding():

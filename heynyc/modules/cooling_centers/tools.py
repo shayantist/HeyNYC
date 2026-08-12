@@ -285,7 +285,7 @@ def _decode_site_fact(
     return [key.casefold() for key in raw_keys], [float(origin[0]), float(origin[1])], scope
 
 
-async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
+async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     near = str(args.get("near", "")).strip()
     origin = await geocode(near, client=ctx.http)
     if origin is None:
@@ -588,7 +588,7 @@ async def _cool_options_lookup(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="cool_options_lookup",
+            name="find_cool_options",
             description=(
                 "Find live NYC Cool Options. Use kind='cooling_center' for activated centers, "
                 "kind='indoor' for indoor A/C options, or kind='all' for any heat-relief option. "
@@ -610,7 +610,10 @@ def get_tools() -> list[Tool]:
                     },
                     "exclude_sites": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {
+                            "type": "string",
+                            "description": "One exact facility name to exclude",
+                        },
                         "maxItems": 10,
                         "description": (
                             "Exact facility names the resident rejected in this turn"
@@ -650,7 +653,7 @@ def get_tools() -> list[Tool]:
                 },
                 "required": ["near"],
             },
-            handler=_cool_options_lookup,
+            handler=_find_cool_options,
             open_world=True,
             title="Find Cool Options",
         )

@@ -187,7 +187,7 @@ async def _street_closures(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="street_closures",
+            name="find_street_closures",
             description=(
                 "Check scheduled NYC street closures near a place, grounded in DOT's construction "
                 "street-closure schedule (NYC Open Data). Use it for game-day and travel planning: "
@@ -207,6 +207,7 @@ def get_tools() -> list[Tool]:
                     },
                     "on": {
                         "type": "string",
+                        "format": "date",
                         "description": "Date to check (YYYY-MM-DD), e.g. a game day. Defaults to today.",
                     },
                     "limit": {
@@ -217,6 +218,7 @@ def get_tools() -> list[Tool]:
                         "description": "Max closures to list.",
                     },
                 },
+                "required": ["near"],
             },
             handler=_street_closures,
             open_world=True,  # hits live Socrata

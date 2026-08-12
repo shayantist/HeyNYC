@@ -1,4 +1,4 @@
-"""Offline tests for the benefits module's benefits_search tool (no network)."""
+"""Offline tests for the benefits module's search_benefits tool (no network)."""
 from __future__ import annotations
 
 import httpx
@@ -31,7 +31,7 @@ _FAKE_ROW = {
 
 def _benefits_tool():
     registry = Registry.discover(config.MODULES_DIR)
-    tool = next(t for t in registry.load_module_tools() if t.name == "benefits_search")
+    tool = next(t for t in registry.load_module_tools() if t.name == "search_benefits")
     return tool, registry
 
 
@@ -47,7 +47,7 @@ def _client_returning(rows, status=200):
 
 def test_benefits_module_tool_is_discovered():
     registry = Registry.discover(config.MODULES_DIR)
-    assert "benefits_search" in {t.name for t in registry.load_module_tools()}
+    assert "search_benefits" in {t.name for t in registry.load_module_tools()}
 
 
 async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
@@ -77,7 +77,7 @@ async def test_benefits_search_offers_conversational_screening_without_uncited_i
         registry=registry,
         http=client,
         embedder=_EMBEDDER,
-        toolbox={"screen_eligibility": btools.screen_eligibility_tool()},
+        toolbox={"screen_access_nyc_eligibility": btools.screen_access_nyc_eligibility_tool()},
     )
 
     out = await tool.handler({"query": "benefits for a new parent"}, ctx)
@@ -177,7 +177,7 @@ async def test_benefits_search_states_oldest_returned_date_and_ends_with_next_st
         registry=registry,
         http=client,
         embedder=_EMBEDDER,
-        toolbox={"screen_eligibility": btools.screen_eligibility_tool()},
+        toolbox={"screen_access_nyc_eligibility": btools.screen_access_nyc_eligibility_tool()},
     )
 
     out = await tool.handler({"query": "program"}, ctx)
@@ -389,7 +389,7 @@ def test_benefits_eval_cases_load_and_flag_safety():
     assert definite.invariants.get("must_abstain_or_redirect") is True
 
 
-# --- screen_eligibility (Module B) -----------------------------------------
+# --- screen_access_nyc_eligibility (Module B) -----------------------------------------
 
 def _route_screen(req: httpx.Request) -> httpx.Response:
     host, path = req.url.host, req.url.path
@@ -406,7 +406,7 @@ def _route_screen(req: httpx.Request) -> httpx.Response:
     return httpx.Response(404)
 
 
-async def test_screen_eligibility_grounds_and_frames(monkeypatch):
+async def test_screen_access_nyc_eligibility_grounds_and_frames(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -427,7 +427,7 @@ async def test_screen_eligibility_grounds_and_frames(monkeypatch):
     assert any("/resource/kvhd-5fmu/row-snap.json" in c["url"] for c in cites.values())
 
 
-async def test_screen_eligibility_asks_for_a_goal_instead_of_dumping_matches(monkeypatch):
+async def test_screen_access_nyc_eligibility_asks_for_a_goal_instead_of_dumping_matches(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -460,7 +460,7 @@ async def test_screen_eligibility_asks_for_a_goal_instead_of_dumping_matches(mon
     assert len(reg.mapping()) == 1
 
 
-async def test_screen_eligibility_uses_goal_to_show_three_grounded_matches(monkeypatch):
+async def test_screen_access_nyc_eligibility_uses_goal_to_show_three_grounded_matches(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -513,7 +513,7 @@ async def test_screen_eligibility_uses_goal_to_show_three_grounded_matches(monke
     assert len(reg.mapping()) == 4
 
 
-async def test_screen_eligibility_show_all_returns_every_grounded_match(monkeypatch):
+async def test_screen_access_nyc_eligibility_show_all_returns_every_grounded_match(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -542,7 +542,7 @@ async def test_screen_eligibility_show_all_returns_every_grounded_match(monkeypa
     assert all(program["name"] in out for program in programs)
 
 
-async def test_screen_eligibility_keeps_verdict_when_catalog_enrichment_fails(monkeypatch):
+async def test_screen_access_nyc_eligibility_keeps_verdict_when_catalog_enrichment_fails(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -571,7 +571,7 @@ async def test_screen_eligibility_keeps_verdict_when_catalog_enrichment_fails(mo
                for c in reg.mapping().values())
 
 
-async def test_screen_eligibility_keeps_verdict_when_catalog_json_is_malformed(monkeypatch):
+async def test_screen_access_nyc_eligibility_keeps_verdict_when_catalog_json_is_malformed(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -597,7 +597,7 @@ async def test_screen_eligibility_keeps_verdict_when_catalog_json_is_malformed(m
     assert "likely eligible" in out.lower() and "SNAP" in out
 
 
-async def test_screen_eligibility_surfaces_api_validation_error(monkeypatch):
+async def test_screen_access_nyc_eligibility_surfaces_api_validation_error(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -624,7 +624,7 @@ async def test_screen_eligibility_surfaces_api_validation_error(monkeypatch):
     assert "couldn't reach" not in out.lower()
 
 
-async def test_screen_eligibility_handles_malformed_api_validation_payload(monkeypatch):
+async def test_screen_access_nyc_eligibility_handles_malformed_api_validation_payload(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     screening.clear_token("https://sandbox.screeningapi.cityofnewyork.us")
@@ -647,7 +647,7 @@ async def test_screen_eligibility_handles_malformed_api_validation_payload(monke
     assert "request contract" in out.lower()
 
 
-async def test_screen_eligibility_rejects_pii(monkeypatch):
+async def test_screen_access_nyc_eligibility_rejects_pii(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None)
@@ -656,7 +656,7 @@ async def test_screen_eligibility_rejects_pii(monkeypatch):
     assert out.startswith("ERROR")
 
 
-async def test_screen_eligibility_rejects_program_name_before_auth(monkeypatch):
+async def test_screen_access_nyc_eligibility_rejects_program_name_before_auth(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     calls = {"n": 0}
@@ -682,7 +682,7 @@ async def test_screen_eligibility_rejects_program_name_before_auth(monkeypatch):
     assert calls["n"] == 0
 
 
-async def test_screen_eligibility_validates_the_complete_tool_payload_before_auth(monkeypatch):
+async def test_screen_access_nyc_eligibility_validates_the_complete_tool_payload_before_auth(monkeypatch):
     monkeypatch.setattr(config, "screening_creds",
                         lambda: ("https://sandbox.screeningapi.cityofnewyork.us", "u", "p"))
     calls = {"n": 0}
@@ -711,13 +711,13 @@ async def test_screen_eligibility_validates_the_complete_tool_payload_before_aut
 def test_get_tools_gates_screener_on_creds(monkeypatch):
     monkeypatch.delenv("HEYNYC_FORMS", raising=False)
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))
-    assert {t.name for t in btools.get_tools()} == {"benefits_search"}
+    assert {t.name for t in btools.get_tools()} == {"search_benefits"}
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "u", "p"))
-    assert {t.name for t in btools.get_tools()} == {"benefits_search", "screen_eligibility"}
+    assert {t.name for t in btools.get_tools()} == {"search_benefits", "screen_access_nyc_eligibility"}
 
 
 def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
-    tool = btools.screen_eligibility_tool()
+    tool = btools.screen_access_nyc_eligibility_tool()
     schema = tool.parameters
     household = schema["properties"]["household"]
     assert household["properties"]["cashOnHand"]["type"] == "string"
@@ -917,7 +917,7 @@ async def test_synthetic_screen_review_pdf_workflow_stops_before_submission(
         }
 
     responses = [
-        {"role": "assistant", "content": None, "tool_calls": [call("screen_eligibility", profile, "s1")]},
+        {"role": "assistant", "content": None, "tool_calls": [call("screen_access_nyc_eligibility", profile, "s1")]},
         {"role": "assistant", "content": None, "tool_calls": [call(
             "prepare_snap_application", {"slots": slots, "confirmed": False}, "p1"
         )]},
@@ -939,7 +939,7 @@ async def test_synthetic_screen_review_pdf_workflow_stops_before_submission(
         return True
 
     tools = {
-        "screen_eligibility": btools.screen_eligibility_tool(),
+        "screen_access_nyc_eligibility": btools.screen_access_nyc_eligibility_tool(),
         "prepare_snap_application": btools.prepare_application_tool(),
     }
     assert not any("submit" in name or tool.destructive for name, tool in tools.items())
@@ -959,7 +959,7 @@ async def test_synthetic_screen_review_pdf_workflow_stops_before_submission(
     )
 
     pdfs = list(artifacts.glob("*.pdf"))
-    assert review.tool_calls_made == ["screen_eligibility", "prepare_snap_application"]
+    assert review.tool_calls_made == ["screen_access_nyc_eligibility", "prepare_snap_application"]
     assert ready.tool_calls_made == ["prepare_snap_application"]
     assert approvals == [("prepare_snap_application", False), ("prepare_snap_application", True)]
     assert len(pdfs) == 1 and pdfs[0].read_bytes()[:4] == b"%PDF"

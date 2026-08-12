@@ -1,7 +1,7 @@
 - id: transit_accessible_followup
   tags: [must-win]
   query: "How do I get there by subway with a wheelchair, and are the elevators working?"
-  expect_tools: [official_sources]
+  expect_tools: [web_fetch]
   abstain: false
   capability: dataset_grounding
   test_type: MFT
@@ -14,7 +14,7 @@
 - id: transit_f234_flushing_met_wheelchair
   tags: [F234, must-win]
   query: "My dad uses a wheelchair. We need to go from Flushing-Main St to the Metropolitan Museum of Art this Saturday. Which route actually has working elevators?"
-  expect_tools: [mta_elevator_status]
+  expect_tools: [check_mta_elevators]
   abstain: false
   capability: dataset_grounding
   test_type: MFT

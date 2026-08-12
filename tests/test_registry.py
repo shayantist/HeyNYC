@@ -103,7 +103,7 @@ def test_housing_manifest_declares_the_active_lockout_situation():
     assert "every recommended action" in hint.reminder.lower()
     assert "retrieved official text" in hint.reminder.lower()
     assert "distinct lease and occupancy conditions" in hint.reminder.lower()
-    assert "housing_guidance" in hint.focus_tools
+    assert "get_housing_guidance" in hint.focus_tools
     assert "threatened future" in hint.definition
     assert "not" in hint.definition
     assert "recent_developments" not in hint.focus_tools
@@ -135,7 +135,7 @@ def test_benefits_manifest_declares_the_snap_work_rules_situation():
         for host in ("nyc.gov", "access.nyc.gov", "otda.ny.gov")
     )
     assert "fair-hearing" in hint.reminder
-    assert "official_sources" in hint.focus_tools
+    assert "web_fetch" in hint.focus_tools
     # Meaning-based, never a keyword list (the Bengali acid test): the definition must read as a
     # description of the situation, not as SNAP/work terms.
     assert len(hint.definition.split()) >= 8
@@ -160,13 +160,12 @@ def test_benefits_manifest_declares_mixed_status_snap_situation():
     assert "required outcomes" in hint.reminder.lower()
     assert "immigration-safe legal-help route" in hint.reminder.lower()
     assert "the final sentence must ask" not in hint.reminder.lower()
-    assert hint.focus_tools == ["official_sources"]
+    assert hint.focus_tools == ["web_fetch"]
     _, capabilities = build_module_capabilities(registry, {})
-    capability = next(
-        item for item in capabilities if item.id == "benefits-mixed-status-snap"
-    )
+    capability = next(item for item in capabilities if item.id == "benefits")
     instructions = "\n".join(capability.get_instructions())
-    assert "call `official_sources` with every official pages url" in instructions.lower()
+    assert "benefits-mixed-status-snap" in instructions
+    assert "call `web_fetch` once for each official pages url needed" in instructions.lower()
 
 
 def test_benefits_manifest_declares_generic_snap_denial_situation():
@@ -179,13 +178,12 @@ def test_benefits_manifest_declares_generic_snap_denial_situation():
     assert hint.high_stakes is True
     assert any("LDSS_4826A.pdf" in url for url in hint.urls)
     assert "food assistance is additional" in hint.reminder.lower()
-    assert hint.focus_tools == ["official_sources"]
+    assert hint.focus_tools == ["web_fetch"]
     _, capabilities = build_module_capabilities(registry, {})
-    capability = next(
-        item for item in capabilities if item.id == "benefits-snap-denial-fair-hearing"
-    )
+    capability = next(item for item in capabilities if item.id == "benefits")
     instructions = "\n".join(capability.get_instructions())
-    assert "call `official_sources` with every official pages url" in instructions.lower()
+    assert "benefits-snap-denial-fair-hearing" in instructions
+    assert "call `web_fetch` once for each official pages url needed" in instructions.lower()
 
 
 def test_benefits_manifest_declares_medicaid_termination_hearing_situation():
@@ -201,13 +199,12 @@ def test_benefits_manifest_declares_medicaid_termination_hearing_situation():
     assert any("medicaid/how_do_i_apply" in url for url in hint.urls)
     assert "otda decides" in hint.reminder.lower()
     assert "resident's language" in hint.reminder.lower()
-    assert hint.focus_tools == ["official_sources"]
+    assert hint.focus_tools == ["web_fetch"]
     _, capabilities = build_module_capabilities(registry, {})
-    capability = next(
-        item for item in capabilities if item.id == "benefits-medicaid-termination-fair-hearing"
-    )
+    capability = next(item for item in capabilities if item.id == "benefits")
     instructions = "\n".join(capability.get_instructions()).lower()
-    assert "call `official_sources` with every official pages url" in instructions
+    assert "benefits-medicaid-termination-fair-hearing" in instructions
+    assert "call `web_fetch` once for each official pages url needed" in instructions
 
 
 def test_official_only_is_the_default_and_blocks_editorial_sources_at_load():
@@ -297,7 +294,7 @@ def test_transit_manifest_declares_current_mta_accessibility_sources():
     assert "requested day" in prompt
     assert "requires a grounded handoff" in prompt
     assert "ask that exact endpoint question in the grounded handoff" in prompt
-    assert "call official_sources directly" in prompt
+    assert "call web_fetch directly" in prompt
     assert "do not use web_search" in prompt
     assert "do not suggest a candidate address or entrance" in prompt
 
@@ -321,7 +318,7 @@ def test_food_help_manifest_handles_citywide_starting_point_before_location():
     prompt = " ".join(food.prompt.lower().split())
 
     assert "where do i start" in prompt
-    assert "official_sources" in prompt
+    assert "web_fetch" in prompt
     assert "before optionally asking for a location" in prompt
     assert "exact location phrase" in prompt
 
@@ -332,18 +329,18 @@ def test_governed_screening_capability_explains_estimate_before_intake():
         resident_fact_confirmation_tool,
     )
     from heynyc.core.tools.base import Tool
-    from heynyc.modules.benefits.tools import screen_eligibility_tool
+    from heynyc.modules.benefits.tools import screen_access_nyc_eligibility_tool
 
     async def search_handler(args, ctx):
         return "official guidance"
 
     registry = Registry.discover(Path("heynyc/modules"))
-    screening = screen_eligibility_tool()
+    screening = screen_access_nyc_eligibility_tool()
     screening.module = "benefits"
     confirmation = resident_fact_confirmation_tool(screening)
     confirmation.module = "benefits"
     discovery = Tool(
-        name="benefits_search",
+        name="search_benefits",
         description="Find current benefit programs",
         parameters={"type": "object", "properties": {}},
         handler=search_handler,
@@ -357,14 +354,19 @@ def test_governed_screening_capability_explains_estimate_before_intake():
             discovery.name: discovery,
         },
     )
-    capability = next(
-        item for item in capabilities if item.id == "benefits-screen-eligibility"
-    )
+    capability = next(item for item in capabilities if item.id == "benefits")
     instructions = "\n".join(capability.get_instructions()).lower()
 
     assert "guaranteed approval" in instructions
-    assert "benefits_search" not in capability.get_toolset().tools
-    assert "load the parent `benefits` capability" in instructions
-    assert "use `search_tools` to discover and call" in instructions
-    assert "`benefits_search`" in instructions
+    assert set(capability.get_toolset().tools) == {
+        "search_benefits",
+        "confirm_screen_access_nyc_eligibility_facts",
+    }
+    assert not any(
+        item.id == "benefits-screen-access-nyc-eligibility"
+        for item in capabilities
+    )
+    assert "load the parent `benefits` capability" not in instructions
+    assert "use `search_tools` to discover and call" not in instructions
+    assert "`search_benefits`" in instructions
     assert "estimate, not a determination" in instructions

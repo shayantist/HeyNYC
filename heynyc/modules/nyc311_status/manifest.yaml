@@ -19,13 +19,12 @@ allowlist:
   - portal.311.nyc.gov
 tools: tools.py
 prompt: |
-  For questions about an EXISTING 311 complaint or recent 311 activity, call nyc311_status.
-  Two shapes:
-  - "Is my complaint moving / what's the status of SR <number>?" pass sr_number=<the resident's
+  For questions about an EXISTING 311 complaint, call check_311_request and pass
+  sr_number=<the resident's
     service request number>. Pass ONLY the number, never their name or address.
-  - "What's happening with 311 complaints about <thing> near <place>?" pass about=<the problem, in
-    the resident's words, e.g. noise, heat, illegal parking> and/or near=<one NYC address or
-    landmark>.
+  For recent 311 activity, call search_311_complaints and pass about=<the problem, in
+    the resident's words, e.g. noise, heat, illegal parking> and optionally near=<one NYC address
+    or landmark>.
   Preserve the tool's statuses, dates, resolution text, and citations. Report the status verbatim
   (Open, In Progress, Assigned, Started, Pending, Closed) and never upgrade "Open" or "In Progress"
   into a promise that the problem is fixed. Do not invent

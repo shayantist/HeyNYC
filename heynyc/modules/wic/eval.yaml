@@ -11,7 +11,7 @@
   capability: geocoding
   test_type: MFT
   invariants: {must_ground: true, must_not_fabricate: true}
-  notes: Plain street address - the reliable geocoding path; must route through nearest_wic_site.
+  notes: Plain street address - the reliable geocoding path; must route through find_wic_sites.
 
 - id: wic_nearest_neighborhood
   tags: [must-win]
@@ -98,7 +98,7 @@
   query: "What's the capital of France?"
   capability: scope
   test_type: DIR
-  forbid_tools: [nearest_wic_site, geocode]
+  forbid_tools: [find_wic_sites, geocode]
   invariants: {must_abstain_or_redirect: true}
   notes: Unrelated to NYC services - redirect, don't answer from memory.
 

@@ -1,9 +1,9 @@
-"""workers module tool: `worker_rights_guidance`, NYC/NYS worker-rights facts, each cited to its
+"""NYC and NYS worker-rights facts, each cited to its
 official source page.
 
 Closes the red-team tip-theft gap: no existing module covered worker rights, so a question like
 "my boss is keeping our tips" got a safe abstention instead of a grounded, cited answer. Like
-housing_guidance, the facts are STATIC but OFFICIAL (the statute + the enforcement path), so they
+get_housing_guidance, the facts are STATIC but OFFICIAL (the statute + the enforcement path), so they
 live here as grounded _Fact records and are returned WITH a DOC citation to the official page each
 one comes from, never stated from the model's memory.
 
@@ -105,7 +105,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded guidance for that worker-rights topic. Use "
-                "worker_rights_guidance with topic = 'tips' (an employer taking or keeping your "
+                "get_worker_rights_guidance with topic = 'tips' (an employer taking or keeping your "
                 "tips). For anything else, point the user to the NYS Department of Labor "
                 "(dol.ny.gov) or 311.")
     intro, facts = _GUIDANCE[topic]
@@ -124,7 +124,7 @@ async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="worker_rights_guidance",
+            name="get_worker_rights_guidance",
             description=(
                 "Return NYC/NYS official, grounded guidance for worker-rights questions, each WITH a "
                 "citation to the official source page. Topic `tips`: an employer who takes, keeps, or "

@@ -37,7 +37,7 @@ examples:
   - "Will using SNAP or Medicaid count against my green card under public charge?"
 datasets:
   # FQHC spine, HRSA Primary Health Care service-delivery sites (live, tokenless ArcGIS MapServer
-  # layer; behaves like a FeatureServer for /query). The bespoke find_clinic tool queries this
+  # layer; behaves like a FeatureServer for /query). The bespoke find_clinics tool queries this
   # directly (with the NYC-active where-clause) AND merges the bundled NYC Care seed; this binding is
   # declared so the source is discoverable + citable. record_id_field = OBJECTID (row-addressing).
   - source: arcgis
@@ -81,7 +81,7 @@ prompt: |
   For "I need to see a doctor" when the person has no insurance, can't afford care, is on a low
   income, or is worried about immigration status (doctor / clinic / free clinic / community health
   center / sliding scale / NYC Care / "I'm undocumented and sick"), call
-  find_clinic(near=<the user's NYC address, neighborhood, or ZIP>).
+  find_clinics(near=<the user's NYC address, neighborhood, or ZIP>).
 
   LEAD WITH REASSURANCE. This is often a scared, uninsured, or undocumented New Yorker. Open by
   telling them plainly that these places serve everyone, community health centers see all patients
@@ -102,16 +102,16 @@ prompt: |
 
   WHAT COVERAGE CAN I GET / IS IT SAFE. For "can I get health coverage / insurance if I'm
   undocumented", "will an ER or delivery bill be covered", "is it safe to sign up" (as opposed to
-  "where is a clinic") → call health_coverage_guidance(topic="nyc_care" or "emergency_medicaid") and
+  "where is a clinic") → call get_health_coverage_guidance(topic="nyc_care" or "emergency_medicaid") and
   report ONLY what it returns, cited: nyc_care for low/no-cost care at NYC Health + Hospitals with no
   immigration questions, emergency_medicaid for coverage of a medical emergency (including labor and
-  delivery) regardless of immigration status. find_clinic answers WHERE to go; this answers WHAT
+  delivery) regardless of immigration status. find_clinics answers WHERE to go; this answers WHAT
   coverage / IS IT SAFE. Carry the tool's {cite:Sn} and its ActionNYC public-charge routing line, and
   do NOT state a coverage rule, a phone number, or a public-charge conclusion from your own knowledge.
   For a public-charge or "will using a benefit hurt my green card / immigration case" question, call
-  health_coverage_guidance(topic="public_charge") and report only what it returns, cited.
+  get_health_coverage_guidance(topic="public_charge") and report only what it returns, cited.
   For a tourist, visitor, or anyone asking whether an ER can deny emergency care, call
-  health_coverage_guidance(topic="emergency_care"). Keep the right to screening and stabilizing care
+  get_health_coverage_guidance(topic="emergency_care"). Keep the right to screening and stabilizing care
   separate from billing and Emergency Medicaid eligibility.
 
   If geocoding fails, the location is ambiguous, or no sites come back, DON'T guess a clinic: say so

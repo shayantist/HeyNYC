@@ -60,7 +60,7 @@ situations:
       action and effective date the notice states, without requesting identifiers. Preserve the
       resident's language in the answer. If these pages answer the question, stop searching.
     focus_tools:
-      - official_sources
+      - web_fetch
   - name: mixed_status_snap
     definition: >-
       A resident asks whether an undocumented parent or another ineligible household member can
@@ -87,7 +87,7 @@ situations:
       response in the resident's language and focused on the benefit they asked about. Do not add
       unrelated health programs. If the official pages answer the question, stop searching.
     focus_tools:
-      - official_sources
+      - web_fetch
   - name: snap_work_rules
     definition: >-
       The resident's SNAP or food-stamp benefits are ending, being reduced, cut off, or
@@ -116,9 +116,9 @@ situations:
       asked for them. Start with the listed official pages. If they answer the resident's
       question, stop searching.
     focus_tools:
-      - official_sources
+      - web_fetch
       - web_search
-      - nearest_food_pantry
+      - find_foodhelp_locations
   - name: snap_denial_fair_hearing
     definition: >-
       A resident says a SNAP application or case was denied, stopped, reduced, or decided
@@ -137,7 +137,7 @@ situations:
       additional immediate help, never a replacement for challenging the decision. If the official
       source answers the question, stop searching.
     focus_tools:
-      - official_sources
+      - web_fetch
 seeds:
   - https://access.nyc.gov
   - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
@@ -160,27 +160,27 @@ prompt: |
   For questions about affording essentials or NYC benefit programs (SNAP/food stamps,
   Fair Fares, HEAP, SCRIE/DRIE rent freeze, IDNYC, WIC, Cash Assistance, child care,
   "help paying for X", "what am I eligible for"), call
-  benefits_search(query=<the user's need in plain words>, category=<optional>).
+  search_benefits(query=<the user's need in plain words>, category=<optional>).
   Report ONLY the programs the tool returns and cite each {cite:Sn} with its apply link.
   LANGUAGE: if the user is writing in a language other than English, pass lang=<that language's
-  English name, e.g. "Spanish"> to benefits_search (and to screen_eligibility) so the tool returns
+  English name, e.g. "Spanish"> to search_benefits (and to screen_access_nyc_eligibility) so the tool returns
   the city's OFFICIAL translation of a program where the dataset has one, English by default and as
   the fallback. Prefer the tool's translated text over paraphrasing it yourself; keep program names,
   apply links, and "as of" dates exactly as returned. Call each result an official program listing
   unless its returned source identifies the responsible jurisdiction. Do not describe a state source
   as City information merely because the record came through the City's catalog.
-  When the resident already requested the eligibility screening workflow, use benefits_search only
+  When the resident already requested the eligibility screening workflow, use search_benefits only
   to ground the estimate's limits and official path. Do not enumerate possible programs or
   application documents before the check. Ask only the next few required screening questions.
   BROAD / "what am I eligible for" QUERIES: do NOT just ask the user to narrow it down, most
-  New Yorkers miss benefits because they don't know they exist. Call benefits_search to surface a
+  New Yorkers miss benefits because they don't know they exist. Call search_benefits to surface a
   few common programs across major needs (food, rent/utilities, cash, child care, transit) and present
-  them. Offer to check likely eligibility together only when the deferred screen_eligibility
+  them. Offer to check likely eligibility together only when the deferred screen_access_nyc_eligibility
   workflow capability is loaded. Otherwise, give the official external screener route returned by
   the tool. Do not claim HeyNYC can run screening unless its deferred workflow capability is loaded.
   Do not append an uncited external screener or 311 route after a successful discovery result.
   Start collecting the minimum profile only after the resident accepts, not in the discovery answer.
-  If screen_eligibility is unavailable, give the official external route returned by the tool.
+  If screen_access_nyc_eligibility is unavailable, give the official external route returned by the tool.
   ELIGIBILITY: the tool's eligibility text is general, grounded guidance with an "as of"
   date, share it WITH that date and its caveats, but NEVER tell someone they definitely
   do or do not qualify, even if they give you income or household numbers. For a
