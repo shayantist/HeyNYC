@@ -3,7 +3,7 @@
 - id: wc_watch_final
   tags: [general-chat, must-win]
   query: "Where can I watch the World Cup final in NYC?"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: grounding
   notes: Must surface grounded watch parties/fan events with links + the free-ticket caveat.

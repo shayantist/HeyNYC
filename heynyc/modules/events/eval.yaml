@@ -2,7 +2,7 @@
 
 - id: events_groundable_weekend
   query: "What free events are happening in NYC parks this weekend?"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   expect_cite_kinds: [DATA]
   abstain: false
   capability: grounding
@@ -13,9 +13,9 @@
     and a direct event link. Exclude stale or duplicate listings, mention a material citywide
     planning advisory once, and offer to narrow or list more.
   notes: Must list only Saturday and Sunday events for the current NYC weekend. Must not call
-    an event free unless retrieved evidence establishes its cost. The broad-query coordinator
-    must include relevant official seasonal and current editorial context. A separate Notify NYC
-    call is required only when the per-turn awareness titles reveal a material planning issue.
+    an event free unless retrieved evidence establishes its cost. Use web_search when the structured
+    listings do not provide relevant seasonal or editorial context. A separate Notify NYC call is
+    required only when the per-turn awareness titles reveal a material planning issue.
 
 - id: events_groundable_inv
   tags: [general-chat, must-win]
@@ -24,7 +24,7 @@
   test_type: INV
   perturbation: paraphrase
   expect_same_outcome_as_base: true
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   notes: Paraphrase of the base case — same grounded outcome class.
 
@@ -38,7 +38,7 @@
 
 - id: events_cancelled_not_recommended
   query: "Show me events happening today, but do not send me to anything cancelled or postponed."
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: grounding
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
@@ -52,17 +52,19 @@
 
 - id: events_f236_what_to_do_today
   query: "what to do in nyc today"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   expect_cite_kinds: [DATA]
   abstain: false
   capability: grounding
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
-  tags: [F236, general-chat, must-win]
+  tags: [F236, F237, general-chat, must-win]
   utility_criterion: >-
     Give a useful short list of distinct NYC events the resident can still attend today, with
     grounded start times and direct links. Do not return a verification abstention after the live
     event tool returned usable current listings, duplicate the same attraction as separate choices,
-    or recommend an event whose known start time has passed.
+    recommend an event whose known start time has passed, or attach an advisory to an unrelated
+    event citation. If a retrieved event has started but has a known future end time, describe it as
+    in progress instead of later or ended.
   notes: Exact public-channel query that abstained after a successful live events lookup.
 
 - id: events_private_excluded
@@ -75,7 +77,7 @@
 - id: events_attribution
   tags: [general-chat, must-win]
   query: "What's a concert in NYC this month?"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   expect_cite_kinds: [DATA]
   abstain: false
   capability: attribution
@@ -83,7 +85,7 @@
 
 - id: events_abbreviated_game_preparation
   query: "What to prepare for tomorrow's WC game"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: scope
   tags: [F045, F060, general-chat, must-win]
@@ -101,7 +103,7 @@
 
 - id: events_abbreviated_parade_preparation
   query: "How should I get ready for tomorrows parade?"
-  expect_tools: [whats_on_events]
+  expect_tools: [find_nyc_events]
   abstain: false
   capability: scope
   tags: [F046, general-chat, must-win]
@@ -122,7 +124,7 @@
 
 - id: events_f230_knicks_captain_and_next_game
   query: "Who is the Knicks captain right now and when is their next game?"
-  expect_tools: [official_sources]
+  expect_tools: [web_fetch]
   expect_cite_kinds: [WEB]
   abstain: false
   capability: grounding

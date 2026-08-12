@@ -20,7 +20,7 @@ def test_domain_allowed_matches_subdomains_only():
 
 
 async def test_web_search_keeps_unlisted_results_and_marks_them_unverified():
-    async def fake_search(query, domains, recency=None):
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
         return [
             {"title": "Official", "url": "https://www.nyc.gov/worldcup", "snippet": "official info"},
             {"title": "Unlisted", "url": "https://example.com/x", "snippet": "lead"},
@@ -47,7 +47,7 @@ async def test_web_search_keeps_unlisted_results_and_marks_them_unverified():
 async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
     snippet = "x" * 250 + " decisive detail"
 
-    async def fake_search(query, domains, recency=None):
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
         return [
             {
                 "title": "Official",
@@ -61,12 +61,12 @@ async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
     out = await tool.handler({"query": "current SNAP rule"}, ctx)
 
     assert "decisive detail" in ctx.citations.mapping()["S1"]["snippet"]
-    assert "call official_sources" in out
+    assert "call web_fetch" in out
     assert "details beyond an excerpt" in out
 
 
 async def test_web_search_marks_an_official_excerpt_as_bounded_answer_evidence():
-    async def fake_search(query, domains, recency=None):
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
         return [
             {
                 "title": "Knicks Name Jalen Brunson Team Captain",
@@ -92,7 +92,7 @@ async def test_web_search_marks_an_official_excerpt_as_bounded_answer_evidence()
 
 
 async def test_web_search_marks_archived_results_as_not_current():
-    async def fake_search(query, domains, recency=None):
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
         return [
             {
                 "title": "Temporary Protected Status Designated Country",
@@ -114,7 +114,7 @@ async def test_web_search_marks_archived_results_as_not_current():
 
 
 async def test_web_search_no_results_abstains():
-    async def empty(query, domains, recency=None):
+    async def empty(query, domains, published_after=None, published_before=None, count=5):
         return []
 
     tool = web_search_tools(ALLOW, search_fn=empty)[0]
@@ -204,17 +204,17 @@ async def test_search_falls_back_to_duckduckgo_when_tavily_plan_is_exhausted(mon
             response=httpx.Response(432),
         )
 
-    async def fallback(query, allowed_domains, recency=None):
+    async def fallback(query, allowed_domains, count=5):
         assert query == "current NYC service"
         assert allowed_domains == ["nyc.gov"]
-        assert recency == "week"
+        assert count == 7
         return [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
 
     monkeypatch.setattr(web_search_mod, "_tavily", exhausted)
     monkeypatch.setattr(web_search_mod, "_duckduckgo", fallback)
 
-    assert await web_search_mod.tavily_search_recent(
-        "current NYC service", ["nyc.gov"], recency="week"
+    assert await web_search_mod.tavily_search(
+        "current NYC service", ["nyc.gov"], count=7
     ) == [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
 
 
@@ -241,7 +241,7 @@ async def _run(tool, query, **args):
 
 
 async def test_web_search_ranks_by_tier_and_disclaims_community():
-    async def fake_search(query, allowed, recency=None):
+    async def fake_search(query, allowed, published_after=None, published_before=None, count=5):
         return [
             {"title": "Eventbrite listing", "url": "https://eventbrite.com/e/x", "snippet": "s"},
             {"title": "Official Parks page", "url": "https://nycgovparks.org/events/y", "snippet": "s"},
@@ -268,7 +268,7 @@ async def test_web_search_ranks_by_tier_and_disclaims_community():
 
 
 async def test_web_search_keeps_ugc_off_allowlist_as_an_unverified_lead():
-    async def fake_search(query, allowed, recency=None):
+    async def fake_search(query, allowed, published_after=None, published_before=None, count=5):
         return [{"title": "Luma party", "url": "https://lu.ma/x", "snippet": "s"}]
 
     tool = web_search_tools(["nycgovparks.org"], source_tiers={}, search_fn=fake_search)[0]
@@ -278,7 +278,7 @@ async def test_web_search_keeps_ugc_off_allowlist_as_an_unverified_lead():
 
 
 async def test_web_search_prefer_boosts_domain():
-    async def fake_search(query, allowed, recency=None):
+    async def fake_search(query, allowed, published_after=None, published_before=None, count=5):
         return [
             {"title": "Time Out", "url": "https://timeout.com/a", "snippet": "s"},
             {"title": "WorldCup NYC", "url": "https://worldcup.nyc/b", "snippet": "s"},
@@ -290,7 +290,7 @@ async def test_web_search_prefer_boosts_domain():
     assert out.index("worldcup.nyc") < out.index("timeout.com")  # preferred domain first
 
 
-# --- Currency layer: the recency check (recent_developments) + its subordinate news tier ---
+# --- One search operation with optional recency and source grading ---
 
 def _by_name(allow, tiers=None, news=None, search_fn=None):
     return {t.name: t for t in web_search_tools(allow, source_tiers=tiers, news_tier=news, search_fn=search_fn)}
@@ -299,57 +299,61 @@ def _by_name(allow, tiers=None, news=None, search_fn=None):
 async def test_default_web_search_keeps_trust_domains_as_ranking_metadata():
     seen: dict[str, list[str]] = {}
 
-    async def spy(query, domains, recency=None):
+    async def spy(query, domains, published_after=None, published_before=None, count=5):
         seen[query] = list(domains)
         return [{"title": "Gov", "url": "https://www.nyc.gov/x", "snippet": "s"}]
 
     tools = _by_name(["nyc.gov"], news=["gothamist.com", "nytimes.com"], search_fn=spy)
     await _run(tools["web_search"], "q")
-    assert seen["q"] == ["nyc.gov"]
+    assert seen["q"] == ["gothamist.com", "nyc.gov", "nytimes.com"]
 
 
-async def test_recent_developments_unions_news_tier():
-    """Recency mode searches the trusted allowlist PLUS the curated news tier."""
+async def test_web_search_publication_bound_keeps_trust_domains_as_ranking_metadata():
+    """A publication bound keeps the trust domains as ranking metadata."""
     seen: dict[str, set[str]] = {}
 
-    async def spy(query, domains, recency=None):
+    async def spy(query, domains, published_after=None, count=5):
+        assert published_after == "2026-08-01"
         seen[query] = set(domains)
         return []
 
     tools = _by_name(["nyc.gov"], news=["gothamist.com", "NYTimes.com"], search_fn=spy)
-    out = await _run(tools["recent_developments"], "q")
+    out = await _run(tools["web_search"], "q", published_after="2026-08-01")
     assert {"nyc.gov", "gothamist.com", "nytimes.com"} <= seen["q"]  # allowlist ∪ news (lowercased)
-    assert "no recent developments" in out.lower()                   # its own abstain message
+    assert "no results" in out.lower()
 
 
-async def test_recent_developments_ranks_news_below_gov():
+async def test_web_search_ranks_news_below_gov():
     """A news-tier URL ranks below a gov URL, and carries the developing-news label."""
-    async def fake(query, domains, recency=None):
+    async def fake(query, domains, published_after=None, count=5):
+        assert published_after == "2025-08-12"
         return [
             {"title": "Gothamist story", "url": "https://gothamist.com/a", "snippet": "s"},
             {"title": "Official CCHR", "url": "https://www.nyc.gov/cchr", "snippet": "s"},
         ]
 
     tools = _by_name(["nyc.gov"], news=["gothamist.com"], search_fn=fake)
-    out = await _run(tools["recent_developments"], "voucher ruling")
+    out = await _run(
+        tools["web_search"], "voucher ruling", published_after="2025-08-12"
+    )
     assert out.index("nyc.gov") < out.index("gothamist.com")  # gov (authoritative) above news
     assert "📰 news" in out                                    # developing-news label present
 
 
-async def test_web_search_keeps_an_unlisted_news_result_as_unverified():
-    async def fake(query, domains, recency=None):
+async def test_web_search_grades_a_known_news_result_as_news():
+    async def fake(query, domains, published_after=None, published_before=None, count=5):
         return [{"title": "Gothamist", "url": "https://gothamist.com/a", "snippet": "s"}]
 
     tools = _by_name(["nyc.gov"], news=["gothamist.com"], search_fn=fake)
     out = await _run(tools["web_search"], "q")
     assert "gothamist.com" in out
-    assert "unverified source" in out.lower()
+    assert "📰 news" in out
 
 
-# --- Agent-settable recency window: what time_range reaches the Tavily backend ---
+# --- Agent-settable publication bounds: what dates reach Tavily ---
 
 def _capture_tavily(monkeypatch):
-    """Patch the shared `_tavily` and record the kwargs (incl. time_range) each call passes."""
+    """Patch the shared `_tavily` and record the date-bound kwargs each call passes."""
     calls: list[dict] = []
 
     async def fake_tavily(query, allowed_domains, **extra):
@@ -361,22 +365,72 @@ def _capture_tavily(monkeypatch):
 
 
 def _real_backend_tools():
-    """Wire the production backends (no injected search_fn) so tavily_search[_recent] run for real."""
+    """Wire the production backend so optional publication bounds reach Tavily."""
     return {t.name: t for t in web_search_tools(["nyc.gov"])}
 
 
-async def test_recent_developments_recency_week_passes_time_range_week(monkeypatch):
+async def test_web_search_passes_publication_date_bounds_to_tavily(monkeypatch):
     calls = _capture_tavily(monkeypatch)
     tools = _real_backend_tools()
-    await tools["recent_developments"].handler({"query": "q", "recency": "week"}, _ctx())
-    assert calls[0]["time_range"] == "week"  # agent-chosen window reaches Tavily
+    await tools["web_search"].handler(
+        {
+            "query": "q",
+            "published_after": "2025-09-01",
+            "published_before": "2025-12-01",
+        },
+        _ctx(),
+    )
+    assert calls[0]["start_date"] == "2025-09-01"
+    assert calls[0]["end_date"] == "2025-12-01"
 
 
-async def test_recent_developments_defaults_to_year(monkeypatch):
+async def test_web_search_rejects_invalid_or_reversed_publication_bounds():
+    async def must_not_search(*_args, **_kwargs):
+        raise AssertionError("invalid date bounds must not reach the backend")
+
+    tool = web_search_tools(["nyc.gov"], search_fn=must_not_search)[0]
+
+    invalid = await tool.handler(
+        {"query": "q", "published_after": "last Tuesday"}, _ctx()
+    )
+    reversed_range = await tool.handler(
+        {
+            "query": "q",
+            "published_after": "2025-12-01",
+            "published_before": "2025-09-01",
+        },
+        _ctx(),
+    )
+
+    assert invalid == "Publication dates must use YYYY-MM-DD."
+    assert reversed_range == "published_after must be earlier than published_before."
+
+
+async def test_bounded_search_does_not_use_an_untimed_fallback(monkeypatch):
+    async def exhausted(*_args, **_kwargs):
+        raise httpx.HTTPStatusError(
+            "plan limit exceeded",
+            request=httpx.Request("POST", "https://api.tavily.com/search"),
+            response=httpx.Response(432),
+        )
+
+    async def must_not_fallback(*_args, **_kwargs):
+        raise AssertionError("untimed fallback cannot honor exact publication bounds")
+
+    monkeypatch.setattr(web_search_mod, "_tavily", exhausted)
+    monkeypatch.setattr(web_search_mod, "_duckduckgo", must_not_fallback)
+
+    assert await web_search_mod.tavily_search(
+        "query", ["nyc.gov"], published_after="2025-09-01"
+    ) == []
+
+
+async def test_web_search_without_publication_bounds_stays_untimed(monkeypatch):
     calls = _capture_tavily(monkeypatch)
     tools = _real_backend_tools()
-    await tools["recent_developments"].handler({"query": "q"}, _ctx())
-    assert calls[0]["time_range"] == "year"  # unset → slow-moving default
+    await tools["web_search"].handler({"query": "q"}, _ctx())
+    assert "start_date" not in calls[0]
+    assert "end_date" not in calls[0]
 
 
 async def test_web_search_passes_no_time_range(monkeypatch):
@@ -387,55 +441,52 @@ async def test_web_search_passes_no_time_range(monkeypatch):
     assert "time_range" not in calls[0]
 
 
-async def test_recent_developments_out_of_enum_recency_falls_back_to_year(monkeypatch):
-    """Defense in depth: an unexpected window value falls back to a year, not straight through."""
-    calls = _capture_tavily(monkeypatch)
-    tools = _real_backend_tools()
-    await tools["recent_developments"].handler({"query": "q", "recency": "decade"}, _ctx())
-    assert calls[0]["time_range"] == "year"
+def test_web_search_exposes_publication_date_bounds():
+    tools = web_search_tools(["nyc.gov"], news_tier=["gothamist.com"])
+    assert [tool.name for tool in tools] == ["web_search"]
+    properties = tools[0].parameters["properties"]
+    assert properties["published_after"]["format"] == "date"
+    assert properties["published_before"]["format"] == "date"
+    assert "exclusive lower bound" in properties["published_after"]["description"]
+    assert "exclusive upper bound" in properties["published_before"]["description"]
+    assert "published_within" not in properties
+    assert "recency" not in properties
 
 
-def test_recent_developments_description_warns_on_contested_legal_matter():
-    """Red-team MC03/MC04/FP02/ES03 fix: the recency-tool description tells the agent not to restate a
-    ruling's court/holding/scope from a news snippet, and to lead with the standing protection instead."""
-    tools = {t.name: t for t in web_search_tools(["nyc.gov"], news_tier=["gothamist.com"])}
-    desc = tools["recent_developments"].description.lower()
-    assert "contested legal matter" in desc
-    assert "struck down" in desc and "annulled" in desc
-    assert "currently stands" in desc
-    assert "never name the court" in desc
+async def test_web_search_count_bounds_the_returned_results():
+    seen = {}
+
+    async def fake(query, domains, published_after=None, published_before=None, count=5):
+        seen["count"] = count
+        return [
+            {
+                "title": f"Result {index}",
+                "url": f"https://example.com/{index}",
+                "snippet": "evidence",
+            }
+            for index in range(5)
+        ]
+
+    tool = web_search_tools(["nyc.gov"], search_fn=fake)[0]
+    assert tool.parameters["properties"]["count"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "description": "Maximum number of results to return, from 1 to 10.",
+    }
+
+    out = await tool.handler({"query": "NYC events", "count": 2}, _ctx())
+
+    assert seen["count"] == 2
+    assert "Result 0" in out
+    assert "Result 1" in out
+    assert "Result 2" not in out
 
 
-def test_rewrite_query_strips_scaffolding_and_errand_verbs():
-    """Audited live (F055): searching the resident's prep-phrased sentence returned a
-    gardening workshop because 'prepare' matched. The shared rewrite stage normalizes every
-    caller's query, the layer where Gemini and ChatGPT put query understanding."""
-    from heynyc.core.tools.web_search import _rewrite_query
-
-    assert _rewrite_query("what to prepare for tomorrow wc game July 18, 2026") == (
-        "tomorrow wc game July 18, 2026"
-    )
-    # Civic action verbs are content, never stripped.
-    assert _rewrite_query("how do I appeal a SNAP denial") == "appeal a SNAP denial"
-    # Nested scaffolding strips iteratively, leading articles too.
-    assert _rewrite_query("can you tell me where is the nearest food pantry") == (
-        "nearest food pantry"
-    )
-    # Already search-shaped queries pass through untouched.
-    assert _rewrite_query("world cup match schedule July 18 2026") == (
-        "world cup match schedule July 18 2026"
-    )
-    assert _rewrite_query(
-        "NYC Section 8 source of income discrimination court ruling 2026"
-    ) == "NYC Section 8 source of income discrimination court ruling 2026"
-    # Over-stripping falls back to the original instead of searching almost nothing.
-    assert _rewrite_query("what to do") == "what to do"
-
-
-async def test_handler_sends_rewritten_query_and_reports_it():
+async def test_handler_sends_the_model_query_without_hidden_rewriting():
     seen = []
 
-    async def fake_search(query, domains, recency=None):
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
         seen.append(query)
         return [{"title": "Official", "url": "https://www.nyc.gov/wc", "snippet": "row"}]
 
@@ -445,31 +496,15 @@ async def test_handler_sends_rewritten_query_and_reports_it():
         {"query": "what to prepare for tomorrow wc game July 18, 2026"}, ctx,
     )
 
-    assert seen == ["tomorrow wc game July 18, 2026"]
-    # The model sees the effective query, mirroring vendors exposing their search queries.
-    assert 'Searched as: "tomorrow wc game July 18, 2026"' in out
-
-
-async def test_handler_does_not_annotate_unchanged_queries():
-    seen = []
-
-    async def fake_search(query, domains, recency=None):
-        seen.append(query)
-        return [{"title": "Official", "url": "https://www.nyc.gov/wc", "snippet": "row"}]
-
-    tool = web_search_tools(ALLOW, search_fn=fake_search)[0]
-    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
-    out = await tool.handler({"query": "world cup schedule"}, ctx)
-
-    assert seen == ["world cup schedule"]
+    assert seen == ["what to prepare for tomorrow wc game July 18, 2026"]
     assert "Searched as" not in out
 
 
 def test_web_search_stays_available_for_fresh_event_context():
     tools = {t.name: t for t in web_search_tools(["nyc.gov"])}
     desc = tools["web_search"].description.lower()
-    assert "orientation" in desc and "first" in desc      # orientation-first rule intact
-    assert "long-tail" in desc                            # long-tail facts stay here
+    assert "current" in desc
+    assert "long-tail" in desc
     assert "events" in desc
     assert "always available" in desc
 
@@ -479,3 +514,12 @@ def test_web_search_description_caps_repeated_search_for_one_missing_fact():
     assert "same missing fact" in desc
     assert "one focused search" in desc
     assert "say you could not confirm it" in desc
+
+
+def test_web_search_parameter_descriptions_state_real_limits():
+    properties = web_search_tools(["nyc.gov"])[0].parameters["properties"]
+    assert "publication or last-update date" in properties["published_after"]["description"]
+    assert "not the date of an event" in properties["published_after"]["description"]
+    assert "exclusive" in properties["published_before"]["description"]
+    assert "ranks only the results returned" in properties["prefer"]["description"]
+    assert "does not restrict" in properties["prefer"]["description"]

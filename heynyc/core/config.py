@@ -148,11 +148,11 @@ BASE_ALLOWLIST = [
 ]
 
 # The "currency layer", a small, curated set of reputable news / legal-news domains used
-# ONLY by the recency check (the recent_developments tool), never by the default web_search.
+# as trust metadata for recency-aware web searches.
 # This is a deliberate, SUBORDINATE tier: news ranks BELOW gov/authoritative sources and its
 # results are labeled developing/contested, so the official grounded answer always stays
 # primary. Kept engine-independent (injected like BASE_ALLOWLIST) so it never pollutes the
-# per-module allowlists. Intentionally short and reputable-only, this is not "the open web."
+# per-module preferred domains. Search still retrieves the open web.
 NEWS_ALLOWLIST = [
     # NYC local newsrooms
     "thecity.nyc",

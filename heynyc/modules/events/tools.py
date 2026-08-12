@@ -1,4 +1,4 @@
-"""events module tool: `whats_on_events`, a thin composition (§10.3) of shared infra.
+"""events module tool: `find_nyc_events`, a thin composition (§10.3) of shared infra.
 
 Merges the Ticketmaster Discovery client (structured backbone) + NYC Parks public
 events (query_dataset over w3wp-dpdi) into one Event shape, filtered to future dates.
@@ -11,18 +11,12 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-import httpx
-
-from heynyc.core.agent import is_event_preparation_query
-from heynyc.core.index.corpus import clean_html, fetch_clean
+from heynyc.core.index.corpus import clean_html
 from heynyc.core.ticketmaster import ticketmaster_events
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import query_dataset, row_url
-from heynyc.core.tools.notify_nyc import _safe_fromstring
-from heynyc.core.tools.official_sources import _relevant_chunks
 
 PARKS_DATASET_ID = "w3wp-dpdi"  # NYC Parks Public Events (clean, upcoming, free/park-focused)
 PARKS_SOURCE_URL = "https://www.nycgovparks.org/events"
@@ -37,14 +31,15 @@ PERMITTED_SOURCE_URL = (
 )
 NYC_TZ = ZoneInfo("America/New_York")
 _SOURCE_TIMEOUT_S = 8.0
-SECRET_NYC_WEEKEND_URL = "https://secretnyc.co/what-to-do-this-weekend-nyc/"
-NYC_FOR_FREE_RSS_URL = "https://www.nycforfree.co/events?format=rss"
 _PARK_BOROUGHS = {
     "B": "Brooklyn",
     "M": "Manhattan",
     "Q": "Queens",
     "R": "Staten Island",
     "X": "Bronx",
+}
+_TICKETMASTER_NYC_CITIES = {
+    "bronx", "brooklyn", "new york", "new york city", "queens", "staten island",
 }
 
 
@@ -96,6 +91,8 @@ def _from_ticketmaster(raw: dict) -> Optional[Event]:
     venues = (raw.get("_embedded") or {}).get("venues") or []
     venue = venues[0].get("name", "") if venues else ""
     borough = (venues[0].get("city") or {}).get("name", "") if venues else ""
+    if borough and borough.strip().casefold() not in _TICKETMASTER_NYC_CITIES:
+        return None
     return Event(
         name=raw.get("name") or "", start_date=start_date,
         start_time=start.get("localTime") or "", venue=venue, borough=borough,
@@ -187,9 +184,26 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
     order and `[:limit]` truncates the last-appended permitted lane to zero. Instead rank each
     event within its own source by date, then order by that rank so every source's soonest
     events compete before any source's later ones (ties break on date)."""
+    unique: list[Event] = []
+    identities: set[tuple[str, ...]] = set()
+    for event in events:
+        identity = (
+            event.source.casefold(),
+            event.start_date,
+            event.start_time.casefold(),
+            (
+                event.venue.casefold()
+                if event.venue and event.start_time
+                else event.name.casefold()
+            ),
+        )
+        if identity in identities:
+            continue
+        identities.add(identity)
+        unique.append(event)
     seen: dict[str, int] = {}
     ranked: list[tuple[int, str, Event]] = []
-    for event in sorted(events, key=lambda e: e.start_date):
+    for event in sorted(unique, key=lambda e: e.start_date):
         rank = seen.get(event.source, 0)
         seen[event.source] = rank + 1
         ranked.append((rank, event.start_date, event))
@@ -235,37 +249,6 @@ _NO_RESULTS = (
     "no matching events exist."
 )
 
-_SHORTLIST_SYNTHESIS_RULES = (
-    "Synthesis rules: supplement the structured catalog with relevant official web results. "
-    "For every recommended event, copy its direct source URL beside the item and include any "
-    "known date, time, place, and ticket or reservation step. Prefer individual event pages "
-    "over roundup pages. Merge sources that describe the same event into one option; mention "
-    "any today-only advisory once after the event list; finish with one natural narrowing "
-    "question. Do not call an event free unless its cited evidence establishes that. Keep "
-    "prior-conversation facts separate from these newly retrieved results."
-)
-
-_PREPARATION_SYNTHESIS_RULES = (
-    "Synthesis rules: this is a preparation question about one specific dated event. First "
-    "resolve which event the resident means from the sources above: state its name, date, and "
-    "local time from cited evidence, or, if more than one event remains plausible, ask one "
-    "short clarifying question and stop. Then give a plan only from cited evidence: how to "
-    "attend or watch it, ticket or reservation status, venue access, transit or street "
-    "impacts, and any material advisory, each with its direct source URL beside it. The event "
-    "happening on the asked date is the answer: name it from the asked date's evidence, even "
-    "when a more prominent event sits on a different date; that other event is context at "
-    "most, never the resident's event. State the "
-    "event's own date plainly, and say so when it is not on the exact day the resident asked "
-    "about. Skip "
-    "generic packing advice unless a retrieved advisory or forecast supports it. Do not guess "
-    "kickoff times, prices, or transit changes. Take a start or kickoff time only from the "
-    "most authoritative schedule source retrieved, state it with its timezone, and when two "
-    "sources disagree on a time, say so plainly instead of silently choosing one. Keep "
-    "prior-conversation facts separate from "
-    "these newly retrieved results."
-)
-
-
 _TIME_FORMATS = ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M")
 
 
@@ -286,7 +269,11 @@ def _today_timing_note(ev: Event, now: datetime) -> str:
     parsed = _parse_start_time(ev.start_time)
     if parsed is None:
         return ""
-    if parsed < now.replace(tzinfo=None).time():
+    current_time = now.replace(tzinfo=None).time()
+    if parsed < current_time:
+        end = _parse_start_time(ev.end_time)
+        if end is not None and end >= current_time:
+            return "; in progress"
         return "; already started or ended earlier today"
     return "; starts later today"
 
@@ -350,170 +337,7 @@ def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
     return kept
 
 
-def _broad_temporal_query(query: str) -> bool:
-    low = query.lower()
-    event_intent = any(term in low for term in ("event", "what's on", "whats on", "happening", "things to do"))
-    time_intent = any(term in low for term in ("today", "tonight", "weekend", "this week"))
-    return event_intent and time_intent
-
-
-def _editorial_query(query: str, window_start: str, window_end: Optional[str]) -> str:
-    # F085: an open window (end=None) appends NO dates; appending today's date biased
-    # retrieval toward date-roundup guides and away from named series pages.
-    if window_end is None:
-        return query
-    dates = [date.fromisoformat(window_start).strftime("%B %-d, %Y")]
-    if window_end != window_start:
-        dates.append(date.fromisoformat(window_end).strftime("%B %-d, %Y"))
-    return f"{query} {' '.join(dates)}"
-
-
-def _windowed_context(text: str, window_start: str, window_end: Optional[str]) -> str:
-    # F085: None used to collapse to window_start, turning "open-ended" into "today only"
-    # and stripping a named series' July 27 blocks from a July 22 question.
-    if window_end is None:
-        return text
-    start = date.fromisoformat(window_start)
-    end = date.fromisoformat(window_end)
-    patterns = []
-    current = start
-    while current <= end:
-        patterns.extend((
-            re.compile(rf"\b{re.escape(current.isoformat())}\b", re.IGNORECASE),
-            re.compile(
-                rf"\b{current.strftime('%B')}\s+{current.day}(?:st|nd|rd|th)?"
-                rf"(?:,?\s+{current.year})?\b",
-                re.IGNORECASE,
-            ),
-        ))
-        current += timedelta(days=1)
-    return "\n\n".join(
-        block for block in text.split("\n\n")
-        if any(pattern.search(block) for pattern in patterns)
-    )
-
-
-def _nyc_for_free_items(
-    rss_text: str, window_start: str, window_end: Optional[str],
-) -> tuple[str, list[tuple[str, str, str]]]:
-    try:
-        root = _safe_fromstring(rss_text)
-    except Exception:
-        return "", []
-    if window_end is None:
-        patterns = None  # F085: open window, no date gate; the model judges relevance
-    else:
-        days = []
-        current = date.fromisoformat(window_start)
-        end = date.fromisoformat(window_end)
-        while current <= end:  # every day in the range, not just the endpoints
-            days.append(current)
-            current += timedelta(days=1)
-        patterns = [
-            re.compile(
-                rf"\b{day.strftime('%B')}\s+{day.day}(?:st|nd|rd|th)?"
-                rf"(?:,?\s+{day.year})?\b",
-                re.IGNORECASE,
-            )
-            for day in days
-        ]
-    items = []
-    for item in root.findall(".//item"):
-        title = (item.findtext("title") or "").strip()
-        url = (item.findtext("link") or "").strip()
-        _unused, body = clean_html(item.findtext("description") or "")
-        if patterns is None:
-            matched = ""
-        else:
-            matched = next(
-                (match.group(0) for pattern in patterns
-                 if (match := pattern.search(f"{title} {body}"))),
-                "",
-            )
-            if not matched:
-                continue
-        if title and url:
-            items.append((title, url, matched))
-    return (root.findtext(".//lastBuildDate") or "").strip(), items
-
-
-def _context_tools(ctx: ToolContext) -> tuple[Tool, ...]:
-    from heynyc.core.tools.web_search import web_search_tools
-
-    tools = []
-    if ctx.toolbox and "index_search" in ctx.toolbox:
-        tools.append(ctx.toolbox["index_search"])
-    tiers = ctx.registry.source_tiers()
-    trusted = [domain for domain, (tier, _) in tiers.items() if tier in {"authoritative", "editorial"}]
-    tools.extend(web_search_tools(trusted, tiers, ctx.registry.news_tier()))
-    return tuple(tools)
-
-
-async def _editorial_context(
-    ctx: ToolContext, window_start: str, window_end: Optional[str],
-) -> str:
-    own_client = ctx.http is None
-    client = ctx.http or httpx.AsyncClient(timeout=_SOURCE_TIMEOUT_S)
-
-    async def fetch_rss():
-        response = await client.get(
-            NYC_FOR_FREE_RSS_URL,
-            follow_redirects=True,
-            headers={"User-Agent": "HeyNYC/0.1"},
-        )
-        response.raise_for_status()
-        return response.text
-
-    try:
-        secret, free_rss = await asyncio.gather(
-            fetch_clean(SECRET_NYC_WEEKEND_URL, client),
-            fetch_rss(),
-            return_exceptions=True,
-        )
-    finally:
-        if own_client:
-            await client.aclose()
-
-    blocks: list[str] = []
-    if not isinstance(secret, BaseException):
-        title, text = secret
-        chunks = _relevant_chunks(
-            f"{title} {text}", _editorial_query(ctx.query, window_start, window_end), limit=1,
-        )
-        if chunks:
-            cite = ctx.citations.register(
-                SECRET_NYC_WEEKEND_URL, snippet=chunks[0],
-                title=title or "Secret NYC weekend guide", kind="WEB",
-            )
-            blocks.append(
-                f"[{cite}] (editorial discovery, fetched live; publication freshness not "
-                "independently verified; confirm details) "
-                f"{title or 'Secret NYC weekend guide'} ({SECRET_NYC_WEEKEND_URL})\n{chunks[0]}"
-            )
-    if not isinstance(free_rss, BaseException):
-        built, items = _nyc_for_free_items(free_rss, window_start, window_end)
-        for title, url, matched_date in items[:3]:
-            snippet = f"{title}." + (
-                f" This event page explicitly mentions {matched_date}." if matched_date else ""
-            )
-            cite = ctx.citations.register(
-                url, snippet=snippet, title=title, kind="WEB", valid_as_of=built,
-            )
-            blocks.append(
-                f"[{cite}] (editorial discovery, confirm details) {title} ({url})\n{snippet}"
-            )
-    return "\n\n".join(blocks) or "Current editorial event guides unavailable for this lookup."
-
-
-_ANY_MARKER_RE = re.compile(r"\{cite:(S\d+)\}|\[(S\d+)\]")
-
-
-def _referenced_ids(text: str) -> set[str]:
-    return {a or b for a, b in _ANY_MARKER_RE.findall(text)}
-
-
 async def _handler(args: dict, ctx: ToolContext) -> str:
-    pre_existing_ids = set(ctx.citations.mapping())
     keyword = (args.get("keyword") or "").strip() or None
     if keyword and not _keyword_terms(keyword):
         keyword = None
@@ -522,7 +346,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     audience = (args.get("audience") or "").strip().lower()
     if audience not in {"", "kids"}:
         raise ValueError(f"Unsupported audience: {audience}")
-    limit = int(args.get("limit") or 12)
+    limit = max(1, min(int(args.get("limit") or 12), 20))
 
     now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
@@ -575,47 +399,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         + (f" AND start_date_time <= '{window_end}T23:59:59'" if window_end else "")
     )
 
-    permitted_attempts = 0
-    broadened_catalog: set[str] = set()
-    partial_catalog: set[str] = set()
-
     async def permitted_source():
-        nonlocal permitted_attempts
-        permitted_attempts += 1
-        rows = await query_dataset(
+        return await query_dataset(
             PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
             q=keyword, limit=50, client=ctx.http,
         )
-        # A stuffed keyword full-text-matches zero permit names ("street fairs farmers
-        # markets" vs "Inwood Greenmarket") while Ticketmaster still returns rows, so the
-        # all-lanes-empty retry never fires (observed live 2026-07-18). The agency+window
-        # WHERE already bounds this slice to the week's public street events, so retry
-        # once unkeyworded and let the shortlist and the model select.
-        if not rows and keyword and permitted_attempts == 1:
-            broadened_catalog.add("permitted")
-            try:
-                rows = await query_dataset(
-                    PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
-                    limit=50, client=ctx.http,
-                )
-            except Exception:
-                partial_catalog.add("permitted")
-        return rows
-
-    # The semantic scope-preflight tri-state arrives via ToolContext and is authoritative when
-    # present; the broad-temporal and preparation regexes are the fallback for direct tool use
-    # without a preflight (F058: the regex is demoted, never deleted).
-    if ctx.event_turn is not None:
-        preparation_context = ctx.event_turn == "preparation"
-        discovery_context = ctx.event_turn == "discovery"
-    else:
-        preparation_context = (
-            is_event_preparation_query(ctx.query) and not _broad_temporal_query(ctx.query)
-        )
-        discovery_context = _broad_temporal_query(ctx.query)
-    broad_context = (
-        (discovery_context or preparation_context) and not borough and not audience
-    )
     catalog_sources = {
         "ticketmaster": ticketmaster_source,
         "parks": parks_source,
@@ -627,71 +415,20 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "permitted": "NYC Permitted Events",
     }
     sources = [(name, source()) for name, source in catalog_sources.items()]
-    if broad_context:
-        sources.append(("editorial_guides", _editorial_context(ctx, window_start, window_end)))
-        for tool in _context_tools(ctx):
-            if tool.name == "index_search":
-                topics = [module for module in ctx.registry.modules if module.parent == "events"]
-                topic_queries = [
-                    (
-                        f"index_search:{topic.name}",
-                        " ".join([
-                            topic.name.replace("_", " "),
-                            *(urlparse(seed).path.replace("-", " ").replace("/", " ")
-                              for seed in topic.seeds[:1]),
-                        ]),
-                    )
-                    for topic in topics
-                ] or [("index_search", ctx.query)]
-                sources.extend(
-                    (name, tool.handler({"query": query}, ctx)) for name, query in topic_queries
-                )
-            else:
-                if tool.name in {"web_search", "recent_developments"}:
-                    editorial = [
-                        domain for domain, (tier, _) in ctx.registry.source_tiers().items()
-                        if tier == "editorial"
-                    ]
-                    tool_args = {
-                        "query": _editorial_query(ctx.query, window_start, window_end),
-                        "prefer": editorial,
-                    }
-                    if tool.name == "recent_developments":
-                        tool_args["recency"] = "week"
-                    if tool.name == "web_search" and preparation_context:
-                        # Identity lane (F053/F055): schedule-shaped, never the resident's
-                        # prep phrasing. Audited live: searching the raw sentence returned a
-                        # gardening workshop because "prepare" matched; the model's keyword
-                        # interpretation plus "schedule" plus the dates returns the actual
-                        # event row for the asked date.
-                        sources.append((
-                            "identity_web",
-                            tool.handler(
-                                {"query": _editorial_query(
-                                    f"{keyword} schedule" if keyword else f"{ctx.query} schedule",
-                                    window_start, window_end,
-                                )},
-                                ctx,
-                            ),
-                        ))
-                else:
-                    tool_args = {
-                        "citywide_only": not bool(borough),
-                        **({"near": borough} if borough else {}),
-                    }
-                sources.append((tool.name, tool.handler(tool_args, ctx)))
-    if keyword and not preparation_context and not borough and not audience:
-        # F085: a named keyword ("Bryant Park movie series") gets the scoped search as a
-        # PARALLEL corroborating lane, query = the exact keyword, no date suffix, results
-        # never window-stripped. The structured lanes are structurally blind to unticketed,
-        # out-of-window, or un-permitted series; retrieval absence there is not evidence.
-        # Preparation turns are excluded: they already run the identity-anchored keyword
-        # search (identity_web), and an unfiltered famous-other-date row must not re-enter
-        # the composition around that anchor (F053).
-        for tool in _context_tools(ctx):
-            if tool.name == "web_search":
-                sources.append(("keyword_web", tool.handler({"query": keyword}, ctx)))
-                break
+    broad_web = (
+        not keyword
+        and not classification
+        and bool(ctx.query.strip())
+        and ctx.toolbox is not None
+        and "web_search" in ctx.toolbox
+    )
+    if broad_web:
+        sources.append((
+            "broad_web",
+            ctx.toolbox["web_search"].handler(
+                {"query": ctx.query.strip(), "count": 5}, ctx
+            ),
+        ))
     gathered = await asyncio.gather(*(
         asyncio.wait_for(call, timeout=_SOURCE_TIMEOUT_S) for _, call in sources
     ), return_exceptions=True)
@@ -700,7 +437,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         name for name in catalog_sources if isinstance(results[name], BaseException)
     ]
     retryable_failed = [
-        name for name in failed_catalog if name not in broadened_catalog
+        name for name in failed_catalog
     ]
     if retryable_failed:
         retried = await asyncio.gather(*(
@@ -711,15 +448,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     unavailable_catalog = [
         name for name in catalog_sources if isinstance(results[name], BaseException)
     ]
-    keyword_context = results.get("keyword_web")
-    if keyword_context is None or isinstance(keyword_context, BaseException):
-        keyword_block = ""
-    else:
-        # F085: never window-stripped; a named series legitimately lives outside today.
-        keyword_block = (
-            "\n\nScoped search on the resident's exact keyword (parallel corroboration, "
-            "not window-filtered; cite if used):\n" + str(keyword_context)
+    web_context = results.get("broad_web")
+    web_failed = isinstance(web_context, BaseException)
+    if web_failed:
+        web_context = None
+    web_appendix = (
+        "\n\nCurrent web event leads, searched in parallel with the structured catalogs. "
+        "Keep each result's evidence grade and verification warning:\n"
+        f"{web_context}"
+        if web_context
+        else (
+            "\n\nCurrent web event leads were unavailable. Results are partial; do not claim "
+            "complete coverage or that no other event exists."
+            if web_failed
+            else ""
         )
+    )
     raw_tm = [] if isinstance(results["ticketmaster"], BaseException) else results["ticketmaster"]
     raw_parks = [] if isinstance(results["parks"], BaseException) else results["parks"]
     raw_permitted = [] if isinstance(results["permitted"], BaseException) else results["permitted"]
@@ -730,10 +474,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         events = [
             event for event in events
             if event.source == "Ticketmaster"
-            or (
-                event.source == "NYC Permitted Events"
-                and "permitted" not in broadened_catalog
-            )
+            or event.source == "NYC Permitted Events"
             or _matches_keyword(event, keyword)
         ]
 
@@ -752,57 +493,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         return _shortlist(kept, limit)
 
     events = _window_filter(events)
-    broadened = False
-    if not events and keyword:
-        # A stuffed keyword phrase can full-text-match nothing while the window alone holds
-        # the rows (observed live). Retry the two catalog lanes once without the keyword and
-        # let the window, free, and borough filters do the selection.
-        retry_calls = {}
-        blocked_broadening = set(failed_catalog) | broadened_catalog
-        if "ticketmaster" not in blocked_broadening:
-            retry_calls["ticketmaster"] = asyncio.wait_for(ticketmaster_events(
-                keyword=None, classification=classification, start_datetime=start_dt,
-                size=20, client=ctx.http,
-            ), timeout=_SOURCE_TIMEOUT_S)
-        if "parks" not in blocked_broadening:
-            retry_calls["parks"] = asyncio.wait_for(query_dataset(
-                PARKS_DATASET_ID,
-                where=(
-                    f"startdate >= '{window_start}'"
-                    + (f" AND startdate <= '{window_end}T23:59:59'" if window_end else "")
-                ),
-                order="startdate", q=None, limit=50, client=ctx.http,
-            ), timeout=_SOURCE_TIMEOUT_S)
-        if "permitted" not in blocked_broadening:
-            retry_calls["permitted"] = asyncio.wait_for(query_dataset(
-                PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
-                q=None, limit=50, client=ctx.http,
-            ), timeout=_SOURCE_TIMEOUT_S)
-        retry_values = await asyncio.gather(
-            *retry_calls.values(), return_exceptions=True,
-        )
-        retry_results = dict(zip(retry_calls, retry_values))
-        partial_catalog.update(
-            name for name, value in retry_results.items()
-            if isinstance(value, BaseException)
-        )
-        retry_tm = retry_results.get("ticketmaster", [])
-        retry_parks = retry_results.get("parks", [])
-        retry_permitted = retry_results.get("permitted", [])
-        retried = [] if isinstance(retry_tm, BaseException) else [
-            e for e in (_from_ticketmaster(r) for r in retry_tm) if e
-        ]
-        retried += [] if isinstance(retry_parks, BaseException) else [
-            e for e in (_from_parks(r) for r in retry_parks) if e
-        ]
-        retried += [] if isinstance(retry_permitted, BaseException) else [
-            e for e in (_from_permitted(r) for r in retry_permitted) if e
-        ]
-        retried = [event for event in retried if _matches_keyword(event, keyword)]
-        events = _window_filter(retried)
-        broadened = bool(events)
-
-    limited_catalog = set(unavailable_catalog) | partial_catalog
+    limited_catalog = set(unavailable_catalog)
     coverage_note = ""
     if limited_catalog:
         names = ", ".join(
@@ -840,145 +531,62 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             "Do not convert a relative window such as this weekend into exact dates or weekdays "
             "because these index citations do not evidence that calendar conversion."
         )
-    if not events and keyword:
-        catalog_scope = (
-            "available catalog sources"
-            if failed_catalog or partial_catalog
-            else "complete catalog"
-        )
-        no_results += (
-            f" This lookup already retried the {catalog_scope} without the keyword. "
-            "Do not call this tool again with synonyms for the same date and borough."
-        )
-    if not events and not broad_context:
-        return f"{no_results}{keyword_block}" if keyword_block else no_results
+    if not events:
+        return no_results + web_appendix
 
     blocks = []
     for ev in events:
         weekday = date.fromisoformat(ev.start_date).strftime("%A")
         # The snapshot carries the FULL row the model will describe, time and source included,
         # so cited prose stays supported by its own evidence.
+        timing = _today_timing_note(ev, now).removeprefix("; ")
         snippet_bits = [
-            ev.name, weekday, ev.start_date, ev.start_time, ev.venue, ev.borough,
-            ev.free_evidence, ev.audience, f"({ev.source})",
+            f"Name: {ev.name}",
+            f"Date: {weekday}, {ev.start_date}",
+            f"Start time: {ev.start_time}" if ev.start_time else "",
+            f"End time: {ev.end_time}" if ev.end_time else "",
+            f"Venue: {ev.venue}" if ev.venue else "",
+            f"Borough: {ev.borough}" if ev.borough else "",
+            f"Timing at lookup: {timing}" if timing else "",
+            f"Cost evidence: {ev.free_evidence}" if ev.free_evidence else "",
+            f"Audience: {ev.audience}" if ev.audience else "",
+            f"Source: {ev.source}",
         ]
         cite = ctx.citations.register(
             ev.url or PARKS_SOURCE_URL,
-            snippet=" ".join(bit for bit in snippet_bits if bit).strip(),
+            snippet="; ".join(bit for bit in snippet_bits if bit).strip(),
             title=ev.name or "NYC event", kind="DATA", valid_as_of=ev.start_date,
         )
         blocks.append(_event_block(ev, cite, now))
 
     window = f" for {window_start} through {window_end}" if window_end else ""
     free_scope = " whose official source evidence says free" if "free" in ctx.query.lower() else ""
-    broadened_note = ""
-    if broadened:
-        retry_limit_note = (
-            " A source that needed a recovery retry was not queried a third time, so this "
-            "broadened shortlist does not restore complete catalog coverage."
-            if failed_catalog
-            else ""
-        )
-        broadened_note = (
-            "These listings came from a BROADENED search after the keyword matched nothing."
-            f"{retry_limit_note} If the resident's request was for something these listings do "
-            "not actually satisfy, such as a private or unlisted gathering or a specific event "
-            "not shown, say so plainly, do not substitute these as the answer, and point to 311 "
-            "for official help; you may offer them separately as public alternatives.\n"
-        )
     header = (
-        f"{coverage_note}{broadened_note}"
+        f"{coverage_note}"
         f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
         "NYC Permitted Events, the Street Activity Permit Office feed of street fairs, farmers "
         "markets, block parties, parades, and plaza events). "
         "Each links to its official page, cite them and don't add events that aren't listed here:\n"
     )
     catalog = header + "\n".join(blocks) if blocks else no_results
-    if borough or audience:
-        return catalog
-    if not broad_context:
-        return f"{catalog}{keyword_block}"
-
-    index_results = [value for name, value in results.items() if name.startswith("index_search")]
-    index_contexts = [value for value in index_results if not isinstance(value, BaseException)]
-    index_context = "\n\n".join(index_contexts) or "Curated official event context unavailable for this lookup."
-    web_context = results.get("web_search", "Official web context unavailable for this lookup.")
-    if isinstance(web_context, BaseException):
-        web_context = "Official web context unavailable for this lookup."
-    else:
-        web_context = _windowed_context(str(web_context), window_start, window_end) or (
-            "Official web context had no result explicitly dated for this window."
-        )
-    recent_context = results.get(
-        "recent_developments", "Current editorial and news context unavailable for this lookup.",
-    )
-    if isinstance(recent_context, BaseException):
-        recent_context = "Current editorial and news context unavailable for this lookup."
-    else:
-        recent_context = _windowed_context(str(recent_context), window_start, window_end) or (
-            "Current editorial and news context had no result explicitly dated for this window."
-        )
-    editorial_context = results.get(
-        "editorial_guides", "Current editorial event guides unavailable for this lookup.",
-    )
-    if isinstance(editorial_context, BaseException):
-        editorial_context = "Current editorial event guides unavailable for this lookup."
-    identity_block = ""
-    if preparation_context:
-        identity_context = results.get("identity_web")
-        if identity_context is None or isinstance(identity_context, BaseException):
-            identity_context = "Event identity context unavailable for this lookup."
-        else:
-            # Prefer the asked date's rows from schedule-bearing pages so a more famous
-            # match on another date cannot anchor the answer; fall back to the unfiltered
-            # result when no row carries the date. Identity ANCHORS to a date by design, so
-            # an open window pins to its start (today) here; the F085 open-window
-            # pass-through applies to discovery lanes, never this one (F053).
-            dated = _windowed_context(
-                str(identity_context), window_start, window_end or window_start
-            )
-            identity_context = dated or str(identity_context)
-        identity_block = (
-            "Event identity context (current trusted-web results; use these to resolve which "
-            "event the resident means). Times on schedule pages such as FIFA's are UTC unless "
-            "explicitly labeled otherwise: convert to Eastern before stating a local time, and "
-            "never present two renderings of the same instant as a conflict.\n"
-            f"{identity_context}\n\n"
-        )
-    synthesis_rules = _PREPARATION_SYNTHESIS_RULES if preparation_context else _SHORTLIST_SYNTHESIS_RULES
-    composed = (
-        f"{catalog}\n\n"
-        "Newly retrieved current city context for this event-planning question:\n"
-        f"{identity_block}"
-        f"Curated official and seasonal context:\n{index_context}\n\n"
-        f"Official event and seasonal context:\n{web_context}\n\n"
-        f"Current editorial event guides:\n{editorial_context}\n\n"
-        f"Current editorial and news discovery:\n{recent_context}"
-        f"{keyword_block}\n\n"
-        f"{synthesis_rules}"
-    )
-    # F057: lanes register citations while fetching, then windowing can drop their content
-    # from the composed text. Prune this call's registrations that the model never sees, so
-    # no orphaned evidence survives; citations from other tools or turns are untouched.
-    orphaned = (
-        set(ctx.citations.mapping()) - pre_existing_ids - _referenced_ids(composed)
-    )
-    ctx.citations.discard(orphaned)
-    return composed
+    return catalog + web_appendix
 
 
 def get_tools() -> list[Tool]:
     return [
         Tool(
-            name="whats_on_events",
+            name="find_nyc_events",
             description=(
                 "Find structured NYC event listings by date, borough, audience, topic, or category. "
-                "It combines live Ticketmaster, NYC Parks, NYC Permitted Events, current editorial "
-                "guides, and web context into grounded, dated, linked listings. Use it when the "
+                "It combines live Ticketmaster, NYC Parks, and NYC Permitted Events into grounded, "
+                "dated, linked listings. For broad requests such as things to do today, it also "
+                "searches the current web in parallel so the model does not need to coordinate a "
+                "second required call. Use it when the "
                 "resident wants event choices or wants to filter earlier choices. Do not use it for "
                 "general facts merely because they concern sports, music, or entertainment. "
-                "web_search remains available for fresh context, named-event details, and gaps the "
-                "structured listings do not cover. Pass `keyword` for a specific event topic, plus "
+                "For a specific event topic, web_search remains available for fresh context, "
+                "named-event details, and gaps the structured listings do not cover. Pass `keyword` "
+                "for a specific event topic, plus "
                 "optional `classification`, `borough`, source-backed `audience`, and date window."
             ),
             parameters={
@@ -1000,9 +608,9 @@ def get_tools() -> list[Tool]:
                         ),
                     },
                     "audience": {"type": "string", "enum": ["kids"], "description": "Optional evidence-backed audience filter. Use `kids` only when the resident asks for children's events; returned rows must carry a source audience label for kids."},
-                    "window_start": {"type": "string", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
-                    "window_end": {"type": "string", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
-                    "limit": {"type": "integer", "description": "Max events to return (default 12)."},
+                    "window_start": {"type": "string", "format": "date", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
+                    "window_end": {"type": "string", "format": "date", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 12, "description": "Max events to return."},
                 },
             },
             handler=_handler,
