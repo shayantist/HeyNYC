@@ -7,6 +7,7 @@ from litellm.main import responses_api_bridge_check
 from pydantic_ai import UsageLimits
 from pydantic_ai.models import infer_model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
+from pydantic_ai.profiles.openai import openai_model_profile
 
 from heynyc.core import config
 from heynyc.core.memory import compact_memory, context_capacity, request_tokens
@@ -159,7 +160,18 @@ def configured_model(
             if value is not None
         }
         model_type = OpenAIResponsesModel if _uses_openai_responses(model) else OpenAIChatModel
-        return model_type(model.removeprefix("openai/"), settings=settings)
+        model_name = model.removeprefix("openai/")
+        profile = openai_model_profile(model_name)
+        if model_name.startswith("gpt-5.6-luna"):
+            profile = {
+                **profile,
+                "supported_native_tools": frozenset(
+                    tool
+                    for tool in profile.get("supported_native_tools", ())
+                    if tool.__name__ != "ToolSearchTool"
+                ),
+            }
+        return model_type(model_name, settings=settings, profile=profile)
     return infer_model(model.replace("/", ":", 1))
 
 
@@ -190,6 +202,7 @@ def build_configured_runtime(
         current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
         structured_grounding=True,
+        semantic_verifier=None,
         fact_review_model=(
             configured_model(config.HEYNYC_FACT_REVIEW_MODEL)
             if isinstance(model, str)

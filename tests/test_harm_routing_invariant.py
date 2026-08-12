@@ -190,7 +190,7 @@ def test_translated_specialized_advice_uses_structured_grounding():
     trace = Trace(
         case_id=case.id,
         query=case.query,
-        spans=[Span(kind="tool", name="official_sources", output=evidence)],
+        spans=[Span(kind="tool", name="web_fetch", output=evidence)],
         final_text="Llame hoy al (800) 342-3334 y tenga el aviso a mano. {cite:S1}",
         citations={"S1": {"kind": "WEB", "url": "u", "snippet": evidence}},
         outcome="answered",
@@ -213,7 +213,7 @@ def test_translated_specialized_advice_semantics_are_not_string_matched():
     trace = Trace(
         case_id=case.id,
         query=case.query,
-        spans=[Span(kind="tool", name="official_sources", output=evidence)],
+        spans=[Span(kind="tool", name="web_fetch", output=evidence)],
         final_text="Llame hoy al (800) 555-0100. {cite:S1}",
         citations={"S1": {"kind": "WEB", "url": "u", "snippet": evidence}},
         outcome="answered",
@@ -234,7 +234,7 @@ def test_specialized_advice_gate_does_not_parse_map_coordinates() -> None:
     trace = Trace(
         case_id=case.id,
         query=case.query,
-        spans=[Span(kind="tool", name="cool_options_lookup", output="Three City sites")],
+        spans=[Span(kind="tool", name="find_cool_options", output="Three City sites")],
         final_text=(
             "Get directions from the resolved area point to the closest site: "
             "https://www.google.com/maps/dir/?api=1&origin=40.67363,-73.95400&"

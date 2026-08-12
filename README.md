@@ -50,7 +50,7 @@ The table below is the full, generated list of current service modules, each wit
 
 ## What makes it different
 
-- **Cite or abstain:** Supported factual claims need a citation or an abstention. A deterministic guard rechecks cited claims before an answer ships. See [SAFETY.md](SAFETY.md).
+- **Cite or abstain:** Supported factual claims need a citation or an abstention. Mechanical checks validate citation IDs and exact structured values before an answer ships, while live evaluations review broader claim support. See [SAFETY.md](SAFETY.md).
 - **Does, not just tells:** It uses the city's benefits screener and can prepare the real application for review, without deciding eligibility itself.
 - **Reachable today:** SMS, WhatsApp, and a CLI, without a resident account. Self-hosted instances need provider configuration for the messaging channels.
 - **Open and self-hostable:** The package can be run by an operator who controls its infrastructure and model configuration.
@@ -61,7 +61,7 @@ HeyNYC is an alpha release. The public pilot number above runs from an operator-
 
 - **Built:** a Python CLI, SMS and WhatsApp adapters, grounded service modules, scoped official-source web search as a retrieval tool, a deterministic citation guard, and an offline evaluation suite.
 - **Agent runtime:** PydanticAI is the default. Operators can retain or restore the prior loop with [`HEYNYC_AGENT_RUNTIME=legacy`](heynyc/core/config.py); both runtimes use the same civic tools, grounding policy, encrypted resident transcript and channel store, and channel adapters.
-- **Prototype, off by default:** the optional benefits application-form draft workflow, translate-at-edge pipeline, and Tier-2 faithfulness checker. Forms require explicit configuration and encryption settings.
+- **Prototype, off by default:** the optional benefits application-form draft workflow and translate-at-edge pipeline. The model-based faithfulness checker remains available for evaluation comparisons but is not part of resident traffic. Forms require explicit configuration and encryption settings.
 - **Conversation continuity:** messaging sessions resume from encrypted local transcripts and expire after the configured inactivity period. Twilio requests enter an encrypted SQLite inbox before acknowledgement; generated replies are durably staged before their turns commit, and delivery resumes from the last provider-accepted part after a restart. Resident-answer context is measured before it reaches the answer model, older turns compact only under pressure, and `NEW` starts fresh model context. Texting `DELETE MY DATA` and confirming erases the resident's transcript, queued messages, draft, and pending report flags; see the [privacy notice](docs/legal/HEYNYC-PRIVACY.md) and [safety guide](SAFETY.md).
 - **Not yet shipped:** a resident web UI, durable Meta webhook intake, automated restore-tested host migration, self-service resident data export, authenticated browser actions, automatic application submission, and demonstrated production multilingual safety.
 - **Known limitations:** intersection geocoding can be wrong, so HeyNYC echoes the resolved address and asks for confirmation. Some city datasets are thin (the SNAP-center list has weekday hours but no phone numbers), and HeyNYC says so rather than filling the gap.
@@ -116,13 +116,10 @@ flowchart TD
     C -->|Risk detected| D["Deterministic safety response"]
     C -->|Continue| E["Cached Notify NYC awareness"]
     E --> F["Answer model and official-data tools"]
-    F --> G["GroundedAnswer: claims paired with source IDs"]
-    G --> H["Deterministic grounding checks"]
+    F --> G["Conversational prose with inline source IDs"]
+    G --> H["Mechanical citation and source checks"]
     H -->|Rejected| F
     H -->|Accepted| I["Render citations and deliver"]
-    H -. "Optional and off by default" .-> J["Claim-evidence model checker"]
-    J -->|Rejected| F
-    J -->|Accepted| I
     I --> K["SMS or WhatsApp: commit the turn"]
     I --> L["REPL: update the live console"]
 ```
@@ -131,10 +128,10 @@ The default Pydantic runtime follows this path:
 
 1. For SMS and WhatsApp, the channel layer normalizes the message, deduplicates provider retries, restores the resident's encrypted session, and keeps that resident's turns in order while other residents can run concurrently. The REPL enters the agent directly and does not use channel persistence ([channel orchestrator](heynyc/channels/orchestrator.py), [REPL](heynyc/__main__.py)).
 2. The current safety gate routes clear time-critical cases before the general tool loop. Narrow deterministic backstops cover chest pain, overdose or unsafe medication dosing, and high-confidence self-harm signals. The default Pydantic runtime adds multilingual self-harm classification and message-language detection; the retained legacy runtime uses only the deterministic backstops ([risk screen](heynyc/core/pydantic_runtime/safety.py), [runtime boundary](heynyc/core/pydantic_runtime/runtime.py), [deterministic backstops](heynyc/core/agent.py)).
-3. Normal turns receive a short-lived cached snapshot of current Notify NYC messages. Only this proactive awareness preflight uses the cache; an explicit `nyc_advisories` tool request still fetches fresh, citable data ([advisory awareness](heynyc/modules/advisories/tools.py)).
-4. The answer model selects only the service modules and official-data tools needed for the question ([module conventions](heynyc/modules/README.md)).
-5. Factual output is a `GroundedAnswer`: small claim blocks paired with source IDs. Structure makes the evidence relationship inspectable; it does not make a claim true by itself ([output schema](heynyc/core/pydantic_runtime/projection.py)).
-6. Deterministic validators reject unknown citations, unsupported specifics, discovery-only sources, and other grounding failures. A rejected draft may be retried; exhausted verification fails closed instead of shipping a partial answer ([grounding guard](heynyc/core/grounding.py), [safety boundaries](SAFETY.md)). The optional model-based claim-evidence checker is a comparison tool and is off by default.
+3. A rolling seven-day process cache stores exact Notify NYC messages. Normal turns receive the newest exact messages that fit the bounded awareness prompt, with an omission count when more remain cached. A failed refresh keeps unexpired messages and labels them stale. Only this proactive awareness preflight uses the cache; an explicit `check_notify_nyc` request still fetches fresh, citable data ([advisory awareness](heynyc/modules/advisories/tools.py)).
+4. The answer model sees one live `web_search`, one local `web_fetch`, and a deferred catalog of service operations. Search accepts optional `published_after` and `published_before` dates for open-ended or bounded publication-time searches. These are not event-date filters. Fetch handles one public URL through SSRF-protected HTTP or a Brave-rendered fallback, while source trust is graded separately from acquisition. Broad event discovery runs its required structured catalogs and one bounded current-web lane concurrently, so the model does not need to rediscover that invariant workflow ([search implementation](heynyc/core/tools/web_search.py), [event discovery](heynyc/modules/events/tools.py), [module conventions](heynyc/modules/README.md)).
+5. The answer model writes ordinary conversational prose and places inline `{cite:S#}` markers immediately after supported claims. Clarification and inherently unknowable outcomes remain typed outputs, but resident-facing answers are not assembled from JSON blocks ([runtime output contract](heynyc/core/pydantic_runtime/runtime.py)).
+6. Mechanical checks reject unknown citation IDs, internal markup, discovery-only citations, and exact address, date, money, phone, or unit-number mismatches against structured DATA snapshots. A failed exact-value check gets one complete-answer retry and never triggers paragraph pruning. Broader semantic citation correctness is measured in trace-backed evaluations rather than a second model call on every resident turn ([grounding guard](heynyc/core/grounding.py), [runtime validator](heynyc/core/pydantic_runtime/runtime.py), [safety boundaries](SAFETY.md)).
 7. Only the accepted answer is rendered. SMS and WhatsApp commit the persistent turn through the channel delivery flow; the REPL updates its live console directly ([session persistence](heynyc/core/session.py), [REPL streaming](heynyc/__main__.py)).
 
 ## Repo layout
@@ -178,7 +175,7 @@ Offline tests prove contracts; live evals prove behavior.
 
 ### If you're texting it
 
-**How do I know it isn't making things up?** Every factual claim carries a citation to an official source, checked by a deterministic guard before the answer reaches you; when the evidence isn't there, it says it can't confirm and points you to 311 instead of guessing. It also never decides your eligibility and never submits anything on your behalf; the full design is in [SAFETY.md](SAFETY.md).
+**How do I know it isn't making things up?** HeyNYC is instructed to cite supported factual claims or abstain. Before delivery, mechanical checks reject unknown or discovery-only citations and exact structured values that disagree with their cited records. Trace-backed live evaluations review the broader claim-to-source relationship that code cannot establish from arbitrary prose alone. It also never decides your eligibility and never submits anything on your behalf; the full design is in [SAFETY.md](SAFETY.md).
 
 **Do people read my messages?** No one reads your conversations in the normal course of things; a human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md) controls.
 
@@ -196,11 +193,11 @@ Offline tests prove contracts; live evals prove behavior.
 
 ### If you're evaluating it (the City, journalists, civic technologists)
 
-**How is this not another MyCity chatbot?** MyCity answered confidently without grounding and [told business owners they could break the law](https://themarkup.org/artificial-intelligence/2024/03/29/nycs-ai-chatbot-tells-businesses-to-break-the-law); HeyNYC's architecture is the deliberate opposite: no ungrounded facts, cite-or-abstain, a deterministic guard on every live answer, and MyCity's documented failures rebuilt as a permanent regression suite ([the traps and the real law behind each](docs/testing/benchmarks.md)). We also publish our own failures as a numbered [register](docs/testing/failure-db.md); [SAFETY.md](SAFETY.md) explains why a documented failure record is the stronger safety claim.
+**How is this not another MyCity chatbot?** MyCity answered confidently without grounding and [told business owners they could break the law](https://themarkup.org/artificial-intelligence/2024/03/29/nycs-ai-chatbot-tells-businesses-to-break-the-law). HeyNYC pairs cite-or-abstain instructions with mechanical citation checks, live trace review, and permanent regressions for MyCity's documented failures ([the traps and the real law behind each](docs/testing/benchmarks.md)). We also publish our own failures as a numbered [register](docs/testing/failure-db.md); [SAFETY.md](SAFETY.md) explains the remaining boundary.
 
-**What grounds the answers?** Official sources only: NYC Open Data, the city's Benefits Screening API, official finders, and scoped search over an allowlist of authoritative NYC domains where a lower-tier source can never outrank an official one. The capability table above names the dataset behind each module; the source-trust design is in [SAFETY.md](SAFETY.md).
+**What grounds the answers?** NYC Open Data, the city's Benefits Screening API, official finders, and live web retrieval with explicit source-trust grades. Search can preserve an unlisted result as a discovery lead, but lower-trust evidence cannot silently become an official claim. The capability table above names the dataset behind each module; the source-trust design is in [SAFETY.md](SAFETY.md).
 
-**Which AI models, and who processes resident data?** The answer model is operator-configured behind a deterministic verification guard, so the safety contract doesn't depend on which backend model runs; messages are carried by Twilio or Meta, and every service provider is named in the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md). Self-hosted models are an explicit design goal: verification adds no data egress ([SAFETY.md](SAFETY.md)).
+**Which AI models, and who processes resident data?** The answer model is operator-configured through Pydantic AI. Mechanical citation checks are provider-independent, while answer quality still depends on the selected model and must pass live evaluations before exposure. Messages are carried by Twilio or Meta, and every service provider is named in the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md). Self-hosted models remain an explicit design goal ([SAFETY.md](SAFETY.md)).
 
 **How is it tested?** An offline pytest suite proves the code's contracts, and a live eval gate runs the real model against every module's contract with a deterministic no-hallucination floor; red-team results and failures become permanent public records. Start at [heynyc/eval/README.md](heynyc/eval/README.md) and [`docs/testing/`](docs/testing/).
 
@@ -208,6 +205,6 @@ Offline tests prove contracts; live evals prove behavior.
 
 **Can we request or add a service module?** Yes: a module is one folder with a YAML manifest, and requesting one needs no code at all. [CONTRIBUTING.md](CONTRIBUTING.md) has both paths.
 
-**What would this cost a city?** The grounding guarantee lives in the deterministic guard rather than in an expensive model, which is what makes cheap or self-hosted models safe to run; measured by the built-in telemetry, the median resident turn costs under two cents on the pilot's current stack. The economics of the design are part of [SAFETY.md](SAFETY.md).
+**What would this cost a city?** Built-in telemetry records model, tool, latency, and cost usage for each evaluated turn. The configured resident path avoids a second model call solely for semantic verification, so deployments can compare hosted and self-hosted models against the same live evaluation gate ([SAFETY.md](SAFETY.md)).
 
-_Last updated: 2026-08-08_
+_Last updated: 2026-08-12_

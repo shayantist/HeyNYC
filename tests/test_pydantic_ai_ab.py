@@ -203,7 +203,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
             "S0": {"url": "https://nyc.gov/pending-only"},
             "S1": {"url": "https://nyc.gov/food"},
         },
-        tool_calls_made=["nearest_food_pantry", "confirm_screen_facts"],
+        tool_calls_made=["find_foodhelp_locations", "confirm_screen_facts"],
         status="approval_required",
         messages=[{"role": "assistant", "content": "pending"}],
         usage={
@@ -283,7 +283,7 @@ async def test_eval_conversation_merges_native_fact_confirmation_run() -> None:
 
     assert result.text == "Screened"
     assert result.tool_calls_made == [
-        "nearest_food_pantry",
+        "find_foodhelp_locations",
         "confirm_screen_facts",
         "screen",
     ]

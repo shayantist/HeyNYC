@@ -2,13 +2,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import RunUsage
 
 from heynyc.core.citations import CitationRegistry, data_provenance
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
-from heynyc.core.pydantic_runtime.projection import GroundedAnswer, GroundedBlock
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 
@@ -44,14 +43,7 @@ def _project(*, limitation: str = "", language: str | None = None) -> str:
     result = runtime._project_result(
         [],
         RunUsage(),
-        GroundedAnswer(
-            grounded_blocks=[
-                GroundedBlock(
-                    text="Queens SNAP Center has regular weekday hours",
-                    citation_ids=[citation_id],
-                )
-            ]
-        ),
+        f"Queens SNAP Center has regular weekday hours {{cite:{citation_id}}}",
         citations,
         time.perf_counter(),
         model_time_ms=0,
@@ -105,13 +97,8 @@ async def test_f176_missing_localized_limit_is_added_without_a_model_retry() -> 
         calls += 1
         if calls == 1:
             return ModelResponse([ToolCallPart("nearest", {}, "nearest-1")])
-        text = "Queens SNAP Center tiene un horario habitual"
         return ModelResponse([
-            ToolCallPart(
-                info.output_tools[0].name,
-                {"grounded_blocks": [{"text": text, "citation_ids": ["S1"]}]},
-                f"answer-{calls}",
-            )
+            TextPart("Queens SNAP Center tiene un horario habitual {cite:S1}")
         ])
 
     async def crisis_screen(_turns):

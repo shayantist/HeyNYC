@@ -93,7 +93,7 @@ async def test_nonfactual_outcome_remains_in_conversation_history() -> None:
     assert calls == 2
 
 
-async def test_plain_text_cannot_bypass_structured_authoritative_grounding() -> None:
+async def test_mechanical_guard_does_not_classify_uncited_prose() -> None:
     async def retrieve(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -115,26 +115,25 @@ async def test_plain_text_cannot_bypass_structured_authoritative_grounding() -> 
             return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
         return ModelResponse([TextPart("The office is open on Mondays.")])
 
-    with pytest.raises(PydanticRunFailure) as raised:
-        await PydanticRuntimeAdapter(
-            FunctionModel(model),
-            registry=Registry([]),
-            tools={
-                "retrieve": Tool(
-                    name="retrieve",
-                    description="Retrieve official evidence",
-                    parameters={"type": "object", "properties": {}},
-                    handler=retrieve,
-                )
-            },
-            structured_grounding=True,
-        ).run("When is the office open?")
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Retrieve official evidence",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+    ).run("When is the office open?")
 
-    assert raised.value.partial_result.status == "error"
-    assert raised.value.partial_result.text != "The office is open on Mondays."
+    assert result.text == "The office is open on Mondays."
+    assert result.diagnostics["validation_rejections"] == []
 
 
-async def test_authoritative_evidence_removes_nonfactual_output() -> None:
+async def test_authoritative_evidence_supports_native_cited_prose() -> None:
     async def retrieve(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -154,20 +153,8 @@ async def test_authoritative_evidence_removes_nonfactual_output() -> None:
             for part in message.parts
         ):
             return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
-        assert "nonfactual_outcome" not in {
-            tool.name for tool in info.output_tools
-        }
         return ModelResponse([
-            ToolCallPart(
-                "grounded_answer",
-                {
-                    "grounded_blocks": [{
-                        "text": "The official office is open on Mondays.",
-                        "citation_ids": ["S1"],
-                    }]
-                },
-                "answer-1",
-            )
+            TextPart("The official office is open on Mondays. {cite:S1}")
         ])
 
     result = await PydanticRuntimeAdapter(
@@ -188,23 +175,21 @@ async def test_authoritative_evidence_removes_nonfactual_output() -> None:
     assert result.text.startswith("The official office is open on Mondays.")
 
 
-async def test_plain_text_cannot_assert_facts_before_retrieval() -> None:
+async def test_mechanical_guard_does_not_classify_prose_before_retrieval() -> None:
     async def model(
         _messages: list[ModelMessage],
         _info: AgentInfo,
     ) -> ModelResponse:
         return ModelResponse([TextPart("The office is open on Mondays.")])
 
-    with pytest.raises(PydanticRunFailure) as raised:
-        await PydanticRuntimeAdapter(
-            FunctionModel(model),
-            registry=Registry([]),
-            tools={},
-            structured_grounding=True,
-        ).run("When is the office open?")
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+    ).run("When is the office open?")
 
-    assert raised.value.partial_result.status == "error"
-    assert raised.value.partial_result.text != "The office is open on Mondays."
+    assert result.text == "The office is open on Mondays."
 
 
 @pytest.mark.parametrize(
@@ -220,7 +205,7 @@ async def test_citation_free_clarification_cannot_include_factual_prose(
 ) -> None:
     async def model(
         _messages: list[ModelMessage],
-        info: AgentInfo,
+        _info: AgentInfo,
     ) -> ModelResponse:
         return ModelResponse([
             ToolCallPart(
@@ -347,16 +332,7 @@ async def test_mechanical_boundary_does_not_parse_phone_semantics() -> None:
         ):
             return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
         return ModelResponse([
-            ToolCallPart(
-                info.output_tools[0].name,
-                {
-                    "grounded_blocks": [{
-                        "text": "Call the unsupported number 212-555-1212.",
-                        "citation_ids": ["S1"],
-                    }]
-                },
-                f"answer-{calls}",
-            )
+            TextPart("Call the unsupported number 212-555-1212. {cite:S1}")
         ])
 
     result = await PydanticRuntimeAdapter(

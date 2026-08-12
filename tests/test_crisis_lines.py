@@ -44,7 +44,7 @@ def test_table_covers_all_ten_ll30_languages():
         assert line.name == LL30_LANGUAGES[code]
 
 
-def test_verified_copy_carries_the_exact_numbers_and_official_sources():
+def test_verified_copy_carries_the_exact_numbers_and_web_fetch():
     for line in CRISIS_LINES.values():
         if line.lifeline_988:
             assert "988" in line.lifeline_988

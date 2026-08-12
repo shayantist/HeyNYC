@@ -67,8 +67,8 @@ def test_record_milestone_is_pii_free(tmp_path: Path):
 def test_funnel_counts_and_dropoff():
     telemetry_records = [
         {"tool_names": ["benefits_search"]},           # a plain answer
-        {"tool_names": ["screen_eligibility"]},        # screened, no eligible
-        {"tool_names": ["screen_eligibility"]},        # screened, eligible shown
+        {"tool_names": ["screen_access_nyc_eligibility"]},        # screened, no eligible
+        {"tool_names": ["screen_access_nyc_eligibility"]},        # screened, eligible shown
         {"tool_names": ["prepare_snap_application"]},  # apply started (review)
         {"tool_names": ["prepare_snap_application"]},  # apply started -> form ready
     ]
@@ -97,7 +97,7 @@ def test_funnel_empty_no_zero_division():
 def test_funnel_roundtrips_through_the_sidecar(tmp_path: Path):
     opath = outcomes.default_path(tmp_path)
     outcomes.record_milestone(opath, user_key="u1", eligible_shown=True, form_ready=True)
-    telem = [{"tool_names": ["screen_eligibility", "prepare_snap_application"]}]
+    telem = [{"tool_names": ["screen_access_nyc_eligibility", "prepare_snap_application"]}]
     f = outcomes.funnel(telem, outcomes.load(opath))
     assert f["counts"]["eligible_shown"] == 1 and f["counts"]["form_ready"] == 1
 
@@ -109,7 +109,7 @@ def test_outcomes_report_renders(tmp_path: Path, capsys):
     tpath = telemetry.default_path(tmp_path)
     telemetry.record_turn(tpath, session_id="u1", model="m",
                           usage={"input_tokens": 1, "output_tokens": 1},
-                          n_tool_calls=1, tool_names=["screen_eligibility"], status="success")
+                          n_tool_calls=1, tool_names=["screen_access_nyc_eligibility"], status="success")
     outcomes.record_milestone(outcomes.default_path(tmp_path),
                               user_key="u1", eligible_shown=True, form_ready=False)
     _render_outcomes(tpath, outcomes.default_path(tmp_path))

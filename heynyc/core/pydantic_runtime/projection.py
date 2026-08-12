@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import (
@@ -50,15 +50,26 @@ _CITATION_MARKUP_RE = re.compile(
     r"\{\s*cit(?:e|ation)[_a-z]*\s*:",
     re.IGNORECASE,
 )
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\s)]+\)")
 
 class GroundedBlock(BaseModel):
+    kind: Literal["claim", "framing"] = Field(
+        default="claim",
+        description=(
+            "Use claim for facts and procedures that the cited evidence must support. Use "
+            "framing only for empathy, signposting, or an honest limitation on what retrieval "
+            "established. Framing that adds a fact, prediction, or instruction still fails "
+            "semantic verification."
+        ),
+    )
     text: str = Field(
         min_length=1,
         description=(
             "One factual or procedural claim directly supported by its cited evidence, without "
             "citation markers. Do not turn a cited prohibition into an unsupported positive "
-            "instruction. If another sentence needs different evidence, put it in a separate "
-            "block."
+            "instruction. Do not assert an unsupported fact and then disclaim it. State only what "
+            "the evidence establishes, followed by the limitation when needed. If another sentence "
+            "needs different evidence, put it in a separate block."
         ),
     )
     citation_ids: list[str] = Field(
@@ -77,13 +88,18 @@ class GroundedAnswer(BaseModel):
     grounded_blocks: list[GroundedBlock] = Field(
         min_length=1,
         max_length=12,
+        description="Ordered resident-facing answer blocks with supporting source IDs",
     )
 
 
 class ClarificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(min_length=1, max_length=500)
+    question: str = Field(
+        min_length=1,
+        max_length=500,
+        description="One concise question asking only for the required missing input",
+    )
 
 
 def _grounded_block_text(block: GroundedBlock) -> str:
@@ -92,6 +108,10 @@ def _grounded_block_text(block: GroundedBlock) -> str:
         lambda match: "" if match.group(1).casefold() in declared else match.group(),
         block.text,
     ).strip()
+
+
+def _semantic_claim_text(block: GroundedBlock) -> str:
+    return _MARKDOWN_LINK_RE.sub(r"\1", _grounded_block_text(block))
 
 
 def _legacy_citation_ids(text: str) -> list[str]:

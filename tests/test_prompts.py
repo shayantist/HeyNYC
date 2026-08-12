@@ -49,13 +49,16 @@ def test_system_prompt_bans_internal_jargon_in_replies():
     assert "about 5 items" in low   # consolidated count home (prompt diet block 3)
 
 
-def test_system_prompt_includes_active_recency_check():
-    # The freshness guard goes from passive date-stamping to an ACTIVE recency check: on
-    # time-sensitive law/policy/rights questions the agent must run recent_developments and
-    # surface any breaking change as a dated, cited heads-up on top of the official answer.
+def test_system_prompt_includes_active_publication_freshness_check():
+    # The freshness guard goes from passive date-stamping to an active check: on
+    # time-sensitive law/policy/rights questions the agent uses the one web search tool.
     prompt = build_system_prompt(Registry([]))
     low = prompt.lower()
-    assert "recent_developments" in prompt
+    assert "web_search" in prompt
+    assert "published_after" in low
+    assert "published_before" in low
+    assert "publication date" in low
+    assert "recent_developments" not in prompt
     assert "check for recent changes" in low
     # The heads-up shape ("this may be changing") rehomed to the tool description with the
     # rest of the protocol (prompt diet, 2026-07-22); pinned there by the contested test.
@@ -117,27 +120,19 @@ def test_system_prompt_sets_plain_language_reading_level():
     assert "6th" in low and "8th" in low
 
 
-def test_contested_legal_matter_protocol_lives_in_its_one_home():
-    # Red-team MC03/MC04/FP02/ES03 fix, rehomed by the prompt diet (2026-07-22): the FULL
-    # contested-legal protocol (never restate court/holding/scope from news, never struck
-    # down/annulled, lead with what currently stands, active-legal-challenge framing) now
-    # lives ONCE, in the recent_developments tool description, the point of decision. The
-    # stable prompt keeps only the short never-cross line. Both are pinned so the policy
-    # can never silently vanish from either surface.
+def test_contested_legal_matter_protocol_lives_in_global_policy():
     from heynyc.core.tools.web_search import web_search_tools
 
     tools = {t.name: t for t in web_search_tools(["nyc.gov"], {}, set())}
-    desc = tools["recent_developments"].description.lower()
-    assert "contested legal matter" in desc
-    assert "struck" in desc and "annulled" in desc
-    assert "currently stands" in desc
-    assert "active legal challenge" in desc
-    assert "never name the court" in desc or "characterize the outcome" in desc
+    desc = tools["web_search"].description.lower()
+    assert "contested legal matter" not in desc
+    assert "active legal challenge" not in desc
 
     low = build_system_prompt(Registry([])).lower()
     assert "currently stands" in low                      # the never-cross line survives
     assert "never a repeal" in low
-    assert "recent_developments" in low                   # rule 9 points at the one home
+    assert "recent_developments" not in low
+    assert "web_search" in low
 
 
 def test_system_prompt_emergency_no_medical_dosing():
@@ -285,10 +280,10 @@ def test_router_short_keyword_is_not_substring_matched():
 def test_query_loads_only_matching_blurbs_but_keeps_menu_and_all_rules():
     prompt = build_system_prompt(_real_registry(), query="where's the nearest food pantry?")
     # the matched module's DETAILED blurb loads
-    assert "nearest_food_pantry(near=" in prompt
+    assert "find_foodhelp_locations(near=" in prompt
     # clearly-unrelated modules' DETAILED blurbs do NOT load
-    assert "cool_options_lookup" not in prompt             # cooling blurb text
-    assert "nyc_advisories" not in prompt                 # advisories blurb text
+    assert "find_cool_options" not in prompt             # cooling blurb text
+    assert "check_notify_nyc" not in prompt                 # advisories blurb text
     assert "PROGRAM INFO" not in prompt                   # housing blurb text
     # the always-on capability menu + every safety rule stay present (a routing miss drops neither)
     assert "Services you can help with (quick menu)" in prompt
@@ -300,9 +295,9 @@ def test_query_loads_only_matching_blurbs_but_keeps_menu_and_all_rules():
 def test_no_match_query_keeps_menu_and_rules_but_loads_no_detailed_blurbs():
     prompt = build_system_prompt(_real_registry(), query="what's the capital of France?")
     # fail-open on a routing miss: NO detailed blurbs at all...
-    assert "nearest_food_pantry(near=" not in prompt
-    assert "benefits_search(query=" not in prompt
-    assert "nyc_advisories" not in prompt
+    assert "find_foodhelp_locations(near=" not in prompt
+    assert "search_benefits(query=" not in prompt
+    assert "check_notify_nyc" not in prompt
     # ...but the menu + safety rules are never dropped
     assert "Services you can help with (quick menu)" in prompt
     assert "GROUND EVERYTHING" in prompt
@@ -311,10 +306,10 @@ def test_no_match_query_keeps_menu_and_rules_but_loads_no_detailed_blurbs():
 
 def test_query_none_includes_every_blurb_backward_compat():
     prompt = build_system_prompt(_real_registry())  # query defaults to None -> today's behavior
-    assert "nearest_food_pantry(near=" in prompt      # food blurb
-    assert "benefits_search(query=" in prompt         # benefits blurb
-    assert "cool_options_lookup" in prompt             # cooling blurb
-    assert "nyc_advisories" in prompt                 # advisories blurb
+    assert "find_foodhelp_locations(near=" in prompt      # food blurb
+    assert "search_benefits(query=" in prompt         # benefits blurb
+    assert "find_cool_options" in prompt             # cooling blurb
+    assert "check_notify_nyc" in prompt                 # advisories blurb
 
 
 def test_capability_menu_names_every_service_regardless_of_routing():
@@ -336,10 +331,10 @@ def test_tiers_keep_date_and_selected_blurbs_out_of_the_stable_prefix():
     assert "GROUND EVERYTHING" in stable
     assert "Services you can help with (quick menu)" in stable
     assert "Current date & time" not in stable          # the date must NOT sit inside the cached prefix
-    assert "nearest_food_pantry(near=" not in stable     # selected blurbs are volatile, not cached
+    assert "find_foodhelp_locations(near=" not in stable     # selected blurbs are volatile, not cached
     # volatile = the selected blurbs + the date line
     assert "Current date & time" in volatile
-    assert "nearest_food_pantry(near=" in volatile
+    assert "find_foodhelp_locations(near=" in volatile
 
 
 def test_static_conversation_and_language_rules_live_in_the_stable_prefix():
@@ -358,9 +353,9 @@ def test_static_conversation_and_language_rules_live_in_the_stable_prefix():
     assert "Reply in the same language as the resident" not in volatile
     # the volatile suffix is only the true mutables: the date line and the selected blurbs
     assert "Current date & time" in volatile
-    assert "nearest_food_pantry(near=" in volatile
+    assert "find_foodhelp_locations(near=" in volatile
     assert "Current date & time" not in stable
-    assert "nearest_food_pantry(near=" not in stable
+    assert "find_foodhelp_locations(near=" not in stable
 
 
 def test_conversation_rules_preserve_transform_only_followups_without_retrieval():

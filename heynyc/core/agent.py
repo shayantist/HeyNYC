@@ -1413,37 +1413,41 @@ def _routing_text(user_message: str) -> str:
 
 def _current_source_call(tools: dict[str, Tool], query: str, urls: tuple[str, ...]):
     """Prefer declared-page retrieval, with scoped web search as a compatibility fallback."""
-    if "official_sources" in tools:
-        return "official_sources", {"urls": list(urls), "query": query}
+    if "web_fetch" in tools and urls:
+        return "web_fetch", {"url": urls[0], "query": query}
     return "web_search", {"query": query}
 
 
 def _benefits_recovery_allowed_tools(user_message: str) -> set[str]:
     """Keep a benefits recovery turn out of unrelated modules unless the resident asks."""
     allowed = {
-        "official_sources", "web_search", "recent_developments", "screen_eligibility",
-        "prepare_snap_application", "nearest_food_pantry", "geocode", "nearest",
+        "web_fetch", "web_search", "screen_access_nyc_eligibility",
+        "prepare_snap_application", "find_foodhelp_locations", "geocode", "nearest",
     }
     if _EXPLICIT_HOUSING_RE.search(user_message):
-        allowed.update({"hpd_building_lookup", "hpd_litigation_lookup", "housing_guidance"})
+        allowed.update({
+            "get_hpd_building_records",
+            "get_hpd_litigation_records",
+            "get_housing_guidance",
+        })
     if _EXPLICIT_CLINIC_RE.search(user_message):
-        allowed.update({"find_clinic", "health_coverage_guidance"})
+        allowed.update({"find_clinics", "get_health_coverage_guidance"})
     if _EXPLICIT_WORKER_RE.search(user_message):
-        allowed.add("worker_rights_guidance")
+        allowed.add("get_worker_rights_guidance")
     return allowed
 
 
 def _immigrant_benefits_allowed_tools() -> set[str]:
     return {
-        "official_sources", "web_search", "recent_developments", "benefits_search",
-        "screen_eligibility",
-        "health_coverage_guidance",
+        "web_fetch", "web_search", "search_benefits",
+        "screen_access_nyc_eligibility",
+        "get_health_coverage_guidance",
     }
 
 
 def _civic_law_allowed_tools() -> set[str]:
     """Keep a current-law turn on the retrieved law instead of unrelated static guidance."""
-    return {"official_sources", "web_search", "recent_developments"}
+    return {"web_fetch", "web_search"}
 
 
 # An actual SSN-like value crosses the channel's safe intake boundary. Stop before the model can
@@ -1956,7 +1960,7 @@ def _discovery_citation_feedback(ids: list[str]) -> str:
         "<system-reminder>\n"
         f"Your last answer used search-result snippets as final evidence: {joined}. "
         "Search snippets are for discovery only. Fetch the relevant official page with "
-        "official_sources and cite that evidence, or omit the unsupported claim and explain "
+        "web_fetch and cite that evidence, or omit the unsupported claim and explain "
         "that you could not verify it.\n"
         "</system-reminder>"
     )
@@ -2078,8 +2082,9 @@ def is_event_preparation_query(user_message: str) -> bool:
 _EVENT_PREPARATION_SCOPE_REMINDER = (
     "This turn asks how to prepare for a specific dated event whose name may be abbreviated or "
     "ambiguous. Resolve the event identity from current retrieved sources before giving any "
-    "advice: call `whats_on_events` with the event keyword and use the current official and "
-    "editorial context it returns. If the evidence supports one plausible event, state plainly "
+    "advice: call `find_nyc_events` with the event keyword for structured listings, then use "
+    "`web_search` when those listings do not establish the event identity or current context. "
+    "If the evidence supports one plausible event, state plainly "
     "which event it is with its date and local time, then build the plan only from cited "
     "evidence: how to attend or watch it, ticket or reservation status, venue access, transit or "
     "street impacts, and any material advisory, each with its direct link. If more than one "
@@ -2087,7 +2092,7 @@ _EVENT_PREPARATION_SCOPE_REMINDER = (
     "happening on the asked date is the answer; a more prominent event on a different date is "
     "context at most, never the resident's event. Residents "
     "often use texting shorthand: expand an abbreviated event name to its likely full name for "
-    "the `whats_on_events` keyword instead of searching the raw abbreviation, and retry once "
+    "the `find_nyc_events` keyword instead of searching the raw abbreviation, and retry once "
     "with a broader keyword if the first search returns nothing relevant. In a follow-up turn, "
     "keep the event already under discussion instead of re-asking for details the resident "
     "already gave. State the event's own date plainly, and say so when it is not on the exact "
@@ -2213,7 +2218,7 @@ def _history_already_cites_notify(history) -> bool:
 
 def _delivered_notify_titles(history) -> frozenset:
     """Normalized titles of Notify NYC citations delivered by prior assistant turns in THIS
-    conversation (F080 residual): threaded into ToolContext so a repeat nyc_advisories call
+    conversation (F080 residual): threaded into ToolContext so a repeat check_notify_nyc call
     can return an already-shared marker instead of the full payload the model would re-brief."""
     titles = set()
     for message in history or []:
@@ -2371,7 +2376,7 @@ def _broad_event_context_feedback(
     available_citation_ids: Optional[set[str]] = None,
     discovery_turn: Optional[bool] = None,
 ) -> Optional[str]:
-    if "whats_on_events" not in tools_made:
+    if "find_nyc_events" not in tools_made:
         return None
     # `discovery_turn` is the resolved semantic scope-preflight signal; the broad-events regex
     # is only the fallback for callers without the preflight (mirrors `_event_preparation_feedback`).
@@ -2428,7 +2433,7 @@ def _broad_event_context_feedback(
     return (
         "<system-reminder>\n"
         f"Your broad current-events answer omitted {', and '.join(missing)} from the evidence "
-        "already retrieved by `whats_on_events`. Regenerate a concise answer using those current "
+        "already retrieved by `find_nyc_events`. Regenerate a concise answer using those current "
         "citation ids. Do not call anything free unless its cited source says so. If an advisory "
         "applies today but not to the requested weekend, label it as a separate today-only heads-up "
         "and do not present it as a weekend forecast.\n"
@@ -2788,7 +2793,7 @@ class Agent:
 
     def _runtime_scope_reminder(self, user_message: str) -> str:
         """Return the one current-source reminder added to the real request."""
-        if "official_sources" in self.tools or "web_search" in self.tools:
+        if "web_fetch" in self.tools or "web_search" in self.tools:
             lockout_entry = self.registry.situation_hints().get("active_lockout")
             if lockout_entry is not None and _needs_current_lockout_guidance(user_message):
                 return lockout_entry[1].reminder
@@ -2801,7 +2806,7 @@ class Agent:
                 return _BENEFITS_RECOVERY_SCOPE_REMINDER
             if _current_civic_law_search(user_message):
                 return _CIVIC_LAW_SCOPE_REMINDER
-        if "whats_on_events" in self.tools and is_event_preparation_query(user_message):
+        if "find_nyc_events" in self.tools and is_event_preparation_query(user_message):
             return _EVENT_PREPARATION_SCOPE_REMINDER
         return ""
 
@@ -2893,7 +2898,7 @@ class Agent:
         immigrant_benefits_turn = False
         lockout_turn = False
         civic_law_search = _current_civic_law_search(user_message)
-        has_current_source = "official_sources" in self.tools or "web_search" in self.tools
+        has_current_source = "web_fetch" in self.tools or "web_search" in self.tools
         lockout_entry = self.registry.situation_hints().get("active_lockout")
         lockout_hint = lockout_entry[1] if lockout_entry is not None else None
         snap_entry = self.registry.situation_hints().get("snap_work_rules")
@@ -3195,7 +3200,7 @@ class Agent:
                     )
         if (
             event_preparation_turn
-            and "whats_on_events" in self.tools
+            and "find_nyc_events" in self.tools
             and _EVENT_PREPARATION_SCOPE_REMINDER not in effective_reminders
         ):
             messages.insert(-1, {
@@ -3234,12 +3239,12 @@ class Agent:
             and (event_discovery_turn or event_preparation_turn)
             and bool(notify_awareness)
             and not _history_already_cites_notify(history)
-            and "nyc_advisories" in self.tools
-            and "nyc_advisories" not in set(excluded_tools or ())
+            and "check_notify_nyc" in self.tools
+            and "check_notify_nyc" not in set(excluded_tools or ())
         ):
             # F061: keyed on the EXISTENCE of same-day notifications, never on parsing their
             # wording — the full report comes back cited and the model judges what's material.
-            initial_forced_tool = "nyc_advisories"
+            initial_forced_tool = "check_notify_nyc"
             # `incidental` marks this as OUR check, not the resident's question: an empty
             # result then returns nothing at all instead of prose for the model to narrate
             initial_forced_args = {"incidental": True}
@@ -3267,8 +3272,8 @@ class Agent:
         initial_forced_calls: list[tuple[str, Optional[dict]]] = (
             [(initial_forced_tool, initial_forced_args)] if initial_forced_tool else []
         )
-        if snap_work_rule_turn and "nearest_food_pantry" in self.tools:
-            initial_forced_calls.append(("nearest_food_pantry", {"near": ""}))
+        if snap_work_rule_turn and "find_foodhelp_locations" in self.tools:
+            initial_forced_calls.append(("find_foodhelp_locations", {"near": ""}))
         for i in range(max_iters):
             # SPEND-CAP GUARD (turn boundary). Before each model call, halt if this session's
             # cumulative cost has reached the configured ceiling, never spend past it silently.
@@ -3440,7 +3445,7 @@ class Agent:
                     )
                     messages.append({"role": "user", "content": script_feedback})
                     continue
-                if "whats_on_events" in tools_made and (
+                if "find_nyc_events" in tools_made and (
                     event_discovery_turn or event_preparation_turn
                 ):
                     text = _attach_event_action_urls(
@@ -3472,7 +3477,7 @@ class Agent:
                     assistant["content"] = text
                 # Availability means the turn's citation registry, not the {cite:Sn} markers
                 # seen in tool text: tools may register a citation while referencing it in
-                # another format (observed live with `official_sources`), and invented ids are
+                # another format (observed live with `web_fetch`), and invented ids are
                 # already rejected by the unknown-citation guard below.
                 preparation_feedback = _event_preparation_feedback(
                     user_message, text, citations.mapping(),
@@ -3590,13 +3595,6 @@ class Agent:
                         continue
                     messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_result})
                     tool_citation_ids.update(_CITE_MARKER_RE.findall(tool_result))
-                    # Broad shortlist turns lean on the tool's coordinated lanes; preparation
-                    # turns KEEP free scoped search so the model can resolve the event
-                    # identity when listings alone cannot (F053).
-                    if name == "whats_on_events" and event_discovery_turn:
-                        effective_excluded_tools.update({
-                            "index_search", "web_search", "recent_developments",
-                        })
                     status = "error" if tool_result.startswith(("ERROR", "Action not approved")) else "ok"
                     yield events.ToolCompleted(
                         tool_call_id=call_id, name=name, status=status, result_summary=tool_result[:200]

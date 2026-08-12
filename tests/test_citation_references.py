@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic_ai import ModelRetry
 
-from heynyc.core.citations import CitationRegistry
+from heynyc.core.citations import CitationRegistry, data_provenance
 from heynyc.core.pydantic_runtime.runtime import PydanticRuntimeAdapter
 from heynyc.core.tools.base import ToolContext
 from heynyc.eval.cases import EvalCase
@@ -82,6 +82,63 @@ async def test_pydantic_plain_output_accepts_authoritative_excerpt_citation_id()
     )
 
     output = f"Jalen Brunson is the Knicks captain. {{cite:{citation_id}}}"
+
+    assert await runtime._validate_grounding(context, output) == output
+
+
+async def test_pydantic_plain_output_rejects_mismatched_structured_fact():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://data.cityofnewyork.us/example",
+        title="City office",
+        snippet="Address: 10 Centre Street",
+        kind="DATA",
+        provenance=data_provenance(
+            {"address": "10 Centre Street"},
+            record_id="office-1",
+            field_pointer="/address",
+        ),
+    )
+    runtime = object.__new__(PydanticRuntimeAdapter)
+    runtime._semantic_verifier = None
+    context = SimpleNamespace(
+        deps=ToolContext(
+            citations=citations,
+            registry=None,
+            query="Where is the city office?",
+        )
+    )
+
+    with pytest.raises(ModelRetry, match="exact structured fact"):
+        await runtime._validate_grounding(
+            context,
+            f"The office is at 100 Centre Street. {{cite:{citation_id}}}",
+        )
+
+
+async def test_pydantic_plain_output_accepts_matching_structured_fact():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://data.cityofnewyork.us/example",
+        title="City office",
+        snippet="Address: 10 Centre Street",
+        kind="DATA",
+        provenance=data_provenance(
+            {"address": "10 Centre Street"},
+            record_id="office-1",
+            field_pointer="/address",
+        ),
+    )
+    runtime = object.__new__(PydanticRuntimeAdapter)
+    runtime._semantic_verifier = None
+    context = SimpleNamespace(
+        deps=ToolContext(
+            citations=citations,
+            registry=None,
+            query="Where is the city office?",
+        )
+    )
+    output = f"The office is at 10 Centre Street. {{cite:{citation_id}}}"
 
     assert await runtime._validate_grounding(context, output) == output
 

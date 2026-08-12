@@ -55,7 +55,7 @@ def test_loaded_module_uses_native_prepare_to_hide_unfocused_shared_tools():
 def test_cross_module_capabilities_do_not_narrow_shared_tools():
     registry = Registry([
         ServiceModule(name="places", focus_tools=["nearest"]),
-        ServiceModule(name="benefits", focus_tools=["official_sources"]),
+        ServiceModule(name="benefits", focus_tools=["web_fetch"]),
     ])
     adapted, _capabilities = build_module_capabilities(
         registry,
@@ -93,35 +93,31 @@ def test_cross_module_no_focus_capability_still_disables_narrowing():
     assert distance.prepare(context, definition) is definition
 
 
-def test_hot_water_situation_points_to_parent_that_owns_its_module_tool():
+def test_hot_water_situation_is_folded_into_parent_that_owns_its_module_tool():
     registry = Registry.discover(Path("heynyc/modules"))
-    housing_guidance = _tool("housing_guidance")
+    housing_guidance = _tool("get_housing_guidance")
     housing_guidance.module = "housing"
 
     _adapted, capabilities = build_module_capabilities(
         registry,
-        {"housing_guidance": housing_guidance},
+        {"get_housing_guidance": housing_guidance},
     )
     capabilities_by_id = {
         capability.id: capability
         for capability in capabilities
     }
 
-    assert "housing-hot-water-code-section" in capabilities_by_id
+    assert "housing-hot-water-code-section" not in capabilities_by_id
     parent = capabilities_by_id["housing"]
-    situation = capabilities_by_id["housing-hot-water-code-section"]
-    assert [tool.name for tool in parent.tools].count("housing_guidance") == 1
-    assert all(tool.name != "housing_guidance" for tool in situation.tools)
-    assert "load the parent `housing` capability" in "\n".join(
-        situation.get_instructions()
-    )
+    assert [tool.name for tool in parent.tools].count("get_housing_guidance") == 1
+    instructions = "\n".join(parent.get_instructions())
+    assert "housing-hot-water-code-section" in instructions
+    assert "load the parent `housing` capability" not in instructions
 
 
-def test_active_lockout_uses_native_deferred_capability_selection():
+def test_active_lockout_uses_the_parent_deferred_capability():
     registry = Registry.discover(Path("heynyc/modules"))
     _adapted, capabilities = build_module_capabilities(registry, {})
-    capability = next(
-        item for item in capabilities if item.id == "housing-active-lockout"
-    )
+    capability = next(item for item in capabilities if item.id == "housing")
     assert capability.defer_loading is True
-    assert capability.id == "housing-active-lockout"
+    assert "housing-active-lockout" in "\n".join(capability.get_instructions())

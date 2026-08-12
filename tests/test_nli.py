@@ -179,6 +179,26 @@ def test_prompted_nli_builds_prompt_and_parses_unsupported():
     assert capture["kwargs"]["num_retries"] == 0
 
 
+def test_prompted_nli_requires_evidence_for_current_status() -> None:
+    capture: dict = {}
+    checker = PromptedNLI(
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"claim-0","label":"unsupported",'
+            '"reason":"a past appointment does not establish current status"}]}',
+            capture,
+        )
+    )
+
+    checker.check(
+        "Jalen Brunson is the Knicks captain right now.",
+        "On August 6, 2024, the Knicks named Jalen Brunson captain.",
+    )
+
+    system = capture["messages"][0]["content"]
+    assert "past appointment" in system
+    assert "current status" in system
+
+
 def test_prompted_nli_marks_clarifying_questions_as_questions() -> None:
     capture: dict = {}
     checker = PromptedNLI(

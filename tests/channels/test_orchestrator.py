@@ -752,10 +752,10 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
         return "official estimate"
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(Registry([]), tools={"screen_eligibility": tool})
+    agent = Agent(Registry([]), tools={"screen_access_nyc_eligibility": tool})
     model_calls = []
 
     async def fake_litellm(messages, tool_schemas, forced_tool=None):
@@ -764,7 +764,7 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
         message = (
             {"role": "assistant", "content": None, "tool_calls": [{
                 "id": "c1", "function": {
-                    "name": "screen_eligibility", "arguments": '{"persons": []}',
+                    "name": "screen_access_nyc_eligibility", "arguments": '{"persons": []}',
                 },
             }]}
             if forced_tool
@@ -783,10 +783,10 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
 
     assert model_calls == [
         (None, []),
-        ("screen_eligibility", ["screen_eligibility"]),
-        (None, ["screen_eligibility"]),
-        ("screen_eligibility", ["screen_eligibility"]),
-        (None, ["screen_eligibility"]),
+        ("screen_access_nyc_eligibility", ["screen_access_nyc_eligibility"]),
+        (None, ["screen_access_nyc_eligibility"]),
+        ("screen_access_nyc_eligibility", ["screen_access_nyc_eligibility"]),
+        (None, ["screen_access_nyc_eligibility"]),
     ]
     assert calls == [
         {"persons": [], "show_all": False},

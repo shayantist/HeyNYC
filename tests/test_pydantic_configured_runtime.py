@@ -76,11 +76,12 @@ def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatc
     assert captured["stream_model_requests"] is False
 
 
-def test_configured_runtime_keeps_candidate_semantic_checker_out_of_public_path(
+def test_configured_runtime_keeps_semantic_checker_out_of_public_path(
     monkeypatch,
 ):
     captured = {}
     configured = []
+    verifier_models = []
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.configured_model",
         lambda model, **_kwargs: configured.append(model) or object(),
@@ -93,10 +94,16 @@ def test_configured_runtime_keeps_candidate_semantic_checker_out_of_public_path(
         "heynyc.core.pydantic_runtime.build_runtime",
         lambda _registry, **kwargs: captured.update(kwargs),
     )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.PromptedNLI",
+        lambda model: verifier_models.append(model) or object(),
+        raising=False,
+    )
 
     build_configured_runtime(Registry([]), model="openai/gpt-5.6-luna")
 
-    assert captured.get("semantic_verifier") is None
+    assert captured["semantic_verifier"] is None
+    assert verifier_models == []
     assert "openai/gpt-5.6-luna" in configured
 
 
@@ -126,9 +133,10 @@ def test_configured_model_can_lower_reasoning_for_a_mechanical_classifier(
     )
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.OpenAIResponsesModel",
-        lambda model, *, settings: captured.update(
+        lambda model, *, settings, profile: captured.update(
             model=model,
             settings=settings,
+            profile=profile,
         ),
     )
 
@@ -139,3 +147,18 @@ def test_configured_model_can_lower_reasoning_for_a_mechanical_classifier(
 
     assert captured["model"] == "gpt-5.4-mini"
     assert captured["settings"]["openai_reasoning_effort"] == "low"
+
+
+def test_configured_luna_disables_rejected_native_tool_search(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime._uses_openai_responses",
+        lambda _model: True,
+    )
+
+    model = configured_model("openai/gpt-5.6-luna")
+
+    native_names = {
+        tool.__name__ for tool in model.profile["supported_native_tools"]
+    }
+    assert "ToolSearchTool" not in native_names

@@ -129,17 +129,17 @@ async def test_broad_event_turn_forces_advisory_check_when_notifications_exist(
         else:
             yield {"type": "message", "message": _assistant(content="Current plans checked.")}
 
-    tool = Tool("nyc_advisories", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", {}, advisory)
     agent = Agent(
-        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+        empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
     )
     monkeypatch.setattr(agent, "_litellm_stream", model_stream)
 
     result = await agent.run("What events are happening in NYC this weekend?")
 
-    assert forced == ["nyc_advisories", None]
+    assert forced == ["check_notify_nyc", None]
     assert received_args == [{"incidental": True}]
-    assert result.tool_calls_made == ["nyc_advisories"]
+    assert result.tool_calls_made == ["check_notify_nyc"]
 
 
 async def test_broad_event_turn_skips_advisory_check_on_a_quiet_day(
@@ -157,9 +157,9 @@ async def test_broad_event_turn_skips_advisory_check_on_a_quiet_day(
         forced.append(forced_tool)
         yield {"type": "message", "message": _assistant(content="Current plans checked.")}
 
-    tool = Tool("nyc_advisories", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", {}, advisory)
     agent = Agent(
-        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+        empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
     )
     monkeypatch.setattr(agent, "_litellm_stream", model_stream)
 
@@ -193,16 +193,16 @@ async def test_event_preparation_turn_forces_advisory_check_from_awareness(
                 content="Advisory noted for the plan. What game do you mean?",
             )}
 
-    tool = Tool("nyc_advisories", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", {}, advisory)
     agent = Agent(
-        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+        empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
     )
     monkeypatch.setattr(agent, "_litellm_stream", model_stream)
 
     result = await agent.run("What to prepare for tomorrows WC game")
 
-    assert forced == ["nyc_advisories", None]
-    assert result.tool_calls_made == ["nyc_advisories"]
+    assert forced == ["check_notify_nyc", None]
+    assert result.tool_calls_made == ["check_notify_nyc"]
 
 
 def test_repl_and_chat_wire_notify_awareness_like_the_server():
@@ -215,7 +215,8 @@ def test_repl_and_chat_wire_notify_awareness_like_the_server():
     from heynyc.channels import console
 
     assert "notify_awareness=current_awareness" in inspect.getsource(console.build_console_deps)
-    assert "notify_awareness=current_awareness" in inspect.getsource(cli._cmd_chat)
+    assert "current_awareness=current_awareness" in inspect.getsource(cli._cmd_chat)
+    assert "build_configured_runtime" in inspect.getsource(cli._cmd_chat)
 
 
 @pytest.fixture
@@ -434,7 +435,7 @@ async def test_discovery_event_turn_gets_no_preparation_reminder(empty_registry)
 
     agent = Agent(
         empty_registry,
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, events_tool)},
         complete_fn=complete, scope_fn=discovery_scope,
     )
 
@@ -478,18 +479,18 @@ async def test_discovery_event_turn_forces_advisory_check_by_meaning(
                 content="No match shows in NYC today.",
             )}
 
-    tool = Tool("nyc_advisories", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", {}, advisory)
     agent = Agent(
-        empty_registry, tools={"nyc_advisories": tool}, notify_awareness=awareness,
+        empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
         scope_fn=discovery_scope,
     )
     monkeypatch.setattr(agent, "_litellm_stream", model_stream)
 
     result = await agent.run("is there a game today")
 
-    assert forced == ["nyc_advisories", None]
+    assert forced == ["check_notify_nyc", None]
     assert received_args == [{"incidental": True}]
-    assert result.tool_calls_made == ["nyc_advisories"]
+    assert result.tool_calls_made == ["check_notify_nyc"]
 
 
 def test_broad_event_feedback_honors_discovery_turn_signal():
@@ -515,7 +516,7 @@ def test_broad_event_feedback_honors_discovery_turn_signal():
         "is there a game today",
         "The event search returned one result. {cite:S1}",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
         discovery_turn=True,
     ) is not None
     # Preflight says not-discovery: the guard stays silent even on a regex-broad message.
@@ -523,7 +524,7 @@ def test_broad_event_feedback_honors_discovery_turn_signal():
         "What free events are happening in NYC this weekend?",
         "The event search returned one result. {cite:S1}",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
         discovery_turn=False,
     ) is None
 
@@ -1130,15 +1131,15 @@ async def test_broad_event_answer_does_not_force_every_source_lane():
             f"editorial {{cite:{editorial}}}"
         )
 
-    tool = Tool("whats_on_events", "events", {}, event_context)
+    tool = Tool("find_nyc_events", "events", {}, event_context)
     complete = _scripted(
-        _assistant(tool_calls=[_tool_call("whats_on_events", {})]),
+        _assistant(tool_calls=[_tool_call("find_nyc_events", {})]),
         _assistant(content=(
             "Free Yoga is Saturday: https://www.nycgovparks.org/events/free-yoga {cite:S2}"
         )),
     )
     agent = Agent(
-        registry, tools={"whats_on_events": tool}, complete_fn=complete, guard_grounding=False,
+        registry, tools={"find_nyc_events": tool}, complete_fn=complete, guard_grounding=False,
     )
 
     result = await agent.run("What free events are happening in NYC this weekend?")
@@ -1166,7 +1167,7 @@ def test_broad_event_feedback_rejects_buried_citywide_advisory():
         "What free events are happening in NYC this weekend?",
         "The event search returned one result. {cite:S1}",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
     )
 
     assert feedback is not None
@@ -1188,7 +1189,7 @@ def test_broad_event_feedback_accepts_named_citywide_advisory():
         "What free events are happening in NYC this weekend?",
         "Today-only heads-up: there is an air quality health advisory. {cite:S1}",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
     ) is None
 
 
@@ -1207,7 +1208,7 @@ def test_broad_event_feedback_rejects_named_but_uncited_citywide_advisory():
         "What free events are happening in NYC this weekend?",
         "Today-only heads-up: there is an air quality health advisory.",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
     ) is not None
 
 
@@ -1230,7 +1231,7 @@ def test_broad_event_feedback_rejects_advisory_cited_only_in_sources():
         "What free events are happening in NYC this weekend?",
         text,
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
     ) is not None
 
 
@@ -1248,7 +1249,7 @@ def test_broad_event_feedback_rejects_advisory_named_only_in_sources():
         "What events are happening in NYC this weekend?",
         "Free Yoga is Saturday.\n\nSources:\nAir Quality Health Advisory {cite:S1}",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
     )
 
     assert feedback is not None
@@ -1271,7 +1272,7 @@ def test_broad_event_feedback_handles_citywide_cap_advisory():
         "What events are happening in NYC this weekend?",
         "Free Yoga is Saturday. {cite:S1}",
         citations,
-        ["nyc_advisories", "whats_on_events"],
+        ["check_notify_nyc", "find_nyc_events"],
     )
 
     assert feedback is not None
@@ -1299,7 +1300,7 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         "What free events are happening in NYC this weekend?",
         text,
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
     )
 
     assert feedback is not None
@@ -1313,7 +1314,7 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         "What free events are happening in NYC this weekend?",
         linked,
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
     ) is None
 
     linked_continuation = (
@@ -1326,7 +1327,7 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         "What free events are happening in NYC this weekend?",
         linked_continuation,
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
     ) is None
 
     footer_only = (
@@ -1338,7 +1339,7 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         "What free events are happening in NYC this weekend?",
         footer_only,
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
     ) is not None
 
 
@@ -1372,7 +1373,7 @@ def test_event_preparation_reminder_requires_resolution_before_advice(empty_regi
 
     agent = Agent(
         empty_registry,
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, noop)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, noop)},
         complete_fn=_scripted(_assistant(content="unused")),
     )
 
@@ -1385,6 +1386,9 @@ def test_event_preparation_reminder_requires_resolution_before_advice(empty_regi
     assert "prediction" in low
     assert "shorthand" in low
     assert "keyword" in low
+    assert "web_search" in low
+    assert "structured listings" in low
+    assert "context it returns" not in low
 
     bare = Agent(empty_registry, tools={}, complete_fn=_scripted(_assistant(content="x")))
     assert bare._runtime_scope_reminder("What to prepare for tomorrows WC game") == ""
@@ -1478,12 +1482,12 @@ async def test_event_preparation_turn_without_grounding_retries_then_abstains(em
 
     packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water and snacks")
     complete = _scripted(
-        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "world cup"})]),
+        _assistant(tool_calls=[_tool_call("find_nyc_events", {"keyword": "world cup"})]),
         packing, packing, packing,
     )
     agent = Agent(
         empty_registry,
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, events_tool)},
         complete_fn=complete, guard_grounding=False,
     )
 
@@ -1514,12 +1518,12 @@ async def test_event_preparation_accepts_registry_citations_without_tool_markers
         "parade name or neighborhood and I'll look it up."
     )
     complete = _scripted(
-        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "parade"})]),
+        _assistant(tool_calls=[_tool_call("find_nyc_events", {"keyword": "parade"})]),
         _assistant(content=answer),
     )
     agent = Agent(
         empty_registry,
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, sources_tool)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, sources_tool)},
         complete_fn=complete, guard_grounding=False,
     )
 
@@ -1531,7 +1535,7 @@ async def test_event_preparation_accepts_registry_citations_without_tool_markers
 
 async def test_event_preparation_turn_keeps_free_web_search_after_events_tool(empty_registry):
     """F053: on a preparation turn the model must keep its own scoped `web_search` after
-    `whats_on_events`, so it can resolve the event identity when listings alone cannot."""
+    `find_nyc_events`, so it can resolve the event identity when listings alone cannot."""
     searched = []
 
     async def events_tool(args, ctx):
@@ -1547,7 +1551,7 @@ async def test_event_preparation_turn_keeps_free_web_search_after_events_tool(em
         return f"Bronze final Saturday July 18 {{cite:{cite}}}"
 
     complete = _scripted(
-        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "world cup"})]),
+        _assistant(tool_calls=[_tool_call("find_nyc_events", {"keyword": "world cup"})]),
         _assistant(tool_calls=[
             _tool_call("web_search", {"query": "world cup game tomorrow July 18 2026"}, call_id="c2"),
         ]),
@@ -1556,7 +1560,7 @@ async def test_event_preparation_turn_keeps_free_web_search_after_events_tool(em
     agent = Agent(
         empty_registry,
         tools={
-            "whats_on_events": Tool("whats_on_events", "", {}, events_tool),
+            "find_nyc_events": Tool("find_nyc_events", "", {}, events_tool),
             "web_search": Tool("web_search", "", {}, web_tool),
         },
         complete_fn=complete, guard_grounding=False,
@@ -1577,7 +1581,7 @@ async def test_event_preparation_grounded_plan_passes_with_direct_link(empty_reg
         return f"- World Cup Watch Party {{cite:{cite}}}"
 
     complete = _scripted(
-        _assistant(tool_calls=[_tool_call("whats_on_events", {"keyword": "world cup"})]),
+        _assistant(tool_calls=[_tool_call("find_nyc_events", {"keyword": "world cup"})]),
         _assistant(content=(
             "Tomorrow's game is the World Cup bronze final, France vs England, 5 pm. {cite:S1}\n"
             "In NYC you can watch at the official watch party. {cite:S1}"
@@ -1585,7 +1589,7 @@ async def test_event_preparation_grounded_plan_passes_with_direct_link(empty_reg
     )
     agent = Agent(
         empty_registry,
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, events_tool)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, events_tool)},
         complete_fn=complete, guard_grounding=False,
     )
 
@@ -1613,7 +1617,7 @@ def test_broad_event_feedback_ignores_a_source_url_trailing_slash():
         "What events are happening in NYC this weekend?",
         text,
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
     ) is None
 
 
@@ -1632,7 +1636,7 @@ def test_broad_event_feedback_does_not_accept_a_longer_lookalike_url():
         "What events are happening in NYC this weekend?",
         "- Event A: https://example.org/events/abc {cite:S1}",
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
     ) is not None
 
 
@@ -1656,7 +1660,7 @@ def test_broad_event_feedback_ignores_registered_but_hidden_sources():
         "What events are happening in NYC this weekend?",
         "- Free Yoga: https://www.nycgovparks.org/events/free-yoga {cite:S2}",
         citations,
-        ["whats_on_events"],
+        ["find_nyc_events"],
         available_citation_ids={"S2"},
     ) is None
 
@@ -1884,9 +1888,9 @@ async def test_broad_event_answer_attaches_action_url_without_a_retry(empty_regi
 
     agent = Agent(
         empty_registry,
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, event_context)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, event_context)},
         complete_fn=_scripted(
-            _assistant(tool_calls=[_tool_call("whats_on_events", {})]),
+            _assistant(tool_calls=[_tool_call("find_nyc_events", {})]),
             _assistant(content="Free Yoga is Saturday. {cite:S1}"),
         ),
         guard_grounding=False,
@@ -1914,9 +1918,9 @@ async def test_broad_event_answer_fails_closed_after_context_retry_cap():
 
     agent = Agent(
         Registry.discover(config.MODULES_DIR),
-        tools={"whats_on_events": Tool("whats_on_events", "", {}, event_context)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, event_context)},
         complete_fn=_scripted(
-            _assistant(tool_calls=[_tool_call("whats_on_events", {})]),
+            _assistant(tool_calls=[_tool_call("find_nyc_events", {})]),
             _assistant(content="I couldn't find anything."),
         ),
         guard_grounding=False,
@@ -1928,7 +1932,7 @@ async def test_broad_event_answer_fails_closed_after_context_retry_cap():
     assert result.text == EVENT_CONTEXT_ABSTAIN_FALLBACK
 
 
-async def test_broad_event_coordinator_removes_duplicate_context_tools(empty_registry):
+async def test_atomic_event_tool_keeps_general_search_available(empty_registry):
     schemas_by_call = []
 
     async def event_context(args, ctx):
@@ -1945,24 +1949,23 @@ async def test_broad_event_coordinator_removes_duplicate_context_tools(empty_reg
         calls += 1
         if calls == 1:
             yield {"type": "message", "message": _assistant(
-                tool_calls=[_tool_call("whats_on_events", {})],
+                tool_calls=[_tool_call("find_nyc_events", {})],
             )}
         else:
             yield {"type": "message", "message": _assistant(content="Current events checked.")}
 
     tools = {
-        "whats_on_events": Tool("whats_on_events", "", {}, event_context),
+        "find_nyc_events": Tool("find_nyc_events", "", {}, event_context),
         "web_search": Tool("web_search", "", {}, unused),
-        "recent_developments": Tool("recent_developments", "", {}, unused),
-        "nyc_advisories": Tool("nyc_advisories", "", {}, unused),
+        "check_notify_nyc": Tool("check_notify_nyc", "", {}, unused),
     }
     agent = Agent(empty_registry, tools=tools, stream_fn=stream)
 
     await agent.run("What events are happening in NYC this weekend?")
 
-    assert "recent_developments" in schemas_by_call[0]
-    assert "recent_developments" not in schemas_by_call[1]
-    assert "nyc_advisories" in schemas_by_call[1]
+    assert "web_search" in schemas_by_call[0]
+    assert "web_search" in schemas_by_call[1]
+    assert "check_notify_nyc" in schemas_by_call[1]
 
 
 async def test_run_with_explicit_history(empty_registry):
@@ -2128,14 +2131,14 @@ def test_completion_kwargs_attaches_tools_only_when_present():
 def test_completion_kwargs_can_force_one_named_tool():
     from heynyc.core.agent import _completion_kwargs
 
-    schema = [{"type": "function", "function": {"name": "screen_eligibility"}}]
+    schema = [{"type": "function", "function": {"name": "screen_access_nyc_eligibility"}}]
     kwargs = _completion_kwargs(
         "openai/gpt-5.4-nano", messages=[], tool_schemas=schema,
-        forced_tool="screen_eligibility",
+        forced_tool="screen_access_nyc_eligibility",
     )
 
     assert kwargs["tool_choice"] == {
-        "type": "function", "function": {"name": "screen_eligibility"},
+        "type": "function", "function": {"name": "screen_access_nyc_eligibility"},
     }
 
 
@@ -2219,7 +2222,7 @@ async def test_benefits_denial_forces_current_official_appeal_search(empty_regis
         ),
         "benefits_search": Tool(name="benefits_search", description="x", parameters={},
                                 handler=lambda args, ctx: "benefits"),
-        "housing_guidance": Tool(name="housing_guidance", description="x", parameters={},
+            "get_housing_guidance": Tool(name="get_housing_guidance", description="x", parameters={},
                                  handler=lambda args, ctx: "housing"),
     }
     agent = Agent(empty_registry, tools=tools)
@@ -2305,20 +2308,24 @@ async def test_active_lockout_forces_current_official_housing_search():
         return "current official illegal-lockout guidance"
 
     tools = {
-        "official_sources": Tool(
-            name="official_sources", description="x",
+        "web_fetch": Tool(
+            name="web_fetch", description="x",
             parameters={"type": "object", "properties": {}},
             handler=search,
         ),
-        "housing_guidance": Tool(name="housing_guidance", description="x", parameters={},
-                                 handler=lambda args, ctx: "housing"),
-        "benefits_search": Tool(name="benefits_search", description="x", parameters={},
-                                handler=lambda args, ctx: "benefits"),
+        "get_housing_guidance": Tool(
+            name="get_housing_guidance", description="x", parameters={},
+            handler=lambda args, ctx: "housing",
+        ),
+        "search_benefits": Tool(
+            name="search_benefits", description="x", parameters={},
+            handler=lambda args, ctx: "benefits",
+        ),
     }
     agent = Agent(registry, tools=tools)
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("official_sources", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"query": "ignored"})]),
         _assistant(content="Call 911 now and say your landlord locked you out."),
     ]
 
@@ -2329,11 +2336,11 @@ async def test_active_lockout_forces_current_official_housing_search():
     agent._litellm_stream = fake_litellm
     result = await agent.run("My landlord changed the locks and I'm outside with my children.")
 
-    assert result.tool_calls_made == ["official_sources"]
-    assert calls[0][0] == "official_sources"
+    assert result.tool_calls_made == ["web_fetch"]
+    assert calls[0][0] == "web_fetch"
     assert "illegal lockout" in seen["query"]
-    assert "housing_guidance" in calls[0][1]
-    assert "benefits_search" not in calls[0][1]
+    assert "get_housing_guidance" in calls[0][1]
+    assert "search_benefits" not in calls[0][1]
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
     assert "Call 911 first" in prompt
     assert "essential-services shutoff" in prompt
@@ -2752,7 +2759,7 @@ def test_yes_no_legal_injection_cannot_force_a_flat_verdict():
     ) is None
 
 
-def test_section_8_backstop_requires_both_live_official_sources_and_preserves_citations():
+def test_section_8_backstop_requires_both_live_web_fetch_and_preserves_citations():
     from heynyc.core.agent import _section8_grounded_backstop
 
     citations = {
@@ -2972,7 +2979,7 @@ async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeyp
 
     registry = Registry.discover(Path("heynyc/modules"))
 
-    async def official_sources(args, ctx):
+    async def web_fetch(args, ctx):
         # The forced active_lockout retrieval captures the two sources the backstop keys on.
         ctx.citations.register(
             "https://portal.311.nyc.gov/article/?kanumber=KA-02518",
@@ -2986,15 +2993,15 @@ async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeyp
         return "current official illegal-lockout guidance"
 
     tools = {
-        "official_sources": Tool(
-            "official_sources", "x",
+        "web_fetch": Tool(
+            "web_fetch", "x",
             {"type": "object", "properties": {
                 "urls": {"type": "array", "items": {"type": "string"}},
                 "query": {"type": "string"}}},
-            official_sources,
+            web_fetch,
         ),
-        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
-        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+        "get_housing_guidance": Tool("get_housing_guidance", "x", {}, lambda a, c: "h"),
+        "search_benefits": Tool("search_benefits", "x", {}, lambda a, c: "b"),
     }
 
     async def scope(user_message, history):
@@ -3004,7 +3011,7 @@ async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeyp
         )
 
     responses = [
-        _assistant(tool_calls=[_tool_call("official_sources", {"urls": ["x"], "query": "heat"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"urls": ["x"], "query": "heat"})]),
         _assistant(content=("File a 311 heat complaint. NYC heat season runs October 1 to "
                             "May 31 {cite:S1}.")),
     ]
@@ -3092,8 +3099,8 @@ async def test_civic_law_query_prefers_direct_declared_official_source(empty_reg
         return f"Retail employers must give 72 hours notice {{cite:{cite}}}."
 
     tools = {
-        "official_sources": Tool(
-            name="official_sources", description="x", parameters={}, handler=official,
+        "web_fetch": Tool(
+            name="web_fetch", description="x", parameters={}, handler=official,
         ),
         "web_search": Tool(
             name="web_search", description="x", parameters={},
@@ -3106,7 +3113,7 @@ async def test_civic_law_query_prefers_direct_declared_official_source(empty_reg
     }
     agent = Agent(empty_registry, tools=tools, guard_grounding=False)
     responses = [
-        _assistant(tool_calls=[_tool_call("official_sources", {"urls": [], "query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored", "query": "ignored"})]),
         _assistant(content="Retail workers are covered by Fair Workweek."),
     ]
     forced = []
@@ -3119,12 +3126,12 @@ async def test_civic_law_query_prefers_direct_declared_official_source(empty_reg
     agent._litellm_stream = fake_litellm
     result = await agent.run("Do retail staff get notice before schedule changes?")
 
-    assert forced == ["official_sources", None]
-    assert result.tool_calls_made == ["official_sources"]
+    assert forced == ["web_fetch", None]
+    assert result.tool_calls_made == ["web_fetch"]
     assert all("housing_guidance" not in schemas for schemas in schemas_seen)
-    assert seen["urls"] == [
-        "https://www.nyc.gov/site/dca/workers/workersrights/retail-workers.page",
-    ]
+    assert seen["url"] == (
+        "https://www.nyc.gov/site/dca/workers/workersrights/retail-workers.page"
+    )
     assert "Fair Workweek" in seen["query"]
 
 
@@ -3135,13 +3142,13 @@ async def test_current_source_turn_fails_closed_when_answer_has_no_citation(empt
         return "The approved official pages could not be retrieved. Do not guess; route to 311."
 
     tools = {
-        "official_sources": Tool(
-            name="official_sources", description="x", parameters={}, handler=unavailable,
+        "web_fetch": Tool(
+            name="web_fetch", description="x", parameters={}, handler=unavailable,
         ),
     }
     agent = Agent(empty_registry, tools=tools, guard_grounding=False, guard_max_retries=0)
     responses = [
-        _assistant(tool_calls=[_tool_call("official_sources", {"urls": [], "query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored", "query": "ignored"})]),
         _assistant(content="Restaurants may refuse cash under Local Law 99."),
     ]
 
@@ -3185,9 +3192,9 @@ def test_snap_work_rule_focus_is_manifest_owned_and_excludes_unrelated_modules()
     from heynyc.core.registry import Registry
 
     focus = Registry.discover(Path("heynyc/modules")).situation_hints()["snap_work_rules"][1].focus_tools
-    assert "official_sources" in focus
+    assert "web_fetch" in focus
     assert "benefits_search" not in focus
-    assert "nearest_food_pantry" in focus
+    assert "find_foodhelp_locations" in focus
     assert "housing_guidance" not in focus
     assert "find_clinic" not in focus
 
@@ -3199,24 +3206,24 @@ async def test_forced_tool_applies_only_to_first_model_iteration(empty_registry)
         return "screened"
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
 
     async def fake_litellm(messages, tool_schemas, forced_tool=None):
         calls.append(forced_tool)
         message = (
-            _assistant(tool_calls=[_tool_call("screen_eligibility", {})])
+            _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {})])
             if len(calls) == 1 else _assistant(content="done")
         )
         yield {"type": "message", "message": message}
 
     agent._litellm_stream = fake_litellm
-    result = await agent.run("/screen", forced_tool="screen_eligibility")
+    result = await agent.run("/screen", forced_tool="screen_access_nyc_eligibility")
 
-    assert calls == ["screen_eligibility", None]
-    assert result.tool_calls_made == ["screen_eligibility"]
+    assert calls == ["screen_access_nyc_eligibility", None]
+    assert result.tool_calls_made == ["screen_access_nyc_eligibility"]
 
 
 async def test_forced_tool_arguments_override_model_values(empty_registry):
@@ -3227,12 +3234,12 @@ async def test_forced_tool_arguments_override_model_values(empty_registry):
         return "screened\nThis is a phone-friendly shortlist, not an official ranking."
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
-        _assistant(tool_calls=[_tool_call("screen_eligibility", {"show_all": True})]),
+        _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {"show_all": True})]),
         _assistant(content="done"),
     ]
 
@@ -3241,7 +3248,7 @@ async def test_forced_tool_arguments_override_model_values(empty_registry):
 
     agent._litellm_stream = fake_litellm
     result = await agent.run(
-        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+        "/screen", forced_tool="screen_access_nyc_eligibility", forced_tool_args={"show_all": False},
     )
 
     assert calls == [{"show_all": False}]
@@ -3255,12 +3262,12 @@ async def test_non_english_screen_answer_does_not_append_english_shortlist_copy(
         return "screened\nThis is a phone-friendly shortlist, not an official ranking."
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
-        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {})]),
         _assistant(content="Estos son algunos resultados; puedo mostrarte los demás."),
     ]
 
@@ -3270,7 +3277,7 @@ async def test_non_english_screen_answer_does_not_append_english_shortlist_copy(
     agent._litellm_stream = fake_litellm
     result = await agent.run(
         "Muéstrame los beneficios que podrían corresponderme.",
-        forced_tool="screen_eligibility",
+        forced_tool="screen_access_nyc_eligibility",
     )
 
     assert result.text == "Estos son algunos resultados; puedo mostrarte los demás."
@@ -3312,12 +3319,12 @@ async def test_count_only_screen_response_does_not_claim_to_be_a_shortlist(empty
         return "16 likely matches. Which need matters most?"
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
-        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {})]),
         _assistant(content="You have 16 likely matches. Which need matters most?"),
     ]
 
@@ -3326,7 +3333,7 @@ async def test_count_only_screen_response_does_not_claim_to_be_a_shortlist(empty
 
     agent._litellm_stream = fake_litellm
     result = await agent.run(
-        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+        "/screen", forced_tool="screen_access_nyc_eligibility", forced_tool_args={"show_all": False},
     )
 
     assert "shortlist" not in result.text.lower()
@@ -3339,16 +3346,16 @@ async def test_grounding_fallback_does_not_claim_to_be_a_shortlist(empty_registr
         return "screened\nThis is a phone-friendly shortlist, not an official ranking."
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
     agent = Agent(
         empty_registry,
-        tools={"screen_eligibility": tool},
+        tools={"screen_access_nyc_eligibility": tool},
         guard_max_retries=0,
     )
     responses = [
-        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {})]),
         _assistant(content="Unsupported {cite:S999}"),
     ]
 
@@ -3357,7 +3364,7 @@ async def test_grounding_fallback_does_not_claim_to_be_a_shortlist(empty_registr
 
     agent._litellm_stream = fake_litellm
     result = await agent.run(
-        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+        "/screen", forced_tool="screen_access_nyc_eligibility", forced_tool_args={"show_all": False},
     )
 
     assert result.text == GROUNDING_ABSTAIN_FALLBACK
@@ -3373,14 +3380,14 @@ async def test_forced_tool_rejects_non_object_json_arguments(empty_registry, raw
         return "screened"
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
         _assistant(tool_calls=[{
             "id": "c1",
-            "function": {"name": "screen_eligibility", "arguments": raw_args},
+            "function": {"name": "screen_access_nyc_eligibility", "arguments": raw_args},
         }]),
         _assistant(content="I could not use that malformed request."),
     ]
@@ -3390,7 +3397,7 @@ async def test_forced_tool_rejects_non_object_json_arguments(empty_registry, raw
 
     agent._litellm_stream = fake_litellm
     events_seen = [event async for event in agent.stream(
-        "/screen", forced_tool="screen_eligibility", forced_tool_args={"show_all": False},
+        "/screen", forced_tool="screen_access_nyc_eligibility", forced_tool_args={"show_all": False},
     )]
 
     completed = [event for event in events_seen if event.type == "tool.completed"]
@@ -3409,16 +3416,16 @@ async def test_forced_tool_fails_closed_when_model_does_not_call_it(empty_regist
         return "screened"
 
     tool = Tool(
-        name="screen_eligibility", description="x",
+        name="screen_access_nyc_eligibility", description="x",
         parameters={"type": "object", "properties": {}}, handler=screen,
     )
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
 
     async def fake_litellm(messages, tool_schemas, forced_tool=None):
         yield {"type": "message", "message": _assistant(content="I will skip it")}
 
     agent._litellm_stream = fake_litellm
-    result = await agent.run("/screen", forced_tool="screen_eligibility")
+    result = await agent.run("/screen", forced_tool="screen_access_nyc_eligibility")
 
     assert result.text == FORCED_TOOL_FALLBACK
     assert result.tool_calls_made == []
@@ -3429,7 +3436,7 @@ async def test_forced_tool_fails_closed_when_model_does_not_call_it(empty_regist
     "tool_calls",
     [
         [_tool_call("other", {})],
-        [_tool_call("screen_eligibility", {}), _tool_call("other", {}, call_id="c2")],
+        [_tool_call("screen_access_nyc_eligibility", {}), _tool_call("other", {}, call_id="c2")],
         [None],
     ],
 )
@@ -3442,7 +3449,7 @@ async def test_forced_tool_rejects_wrong_multiple_and_malformed_calls(empty_regi
 
     tools = {
         name: Tool(name=name, description="x", parameters={}, handler=record)
-        for name in ("screen_eligibility", "other")
+        for name in ("screen_access_nyc_eligibility", "other")
     }
     agent = Agent(empty_registry, tools=tools)
 
@@ -3450,7 +3457,7 @@ async def test_forced_tool_rejects_wrong_multiple_and_malformed_calls(empty_regi
         yield {"type": "message", "message": _assistant(tool_calls=tool_calls)}
 
     agent._litellm_stream = fake_litellm
-    result = await agent.run("/screen", forced_tool="screen_eligibility")
+    result = await agent.run("/screen", forced_tool="screen_access_nyc_eligibility")
 
     assert result.status == "error"
     assert result.tool_calls_made == []
@@ -3467,10 +3474,10 @@ async def test_excluded_tool_is_hidden_and_cannot_execute(empty_registry):
         return "ran"
 
     tool = Tool(
-        name="screen_eligibility", description="x", parameters={}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", parameters={}, handler=screen,
     )
     responses = [
-        _assistant(tool_calls=[_tool_call("screen_eligibility", {})]),
+        _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {})]),
         _assistant(content="Reply /screen when ready"),
     ]
 
@@ -3478,8 +3485,8 @@ async def test_excluded_tool_is_hidden_and_cannot_execute(empty_registry):
         schemas_seen.append(tool_schemas)
         yield {"type": "message", "message": responses.pop(0)}
 
-    agent = Agent(empty_registry, tools={"screen_eligibility": tool}, stream_fn=fake_stream)
-    result = await agent.run("profile", excluded_tools={"screen_eligibility"})
+    agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool}, stream_fn=fake_stream)
+    result = await agent.run("profile", excluded_tools={"screen_access_nyc_eligibility"})
 
     assert schemas_seen == [[], []]
     assert result.text == "Reply /screen when ready"
@@ -3552,8 +3559,8 @@ def test_cached_stable_block_excludes_volatile_date_and_selected_blurbs():
 
     assert "Current date & time" not in stable_text
     assert "Current date & time" in reminder_text
-    assert "nearest_food_pantry(near=" not in stable_text
-    assert "nearest_food_pantry(near=" in reminder_text
+    assert "find_foodhelp_locations(near=" not in stable_text
+    assert "find_foodhelp_locations(near=" in reminder_text
 
 
 def test_system_message_is_plain_string_for_non_anthropic():
@@ -3569,7 +3576,7 @@ def test_system_message_is_plain_string_for_non_anthropic():
     assert isinstance(content, str)
     assert "GROUND EVERYTHING" in content              # rules present
     assert "Current date & time" not in content        # the mutable date is NOT in the prefix
-    assert "nearest_food_pantry(near=" not in content  # selected blurbs are NOT in the prefix
+    assert "find_foodhelp_locations(near=" not in content  # selected blurbs are NOT in the prefix
 
 
 def test_system_message_is_stable_only_and_mutables_ride_a_post_history_reminder():
@@ -3588,7 +3595,7 @@ def test_system_message_is_stable_only_and_mutables_ride_a_post_history_reminder
     system_text = "".join(b["text"] for b in system) if isinstance(system, list) else system
     assert "GROUND EVERYTHING" in system_text
     assert "Current date & time" not in system_text          # the mutable date is NOT in the prefix
-    assert "nearest_food_pantry(near=" not in system_text     # selected blurbs are NOT in the prefix
+    assert "find_foodhelp_locations(near=" not in system_text     # selected blurbs are NOT in the prefix
 
     reminder_idx = next(
         i for i, m in enumerate(messages)
@@ -3597,7 +3604,7 @@ def test_system_message_is_stable_only_and_mutables_ride_a_post_history_reminder
     last_history_idx = max(i for i, m in enumerate(messages) if m.get("role") == "assistant")
     assert reminder_idx > last_history_idx                    # the now-line sits AFTER history
     assert "<system-reminder>" in messages[reminder_idx]["content"]
-    assert "nearest_food_pantry(near=" in messages[reminder_idx]["content"]  # blurbs ride along
+    assert "find_foodhelp_locations(near=" in messages[reminder_idx]["content"]  # blurbs ride along
     assert messages[-1]["content"] == "can you narrow it down?"   # user turn is last
     assert reminder_idx < len(messages) - 1                   # reminder precedes the user turn
 
@@ -3612,7 +3619,7 @@ def test_anthropic_system_message_is_a_single_cached_stable_block():
     assert content[0]["cache_control"] == {"type": "ephemeral"}
     assert "GROUND EVERYTHING" in content[0]["text"]
     assert "Current date & time" not in content[0]["text"]
-    assert "nearest_food_pantry(near=" not in content[0]["text"]
+    assert "find_foodhelp_locations(near=" not in content[0]["text"]
 
 
 async def test_scope_classifier_captures_cached_input_tokens(empty_registry, monkeypatch):
@@ -3669,7 +3676,7 @@ def test_build_messages_routes_blurbs_by_query():
     system = messages[0]["content"]
     reminder = next(m["content"] for m in messages if "<system-reminder>" in str(m.get("content")))
 
-    assert "nearest_food_pantry(near=" in reminder
+    assert "find_foodhelp_locations(near=" in reminder
     assert "NOT outdoor misting stations" not in reminder     # cooling blurb not loaded
     assert "Services you can help with (quick menu)" in system
 
@@ -3702,11 +3709,13 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
         return "current official illegal-lockout guidance"
 
     tools = {
-        "official_sources": Tool("official_sources", "x",
+        "web_fetch": Tool("web_fetch", "x",
                            {"type": "object", "properties": {}},
                            search),
-        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
-        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+        "get_housing_guidance": Tool(
+            "get_housing_guidance", "x", {}, lambda a, c: "h"
+        ),
+        "search_benefits": Tool("search_benefits", "x", {}, lambda a, c: "b"),
     }
 
     async def situation_scope(user_message, history):
@@ -3717,7 +3726,7 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
 
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("official_sources", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"query": "ignored"})]),
         _assistant(content="Call 911 now."),
     ]
 
@@ -3731,11 +3740,11 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
     # Deliberately NO lockout keywords: the semantic signal alone must carry it.
     result = await agent.run("mi casera me dejo afuera esta noche")
 
-    assert result.tool_calls_made == ["official_sources"]
-    assert calls[0][0] == "official_sources"
+    assert result.tool_calls_made == ["web_fetch"]
+    assert calls[0][0] == "web_fetch"
     assert "lockout" in seen["query"]
-    assert "housing_guidance" in calls[0][1]
-    assert "benefits_search" not in calls[0][1]  # single-module turn keeps the manifest focus
+    assert "get_housing_guidance" in calls[0][1]
+    assert "search_benefits" not in calls[0][1]  # single-module turn keeps the manifest focus
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
     assert "911" in prompt
 
@@ -4072,7 +4081,7 @@ async def test_event_sink_reaches_run_through_session_prepare(tmp_path):
 
 def test_delivered_notify_titles_collects_prior_notify_citation_titles():
     """F080 residual: the agent threads the titles already cited from Notify sources into
-    ToolContext so a repeat nyc_advisories call can answer with a marker, not a re-brief."""
+    ToolContext so a repeat check_notify_nyc call can answer with a marker, not a re-brief."""
     from heynyc.core.agent import _delivered_notify_titles
 
     history = [
@@ -4092,7 +4101,7 @@ def test_delivered_notify_titles_collects_prior_notify_citation_titles():
 
 async def test_snap_situation_also_forces_the_food_pantry_prefetch():
     """F089 machinery: on a SNAP work-rule situation turn the agent forces a
-    `nearest_food_pantry` prefetch AFTER the current-source search, so food help is in hand
+    `find_foodhelp_locations` prefetch AFTER the current-source search, so food help is in hand
     by construction instead of a ~60% model choice; with no location the tool's ask-for-
     location result is the offer. The advisories-forcing pattern, applied."""
     from pathlib import Path
@@ -4109,12 +4118,12 @@ async def test_snap_situation_also_forces_the_food_pantry_prefetch():
     web = Tool(name="web_search", description="x",
                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
                handler=search)
-    pantry_tool = Tool(name="nearest_food_pantry", description="x", parameters={},
+    pantry_tool = Tool(name="find_foodhelp_locations", description="x", parameters={},
                        handler=pantry, module="food_pantries")
-    agent = Agent(registry, tools={"web_search": web, "nearest_food_pantry": pantry_tool})
+    agent = Agent(registry, tools={"web_search": web, "find_foodhelp_locations": pantry_tool})
     responses = [
         _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
-        _assistant(tool_calls=[_tool_call("nearest_food_pantry", {})]),
+        _assistant(tool_calls=[_tool_call("find_foodhelp_locations", {})]),
         _assistant(content="Here is the plan, and where is a pantry near you?"),
     ]
 
@@ -4125,5 +4134,5 @@ async def test_snap_situation_also_forces_the_food_pantry_prefetch():
     agent._litellm_stream = fake_litellm
     result = await agent.run("HRA says my SNAP is stopping because of a work rule and I have no food tonight")
 
-    assert forced == ["web_search", "nearest_food_pantry", None]
-    assert result.tool_calls_made == ["web_search", "nearest_food_pantry"]
+    assert forced == ["web_search", "find_foodhelp_locations", None]
+    assert result.tool_calls_made == ["web_search", "find_foodhelp_locations"]

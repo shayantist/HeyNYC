@@ -7,7 +7,7 @@ The vertical is find -> understand -> APPLY, so a resident's turn can pass throu
 
 Where each milestone comes from (least-invasive by design):
   - `turns`         : every telemetry record (`heynyc/core/telemetry.py`).
-  - `screened`      : the `screen_eligibility` tool fired that turn (telemetry `tool_names`).
+  - `screened`      : the `screen_access_nyc_eligibility` tool fired that turn (telemetry `tool_names`).
   - `apply_started` : the `prepare_snap_application` tool fired (telemetry `tool_names`).
 These three ride entirely on the EXISTING per-turn telemetry, with no new hook.
 
@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # The tools whose firing marks a funnel step (read straight from telemetry `tool_names`).
-SCREEN_TOOL = "screen_eligibility"
+SCREEN_TOOL = "screen_access_nyc_eligibility"
 APPLY_TOOL = "prepare_snap_application"
 
 # The funnel stages in order. `turns` is the entry; each later stage drops off the prior.

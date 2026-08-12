@@ -48,7 +48,7 @@ _MEDIA_REMINDER = (
     "message. If the answer depends on the attachment, say that plainly and ask the resident to "
     "type the relevant text."
 )
-_SCREEN_TOOL = "screen_eligibility"
+_SCREEN_TOOL = "screen_access_nyc_eligibility"
 _SCREEN_REMINDER = (
     "The user explicitly requested the official benefits screening action. Build its PII-free "
     "arguments only from the conversation history. Do not invent missing profile details."

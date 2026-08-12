@@ -86,15 +86,15 @@ async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_tu
         )
         returns = _tool_returns(messages[latest_user:])
         if not returns:
-            calls.append("cool_options_lookup")
+            calls.append("find_cool_options")
             return ModelResponse([
                 ToolCallPart(
-                    "cool_options_lookup",
+                    "find_cool_options",
                     {"near": "Times Square", "kind": "indoor"},
                     f"cool-{len(calls)}",
                 )
             ])
-        if returns[-1].tool_name == "cool_options_lookup":
+        if returns[-1].tool_name == "find_cool_options":
             result = str(returns[-1].content)
             match = re.search(r"\{cite:([^}]+)\}", result)
             if match is None:
@@ -117,14 +117,14 @@ async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_tu
     first = await conversation.send("现在室内 Cool Options 开放吗？")
     second = await conversation.send("换个地址再查一次")
 
-    assert calls.count("cool_options_lookup") == 2
+    assert calls.count("find_cool_options") == 2
     assert calls.count("web_search") == 0
     assert "目前没有确认开放的室内 Cool Options" in first.text
-    assert first.usage["executed_tool_calls"] == ["cool_options_lookup"]
+    assert first.usage["executed_tool_calls"] == ["find_cool_options"]
     assert first.citations
     assert first.usage["safety_model"] == "test/safety"
     assert first.diagnostics["safety_language"] == "zh"
-    assert second.usage["executed_tool_calls"].count("cool_options_lookup") == 1
+    assert second.usage["executed_tool_calls"].count("find_cool_options") == 1
 
 
 @pytest.mark.asyncio
@@ -155,29 +155,19 @@ async def test_f201_cooling_absence_does_not_discard_another_tools_result():
         calls += 1
         if calls == 1:
             return ModelResponse([
-                ToolCallPart("cool_options_lookup", {}, "cooling-1"),
+                ToolCallPart("find_cool_options", {}, "cooling-1"),
                 ToolCallPart("nearest_fountain", {}, "fountain-1"),
             ])
-        return ModelResponse([ToolCallPart(
-            "grounded_answer",
-            {
-                "grounded_blocks": [
-                    {
-                        "text": "No current Cool Options are confirmed open now.",
-                        "citation_ids": ["S1"],
-                    },
-                    {
-                        "text": "Hunts Point Playground has an active drinking fountain.",
-                        "citation_ids": ["S2"],
-                    },
-                ]
-            },
-            "answer-1",
-        )])
+        return ModelResponse([
+            TextPart(
+                "No current Cool Options are confirmed open now. {cite:S1}\n\n"
+                "Hunts Point Playground has an active drinking fountain. {cite:S2}"
+            )
+        ])
 
     tools = {
-        "cool_options_lookup": Tool(
-            "cool_options_lookup",
+        "find_cool_options": Tool(
+            "find_cool_options",
             "Check cooling",
             {"type": "object", "properties": {}},
             cooling_handler,
@@ -229,12 +219,12 @@ async def test_cooling_terminal_ignores_capability_discovery_returns():
             ])
         if calls == 3:
             return ModelResponse([
-                ToolCallPart("cool_options_lookup", {}, "cooling-1")
+                ToolCallPart("find_cool_options", {}, "cooling-1")
             ])
         return ModelResponse([TextPart("model should not run again")])
 
     tool = Tool(
-        "cool_options_lookup",
+        "find_cool_options",
         "Check cooling",
         {"type": "object", "properties": {}},
         cooling_handler,
@@ -246,7 +236,7 @@ async def test_cooling_terminal_ignores_capability_discovery_returns():
             ServiceModule(
                 name="cooling_centers",
                 description="Find cooling",
-                focus_tools=["cool_options_lookup"],
+                focus_tools=["find_cool_options"],
             )
         ]),
         tools={tool.name: tool},
@@ -282,7 +272,7 @@ async def test_cooling_center_no_open_allows_indoor_fallback(monkeypatch):
         return await cooling.get_tools()[0].handler(args, ctx)
 
     tool = Tool(
-        "cool_options_lookup",
+        "find_cool_options",
         "Find cooling options",
         cooling.get_tools()[0].parameters,
         cooling_handler,
@@ -291,9 +281,9 @@ async def test_cooling_center_no_open_allows_indoor_fallback(monkeypatch):
     async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
         returns = _tool_returns(messages)
         if not returns:
-            return ModelResponse([ToolCallPart("cool_options_lookup", {"near": "Times Square", "kind": "cooling_center"}, "center-1")])
-        if returns[-1].tool_name == "cool_options_lookup" and len(calls) == 1:
-            return ModelResponse([ToolCallPart("cool_options_lookup", {"near": "Times Square", "kind": "indoor"}, "indoor-1")])
+            return ModelResponse([ToolCallPart("find_cool_options", {"near": "Times Square", "kind": "cooling_center"}, "center-1")])
+        if returns[-1].tool_name == "find_cool_options" and len(calls) == 1:
+            return ModelResponse([ToolCallPart("find_cool_options", {"near": "Times Square", "kind": "indoor"}, "indoor-1")])
         return ModelResponse([TextPart("model prose")])
 
     _patch_cooling(monkeypatch, rows)
