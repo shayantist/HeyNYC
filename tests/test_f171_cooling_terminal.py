@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelRequest,
     ModelResponse,
     TextPart,
     ToolCallPart,
@@ -66,6 +67,14 @@ def _tool_returns(messages: list[ModelMessage]) -> list[ToolReturnPart]:
     ]
 
 
+def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
+    return ToolCallPart(
+        "final_answer",
+        {"answer": answer},
+        call_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_turn(monkeypatch):
     _patch_cooling(monkeypatch, [_row("Indoor Option", "Indoor", closed=True)])
@@ -114,12 +123,13 @@ async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_tu
         crisis_screen=lambda _turns: _screen_zh(),
     ).conversation()
 
-    first = await conversation.send("现在室内 Cool Options 开放吗？")
-    second = await conversation.send("换个地址再查一次")
+    first = await conversation.send("Times Square 附近现在有室内 Cool Options 开放吗？")
+    second = await conversation.send("换到 Times Square 附近再查一次")
 
     assert calls.count("find_cool_options") == 2
     assert calls.count("web_search") == 0
     assert "目前没有确认开放的室内 Cool Options" in first.text
+    assert "{cite:" in first.text
     assert first.usage["executed_tool_calls"] == ["find_cool_options"]
     assert first.citations
     assert first.usage["safety_model"] == "test/safety"
@@ -159,7 +169,7 @@ async def test_f201_cooling_absence_does_not_discard_another_tools_result():
                 ToolCallPart("nearest_fountain", {}, "fountain-1"),
             ])
         return ModelResponse([
-            TextPart(
+            _cited_answer(
                 "No current Cool Options are confirmed open now. {cite:S1}\n\n"
                 "Hunts Point Playground has an active drinking fountain. {cite:S2}"
             )
@@ -319,6 +329,87 @@ def test_all_cooling_terminal_is_localized_in_chinese():
         "সুপারিশ করতে পারছি না। এখন খোলা কোনো শীতল জায়গা খুঁজে পেতে সাহায্যের জন্য 311-এ ফোন "
         "করুন। কারও শ্বাসকষ্ট হলে 911-এ ফোন করুন।"
     )
+
+
+@pytest.mark.asyncio
+async def test_selected_unavailable_site_gets_one_output_only_synthesis():
+    tool_calls: list[str] = []
+
+    async def cooling_handler(_args: dict, ctx: ToolContext) -> str:
+        tool_calls.append("find_cool_options")
+        selected = ctx.citations.register(
+            "https://www.nyc.gov/cooling",
+            title="Cooling lookup",
+            snippet="The selected indoor option is not confirmed open now.",
+        )
+        help_cite = ctx.citations.register(
+            "https://portal.311.nyc.gov/cooling",
+            title="NYC311",
+            snippet="Call 311 for help finding a currently open place to cool down.",
+        )
+        ctx.cooling_terminal_result = "The selected indoor option is not confirmed open now."
+        ctx.cooling_terminal_citation_ids = (selected, help_cite)
+        ctx.cooling_terminal_synthesis = True
+        return f"Not open now. {{cite:{selected}}} Call 311. {{cite:{help_cite}}}"
+
+    async def web_handler(_args: dict, _ctx: ToolContext) -> str:
+        tool_calls.append("web_search")
+        return "should not run"
+
+    calls = 0
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert "find_cool_options" in {tool.name for tool in info.function_tools}
+            assert "load_capability" in {tool.name for tool in info.function_tools}
+            return ModelResponse([ToolCallPart("find_cool_options", {}, "cool-1")])
+        assert not info.function_tools
+        latest_request = next(
+            message for message in reversed(messages) if isinstance(message, ModelRequest)
+        )
+        assert "leave resident-provided facts and general medical or route cautions uncited" in (
+            latest_request.instructions or ""
+        )
+        return ModelResponse([_cited_answer(
+            "目前没有确认开放，也没有空调证据。您说自己使用助行器而且不能走远，"
+            "这项结果不能支持步行或交通建议。请拨打 311。 {cite:S1} {cite:S2}"
+        )])
+
+    tools = {
+        "find_cool_options": Tool(
+            "find_cool_options",
+            "Check cooling",
+            {"type": "object", "properties": {}},
+            cooling_handler,
+        ),
+        "web_search": Tool(
+            "web_search",
+            "Search",
+            {"type": "object", "properties": {}},
+            web_handler,
+        ),
+    }
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([
+            ServiceModule(
+                name="libraries",
+                description="Find library information",
+                prompt="Use library sources",
+            )
+        ]),
+        tools=tools,
+        use_module_capabilities=True,
+        structured_grounding=True,
+        crisis_screen=lambda _turns: _screen_zh(),
+    ).run("我用walker，不能走远。这个地方开门和有空调吗？")
+
+    assert calls == 2
+    assert tool_calls == ["find_cool_options"]
+    assert "助行器" in result.text
+    assert "空调" in result.text
 
 
 @pytest.mark.asyncio

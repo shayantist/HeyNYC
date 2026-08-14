@@ -286,17 +286,18 @@ def _geosearch_response(lat: float, lon: float, label: str) -> httpx.Response:
     )
 
 
-async def test_geocode_parses_lon_lat_order():
-    def handler(request):
-        return _geosearch_response(40.8075, -73.9626, "Columbia University, Manhattan")
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    point = await geocode("Columbia University", client=client)  # non-intersection → GeoSearch
-    await client.aclose()
+async def test_geocode_uses_general_provider_for_a_place_name():
+    expected = GeoPoint(
+        40.8075,
+        -73.9626,
+        "Columbia University, Manhattan",
+        match_type="nominatim",
+    )
+    point = await geocode("Columbia University", forgiving=_fake_forgiving(expected))
     assert point is not None
     assert round(point.lat, 4) == 40.8075
     assert round(point.lon, 4) == -73.9626
-    assert "Columbia" in point.label
+    assert point == expected
 
 
 async def test_geocode_accepts_grounded_nyc_coordinate_text_without_provider_lookup():
@@ -667,7 +668,7 @@ async def test_nearest_handler_ranks_and_cites():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
-    out = await _nearest_handler({"category": "cooling_center", "near": "origin", "k": 2}, ctx)
+    out = await _nearest_handler({"category": "cooling_center", "near": "40.7500,-73.9900", "k": 2}, ctx)
     await client.aclose()
 
     # Closest first, bad-coords row skipped
@@ -679,7 +680,10 @@ async def test_nearest_handler_ranks_and_cites():
     assert ctx.citations.mapping()["S1"]["kind"] == "DATA"
     assert "{cite:S1}" in out
     # Transparency: the resolved origin label is surfaced
-    assert "Resolved 'origin'" in out
+    assert "Resolved '40.7500,-73.9900'" in out
+    assert next(line for line in out.splitlines() if line.startswith("(Resolved")).endswith(
+        "{cite:S1}"
+    )
     # A deterministic Google Maps link is offered per place (navigation handoff)
     assert "google.com/maps" in out
     assert "record updated=2025-06-27" in lines[0]
@@ -792,7 +796,7 @@ async def test_nearest_handler_arcgis_ranks_surfaces_phone_and_cites():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_arcgis_cooling(), http=client)
-    out = await _nearest_handler({"category": "cooling_center", "near": "origin", "k": 2}, ctx)
+    out = await _nearest_handler({"category": "cooling_center", "near": "40.7500,-73.9900", "k": 2}, ctx)
     await client.aclose()
 
     site_lines = [l for l in out.splitlines() if l.startswith("- ")]
@@ -824,7 +828,7 @@ async def test_nearest_handler_dedupes_repeated_sites():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
-    out = await _nearest_handler({"category": "cooling_center", "near": "origin", "k": 3}, ctx)
+    out = await _nearest_handler({"category": "cooling_center", "near": "40.7500,-73.9900", "k": 3}, ctx)
     await client.aclose()
     site_lines = [l for l in out.splitlines() if l.startswith("- ")]
     assert len(site_lines) == 2  # dup collapsed
@@ -911,7 +915,14 @@ def test_place_citation_is_row_addressed_and_carries_recomputable_provenance():
     place = Place(name="Marconi Park", lat=40.74, lon=-73.88, status="Activated",
                   borough="Queens", record_id="row-9", updated_at="2026-06-20",
                   raw={":id": "row-9", "propertyname": "Marconi Park", "status": "Activated"})
-    cid = _place_citation(_Ctx(), place, _Binding(), origin_lat=40.75, origin_lon=-73.87, dist_mi=0.68)
+    cid = _place_citation(
+        _Ctx(),
+        place,
+        _Binding(),
+        origin_query="Queens Center",
+        origin=GeoPoint(40.75, -73.87, label="Queens Center"),
+        dist_mi=0.68,
+    )
     c = reg.mapping()[cid]
     assert c["kind"] == "DATA"
     assert c["url"] == "https://data.cityofnewyork.us/resource/h2bn-gu9k/row-9.json"
@@ -919,7 +930,13 @@ def test_place_citation_is_row_addressed_and_carries_recomputable_provenance():
     prov = c["provenance"]
     assert prov["record_id"] == "row-9"
     assert prov["content_hash"] == content_hash(place.raw)
-    assert prov["derivation"] == {"origin": [40.75, -73.87], "point": [40.74, -73.88], "distance_mi": 0.68}
+    assert prov["derivation"] == {
+        "origin": [40.75, -73.87],
+        "origin_query": "Queens Center",
+        "origin_label": "Queens Center",
+        "point": [40.74, -73.88],
+        "distance_mi": 0.68,
+    }
 
 
 # --- F079: the bundled NTA neighborhood gazetteer resolves before any fuzzy provider ---
@@ -1088,6 +1105,17 @@ def test_fallback_address_identity_ignores_provider_locality_and_suffix_variants
         assert _fallback_landmark_identity_matches(query, label)
 
 
+def test_fallback_address_identity_accepts_city_spelling_and_ordinals():
+    assert _fallback_landmark_identity_matches(
+        "100 Centre St, New York, NY",
+        "100 CENTER STREET, New York, NY, USA",
+    )
+    assert _fallback_landmark_identity_matches(
+        "350 5th Ave, New York, NY",
+        "350 5 AVENUE, New York, NY, USA",
+    )
+
+
 def test_fallback_address_identity_rejects_different_number_or_street():
     label = "123 Main St, New York, NY 10001, United States"
 
@@ -1133,13 +1161,13 @@ async def test_neighborhood_with_contradictory_borough_falls_through():
     assert point is None
 
 
-async def test_unknown_area_still_uses_existing_path():
+async def test_unknown_place_does_not_fall_through_to_address_search():
     def handler(request):
         return _geosearch_response(40.7, -73.9, "Somewhere, NYC")
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     point = await geocode("Flurbville", client=client, forgiving=_fake_forgiving(None))
     await client.aclose()
-    assert point is not None and point.match_type == "geosearch"
+    assert point is None
 
 
 async def test_missing_gazetteer_file_degrades_to_provider_path(monkeypatch):

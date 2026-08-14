@@ -37,9 +37,9 @@ from heynyc.core.tools.geo import (
     _resolution_note,
     format_distance,
     geocode,
-    haversine_m,
     maps_link,
     miles,
+    rank_nearby,
 )
 
 # --- FQHC spine (live HRSA ArcGIS MapServer layer; behaves like a FeatureServer for /query) ---
@@ -310,17 +310,16 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 f"user to {OFFICIAL}, or findahealthcenter.hrsa.gov.")
 
     k = int(args.get("k") or 5)
-    ordered = sorted(clinics, key=lambda c: haversine_m(origin.lat, origin.lon, c.lat, c.lon))
-    ranked: list[Clinic] = []
-    seen: set[tuple] = set()
-    for clinic in ordered:
-        key = (clinic.name.strip().lower(), round(clinic.lat, 5), round(clinic.lon, 5))
-        if key in seen:
-            continue
-        seen.add(key)
-        ranked.append(clinic)
-        if len(ranked) >= k:
-            break
+    ranked = rank_nearby(
+        origin,
+        clinics,
+        key=lambda clinic: (
+            clinic.name.strip().casefold(),
+            round(clinic.lat, 5),
+            round(clinic.lon, 5),
+        ),
+        limit=k,
+    )
 
     lines = [
         f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
@@ -332,8 +331,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     lines.append("Nearby clinics that will see you regardless of insurance, report only these, cite "
                  "each. Lead with the reassurance that these places serve everyone:")
     classes_present: list[str] = []
-    for clinic in ranked:
-        dist_mi = miles(haversine_m(origin.lat, origin.lon, clinic.lat, clinic.lon))
+    for clinic, distance_m in ranked:
+        dist_mi = miles(distance_m)
         cite = _facility_citation(ctx, clinic, origin_lat=origin.lat, origin_lon=origin.lon,
                                   dist_mi=dist_mi)
         lines.append(_clinic_block(clinic, cite, format_distance(near, origin, dist_mi)))
@@ -524,14 +523,15 @@ async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
             provenance={"snapshot": {"verified_fact": fact.body}},
         )
         lines.append(f"- {fact.body} {{cite:{cite}}}")
-    lines.extend([
-        COVERAGE_CLOSING,
-        "Report ONLY these grounded facts with their {cite:Sn} and the ActionNYC routing line above. Do "
-        "not add or change a phone number, a dollar figure, or an eligibility rule, and do not state "
-        "a public-charge conclusion of your own. Do not add an application office, counselor, "
-        "screening step, or hospital instruction that is not in a cited fact; if the user needs "
-        "more, that's 311 / 646-NYC-CARE / ActionNYC.",
-    ])
+    if topic == "public_charge":
+        lines.append(COVERAGE_CLOSING)
+    lines.append(
+        "Report ONLY these grounded facts with their {cite:Sn}. Do not add or change a phone number, "
+        "a dollar figure, an eligibility rule, service type, application office, counselor, "
+        "screening step, or hospital instruction that is not in a cited fact. Do not add urgency, "
+        "timing, or an intake script beyond what a cited fact states. Keep each fact's citation "
+        "only on claims from that fact; do not attach it to another fact."
+    )
     return "\n".join(lines)
 
 
@@ -577,8 +577,10 @@ def get_tools() -> list[Tool]:
                 "to pay), and `public_charge` (MOIA public-charge guidance). Pass `topic` = one of "
                 "those four values. find_clinics answers WHERE "
                 "to go; this answers WHAT coverage / IS IT SAFE. It appends an ActionNYC routing line "
-                "for public-charge questions; never state a coverage rule or a public-charge conclusion "
-                "from your own knowledge; report only what it returns, cited."
+                "only for public-charge questions. For delivery payment, use `emergency_medicaid`. "
+                "Do not also call `nyc_care` unless the resident separately asks about ongoing "
+                "non-emergency care. Never state a coverage rule or a public-charge conclusion from "
+                "your own knowledge; report only what it returns, cited."
             ),
             parameters={
                 "type": "object",

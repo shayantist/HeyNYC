@@ -232,6 +232,8 @@ async def test_health_coverage_emergency_medicaid_grounds_body_and_cites():
     assert "emergency labor and delivery and kidney dialysis" in out
     assert "HRA Medicaid Helpline" in out
     assert "(888) 692-6116" in out
+    assert "Do not add urgency, timing, or an intake script" in out
+    assert "Keep each fact's citation only on claims from that fact" in out
     mapping = citations.mapping()
     assert len(mapping) == 2
     cite = mapping["S1"]
@@ -243,9 +245,8 @@ async def test_health_coverage_emergency_medicaid_grounds_body_and_cites():
     assert application["url"].endswith("/medicaid/how_do_i_apply.htm")
     assert "HRA Medicaid Helpline" in application["provenance"]["snapshot"]["verified_fact"]
     assert "{cite:S2}" in out
-    # the shared public-charge / ActionNYC closing routing line is appended once
-    assert "public charge" in out.lower()
-    assert "ActionNYC" in out
+    assert "public charge" not in out.lower()
+    assert "ActionNYC" not in out
 
 
 async def test_health_coverage_tourist_emergency_care_separates_treatment_from_billing():
@@ -269,8 +270,7 @@ async def test_health_coverage_nyc_care_grounds_body_and_cites():
     assert mapping["S1"]["kind"] == "DOC"
     assert mapping["S1"]["url"] == "https://access.nyc.gov/programs/nyc-care/"
     assert "{cite:S1}" in out
-    # the shared public-charge / ActionNYC closing routing line is present
-    assert "ActionNYC" in out and "public charge" in out.lower()
+    assert "ActionNYC" not in out and "public charge" not in out.lower()
 
 
 async def test_health_coverage_public_charge_grounds_body_and_cites():
@@ -324,3 +324,21 @@ def test_clinics_module_loads_with_tool_and_eval():
     cases = [c for c in load_cases(registry) if c.module == "clinics"]
     assert cases, "clinics should ship eval cases"
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
+
+
+def test_health_coverage_tool_separates_delivery_coverage_from_nyc_care():
+    description = _coverage_tool().description.lower()
+
+    assert "delivery payment" in description
+    assert "use `emergency_medicaid`" in description
+    assert "ongoing non-emergency care" in description
+    assert "do not also call `nyc_care`" in description
+
+
+def test_clinics_module_scopes_call_ahead_disclaimer_to_location_results():
+    registry = Registry.discover(config.MODULES_DIR)
+    module = next(module for module in registry.modules if module.name == "clinics")
+    prompt = module.prompt.lower()
+
+    assert "after `find_clinics` returns locations" in prompt
+    assert "do not append this location disclaimer to coverage-only answers" in prompt

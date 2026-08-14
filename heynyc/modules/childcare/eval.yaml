@@ -102,14 +102,19 @@
   invariants: {must_abstain_or_redirect: true, must_not_fabricate: true}
   notes: The list carries NO cost/eligibility - don't assert a free seat or voucher; route to MySchools / ACCESS NYC.
 
-# --- Scope: not a child care question --------------------------------------
+# --- General help must not be suppressed -----------------------------------
 - id: childcare_out_of_scope
+  tags: [F252]
   query: "What's the capital of France?"
-  capability: scope
+  capability: general-chat
   test_type: DIR
   forbid_tools: [find_child_care_connect_programs, geocode]
-  invariants: {must_abstain_or_redirect: true}
-  notes: Unrelated to NYC services - redirect, don't answer from memory.
+  invariants: {must_not_fabricate: true}
+  utility_criterion: >-
+    Answer the question correctly and concisely. NYC expertise is a specialization, not a scope
+    wall, so do not refuse, redirect, or suppress ordinary general knowledge. Use no child-care or
+    location tool.
+  notes: F252 pins the no-topic-suppression contract and remains a retrieval-efficiency canary.
 
 # --- False premise: must not validate a fabricated fact --------------------
 - id: childcare_false_premise_endorsed

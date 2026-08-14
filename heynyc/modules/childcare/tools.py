@@ -36,8 +36,8 @@ from heynyc.core.tools.geo import (
     _resolution_note,
     format_distance,
     geocode,
-    haversine_m,
     miles,
+    rank_nearby,
 )
 
 # The live backend of NYC Child Care Connect - verified public + tokenless on data.cityofnewyork.us.
@@ -239,18 +239,16 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 f"one - point the user to {OFFICIAL}.")
 
     k = int(args.get("k") or 5)
-    ordered = sorted(sites, key=lambda s: haversine_m(origin.lat, origin.lon, s.lat, s.lon))
-    # Collapse duplicate rows for the same physical program (same name + coordinate).
-    ranked: list[ChildCareSite] = []
-    seen: set[tuple] = set()
-    for site in ordered:
-        key = (site.name.strip().lower(), round(site.lat, 5), round(site.lon, 5))
-        if key in seen:
-            continue
-        seen.add(key)
-        ranked.append(site)
-        if len(ranked) >= k:
-            break
+    ranked = rank_nearby(
+        origin,
+        sites,
+        key=lambda site: (
+            site.name.strip().casefold(),
+            round(site.lat, 5),
+            round(site.lon, 5),
+        ),
+        limit=k,
+    )
 
     lines = [
         f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
@@ -258,8 +256,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "NYC child care programs from the DOHMH regulated child care list (powers NYC Child Care "
         "Connect) - report only these, cite each:",
     ]
-    for site in ranked:
-        dist_mi = miles(haversine_m(origin.lat, origin.lon, site.lat, site.lon))
+    for site, distance_m in ranked:
+        dist_mi = miles(distance_m)
         cite = _site_citation(ctx, site, origin_lat=origin.lat, origin_lon=origin.lon,
                               dist_mi=dist_mi)
         fallback_cite = ""

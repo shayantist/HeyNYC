@@ -19,6 +19,7 @@ keywords:
 examples:
   - "Where's the nearest cooling center?"
   - "It's too hot, where can I cool off indoors today?"
+official_link: https://finder.nyc.gov/coolingcenters/
 datasets:
   - source: arcgis
     url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/Cool_Options/FeatureServer/0
@@ -35,7 +36,6 @@ datasets:
       status: Finder_status
       phone: Phone
 seeds:
-  - https://finder.nyc.gov/coolingcenters/
   - https://portal.311.nyc.gov/article/?kanumber=KA-02663
 allowlist:
   - finder.nyc.gov

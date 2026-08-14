@@ -16,6 +16,7 @@ from heynyc.core.tools.geo import (
     geocode,
     haversine_m,
     miles,
+    resident_supplied_location,
 )
 
 COOL_OPTIONS_URL = (
@@ -34,6 +35,10 @@ _HEAT_HELP_URL = "https://portal.311.nyc.gov/article/?kanumber=KA-02663"
 _HEAT_HELP = (
     "Call 311 for help finding a currently open place to cool down. "
     "If anyone has trouble breathing, call 911."
+)
+_SELECTED_INDOOR_UNAVAILABLE = (
+    "The selected indoor Cool Option is not confirmed open now. The City result does not "
+    "confirm usable air conditioning there now."
 )
 
 
@@ -153,7 +158,15 @@ def _citation(ctx: ToolContext, item: dict, origin: GeoPoint) -> str:
             record,
             record_id=record_id,
             field_pointer="/",
-            derivation={"origin": [origin.lat, origin.lon]},
+            derivation={
+                "origin": [origin.lat, origin.lon],
+                "origin_label": origin.label,
+                **(
+                    {"open_now": item["open_now"]}
+                    if "open_now" in item
+                    else {}
+                ),
+            },
         ),
     )
 
@@ -287,7 +300,40 @@ def _decode_site_fact(
 
 async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     near = str(args.get("near", "")).strip()
-    origin = await geocode(near, client=ctx.http)
+    current_turn = ctx.query
+    site = str(args.get("site") or "").strip()
+    offered_fact = ctx.resident_facts.get(_OFFERED_SITE_FACT)
+    prior_offered = (
+        _decode_site_fact(offered_fact.value, offered=True)
+        if offered_fact
+        else None
+    )
+    current_location = resident_supplied_location(
+        near,
+        current_turn,
+        (),
+    ) if current_turn else ""
+    if site and prior_offered and not current_location:
+        origin = GeoPoint(
+            prior_offered[1][0],
+            prior_offered[1][1],
+            "previously resolved origin",
+        )
+    elif current_turn:
+        near = resident_supplied_location(
+            near,
+            current_turn,
+            ctx.user_turns,
+            allow_prior=True,
+        )
+        if not near:
+            return (
+                "A location is required before ranking nearby Cool Options. "
+                "Ask for the resident's neighborhood, address, or landmark."
+            )
+        origin = await geocode(near, client=ctx.http)
+    else:
+        origin = await geocode(near, client=ctx.http)
     if origin is None:
         return f"Could not locate '{near}'. Ask for a specific NYC address or landmark."
     if origin.low_confidence:
@@ -337,7 +383,6 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         return "No matching NYC Cool Options were found near that location."
 
     origin_value = [origin.lat, origin.lon]
-    offered_fact = ctx.resident_facts.get(_OFFERED_SITE_FACT)
     offered_state = (
         _decode_site_fact(offered_fact.value, offered=True)
         if offered_fact
@@ -375,7 +420,7 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     }
     selected, _ = _match_site(
         [item for item in offered_items if _site_key(item) not in excluded],
-        str(args.get("site") or "").strip(),
+        site,
     )
     selected_item = None
     if selected:
@@ -413,34 +458,50 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         return "The date must use YYYY-MM-DD. Ask the resident to clarify the date."
     planning_ahead = target_date != now.date()
     target_day_name = _DAY_NAMES[target_date.weekday()]
-    for item in unique:
+    for item in candidate_items:
         item["open_now"] = _open_now(item["record"], now)
         item["target_hours"] = _scheduled_hours(item["record"], target_date.weekday())
         item["target_open"] = _scheduled_open(item["record"], target_date.weekday())
         item["distance_m"] = haversine_m(origin.lat, origin.lon, item["lat"], item["lon"])
-    current_items = unique
+    current_items = candidate_items
     current_open = [item for item in current_items if item["open_now"] is True]
+    unavailable_note = ""
     if not planning_ahead:
         if selected_item and selected_item["open_now"] is not True:
             selected_label = {
                 "cooling_center": "cooling center",
                 "indoor": "indoor Cool Option",
             }.get(kind, "Cool Option")
-            if any(
-                _open_now(item["record"], now) is True
-                and _site_key(item) != _site_key(selected_item)
-                for item in candidate_items
-            ):
-                alternative_note = (
-                    "Other current cooling center options can be checked."
-                    if kind == "cooling_center"
-                    else "Other current options can be checked."
+            selected_cite = _citation(ctx, selected_item, origin)
+            alternatives = [
+                item
+                for item in current_open
+                if _site_key(item) != _site_key(selected_item)
+            ]
+            if alternatives:
+                unique = alternatives
+                unavailable_note = (
+                    f"The selected {selected_label} is not confirmed open now. "
+                    f"{{cite:{selected_cite}}} Current alternatives:"
                 )
+            elif kind == "cooling_center":
                 return (
                     f"The selected {selected_label} is not confirmed open now. "
-                    + alternative_note
+                    f"{{cite:{selected_cite}}} {_INDOOR_NEXT_STEP}"
                 )
-            return f"The selected {selected_label} is not confirmed open now. {_INDOOR_NEXT_STEP}"
+            else:
+                heat_cite = _heat_help_citation(ctx)
+                ctx.cooling_terminal_result = (
+                    f"{_SELECTED_INDOOR_UNAVAILABLE} {_HEAT_HELP}"
+                )
+                ctx.cooling_terminal_citation_ids = (selected_cite, heat_cite)
+                ctx.cooling_terminal_synthesis = True
+                return (
+                    f"Resolved origin: origin={origin.lat:.5f},{origin.lon:.5f}\n"
+                    f"Selected-site status and A/C: {_SELECTED_INDOOR_UNAVAILABLE} "
+                    f"{{cite:{selected_cite}}}\n"
+                    f"NYC311 next step and emergency: {_HEAT_HELP} {{cite:{heat_cite}}}"
+                )
         if selected_item is None and not current_open:
             if kind == "cooling_center":
                 return f"No activated cooling center is confirmed open now. {_INDOOR_NEXT_STEP}"
@@ -507,6 +568,8 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         lines.append(
             "Activation status is current at lookup time, not a guarantee for the requested date."
         )
+    if unavailable_note:
+        lines.append(unavailable_note)
     if closer_closed:
         count = len(closer_closed)
         note = (

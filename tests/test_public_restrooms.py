@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -26,10 +27,15 @@ def test_public_restrooms_scope_accessibility_and_311_claims():
     registry = Registry.discover(config.MODULES_DIR)
     module = next(item for item in registry.modules if item.name == "public_restrooms")
     parameter = restrooms.get_tools()[0].parameters["properties"]["fully_accessible"]
+    prompt = " ".join(module.prompt.split())
 
     assert "site accessibility field" in parameter["description"]
     assert "does not prove restroom fixture accessibility" in parameter["description"]
-    assert "Only route an explicitly reported closure or maintenance problem" in module.prompt
+    assert "Only route an explicitly reported closure or maintenance problem" in prompt
+    assert "include every closer partial match" in prompt
+    assert "call web_fetch once" in prompt
+    assert "Never call a result a confirmed fully accessible restroom" in prompt
+    assert "Repeat that fixture-accessibility limit beside every result" in prompt
 
 
 @pytest.mark.asyncio
@@ -103,6 +109,10 @@ async def test_lookup_prefers_open_official_corroboration_and_respects_limit(mon
     assert "{cite:S1}" in output
     assert "{cite:S2}" in output
     assert len(ctx.citations.mapping()) == 2
+    assert all(
+        citation["provenance"]["derivation"]["origin_label"] == "Rockefeller Center"
+        for citation in ctx.citations.mapping().values()
+    )
 
 
 @pytest.mark.asyncio
@@ -238,8 +248,89 @@ async def test_lookup_honors_requested_access_and_changing_station_filters(monke
     assert "Usable Restroom" in filtered
     assert "Nearest Restroom" not in filtered
     assert "does not prove restroom fixture accessibility" in filtered
+    assert "City-dataset matches for site accessibility and a changing station" in filtered
+    assert "matches for every requested feature" not in filtered
     assert "311" not in filtered
     assert "1. Nearest Restroom" in unfiltered
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_named_city_record_and_keeps_closer_partial_match(monkeypatch):
+    fetched = []
+
+    async def missing_geocode(text, **kwargs):
+        return None
+
+    async def fake_city(*args, **kwargs):
+        return [
+            {
+                ":id": "origin",
+                "facility_name": "Neighborhood Plaza APT",
+                "latitude": "40.0000",
+                "longitude": "-73.0000",
+                "status": "Operational",
+                "accessibility": "Fully Accessible",
+                "changing_stations": "No",
+            },
+            {
+                ":id": "partial",
+                "facility_name": "Neighborhood Library",
+                "latitude": "40.0010",
+                "longitude": "-73.0000",
+                "status": "Operational",
+                "accessibility": "",
+                "changing_stations": "Yes",
+                "website": {"url": "https://library.example/branch"},
+            },
+            {
+                ":id": "complete",
+                "facility_name": "Far Library",
+                "latitude": "40.1000",
+                "longitude": "-73.0000",
+                "status": "Operational",
+                "accessibility": "Fully Accessible",
+                "changing_stations": "Yes",
+            },
+        ]
+
+    async def fake_cool_options(*args, **kwargs):
+        return []
+
+    async def fake_web_fetch(args, _ctx):
+        fetched.append(args)
+        return "SOURCE S99: Official page\nWheelchair accessible\n{cite:S99}"
+
+    monkeypatch.setattr(restrooms, "geocode", missing_geocode)
+    monkeypatch.setattr(restrooms, "query_dataset", fake_city)
+    monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry.discover(config.MODULES_DIR),
+        toolbox={"web_fetch": SimpleNamespace(handler=fake_web_fetch)},
+    )
+
+    output = await restrooms.get_tools()[0].handler(
+        {
+            "near": "Neighborhood Plaza, Queens, NY",
+            "fully_accessible": True,
+            "changing_station": True,
+        },
+        ctx,
+    )
+
+    assert "Neighborhood Plaza APT" in output
+    assert "Far Library" in output
+    assert "Closest supported match" in output
+    assert "Neighborhood Library" in output
+    assert "Missing constraint: site accessibility is not listed" not in output
+    assert "https://library.example/branch" in output
+    assert "Official page resolves the missing site-accessibility field" in output
+    assert fetched == [{
+        "url": "https://library.example/branch",
+        "query": "site wheelchair accessibility",
+    }]
+    assert output.index("- Neighborhood Library") < output.index("- Neighborhood Plaza APT")
+    assert output.index("Neighborhood Library") < output.index("Far Library")
 
 
 @pytest.mark.asyncio

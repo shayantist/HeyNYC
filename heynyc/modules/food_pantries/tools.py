@@ -31,6 +31,7 @@ from heynyc.core.tools.geo import (
     geocode,
     haversine_m,
     miles,
+    rank_nearby,
     resident_supplied_location,
 )
 
@@ -52,6 +53,10 @@ FOODHELP_QUERY_URL = (
     )
 )
 OFFICIAL = "finder.nyc.gov/foodhelp or call 311"
+FOOD_ROUTE_URL = "https://access.nyc.gov/programs/emergency-food-assistance/"
+FOOD_ROUTE_FACT = (
+    "Use the Food Help NYC map or call 311 and ask for food locations near you"
+)
 NO_LOCATION = (
     "The proposed search origin was not supplied by the user, so do not use it. "
     "For immediate food help, tell the user to call 311 or use "
@@ -274,13 +279,23 @@ def _scheduled_during(
     prefix = _prefix(record)
     slots = _day_slots(record, prefix, _DAYS[requested.weekday()])
     if slots:
-        return any(
-            opened < window_end and (closed if closed > opened else closed + 1440) > window_start
-            for opened, closed in slots
-        )
+        return bool(_window_overlaps(slots, window_start, window_end))
     if any(_day_slots(record, prefix, day) for day in _DAYS):
         return False
     return None
+
+
+def _window_overlaps(
+    slots: list[tuple[int, int]],
+    window_start: int,
+    window_end: int,
+) -> list[tuple[int, int]]:
+    return [
+        (max(opened, window_start), min(closed if closed > opened else closed + 1440, window_end))
+        for opened, closed in slots
+        if opened < window_end
+        and (closed if closed > opened else closed + 1440) > window_start
+    ]
 
 
 def _schedule_conflict(record: dict, requested: date) -> bool:
@@ -456,6 +471,17 @@ def _pantry_citation(ctx: ToolContext, pantry: FoodPantry, *,
     )
 
 
+def _food_route_citation(ctx: ToolContext) -> str:
+    return ctx.citations.register(
+        FOOD_ROUTE_URL,
+        snippet=FOOD_ROUTE_FACT,
+        title="Community Food Connection, ACCESS NYC",
+        kind="DOC",
+        valid_as_of="2026-06-18",
+        provenance={"snapshot": {"verified_fact": FOOD_ROUTE_FACT}},
+    )
+
+
 def _availability_citation(
     ctx: ToolContext,
     *,
@@ -541,9 +567,19 @@ def _pantry_block(
         requested = requested or now.date()
         start, end = service_window
         scheduled = _scheduled_during(pantry.raw, requested, start, end)
+        overlaps = _window_overlaps(
+            _day_slots(pantry.raw, _prefix(pantry.raw), _DAYS[requested.weekday()]),
+            start,
+            end,
+        )
+        overlap_label = ", ".join(
+            f"{opened // 60:02d}:{opened % 60:02d}-{closed // 60:02d}:{closed % 60:02d}"
+            for opened, closed in overlaps
+        )
         status = (
             f"weekly schedule overlaps the requested "
-            f"{start // 60:02d}:{start % 60:02d}-{end // 60:02d}:{end % 60:02d} service window"
+            f"{start // 60:02d}:{start % 60:02d}-{end // 60:02d}:{end % 60:02d} service window; "
+            f"actual weekly-hours overlap: {overlap_label}"
             if scheduled is True
             else "weekly schedule does not overlap the requested service window"
             if scheduled is False
@@ -581,13 +617,17 @@ def _pantry_block(
             if requested and requested != now.date()
             else "Today's"
         )
-        parts.append(f"  {label} listed weekly hours: {hours}")
+        parts.append(f"  {label} listed weekly hours: {hours} {{cite:{cite}}}")
     if pantry.phone:
-        parts.append(f"  Phone: {pantry.phone}")
+        parts.append(f"  Phone: {pantry.phone} {{cite:{cite}}}")
     if pantry.notes:
         parts.append(f"  Eligibility/notes: {pantry.notes}")
-    parts.append(f"  Directions: {directions_link(pantry.lat, pantry.lon)}")
-    parts.append(f"  As of: {pantry.valid_as_of or 'Source date unavailable'}")
+    parts.append(f"  Directions: {directions_link(pantry.lat, pantry.lon)} {{cite:{cite}}}")
+    parts.append(
+        "  Freshness: live feed lists this site open; "
+        f"record last updated {pantry.valid_as_of or 'date unavailable'}; "
+        f"weekly hours may be outdated {{cite:{cite}}}"
+    )
     return "\n".join(parts)
 
 
@@ -717,21 +757,28 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         )
         if urgent:
             ctx.response_priority_citation_ids.add(cite)
+            route_cite = _food_route_citation(ctx)
+            ctx.response_priority_citation_ids.add(route_cite)
+            route = f"{{cite:{route_cite}}}"
+        else:
+            route = ""
         return (
             f"No open {result_label} came back from the city's FoodHelp data. Don't invent one, "
-            f"point the user to {OFFICIAL}. {{cite:{cite}}}"
+            f"point the user to {OFFICIAL}. {{cite:{cite}}} {route}"
         )
     k = int(args.get("k") or 5)
-    ordered = sorted(pantries, key=lambda p: haversine_m(origin.lat, origin.lon, p.lat, p.lon))
-    # Collapse duplicate rows for the same physical site (same name + coordinate).
-    unique: list[FoodPantry] = []
-    seen: set[tuple] = set()
-    for pantry in ordered:
-        key = (pantry.name.strip().lower(), round(pantry.lat, 5), round(pantry.lon, 5))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(pantry)
+    unique = [
+        pantry
+        for pantry, _distance_m in rank_nearby(
+            origin,
+            pantries,
+            key=lambda pantry: (
+                pantry.name.strip().casefold(),
+                round(pantry.lat, 5),
+                round(pantry.lon, 5),
+            ),
+        )
+    ]
     if site_record_id:
         referenced = [
             pantry
@@ -771,6 +818,15 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             )
 
         rank_pool.sort(key=requested_day_rank)
+    elif not urgent and not site_record_id:
+        def current_usability_rank(pantry: FoodPantry) -> tuple[float, float]:
+            scheduled = _open_now(pantry.raw, now)
+            return (
+                0 if scheduled is True else 2 if scheduled is False else 1,
+                haversine_m(origin.lat, origin.lon, pantry.lat, pantry.lon),
+            )
+
+        rank_pool.sort(key=current_usability_rank)
     ranked = rank_pool[:k]
     if service_window:
         def availability(pantry: FoodPantry) -> bool | None:
@@ -809,6 +865,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
     if availability_citation:
         ctx.response_priority_citation_ids.add(availability_citation)
+    route_citation = _food_route_citation(ctx) if urgent else ""
+    if route_citation:
+        ctx.response_priority_citation_ids.add(route_citation)
     availability_marker = (
         f" {{cite:{availability_citation}}}" if availability_citation else ""
     )
@@ -823,7 +882,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
 
     lines = [
-        f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
+        f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f}){availability_marker}",
         _resolution_note(near, origin),
         (
             f"City-listed {service_name} evidence from NYC FoodHelp "
@@ -836,9 +895,21 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     if source_origin:
         lines.insert(2, f"Origin address came from the official source {{cite:{source_id}}}.")
     if availability_citation:
+        availability_summary = (
+            f"{scheduled_open_count} of {len(ranked)} nearby candidates have overlapping weekly hours"
+            if service_window
+            else f"{scheduled_open_count} of {len(ranked)} nearby candidates are scheduled open"
+        )
         lines.append(
-            f"Lookup time: {now.strftime('%Y-%m-%d %H:%M')} America/New_York "
+            f"SOURCE {availability_citation}: Weekly-schedule availability evidence: "
+            f"{availability_summary} at "
+            f"{now.strftime('%Y-%m-%d %H:%M')} America/New_York "
             f"{{cite:{availability_citation}}}"
+        )
+    if route_citation:
+        lines.append(
+            f"SOURCE {route_citation}: Official immediate route: call 311 or use "
+            f"https://finder.nyc.gov/foodhelp. {{cite:{route_citation}}}"
         )
     if future_schedule:
         lines.append(
@@ -848,29 +919,36 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     if urgent and site_record_id and not scheduled_open:
         lines.append(
             "The previously cited site's weekly schedule does not establish service in the "
-            f"requested {window_start}-{window_end} window. Do not substitute another site. "
-            "Tell the resident to call the site before traveling, and use 311 or "
-            f"https://finder.nyc.gov/foodhelp for immediate help.{availability_marker}"
+            f"requested {window_start}-{window_end} window. Do not substitute "
+            "another site. Tell the resident to call the site before traveling. Official immediate "
+            "route is in the separately labeled source above."
         )
     elif urgent and service_window and scheduled_open:
         lines.append(
             f"Immediate food need in the requested {window_start}-{window_end} service window: "
             "the listed weekly schedule overlaps that window but does not confirm food "
-            "availability. Lead with call 311 or https://finder.nyc.gov/foodhelp for immediate "
-            "help, then give one nearest weekly-schedule lead, not the only nearby option, and "
-            f"tell the resident to call the listed site before traveling.{availability_marker}"
+            "availability. Lead with the separately labeled official immediate route. Then give "
+            "one nearest dated call-only lead. Describe it as one displayed lead, never as the "
+            "only matching option. State its displayed as-of value and exact overlap interval, not only the "
+            "site's closing time. Do not describe the schedule as current or as service available "
+            "today. The live feed still lists the site open, but the record's last-update date may "
+            "be old. Tell the resident to call the listed site before traveling."
         )
     elif urgent and service_window:
         lines.append(
             f"Immediate food need in the requested {window_start}-{window_end} service window: "
             "no City-listed site in this feed has weekly hours establishing service in that "
-            "window. Lead with call 311 or https://finder.nyc.gov/foodhelp. Do not present "
-            f"another time of day as an option for that window.{availability_marker}"
+            "window. Lead with the separately labeled official immediate route. Do not present "
+            "another time of day as "
+            "an option for that window."
         )
     elif urgent and scheduled_open:
         lines.append(
             "Immediate food need: a weekly schedule does not confirm food availability now or "
-            "later today. Lead with asking the resident to call the listed site now. If the site "
+            "later today. Present the site only as a dated call-only lead, state its displayed as-of "
+            "date, and do not describe the schedule as current or as service available today. "
+            "The live feed still lists the site open, but the record's last-update date may be old. "
+            "Lead with asking the resident to call the listed site now. If the site "
             "cannot confirm service, tell them to call 311 or use "
             f"https://finder.nyc.gov/foodhelp, then offer to search farther.{availability_marker}"
         )
@@ -961,9 +1039,10 @@ def get_tools() -> list[Tool]:
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
                 "Set `urgent=true` when the resident needs food now, today, or tonight so the "
                 "result leads with the immediate fallback and does not overstate weekly hours. "
-                "When they need service during a named same-day time window, also pass "
-                "`service_window` with start and end as 24-hour HH:MM values. For "
-                "example, tonight is 17:00-23:59 unless the resident gives narrower times. "
+                "Whenever `urgent=true`, also pass `service_window` with start and end as 24-hour "
+                "NYC-local HH:MM values: now is the current NYC minute, today runs from the current "
+                "NYC time through 23:59, and tonight is 17:00-23:59 unless the resident gives a "
+                "narrower window. "
                 "When a follow-up refers to one site returned earlier, pass that site's citation "
                 "ID as `site_citation` so the lookup does not silently switch locations. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
@@ -1020,7 +1099,9 @@ def get_tools() -> list[Tool]:
                         "type": "object",
                         "additionalProperties": False,
                         "description": (
-                            "Resident's requested same-day service window in NYC local time"
+                            "Resident's requested same-day service window in NYC local time. "
+                            "For `tonight`, pass 17:00-23:59 unless the resident gives a narrower "
+                            "window"
                         ),
                         "properties": {
                             "start": {

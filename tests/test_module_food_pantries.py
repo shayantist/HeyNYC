@@ -680,7 +680,7 @@ async def test_find_foodhelp_locations_ranks_grounds_and_links(monkeypatch):
     assert "globalid" in citations.mapping()["S1"]["url"].lower()  # row-addressed GlobalID permalink
     assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
     assert citations.mapping()["S1"]["valid_as_of"] == ""
-    assert "Source date unavailable" in out
+    assert "record last updated date unavailable" in out
 
 
 async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours(monkeypatch):
@@ -732,14 +732,24 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     await client.aclose()
 
     assert out.index("Immediate food need") < out.index("Nearby Pantry")
-    assert "Lookup time: 2026-07-17 12:00 America/New_York {cite:S1}" in out
+    assert "SOURCE S1: Weekly-schedule availability evidence:" in out
+    assert "at 2026-07-17 12:00 America/New_York" in out
+    assert "Origin: Union Square, Manhattan (40.74331,-73.98897) {cite:S1}" in out
     assert "does not confirm food availability" in out
     assert "call the listed site before traveling" in out
     assert "call 311" in out
     assert "https://finder.nyc.gov/foodhelp" in out
+    assert "SOURCE S1: Weekly-schedule availability evidence" in out
+    assert "SOURCE S2: Official immediate route" in out
     assert "Farther Open Pantry" not in out
     assert "Today's listed weekly hours: 9:00 AM-5:00 PM" in out
-    assert "As of: 2025-11-04" in out
+    assert "Freshness: live feed lists this site open" in out
+    assert "record last updated 2025-11-04" in out
+    assert "weekly hours may be outdated" in out
+    assert "dated call-only lead" in out
+    assert "State its displayed as-of value" in out
+    assert "Do not describe the schedule as current or as service available today" in out
+    assert "The live feed still lists the site open" in out
     assert (
         ctx.citations.mapping()["S1"]["provenance"]["derivation"]["temporal_basis"]
         == "weekly_schedule"
@@ -749,6 +759,41 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     assert schema["properties"]["urgent"]["type"] == "boolean"
     assert schema["properties"]["on"]["format"] == "date"
     assert "urgent" not in schema["required"]
+    description = get_tools()[0].description
+    assert "Whenever `urgent=true`, also pass `service_window`" in description
+    assert "today runs from the current NYC time through 23:59" in description
+    route = next(
+        citation
+        for citation in ctx.citations.mapping().values()
+        if citation["title"] == "Community Food Connection, ACCESS NYC"
+    )
+    assert route["url"] == "https://access.nyc.gov/programs/emergency-food-assistance/"
+    assert "call 311" in route["provenance"]["snapshot"]["verified_fact"]
+    assert f"{{cite:{route['id']}}}" in out
+
+
+def test_pantry_block_labels_each_exact_fact_with_its_row_citation():
+    pantry = _pantry(
+        program="Exact Pantry",
+        distadd="1 Main St",
+        org_phone="212-555-0100",
+        GlobalID="exact-row",
+        EditDate="2026-08-10",
+        fp_thu_open1="1:00 PM",
+        fp_thu_close1="4:00 PM",
+    )
+
+    block = fp._pantry_block(
+        pantry,
+        "S7",
+        "0.2 mi",
+        datetime(2026, 8, 13, 6, 30),
+        service_window=(390, 1439),
+    )
+
+    for line in block.splitlines():
+        if "hours:" in line or "Phone:" in line or "Directions:" in line or "Freshness:" in line:
+            assert "{cite:S7}" in line
 
 
 async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
@@ -811,12 +856,21 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     assert "Nearby Morning Pantry" not in out
     assert "requested 17:00-23:59 service window" in out
     assert "weekly schedule overlaps that window" in out
+    assert "actual weekly-hours overlap: 17:30-20:00" in out
+    assert "2 of 3 nearby candidates have overlapping weekly hours" in out
+    assert "one displayed lead, never as the only matching option" in out
+    assert "exact overlap interval, not only the site's closing time" in out
     assert "does not confirm food availability" in out
-    assert "Lead with call 311 or https://finder.nyc.gov/foodhelp" in out
-    assert "one nearest weekly-schedule lead, not the only nearby option" in out
+    assert "Official immediate route: call 311 or use https://finder.nyc.gov/foodhelp" in out
+    assert "one nearest dated call-only lead" in out
+    assert "dated call-only lead" in out
+    assert "State its displayed as-of value" in out
+    assert "Do not describe the schedule as current or as service available today" in out
+    assert "The live feed still lists the site open" in out
     schema = get_tools()[0].parameters["properties"]
     assert schema["service_window"]["properties"]["start"]["pattern"] == r"^\d{2}:\d{2}$"
     assert schema["service_window"]["properties"]["end"]["pattern"] == r"^\d{2}:\d{2}$"
+    assert "For `tonight`, pass 17:00-23:59" in schema["service_window"]["description"]
 
 
 async def test_find_foodhelp_locations_does_not_present_closed_candidates_as_open_now(monkeypatch):
@@ -929,7 +983,33 @@ async def test_find_foodhelp_locations_returns_farther_open_lead_after_immediate
     assert "call the listed site before traveling" in out
     assert "{cite:S1}" in out
     assert "{cite:S2}" in out
-    assert len(ctx.citations.mapping()) == 2
+    assert len(ctx.citations.mapping()) == 3
+
+
+async def test_find_foodhelp_locations_leads_with_open_site_for_nonurgent_request(
+    monkeypatch,
+):
+    monkeypatch.setattr(fp, "datetime", _Noon)
+    now_day = _DAYS[_Noon.now().weekday()]
+    features = [
+        _pantry_feature(
+            -73.9910, 40.7510, program="Nearby Closed Pantry", GlobalID="closed-near",
+            type_fp="FP", program_type="FP",
+            **{f"fp_{now_day}_open1": "1:00 AM", f"fp_{now_day}_close1": "2:00 AM"},
+        ),
+        _pantry_feature(
+            -73.9400, 40.8000, program="Farther Open Pantry", GlobalID="open-far",
+            type_fp="FP", program_type="FP",
+            **{f"fp_{now_day}_open1": "12:00 AM", f"fp_{now_day}_close1": "11:59 PM"},
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler({"near": "Union Square", "k": 2}, ctx)
+    await client.aclose()
+
+    assert out.index("Farther Open Pantry") < out.index("Nearby Closed Pantry")
 
 
 async def test_find_foodhelp_locations_uses_the_residents_requested_date(monkeypatch):
@@ -1308,7 +1388,7 @@ async def test_find_foodhelp_locations_cites_an_empty_official_feed():
     assert "No open food-help sites came back" in out
     assert "{cite:S1}" in out
     citation = ctx.citations.mapping()["S1"]
-    assert ctx.response_priority_citation_ids == {"S1"}
+    assert ctx.response_priority_citation_ids == {"S1", "S2"}
     assert citation["valid_as_of"] == ""
     assert citation["provenance"]["snapshot"]["citywide_records_checked"] == 0
 
@@ -1358,6 +1438,15 @@ def test_food_pantries_module_loads_with_tool_and_eval():
     provenance_case = next(c for c in cases if c.id == "food_source_origin_clarifies")
     assert provenance_case.invariants == {"allow_clarification": True}
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
+
+
+def test_urgent_food_instructions_do_not_reverse_the_immediate_route_priority():
+    registry = Registry.discover(config.MODULES_DIR)
+    module = next(module for module in registry.modules if module.name == "food_pantries")
+
+    assert "first answer paragraph must give the immediate 311 or FoodHelp route" in module.prompt
+    assert "The second paragraph may give one returned site" in module.prompt
+    assert "lead with a scheduled-open option when one was returned" not in module.prompt
 
 
 # F159: assistant proposed a location, resident confirmed, assistant re-asked

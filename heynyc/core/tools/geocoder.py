@@ -1,10 +1,8 @@
-"""Pluggable forgiving geocoder (intersections / POIs / fuzzy) via geopy.
+"""Pluggable general geocoder for places, streets, and intersections via geopy.
 
-NYC GeoSearch (geo.py) stays the authoritative *address* path; this is the
-swappable fallback for queries GeoSearch can't do. The provider is config-
-selected (`HEYNYC_GEOCODER`) so the backend isn't hard-wired to any vendor or
-city, geopy abstracts ~15 providers behind one interface and runs async via
-`AioHTTPAdapter`.
+NYC GeoSearch (geo.py) stays limited to complete addresses that benefit from
+authoritative PAD and BBL identity. The provider is config-selected
+(`HEYNYC_GEOCODER`) so the backend is not hard-wired to any vendor or city.
 
 Per Nominatim's usage policy the default provider sets a `user_agent` and is
 dev/demo-grade (1 req/s, must self-host for production). Point `HEYNYC_GEOCODER`
@@ -15,7 +13,10 @@ Ref: https://geopy.readthedocs.io/en/stable/  (async + AsyncRateLimiter)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections import OrderedDict
 from typing import Awaitable, Callable, Optional
 
 from .. import config
@@ -24,6 +25,11 @@ logger = logging.getLogger("heynyc.geocoder")
 
 # An async geocode callable: (text) -> Optional[geopy Location | GeoPoint]
 GeocodeFn = Callable[[str], Awaitable[Optional[object]]]
+
+_NOMINATIM_CACHE: OrderedDict[str, object] = OrderedDict()
+_NOMINATIM_LOCK = asyncio.Lock()
+_NOMINATIM_LAST_REQUEST = 0.0
+_NOMINATIM_CACHE_SIZE = 512
 
 
 def _confidence(provider: str, raw: dict) -> float:
@@ -89,34 +95,73 @@ def _build_geocode_fn(provider: str) -> GeocodeFn:
     return run
 
 
+async def _provider_geocode(
+    provider: str, text: str, fn: GeocodeFn, *, apply_public_policy: bool = True
+):
+    """Call one provider, applying the public Nominatim policy in process."""
+    if provider != "nominatim" or not apply_public_policy:
+        return await fn(text)
+
+    key = " ".join(text.casefold().split())
+    cached = _NOMINATIM_CACHE.get(key)
+    if cached is not None:
+        _NOMINATIM_CACHE.move_to_end(key)
+        return cached
+
+    global _NOMINATIM_LAST_REQUEST
+    async with _NOMINATIM_LOCK:
+        cached = _NOMINATIM_CACHE.get(key)
+        if cached is not None:
+            _NOMINATIM_CACHE.move_to_end(key)
+            return cached
+        delay = 1.0 - (time.monotonic() - _NOMINATIM_LAST_REQUEST)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        try:
+            location = await fn(text)
+        finally:
+            _NOMINATIM_LAST_REQUEST = time.monotonic()
+        if location is not None:
+            _NOMINATIM_CACHE[key] = location
+            _NOMINATIM_CACHE.move_to_end(key)
+            if len(_NOMINATIM_CACHE) > _NOMINATIM_CACHE_SIZE:
+                _NOMINATIM_CACHE.popitem(last=False)
+        return location
+
+
 async def forgiving_geocode(text: str, *, geocode_fn: Optional[GeocodeFn] = None):
-    """Geocode via the configured provider → a GeoPoint, or None.
+    """Geocode via the configured provider, returning a GeoPoint or None.
 
     `geocode_fn` is injectable for offline tests (no network)."""
     from .geo import GeoPoint  # lazy import to avoid a module cycle
 
-    provider = config.HEYNYC_GEOCODER
-    fn = geocode_fn or _build_geocode_fn(provider)
-    try:
-        loc = await fn(text)
-    except Exception:
-        logger.exception("geocoder '%s' failed for %r", provider, text)
-        return None
-    if loc is None:
-        return None
-    if isinstance(loc, GeoPoint):  # an injected test fake may return a GeoPoint directly
-        return loc
-    label = getattr(loc, "address", "") or ""
-    # The NYC bbox clips a sliver of NJ, so a high-confidence neighbouring-state
-    # match can sneak through ("Fordham Road" → Clifton, NJ). Reject non-NYC.
-    if any(state in label.lower() for state in ("new jersey", "connecticut", "pennsylvania")):
-        logger.info("geocoder '%s' returned a non-NYC match, rejecting: %s", provider, label)
-        return None
-    raw = getattr(loc, "raw", None) or {}
-    return GeoPoint(
-        lat=float(loc.latitude),
-        lon=float(loc.longitude),
-        label=label,
-        confidence=_confidence(provider, raw),
-        match_type=provider,
-    )
+    primary = config.HEYNYC_GEOCODER
+    providers = [(primary, geocode_fn or _build_geocode_fn(primary), geocode_fn is None)]
+    if geocode_fn is None and primary == "nominatim" and config.MAPBOX_TOKEN:
+        providers.append(("mapbox", _build_geocode_fn("mapbox"), True))
+
+    for provider, fn, apply_public_policy in providers:
+        try:
+            loc = await _provider_geocode(
+                provider, text, fn, apply_public_policy=apply_public_policy
+            )
+        except Exception:
+            logger.exception("geocoder '%s' failed for %r", provider, text)
+            continue
+        if loc is None:
+            continue
+        if isinstance(loc, GeoPoint):
+            return loc
+        label = getattr(loc, "address", "") or ""
+        if any(state in label.lower() for state in ("new jersey", "connecticut", "pennsylvania")):
+            logger.info("geocoder '%s' returned a non-NYC match, rejecting: %s", provider, label)
+            continue
+        raw = getattr(loc, "raw", None) or {}
+        return GeoPoint(
+            lat=float(loc.latitude),
+            lon=float(loc.longitude),
+            label=label,
+            confidence=_confidence(provider, raw),
+            match_type=provider,
+        )
+    return None

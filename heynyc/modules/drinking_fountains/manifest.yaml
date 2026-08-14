@@ -2,7 +2,8 @@ name: drinking_fountains
 category: city services
 description: >-
   Find nearby outdoor drinking fountains listed by NYC Parks, with grounded
-  distance and directions.
+  distance and directions, and answer current NYC fire-hydrant drinking or
+  spray-cap cooling safety questions from official DEP guidance.
 keywords:
   - water station
   - drinking fountain
@@ -10,9 +11,34 @@ keywords:
   - bottle filling
   - bottle refill
   - hydration station
+  - fire hydrant
+  - hydrant water
+  - spray cap
 examples:
   - "Where is the nearest drinking fountain?"
   - "Where can I refill my water bottle near Rockefeller Center?"
+situations:
+  - name: hydrant_heat_safety
+    definition: >-
+      A resident asks whether they can drink directly from a fire hydrant, open or use a hydrant
+      to cool down during hot weather, or safely obtain water from one. This includes the same
+      drinking-versus-cooling question in any language.
+    high_stakes: true
+    query: >-
+      NYC DEP fire hydrant drink water spray cap cooling extreme heat current official
+    urls:
+      - https://www.nyc.gov/site/dep/whats-new/extreme-heat-tips.page
+      - https://www.nyc.gov/site/dep/news/25-025/dep-warns-against-illegally-opened-fire-hydrants-record-breaking-heatwave
+    reminder: >-
+      Use the current DEP pages just retrieved and answer in the user's language. Keep drinking
+      and cooling separate. The pages support drinking NYC tap water for hydration and using an
+      approved hydrant spray cap for cooling. Do not infer that water is safe or unsafe to drink
+      directly from a hydrant when the source does not establish that claim. Say "I cannot confirm
+      that drinking directly from a hydrant is safe" and do not begin with a categorical yes or no.
+      Recommend ordinary tap water for drinking. Offer a nearest drinking fountain only after the
+      resident provides a location. If these pages answer the question, stop.
+    focus_tools:
+      - web_fetch
 datasets:
   - source: arcgis
     url: https://services6.arcgis.com/yG5s3afENB5iO9fj/arcgis/rest/services/NYC_Parks_Drinking_Fountains/FeatureServer/0

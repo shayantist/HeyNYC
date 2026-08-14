@@ -1,12 +1,6 @@
-import pytest
-
 from heynyc.core.tools.geo import GeoPoint, geocode
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F211: transit station identity needs an authoritative station resolver",
-)
 async def test_f211_station_query_uses_the_poi_geocoder_first() -> None:
     expected = GeoPoint(
         lat=40.77504,

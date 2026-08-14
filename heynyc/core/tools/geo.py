@@ -1,13 +1,15 @@
 """Geospatial grounding, geocoding, nearest-X, and distance.
 
 The agent must NEVER emit a coordinate or distance from its own head. These
-tools are the only authority: NYC GeoSearch for addresses, Socrata datasets for
-place locations (ranked by Haversine), and OSRM for real travel distance.
+tools are the only authority: a general geocoder for places and streets, NYC
+GeoSearch for complete addresses, source datasets for listed locations, and
+OSRM for real travel distance.
 """
 from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -65,8 +67,13 @@ _LOCATION_NEGATION_RE = re.compile(
 _LOCATION_STALE_RE = re.compile(r"\b(?:used to|formerly|previously)\b", re.IGNORECASE)
 _LOCATION_TOKEN_ALIASES = {
     "st": "street", "ave": "avenue", "rd": "road", "blvd": "boulevard",
-    "ln": "lane", "dr": "drive", "pkwy": "parkway",
+    "ln": "lane", "dr": "drive", "pkwy": "parkway", "centre": "center",
 }
+
+
+def _location_identity_token(token: str) -> str:
+    token = re.sub(r"(?<=\d)(?:st|nd|rd|th)$", "", token)
+    return _LOCATION_TOKEN_ALIASES.get(token, token)
 
 
 def _looks_like_intersection(text: str) -> bool:
@@ -161,6 +168,22 @@ def resident_supplied_location(
     parts = [part.strip() for part in proposed.split(",") if part.strip()]
     candidates = [", ".join(parts[:end]) for end in range(len(parts), 0, -1)]
     for turn in turns:
+        confirmed_parts: list[tuple[str, int, int]] = []
+        for part in parts:
+            raw_start = turn.casefold().find(part.casefold())
+            if raw_start < 0:
+                continue
+            raw_end = raw_start + len(part)
+            clause_start = max(turn.rfind(mark, 0, raw_start) for mark in ".!?;,") + 1
+            clause_ends = [turn.find(mark, raw_end) for mark in ".!?;,"]
+            clause_end = min((end for end in clause_ends if end >= 0), default=len(turn))
+            clause = turn[clause_start:clause_end]
+            if _LOCATION_NEGATION_RE.search(clause) or _LOCATION_STALE_RE.search(clause):
+                continue
+            if semantically_confirmed(part, turn):
+                confirmed_parts.append((turn[raw_start:raw_end], clause_start, clause_end))
+        if len(confirmed_parts) >= 2 and len({item[1:] for item in confirmed_parts}) == 1:
+            return ", ".join(item[0] for item in confirmed_parts)
         for candidate in candidates:
             raw_start = turn.casefold().find(candidate.casefold())
             if raw_start < 0:
@@ -200,7 +223,8 @@ def resident_supplied_location(
                     return ""
                 if not semantically_confirmed(candidate, turn):
                     continue
-                return turn[raw_start:raw_end]
+                resident_span = turn[raw_start:raw_end]
+                return resident_span if resident_span.isascii() else candidate
         if (
             _looks_like_intersection(proposed)
             and _intersection_identity_matches(turn, proposed)
@@ -356,6 +380,34 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
+def rank_nearby(
+    origin: GeoPoint,
+    locations: Iterable,
+    *,
+    key: Callable[[object], Hashable],
+    limit: int | None = None,
+) -> list[tuple[object, float]]:
+    """Sort normalized locations by distance and keep one row per physical site."""
+    ranked = sorted(
+        (
+            (location, haversine_m(origin.lat, origin.lon, location.lat, location.lon))
+            for location in locations
+        ),
+        key=lambda item: item[1],
+    )
+    unique = []
+    seen = set()
+    for location, distance_m in ranked:
+        identity = key(location)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append((location, distance_m))
+        if limit is not None and len(unique) >= limit:
+            break
+    return unique
+
+
 def miles(meters: float) -> float:
     return meters / METERS_PER_MILE
 
@@ -508,6 +560,11 @@ def _looks_like_named_area(text: str) -> bool:
     return not re.search(r"\d", text) and _detect_borough(text) is not None
 
 
+def _looks_like_numbered_address(text: str) -> bool:
+    """A resident-supplied house number, not a numbered street such as 125th Street."""
+    return bool(re.match(r"\s*(?:near\s+)?\d+(?:-\d+)?[a-z]?\s+", text, re.IGNORECASE))
+
+
 async def _point_in_named_borough(
     point: "GeoPoint", borough: str, client: httpx.AsyncClient
 ) -> bool:
@@ -555,7 +612,7 @@ def _fallback_landmark_identity_matches(text: str, label: str) -> bool:
 
     def address_identity(value: str) -> tuple[str, set[str]]:
         tokens = [
-            _LOCATION_TOKEN_ALIASES.get(token, token)
+            _location_identity_token(token)
             for token in _LOCATION_TOKEN_RE.findall(value.casefold())
             if token not in ignored
         ]
@@ -575,12 +632,12 @@ def _fallback_landmark_identity_matches(text: str, label: str) -> bool:
         return query_tokens.issubset(label_tokens)
 
     query_tokens = {
-        _LOCATION_TOKEN_ALIASES.get(token, token)
+        _location_identity_token(token)
         for token in _LOCATION_TOKEN_RE.findall(text.casefold())
         if token not in ignored
     }
     label_tokens = {
-        _LOCATION_TOKEN_ALIASES.get(token, token)
+        _location_identity_token(token)
         for token in _LOCATION_TOKEN_RE.findall(label.casefold())
     }
     return not query_tokens or query_tokens.issubset(label_tokens)
@@ -619,6 +676,11 @@ async def _geosearch_geocode(
         label=props.get("label", ""),
         confidence=float(props.get("confidence", 0.0) or 0.0),
         match_type="geosearch",
+        low_confidence=bool(
+            isinstance(hn, str)
+            and hn.strip()
+            and not re.search(rf"\b{re.escape(hn)}\b", text)
+        ),
         bbl=bbl,
     )
 
@@ -639,16 +701,28 @@ def _gate_low_confidence(point: GeoPoint) -> bool:
     return False
 
 
+def _bare_name_expanded_to_street(query: str, label: str) -> bool:
+    query_tokens = _LOCATION_TOKEN_RE.findall(query.casefold())
+    first_label = label.split(",", 1)[0].strip()
+    return (
+        len(query_tokens) == 1
+        and not _STREET_SUFFIX_RE.search(query)
+        and bool(_STREET_SUFFIX_RE.search(first_label))
+        and first_label.casefold() != query.strip().casefold()
+    )
+
+
 async def geocode(
     text: str, *, client: Optional[httpx.AsyncClient] = None, forgiving=None,
     borough_contains=None,
 ) -> Optional[GeoPoint]:
     """Hybrid geocoder.
 
-    Intersections/POI-ish inputs go to the forgiving provider first (GeoSearch
-    can't do them); everything else tries GeoSearch first (free, NYC-authoritative)
-    and falls back to the forgiving provider. The forgiving provider is a swappable
-    geopy backend (see `geocoder.py`); `forgiving` is injectable for tests.
+    Free-form places, streets, and intersections go to the configured general
+    geocoder first. Exact numbered NYC addresses use GeoSearch's authoritative PAD
+    data first so callers can retain BBL identity. Either provider can fall back to
+    the other. The general provider is swappable through `geocoder.py`, and
+    `forgiving` is injectable for tests.
     Ambiguous intersection results are flagged `low_confidence` so the agent clarifies.
     """
     if text.strip().casefold() in {"here", "near me", "my location", "my current location", "current location"}:
@@ -695,13 +769,17 @@ async def geocode(
         # otherwise rect is None and _geosearch_geocode applies the citywide NYC floor. This is what
         # fixes "125th Street Manhattan" resolving to College Point, Queens.
         rect = _borough_rect(text)
-        if _looks_like_intersection(text) or _looks_like_named_area(text):
-            point = await forgiving(text)
+        provider_text = (
+            re.sub(r"\s+(?:and|at)\s+", " & ", text, count=1, flags=re.IGNORECASE)
+            if _looks_like_intersection(text)
+            else text
+        )
+        if _looks_like_numbered_address(text) and not _looks_like_intersection(text):
+            point = await _geosearch_geocode(text, client, rect=rect) or await forgiving(text)
+        else:
+            point = await forgiving(provider_text)
             if point is not None and rect is not None and not _in_rect(point, rect):
                 point = None
-            point = point or await _geosearch_geocode(text, client, rect=rect)
-        else:
-            point = await _geosearch_geocode(text, client, rect=rect) or await forgiving(text)
         if point is not None and rect is not None and not _in_rect(point, rect):
             point = None
         borough = _detect_borough(text)
@@ -715,6 +793,8 @@ async def geocode(
             # identity check below and the Mapbox confidence gate for intersections) is unchanged.
             if not (_looks_like_named_area(text) and not _looks_like_intersection(text)):
                 point.low_confidence = True
+        if point is not None and _bare_name_expanded_to_street(text, point.label):
+            point.low_confidence = True
         if point is not None and _looks_like_intersection(text):
             if not _intersection_identity_matches(text, point.label):
                 point.low_confidence = True
@@ -829,7 +909,15 @@ async def _geocode_handler(args: dict, ctx: ToolContext) -> str:
     )
 
 
-def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float, dist_mi: float) -> str:
+def _place_citation(
+    ctx,
+    place,
+    binding,
+    *,
+    origin_query: str,
+    origin: GeoPoint,
+    dist_mi: float,
+) -> str:
     """Register a row-addressed DATA citation: permalink URL + the row snapshot, content hash,
     field locator, and the distance derivation (so the eval floor can recompute it)."""
     if getattr(binding, "source", "socrata") == "arcgis":
@@ -840,7 +928,9 @@ def _place_citation(ctx, place, binding, *, origin_lat: float, origin_lon: float
         url = row_url(binding.id, place.record_id) if place.record_id else place.source_url
         title = f"NYC Open Data ({binding.id})"
     derivation = {
-        "origin": [origin_lat, origin_lon],
+        "origin": [origin.lat, origin.lon],
+        "origin_query": origin_query,
+        "origin_label": origin.label,
         "point": [place.lat, place.lon],
         "distance_mi": dist_mi,
     }
@@ -889,25 +979,26 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         return f"No '{category}' locations found in the dataset."
 
     k = _requested_result_limit(args.get("k", 3), ctx.query)
-    ordered = sorted(places, key=lambda p: haversine_m(origin.lat, origin.lon, p.lat, p.lon))
-    # Datasets often have multiple rows per site (e.g. several features at one
-    # playground); keep only the nearest occurrence of each named place.
-    ranked: list = []
-    seen: set[str] = set()
-    for place in ordered:
-        key = place.name.strip().lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        ranked.append(place)
-        if len(ranked) >= k:
-            break
+    ranked = rank_nearby(
+        origin,
+        places,
+        key=lambda place: place.name.strip().casefold(),
+        limit=k,
+    )
 
     lines = [f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})", _resolution_note(args["near"], origin)]
-    for place in ranked:
-        dist_mi = miles(haversine_m(origin.lat, origin.lon, place.lat, place.lon))
-        cite = _place_citation(ctx, place, binding,
-                               origin_lat=origin.lat, origin_lon=origin.lon, dist_mi=dist_mi)
+    origin_cite = ""
+    for place, distance_m in ranked:
+        dist_mi = miles(distance_m)
+        cite = _place_citation(
+            ctx,
+            place,
+            binding,
+            origin_query=args["near"],
+            origin=origin,
+            dist_mi=dist_mi,
+        )
+        origin_cite = origin_cite or cite
         where = place.address or place.borough or "NYC"
         phone = f" phone: {place.phone}" if place.phone else ""
         updated = f" record updated={place.updated_at[:10]}" if place.updated_at else ""
@@ -918,6 +1009,8 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
             f"status={place.status or 'unknown'}{phone}{updated} {{cite:{cite}}}, "
             f"directions: {maps_link(place.lat, place.lon)}{website}{hours}"
         )
+    if origin_cite:
+        lines[1] += f" {{cite:{origin_cite}}}"
     if binding.limitations:
         lines.append(f"Source limit: {binding.limitations}")
     return "\n".join(lines)

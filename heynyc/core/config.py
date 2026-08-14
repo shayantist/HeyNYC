@@ -123,11 +123,10 @@ MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")  # forgiving fallback geocoder (int
 GEOSEARCH_BASE = "https://geosearch.planninglabs.nyc/v2"
 MAPBOX_GEOCODE_BASE = "https://api.mapbox.com/geocoding/v5/mapbox.places"
 
-# Forgiving geocoder (intersections/POIs/fuzzy), swappable provider via geopy.
-# NYC GeoSearch stays the authoritative address path; this is the fallback.
-# Prefer Mapbox when a token is present (free ≤100k/mo, NYC-biased, reliable);
-# otherwise fall back to the keyless public Nominatim (dev/demo-grade, slow).
-HEYNYC_GEOCODER = os.getenv("HEYNYC_GEOCODER") or ("mapbox" if MAPBOX_TOKEN else "nominatim")
+# General geocoder for places, streets, intersections, and fuzzy input.
+# Public Nominatim is the pilot default because it resolves NYC places better in
+# the observed F251 cases. A deployment may select Mapbox explicitly.
+HEYNYC_GEOCODER = os.getenv("HEYNYC_GEOCODER") or "nominatim"
 HEYNYC_USER_AGENT = os.getenv("HEYNYC_USER_AGENT", "heynyc/0.1 (civic assistant)")
 # Below this provider confidence, an intersection result is flagged low-confidence
 # so the agent clarifies (which borough?) instead of answering for the wrong place.

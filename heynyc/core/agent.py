@@ -2244,6 +2244,11 @@ def _urls_in(text: str) -> set[str]:
     return {_normalize_url(match.group()) for match in _HTTP_URL_RE.finditer(text)}
 
 
+def _is_google_maps_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.hostname == "www.google.com" and parsed.path.startswith("/maps/")
+
+
 def _is_broad_notify_citation(citation: dict) -> bool:
     url = str(citation.get("url") or "").lower()
     if urlparse(url).path.lower().endswith("/notifynyc/home/recentmessages"):
@@ -2296,6 +2301,19 @@ def _citation_coordinates(citation: dict) -> Optional[tuple[float, float]]:
     return lat, lon
 
 
+def _block_has_map_for_coordinates(
+    block: str,
+    coordinates: tuple[float, float],
+) -> bool:
+    lat, lon = coordinates
+    return any(
+        _is_google_maps_url(url)
+        and f"{lat:.5f}" in url
+        and f"{lon:.5f}" in url
+        for url in _urls_in(block)
+    )
+
+
 _LOCATION_BLOCK_SPLIT_RE = re.compile(
     r"(?m)\n\s*\n|(?=^\s*(?:[-*•]\s+|\d+[.)]\s+))"
 )
@@ -2305,6 +2323,8 @@ def _attach_location_action_urls(
     text: str,
     citations: dict[str, dict],
     available_citation_ids: Optional[set[str]] = None,
+    *,
+    include_source_limits: bool = True,
 ) -> str:
     """Keep a usable map beside every cited NYC location when the model drops it."""
     answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
@@ -2317,7 +2337,7 @@ def _attach_location_action_urls(
         limitation = str(
             (citation.get("provenance") or {}).get("derivation", {}).get("limitations") or ""
         ).strip()
-        if limitation and limitation not in limitations:
+        if include_source_limits and limitation and limitation not in limitations:
             limitations.append(limitation)
         marker = f"{{cite:{cid}}}"
         blocks = _LOCATION_BLOCK_SPLIT_RE.split(answer_body)
@@ -2339,9 +2359,17 @@ def _attach_location_action_urls(
         if coordinates is None:
             continue
         url = maps_link(*coordinates)
-        if any(marker in block and url in _urls_in(block) for block in blocks):
+        if any(
+            marker in block and _block_has_map_for_coordinates(block, coordinates)
+            for block in blocks
+        ):
             continue
-        text = text.replace(marker, f"{marker}\n  Directions: {url}", 1)
+        text = re.sub(
+            rf"{re.escape(marker)}(?:[ \t]+{{cite:S\d+}})*(?:\n  Directions: https?://\S+)*",
+            lambda match: f"{match.group(0)}\n  Directions: {url}",
+            text,
+            count=1,
+        )
         answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
     low_body = answer_body.casefold()
     plain_body = re.sub(r"[*_~`]", "", low_body)

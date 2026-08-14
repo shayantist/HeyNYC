@@ -1706,6 +1706,29 @@ def test_attach_location_action_urls_adds_directions_from_cited_coordinates():
     assert "Directions: https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737" in text
 
 
+def test_attach_location_action_urls_keeps_adjacent_citations_with_the_claim():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "Resolved origin. {cite:S1} {cite:S2}\n"
+        "  Directions: https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {"derivation": {"point": [40.76082, -73.97737]}},
+            },
+            "S2": {
+                "kind": "DATA",
+                "provenance": {"derivation": {"point": [40.76545, -73.97496]}},
+            },
+        },
+    )
+
+    assert "{cite:S1} {cite:S2}\n  Directions:" in text
+    assert "query=40.76082,-73.97737" in text
+    assert "query=40.76545,-73.97496" in text
+
+
 def test_attach_location_action_urls_does_not_duplicate_existing_map():
     from heynyc.core.agent import _attach_location_action_urls
 
@@ -1722,6 +1745,27 @@ def test_attach_location_action_urls_does_not_duplicate_existing_map():
     )
 
     assert text.count(url) == 1
+
+
+def test_attach_location_action_urls_does_not_add_search_beside_directions():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    directions = (
+        "https://www.google.com/maps/dir/?api=1&origin=40.75000,-73.99000"
+        "&destination=40.76082,-73.97737"
+    )
+    text = _attach_location_action_urls(
+        f"- City fountain {directions} {{cite:S1}}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {"snapshot": {"lat": 40.76082, "lon": -73.97737}},
+            },
+        },
+        available_citation_ids={"S1"},
+    )
+
+    assert text.count("https://www.google.com/maps/") == 1
 
 
 def test_attach_location_action_urls_keeps_dataset_limit_once():

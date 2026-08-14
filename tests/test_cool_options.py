@@ -81,6 +81,50 @@ def lookup(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_origin_does_not_query_or_rank_locations(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(
+            40.7374,
+            -73.82374,
+            "6591 MAIN STREET, Flushing, NY, USA",
+            low_confidence=True,
+        )
+
+    async def should_not_query(*args, **kwargs):
+        raise AssertionError("ambiguous origin reached the location dataset")
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", should_not_query)
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "Main Street, Flushing", "kind": "all"},
+        _context("I am near Main Street in Flushing"),
+    )
+
+    assert "may match several places" in output
+
+
+@pytest.mark.asyncio
+async def test_citywide_policy_query_cannot_invent_a_ranking_origin(monkeypatch):
+    geocode_calls: list[str] = []
+
+    async def fake_geocode(text, **kwargs):
+        geocode_calls.append(text)
+        return GeoPoint(40.7066, -74.0090, "New York Mercantile Exchange")
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    ctx = _context("what's a cooling center and can my dog come")
+    ctx.query = ctx.user_turns[-1]
+
+    output = await cooling.get_tools()[0].handler(
+        {"near": "New York City", "kind": "cooling_center"}, ctx
+    )
+
+    assert geocode_calls == []
+    assert "neighborhood, address, or landmark" in output
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("near", ["Flushing", "Queens", "Brooklyn", "New York"])
 async def test_origin_only_tokens_do_not_select_a_facility(monkeypatch, near):
     lookup = _patch_lookup(
@@ -222,6 +266,49 @@ async def test_origin_change_replaces_offered_and_selected_state(monkeypatch):
         "scope": {"kind": "cooling_center", "audience": "any"},
     }
     assert "/cooling/site" not in ctx.resident_facts
+
+
+@pytest.mark.asyncio
+async def test_selected_site_followup_keeps_the_residents_prior_origin(monkeypatch):
+    geocode_calls = []
+
+    async def fake_geocode(text, **kwargs):
+        geocode_calls.append(text)
+        if text == "Main Street, Flushing":
+            return GeoPoint(40.7580, -73.8300, text)
+        return GeoPoint(40.7600, -73.8280, text)
+
+    async def fake_query(url, **kwargs):
+        return [{
+            **_site_row("library", "Flushing Library", lat=40.7600),
+            "cc_thu_open1": "09:00 AM",
+            "cc_thu_close1": "05:00 PM",
+        }]
+
+    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr(cooling, "query_feature_service", fake_query)
+    ctx = _context("Show me options near Main Street, Flushing")
+    ctx.query = ctx.user_turns[-1]
+    handler = cooling.get_tools()[0].handler
+    await handler({"near": "Main Street, Flushing", "kind": "all"}, ctx)
+
+    ctx.user_turns = (
+        "Show me options near Main Street, Flushing",
+        "Flushing Library looks open",
+        "Can she go inside there and how should she get there?",
+    )
+    ctx.query = ctx.user_turns[-1]
+    output = await handler(
+        {
+            "near": "Flushing Library",
+            "site": "Flushing Library",
+            "kind": "all",
+        },
+        ctx,
+    )
+
+    assert geocode_calls == ["Main Street, Flushing"]
+    assert "origin=40.75800,-73.83000" in output
 
 
 @pytest.mark.asyncio
@@ -440,6 +527,10 @@ async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypat
     assert len(ctx.citations.mapping()) == 2
     assert all(
         citation["provenance"]["derivation"]["origin"] == [40.758, -73.978]
+        for citation in ctx.citations.mapping().values()
+    )
+    assert all(
+        citation["provenance"]["derivation"]["origin_label"] == "Rockefeller Center"
         for citation in ctx.citations.mapping().values()
     )
     assert calls == [(cooling.COOL_OPTIONS_URL, "Finder_status='OPEN'")]
@@ -722,7 +813,7 @@ async def test_current_cooling_lookup_keeps_a_confirmed_open_row(monkeypatch):
 @pytest.mark.parametrize(
     "status_fields", [{}, {"cc_wed_open1": "09:00 AM", "cc_wed_close1": "12:00 PM"}]
 )
-async def test_selected_site_not_confirmed_open_does_not_replace_selection(
+async def test_selected_site_not_confirmed_open_returns_current_alternative(
     monkeypatch, status_fields
 ):
     selected = {
@@ -758,8 +849,9 @@ async def test_selected_site_not_confirmed_open_does_not_replace_selection(
     )
 
     assert "selected cooling center is not confirmed open now" in output.lower()
-    assert "other current cooling center options can be checked" in output.lower()
-    assert "Other Open Center" not in output
+    assert "Other Open Center" in output
+    assert "{cite:S1}" in output
+    assert "{cite:S2}" in output
     assert facts["/cooling/site"].value["key"] == "selected"
 
 
@@ -835,7 +927,42 @@ async def test_selected_site_unknown_and_no_open_alternative_fails_closed(monkey
     assert "selected cooling center is not confirmed open now" in output.lower()
     assert "other indoor cool options can be checked" in output.lower()
     assert "Selected Center" not in output
+    assert "{cite:S1}" in output
     assert facts["/cooling/site"].value["key"] == "selected"
+
+
+@pytest.mark.asyncio
+async def test_selected_indoor_site_closed_returns_cited_complete_result(monkeypatch):
+    row = {
+        **_site_row("selected", "Selected Library"),
+        "Location_type": "Indoor",
+        "Space_type": "Other Indoor Cool Option",
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "12:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [row])
+    ctx = _context("Is Selected Library open now?")
+
+    output = await handler(
+        {
+            "near": "Flushing, Queens",
+            "site": "Selected Library",
+            "kind": "indoor",
+        },
+        ctx,
+    )
+
+    assert "selected indoor Cool Option is not confirmed open now" in output
+    assert "Call 311" in output
+    assert "123 Test Street" not in output
+    assert "Selected-site status and A/C:" in output
+    assert "now. {cite:S1}" in output
+    assert "NYC311 next step and emergency:" in output
+    assert "call 911. {cite:S2}" in output
+    assert ctx.cooling_terminal_result is not None
+    assert ctx.cooling_terminal_citation_ids == ("S1", "S2")
+    assert ctx.cooling_terminal_synthesis is True
+    assert ctx.citations.mapping()["S1"]["provenance"]["derivation"]["open_now"] is False
 
 
 @pytest.mark.asyncio

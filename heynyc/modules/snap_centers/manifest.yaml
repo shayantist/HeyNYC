@@ -31,6 +31,7 @@ allowlist:
   - nyc.gov
 seeds:
   - https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page
+  - https://www.nyc.gov/site/hra/help/snap-application-frequently-asked-questions.page
   - https://www.nyc.gov/site/hra/help/access-hra-resources.page
   - https://www.nyc.gov/site/hra/help/snap-interview-instructions.page
   - https://www.nyc.gov/site/hra/about/contact.page
@@ -47,10 +48,13 @@ prompt: |
 
   After nearest, call web_fetch once with these exact current pages:
   https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page,
+  https://www.nyc.gov/site/hra/help/snap-application-frequently-asked-questions.page,
   https://www.nyc.gov/site/hra/help/access-hra-resources.page, and
   https://www.nyc.gov/site/hra/help/snap-interview-instructions.page, and
   https://www.nyc.gov/site/hra/about/contact.page. Use them to verify the online
-  in-person and online application options and help options. Add the supported ACCESS HRA online option without making the
+  in-person and online application options and help options. The application FAQ establishes
+  that SNAP walk-in centers help with completing an online application or a paper application.
+  Add the supported ACCESS HRA online option without making the
   resident visit a center. Include a phone handoff only when the retrieved page explicitly supports
   it. A phone handoff is for general SNAP help, never schedule confirmation, unless the retrieved
   page explicitly says it confirms center hours. Report the row update date.

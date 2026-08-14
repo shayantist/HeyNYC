@@ -149,6 +149,11 @@ async def test_nearest_wic_site_ranks_grounds_and_links():
     assert "row-close" in mapping["S1"]["url"]
     assert mapping["S1"]["provenance"]["record_id"] == "row-close"
     assert mapping["S1"]["valid_as_of"]
+    assert "https://www.health.ny.gov/prevention/nutrition/wic/how_to_apply.htm" in out
+    assert any(
+        citation["url"] == "https://www.health.ny.gov/prevention/nutrition/wic/how_to_apply.htm"
+        for citation in mapping.values()
+    )
 
 
 async def test_wic_query_creates_client_when_runtime_does_not_inject_one(monkeypatch):
