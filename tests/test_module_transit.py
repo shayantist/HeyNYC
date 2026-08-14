@@ -3,9 +3,30 @@ from __future__ import annotations
 import httpx
 
 from heynyc.core.citations import CitationRegistry
+from heynyc.core import config
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.modules.transit.tools import get_tools
+
+
+def test_f234_expects_retrieval_without_inferred_station_checks():
+    from heynyc.eval.cases import load_cases
+
+    registry = Registry.discover(config.MODULES_DIR)
+    case = next(case for case in load_cases(registry) if case.id == "transit_f234_flushing_met_wheelchair")
+
+    assert case.expect_tools == ["web_fetch"]
+
+
+def test_transit_treats_a_named_landmark_as_a_supplied_endpoint():
+    registry = Registry.discover(config.MODULES_DIR)
+    transit = next(module for module in registry.modules if module.name == "transit")
+    prompt = " ".join(transit.prompt.lower().split())
+
+    assert "named venue or landmark is a supplied endpoint" in prompt
+    assert "do not ask for its exact entrance or street address" in prompt
+    assert "do not ask for a finer endpoint" in prompt
+    assert "endpoint is otherwise too broad" not in prompt
 
 
 async def test_mta_elevator_status_reports_matching_outages_without_calling_other_tools():
@@ -82,6 +103,10 @@ async def test_mta_elevator_status_reports_matching_outages_without_calling_othe
         "61 St-Woodside",
         "86 St-4/5/6",
     ]
+    assert any(
+        item["url"] == "https://www.mta.info/elevator-escalator-status"
+        for item in citations.mapping().values()
+    )
 
 
 async def test_mta_elevator_status_fails_closed_when_feed_is_unavailable():
@@ -95,4 +120,7 @@ async def test_mta_elevator_status_fails_closed_when_feed_is_unavailable():
 
     assert "could not verify" in output.lower()
     assert "mta.info/elevator-escalator-status" in output
-    assert ctx.citations.mapping() == {}
+    assert "{cite:S1}" in output
+    assert ctx.citations.mapping()["S1"]["url"] == (
+        "https://www.mta.info/elevator-escalator-status"
+    )

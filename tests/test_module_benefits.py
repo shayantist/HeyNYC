@@ -1,13 +1,15 @@
 """Offline tests for the benefits module's search_benefits tool (no network)."""
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from heynyc.core import config, pii_crypto
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.index.embedder import HashEmbedder
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.modules.benefits import screening
 from heynyc.modules.benefits import tools as btools
 
@@ -47,7 +49,57 @@ def _client_returning(rows, status=200):
 
 def test_benefits_module_tool_is_discovered():
     registry = Registry.discover(config.MODULES_DIR)
-    assert "search_benefits" in {t.name for t in registry.load_module_tools()}
+    assert {"search_benefits", "get_utility_shutoff_guidance"} <= {
+        t.name for t in registry.load_module_tools()
+    }
+
+
+async def test_utility_shutoff_guidance_returns_source_scoped_evidence():
+    calls: list[dict] = []
+
+    async def fetch(args: dict, _ctx: ToolContext) -> str:
+        if "customer service phone" in args["query"]:
+            await asyncio.sleep(0.01)
+        calls.append(args)
+        return f"evidence for {args['query']} {{cite:S{len(calls)}}}"
+
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        toolbox={
+            "web_fetch": Tool(
+                name="web_fetch",
+                description="Fetch one page",
+                parameters={"type": "object", "properties": {}},
+                handler=fetch,
+            )
+        },
+    )
+    tool = next(
+        tool for tool in btools.get_tools()
+        if tool.name == "get_utility_shutoff_guidance"
+    )
+
+    out = await tool.handler({"provider": "Con Edison"}, ctx)
+
+    assert {call["url"] for call in calls} == {
+        "https://dps.ny.gov/file-complaint",
+        "https://dps.ny.gov/your-rights-residential-gas-electric-or-steam-customer-under-hefpa",
+        "https://dps.ny.gov/electric-utilities",
+    }
+    assert any("Con Edison" in call["query"] for call in calls)
+    assert {call["evidence_scope"] for call in calls} == {
+        "UTILITY CONTACT", "SHUTOFF PROTECTIONS", "DPS EMERGENCY COMPLAINT",
+    }
+    assert out.index("UTILITY CONTACT") < out.index("SHUTOFF PROTECTIONS")
+    assert out.index("SHUTOFF PROTECTIONS") < out.index("DPS EMERGENCY COMPLAINT")
+    assert "UTILITY CONTACT\nevidence for Con Edison customer service phone" in out
+    assert "phone and contact information {cite:S1}" in out
+    assert "SHUTOFF PROTECTIONS\nevidence" in out
+    assert "prevent utility shutoff {cite:S2}" in out
+    assert "DPS EMERGENCY COMPLAINT\nevidence" in out
+    assert "48 72 hours {cite:S3}" in out
+    assert "Use each section only for the claim named by its heading" in out
 
 
 async def test_benefits_search_fetches_catalog_then_ranks_and_grounds():
@@ -328,28 +380,29 @@ async def test_benefits_search_prefers_official_how_to_link_over_brittle_direct_
 
 
 def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
-    # For a denial/problem with a benefit, the benefits blurb must surface the human/appeal
-    # path — call the agency / 311 and the right to a fair hearing.
+    # For a denial/problem, surface a retrieved human/appeal path rather than a hard-coded route.
     reg = Registry.discover(config.MODULES_DIR)
     benefits = next(m for m in reg.modules if m.name == "benefits")
     low = benefits.prompt.lower()
     assert "fair hearing" in low
-    assert "311" in benefits.prompt
+    assert "use only a route supported by the retrieved source" in low
     assert (
         "When the resident already requested the eligibility screening workflow"
         in benefits.prompt
     )
 
 
-def test_snap_work_rule_retrieval_includes_accessible_hra_fair_hearing_evidence():
-    hra_faq = "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
+def test_snap_work_rule_index_uses_the_current_hra_faq_seed():
+    current_hra_faq = "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page"
+    stale_hra_faq = "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
     reg = Registry.discover(config.MODULES_DIR)
     benefits = next(module for module in reg.modules if module.name == "benefits")
 
-    assert hra_faq in benefits.seeds
+    assert current_hra_faq in benefits.seeds
+    assert stale_hra_faq not in benefits.seeds
     # SNAP work-rule retrieval URLs are now manifest-owned (`situations: snap_work_rules`).
     snap_urls = reg.situation_hints()["snap_work_rules"][1].urls
-    assert hra_faq in snap_urls
+    assert stale_hra_faq in snap_urls
     assert "https://otda.ny.gov/oah/" in snap_urls
 
 
@@ -711,9 +764,16 @@ async def test_screen_access_nyc_eligibility_validates_the_complete_tool_payload
 def test_get_tools_gates_screener_on_creds(monkeypatch):
     monkeypatch.delenv("HEYNYC_FORMS", raising=False)
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "", ""))
-    assert {t.name for t in btools.get_tools()} == {"search_benefits"}
+    assert {t.name for t in btools.get_tools()} == {
+        "get_utility_shutoff_guidance",
+        "search_benefits",
+    }
     monkeypatch.setattr(config, "screening_creds", lambda: ("base", "u", "p"))
-    assert {t.name for t in btools.get_tools()} == {"search_benefits", "screen_access_nyc_eligibility"}
+    assert {t.name for t in btools.get_tools()} == {
+        "get_utility_shutoff_guidance",
+        "search_benefits",
+        "screen_access_nyc_eligibility",
+    }
 
 
 def test_screen_tool_uses_city_wire_type_for_cash_on_hand():

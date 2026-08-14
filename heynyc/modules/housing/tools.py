@@ -33,6 +33,7 @@ COMPLAINTS_ID = "ygpa-z7cr"   # HPD Housing Maintenance Code Complaints
 VIOLATIONS_ID = "wvxf-dwi5"   # HPD Housing Maintenance Code Violations
 LITIGATIONS_ID = "59kj-x8nc"  # HPD Housing Litigations (housing-court cases, keyed by BBL)
 OFFICIAL = "NYC311 (call 311 or nyc.gov/311)"
+NYC311_REPORT_URL = "https://portal.311.nyc.gov/report-problems/"
 
 # ygpa-z7cr codes OPEN heat complaints under TWO major_category values: 'HEAT/HOT WATER' and the
 # separate 'HEATING' (minor categories HEAT RELATED / RADIATOR / HEAT-PLANT / SPACE HEATER, all
@@ -139,7 +140,6 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     class_c = class_counts.get("C", 0)
     violations_truncated = len(violations) == 1000
     violations_recent = _most_recent(violations, "novissueddate")
-
     if not complaints and not violations:
         # Say so plainly, DON'T imply the building is trouble-free beyond what the data covers.
         cite_c = _register(ctx, COMPLAINTS_ID, complaints_where,
@@ -150,12 +150,19 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                            title="HPD Housing Maintenance Code Violations (open)",
                            snippet=f"BBL {bbl}: 0 open HPD violations",
                            snapshot={"bbl": bbl, "open_violations": 0}, valid_as_of="")
+        cite_311 = ctx.citations.register(
+            NYC311_REPORT_URL,
+            snippet="Report an apartment maintenance, heat, or hot-water problem through NYC311",
+            title="Report Problems, NYC311",
+            kind="DOC",
+        )
         return (
             f"Building: {origin.label} (BBL {bbl})\n"
             f"No OPEN HPD complaints {{cite:{cite_c}}} or OPEN HPD violations {{cite:{cite_v}}} are on "
             f"record for this building right now. That only reflects what tenants have reported to HPD "
             f"and what HPD has cited, it doesn't guarantee there are no problems. If the user has a "
-            f"heat, hot-water, or repair issue, they can still file a complaint through {OFFICIAL}."
+            f"heat, hot-water, or repair issue, they can still file a complaint through "
+            f"{NYC311_REPORT_URL} {{cite:{cite_311}}} or call 311."
         )
 
     cite_c = _register(
@@ -187,6 +194,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                   "class_c": class_c,
                   "by_class": dict(class_counts)},
         valid_as_of=violations_recent,
+    )
+    cite_311 = ctx.citations.register(
+        NYC311_REPORT_URL,
+        snippet="Report an apartment maintenance, heat, or hot-water problem through NYC311",
+        title="Report Problems, NYC311",
+        kind="DOC",
     )
 
     lines = [f"Building: {origin.label} (BBL {bbl})", "Grounded in NYC HPD open data, report only these:"]
@@ -220,7 +233,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     lines.append(
         f"Tell the tenant these are the building's OPEN records only (issues already reported/cited). "
-        f"To report a NEW no-heat / no-hot-water or repair problem, they file through {OFFICIAL}. "
+        f"To report a NEW no-heat / no-hot-water or repair problem, use {NYC311_REPORT_URL} "
+        f"{{cite:{cite_311}}} or call 311. "
         f"Don't invent counts, dates, or outcomes beyond what's cited above."
     )
     return "\n".join(lines)

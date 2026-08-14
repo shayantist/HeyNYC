@@ -4,11 +4,32 @@
   expect_cite_kinds: [WEB]
   abstain: false
   capability: grounding
-  tags: [F229, F238, must-win]
+  tags: [F229, F238, F239, F240, F241, F242, F243, must-win]
   utility_criterion: >-
     Use Brooklyn Public Library's current Sunset Park branch page for tonight's hours and its
     current systemwide technology page for printing. Give the official branch address and contact,
-    distinguish branch-specific from systemwide facts, and do not rely on a stale class listing.
+    distinguish branch-specific from systemwide facts, preserve straight-line distance as
+    straight-line rather than travel distance, and do not rely on a stale class listing.
+
+- id: libraries_bpl_crown_heights_late
+  query: "Which Brooklyn library near Crown Heights is open late tonight? I need somewhere to work."
+  expect_tools: [find_bpl_branches]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  tags: [F242, F243]
+  utility_criterion: >-
+    Use the current official BPL branch feed, distinguish today's listed hours from future or
+    guaranteed access, and do not invent child, printing, or other unrequested constraints.
+
+- id: libraries_bpl_bay_ridge_printing
+  query: "Where can I print near Bay Ridge tonight, and is the library still open?"
+  expect_tools: [find_bpl_branches]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  tags: [F242, F243]
+  utility_criterion: >-
+    Use the current official BPL branch feed for nearby branches and today's hours, retrieve current
+    BPL printing evidence separately, and preserve any unsupported service detail as a limitation.
 
 - id: libraries_unverified_branch_service
   query: "Does every Queens library branch notarize documents tonight?"

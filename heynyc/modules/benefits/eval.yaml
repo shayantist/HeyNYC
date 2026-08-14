@@ -233,15 +233,15 @@
   query: "My SNAP got denied and I don't think that's right. What can I do?"
   capability: abstention
   test_type: DIR
-  expect_tools: [web_fetch]
+  expect_tools: [web_search]
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   utility_criterion: >-
     Answer the resident's challenge question with the official fair-hearing path and a usable human
     contact route. Food assistance may be additional help, but it cannot replace the appeal answer.
     Fail a generic verification fallback when authoritative appeal guidance was retrieved.
   notes: >-
-    Must surface the human + appeal path — call 311 / contact HRA and the right to request a FAIR
-    HEARING to challenge the decision — not just sympathy, and never invent a deadline, form, or outcome.
+    Must surface a retrieved human + FAIR HEARING path to challenge the decision, not just sympathy,
+    and never invent a deadline, form, contact route, or outcome.
     The human/appeal behavior is the live judge's call; the offline gate only checks it routes + doesn't fabricate.
 
 - id: benefits_f232_medicaid_termination_fair_hearing

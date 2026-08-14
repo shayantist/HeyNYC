@@ -55,9 +55,15 @@ async def _mta_elevator_status(args: dict, ctx: ToolContext) -> str:
         if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
             raise ValueError("unexpected MTA outage response")
     except (httpx.HTTPError, ValueError):
+        status_cite = ctx.citations.register(
+            _STATUS_PAGE,
+            snippet="Official MTA elevator and escalator status page",
+            title="MTA elevator and escalator status",
+            kind="WEB",
+        )
         return (
             "I could not verify current MTA elevator status. Check the official status page "
-            f"before leaving: {_STATUS_PAGE}"
+            f"before leaving: {_STATUS_PAGE} {{cite:{status_cite}}}"
         )
     finally:
         if own_client:
@@ -82,6 +88,12 @@ async def _mta_elevator_status(args: dict, ctx: ToolContext) -> str:
                 "checked_at": checked_at,
             },
         ),
+    )
+    status_cite = ctx.citations.register(
+        _STATUS_PAGE,
+        snippet="Official MTA elevator and escalator status page",
+        title="MTA elevator and escalator status",
+        kind="WEB",
     )
 
     lines = [f"MTA outage feed checked at {checked_at}:"]
@@ -111,7 +123,7 @@ async def _mta_elevator_status(args: dict, ctx: ToolContext) -> str:
                 f"- {row.get('station', station)}: {equipment}, {serving}; {reason}"
                 f"{estimate_text}. {{cite:{cite}}}"
             )
-    lines.append(f"Official status page: {_STATUS_PAGE}")
+    lines.append(f"Official status page: {_STATUS_PAGE} {{cite:{status_cite}}}")
     return "\n".join(lines)
 
 

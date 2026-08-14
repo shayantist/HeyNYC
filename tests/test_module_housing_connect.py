@@ -69,12 +69,23 @@ def _client(rows, *, status=200, captured=None) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def _run(monkeypatch, rows, *, today="2026-07-11", borough=None, status=200, captured=None):
+async def _run(
+    monkeypatch,
+    rows,
+    *,
+    today="2026-07-11",
+    borough=None,
+    limit=None,
+    status=200,
+    captured=None,
+):
     monkeypatch.setattr(hc, "_today", lambda: today)
     citations = CitationRegistry()
     client = _client(rows, status=status, captured=captured)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     args = {} if borough is None else {"borough": borough}
+    if limit is not None:
+        args["limit"] = limit
     out = await get_tools()[0].handler(args, ctx)
     await client.aclose()
     return out, citations
@@ -125,6 +136,8 @@ async def test_finder_lists_open_lotteries_grounded_and_cited(monkeypatch):
     low = out.lower()
     assert "as of" in low                      # reporting-feed, not real-time
     assert "can't submit" in low or "cannot submit" in low
+    assert "free to apply" not in low
+    assert "immigration status" not in low
 
 
 # --- 2. abstain gracefully when nothing is open (still hand off, never fake) -
@@ -152,6 +165,28 @@ async def test_finder_borough_filter_narrows_query(monkeypatch):
     where = captured[0].params["$where"]
     assert "borough='BX'" in where
     assert "Bronx" in out
+
+
+async def test_finder_defaults_to_five_results_and_honors_requested_limit(monkeypatch):
+    rows = [
+        {**_ROW_SMALL, "lottery_id": str(index), "lottery_name": f"Lottery {index}"}
+        for index in range(1, 8)
+    ]
+    default_requests: list = []
+    requested_requests: list = []
+
+    default, _ = await _run(monkeypatch, rows[:5], captured=default_requests)
+    requested, _ = await _run(
+        monkeypatch,
+        rows,
+        limit=7,
+        captured=requested_requests,
+    )
+
+    assert default_requests[0].params["$limit"] == "5"
+    assert requested_requests[0].params["$limit"] == "7"
+    assert default.count("- Lottery ") == 5
+    assert requested.count("- Lottery ") == 7
 
 
 # --- 4. reachability failure: point to the portal, fabricate nothing --------

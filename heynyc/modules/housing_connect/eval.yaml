@@ -4,7 +4,7 @@
 # gracefully (never fabricates a listing) when nothing is open.
 
 - id: hc_open_lotteries
-  tags: [must-win]
+  tags: [F253, must-win]
   query: "What affordable housing lotteries are open right now?"
   capability: dataset_grounding
   test_type: MFT

@@ -30,6 +30,58 @@ examples:
   - "How do I report my employer for stealing tips in NYC?"
 tools: tools.py
 eval: eval.yaml
+situations:
+  - name: youth_pay_stub_retaliation
+    definition: >-
+      A worker under 18, or their parent or guardian, says the worker was fired, punished, had
+      hours cut, or was threatened after asking for a pay stub or asserting another wage right.
+      This includes questions about whether age changes the worker's rights and how to report the
+      wage or retaliation problem.
+    high_stakes: true
+    query: >-
+      New York youth worker pay stub retaliation complaint current official
+    urls:
+      - https://dol.ny.gov/youthworkers
+      - https://dol.ny.gov/retaliation
+      - https://dol.ny.gov/filing-labor-standards-complaint-fare-grant
+      - https://dol.ny.gov/system/files/documents/2024/03/ls223.2.pdf
+    reminder: >-
+      Use the official pages just retrieved. The youth-worker page establishes that New York
+      workers have rights regardless of age. The retaliation page establishes only that the
+      firing or other adverse action may be retaliation when it punishes a worker for asserting a
+      Labor Law right. Do not decide causation from timing alone. Distinguish the retaliation
+      contact route from the LS223 process for a missing pay stub or another labor-standard
+      violation. Do not invent a parent or guardian procedure. If these pages answer the question,
+      stop searching.
+    focus_tools:
+      - web_fetch
+  - name: unpaid_wage_immigration_threat
+    definition: >-
+      A worker says an employer withheld wages or did not pay them and threatened immigration
+      consequences if they complain, or asks whether reporting the wage problem will reveal their
+      identity or immigration status to the employer. This includes the same situation in any
+      language.
+    high_stakes: true
+    query: >-
+      New York unpaid withheld wages complaint process immigrant worker rights employer notice
+      identity confidentiality current official
+    urls:
+      - https://dol.ny.gov/unpaidwithheld-wages-and-wage-supplements
+      - https://dol.ny.gov/labor-standards-complaint-process
+      - https://ag.ny.gov/immigrants-rights/immigrant-workers-rights
+      - https://ag.ny.gov/file-complaint/employment
+    reminder: >-
+      Use the official pages just retrieved. Distinguish an informal inquiry from a formal
+      complaint. The Department of Labor page says an investigator contacts the employer after an
+      accepted claim, but that does not establish what identity information the employer receives.
+      Keep these as two separate sentences, translated into the resident's language: "After an
+      accepted claim, an investigator contacts the employer." "What personal information the
+      employer receives is unknown from these pages." State anonymity, confidentiality, employer
+      notice, and immigration disclosure as unknown whenever the sources are silent. Suggest asking the agency before
+      sharing identifying information. Preserve the resident's language. If these pages answer the
+      question, stop searching.
+    focus_tools:
+      - web_fetch
 seeds:
   - https://dol.ny.gov
   - https://www.nyc.gov/site/dca/workers/workersrights/retail-workers.page
@@ -52,8 +104,9 @@ allowlist:
   - nyc-business.nyc.gov
   - legistar.council.nyc.gov
 prompt: |
-  Worker rights for NYC workers. Ground every answer in the get_worker_rights_guidance tool; never
-  state a law, an agency, or a phone number about worker rights from your own memory.
+  Worker rights for NYC workers. Use get_worker_rights_guidance only for tips. For other
+  worker-rights questions, use web_search and web_fetch, and never state a law, an agency, or a
+  phone number from your own memory.
 
   TIPS / STOLEN TIPS (an employer takes, keeps, or skims tips or gratuities that belong to an
   employee: "my boss is keeping our tips", "the restaurant takes a cut of our tips", "they took my

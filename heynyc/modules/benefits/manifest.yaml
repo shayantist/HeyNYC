@@ -119,6 +119,27 @@ situations:
       - web_fetch
       - web_search
       - find_foodhelp_locations
+  - name: snap_possible_loss
+    definition: >-
+      A resident asks whether SNAP or food-stamp benefits might end, stop, or be reduced without a
+      notice reason, work-rule reason, or other specific change. This includes the same general
+      uncertainty in any language.
+    high_stakes: true
+    query: >-
+      NYC HRA SNAP possible benefit loss check case notice current official
+    urls:
+      - https://www.nyc.gov/site/hra/about/contact.page
+    reminder: >-
+      Use the current HRA pages just retrieved and answer in the resident's language. Do not guess
+      why an individual case may change. Say that the message alone is not enough to determine the
+      outcome, ask whether HRA sent a notice and what it says about the change and dates, and give
+      the supported ACCESS HRA or DSS OneNumber route to check the case. Do not claim every notice
+      contains a particular field. Do not request or repeat a case number or other identifying
+      information. Do not detour into immigration, public charge, or eligibility screening unless
+      the resident asks. Do not mention a possible reason for a change, including work rules, unless
+      the resident provides it. If these pages answer the question, stop.
+    focus_tools:
+      - web_fetch
   - name: snap_denial_fair_hearing
     definition: >-
       A resident says a SNAP application or case was denied, stopped, reduced, or decided
@@ -127,23 +148,51 @@ situations:
       decision, in any language.
     high_stakes: true
     query: >-
-      NYC HRA SNAP denial challenge fair hearing how to request current official
-    urls:
-      - https://www.nyc.gov/assets/hra/ACCESSNYC/pdf/SNAPKit/english/LDSS_4826A.pdf
+      site:otda.ny.gov/hearings SNAP denial 90 days fair hearing request 1-800-342-3334
+    urls: []
     reminder: >-
-      Answer the challenge question from the current official SNAP notice retrieved. Explain the
-      fair-hearing path and give a usable request or human-contact route. Do not guess a deadline;
-      tell the resident to read the date and instructions on their own notice. Food assistance is
-      additional immediate help, never a replacement for challenging the decision. If the official
-      source answers the question, stop searching.
+      Answer only from the current authoritative excerpts returned by the focused search. Explain
+      the fair-hearing path and give one usable request route. State a deadline only when the
+      excerpt explicitly names SNAP, and still tell the resident to read the date and instructions
+      on their own notice. Food assistance is additional immediate help, never a replacement for
+      challenging the decision. Do not call the page an online request route unless the excerpt
+      explicitly says an online form is available. If the search answers the question, stop.
     focus_tools:
-      - web_fetch
+      - web_search
+  - name: utility_shutoff
+    definition: >-
+      A resident says an electric, gas, or steam utility has sent a final disconnection notice,
+      is threatening to shut service off soon, or has already disconnected service and asks for
+      urgent help, protections, a payment arrangement, or a complaint route. This applies to any
+      utility provider and includes the same situation described in any language.
+    high_stakes: true
+    query: >-
+      New York residential utility final disconnection notice emergency complaint payment
+      agreement medical emergency current official
+    urls:
+      - https://dps.ny.gov/file-complaint
+      - https://dps.ny.gov/your-rights-residential-gas-electric-or-steam-customer-under-hefpa
+      - https://dps.ny.gov/electric-utilities
+    reminder: >-
+      Use the current DPS pages just retrieved. Answer whether shutoff can proceed first: say you
+      cannot verify an infant-specific protection from these pages and that this does not prove that
+      none exists. Do not infer either way from the source's silence. State only the cited
+      payment-agreement and certified-medical-emergency conditions that may prevent shutoff. Tell the
+      resident to contact the utility first, using the notice or the official utility directory. Ask
+      only for the supported payment agreement, not an invented urgent hold. If a final disconnection
+      is scheduled within 48 or 72 hours and the utility has not resolved it, give the DPS emergency
+      complaint route and its supported hours. Keep a child's presence separate from a conditional
+      medical emergency protection. Cite each phone number and protection only from the page that
+      states it. Put the provider phone and a payment-agreement rule in separate sentences, each with
+      its own supporting citation. Do not search unrelated benefit programs unless the resident asks.
+      If these pages answer the question, stop.
+    focus_tools:
+      - get_utility_shutoff_guidance
 seeds:
   - https://access.nyc.gov
   - https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml
   - https://www.nyc.gov/main/services/snap-benefits/abawd
   - https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page
-  - https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml
   - https://www.nyc.gov/site/hra/about/claims-collections.page
   - https://www.nyc.gov/site/hra/help/snap-application-frequently-asked-questions.page
   - https://www.nyc.gov/site/hra/about/immigration-faqs.page
@@ -193,10 +242,9 @@ prompt: |
   case numbers or other PII, then surface the human + appeal path. For a SNAP work-rule notice,
   retrieve the current official HRA or ACCESS NYC guidance before describing who may be affected,
   exemptions, qualifying activity, or reporting steps. Do not quote volatile rules from memory.
-  Tell them they can call
-  311 or contact the agency handling the case (e.g. HRA for SNAP / Cash Assistance), and that
-  for SNAP and most benefits they have the right to request a FAIR HEARING to challenge the
-  decision (New York State's fair hearing process). Point to the official page; never invent
-  deadlines, forms, or outcomes, if you don't have the specific step, say so and route to 311.
+  For SNAP and most benefits, retrieve the current official FAIR HEARING path for challenging the
+  decision. Use only a route supported by the retrieved source. Do not append an agency or 311
+  route unless the evidence supports it. Point to the official page; never invent deadlines,
+  forms, or outcomes. If you do not retrieve a usable step, say so.
   If food is needed now, also offer grounded nearby food pantries with scheduled availability and
   operator contact details. Present this as emergency access, not a replacement for lost benefits.

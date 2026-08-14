@@ -597,8 +597,79 @@ def prepare_application_tool() -> Tool:
     )
 
 
+_UTILITY_GUIDANCE_SOURCES = (
+    (
+        "UTILITY CONTACT",
+        "https://dps.ny.gov/electric-utilities",
+        "{provider} customer service phone and contact information",
+    ),
+    (
+        "SHUTOFF PROTECTIONS",
+        "https://dps.ny.gov/your-rights-residential-gas-electric-or-steam-customer-under-hefpa",
+        "payment agreement and certified medical emergency conditions that prevent utility shutoff",
+    ),
+    (
+        "DPS EMERGENCY COMPLAINT",
+        "https://dps.ny.gov/file-complaint",
+        "utility shutoff emergency complaint phone hours final disconnection 48 72 hours",
+    ),
+)
+
+
+async def _utility_shutoff_guidance_handler(args: dict, ctx: ToolContext) -> str:
+    fetch = (ctx.toolbox or {}).get("web_fetch")
+    if fetch is None:
+        return "ERROR: web_fetch is unavailable; do not answer from memory"
+    provider = str(args.get("provider") or "the resident's utility provider").strip()
+    results = [
+        await fetch.handler(
+            {
+                "url": url,
+                "query": query.format(provider=provider),
+                "evidence_scope": heading,
+            },
+            ctx,
+        )
+        for heading, url, query in _UTILITY_GUIDANCE_SOURCES
+    ]
+    sections = (
+        f"{heading}\n{result}"
+        for (heading, _url, _query), result in zip(_UTILITY_GUIDANCE_SOURCES, results)
+    )
+    return (
+        "Use each section only for the claim named by its heading. "
+        "Do not use utility contact evidence to support a shutoff-protection claim.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+def utility_shutoff_guidance_tool() -> Tool:
+    return Tool(
+        name="get_utility_shutoff_guidance",
+        description=(
+            "Get current official New York utility contact, HEFPA shutoff-protection, and DPS "
+            "emergency-complaint evidence in one source-scoped result. Use when a resident has "
+            "a final disconnection notice, imminent shutoff, or disconnected service."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": (
+                        "Utility provider named by the resident, such as Con Edison; omit when unknown"
+                    ),
+                },
+            },
+        },
+        handler=_utility_shutoff_guidance_handler,
+        open_world=True,
+    )
+
+
 def get_tools() -> list[Tool]:
     tools = [
+        utility_shutoff_guidance_tool(),
         Tool(
             name="search_benefits",
             description=(

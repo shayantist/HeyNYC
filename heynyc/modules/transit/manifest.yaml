@@ -32,16 +32,22 @@ tools: tools.py
 prompt: |
   For an accessible trip, call web_fetch directly for
   https://www.mta.info/accessibility/subway and https://www.mta.info/tripplanner/results.
-  Do not use web_search to rediscover these known official pages. Then call check_mta_elevators
-  once for current elevator and escalator outages at the stations the route depends on.
+  Do not use web_search to rediscover these known official pages. Call check_mta_elevators for
+  current elevator and escalator outages only
+  when the resident named the route or a retrieved itinerary listed the stations it depends on.
+  Do not infer candidate stations from general transit knowledge. When the fetched planner does
+  not return an itinerary, do not call search_tools for another route tool. Link the official
+  planner, preserve any verified general accessibility guidance, and state that the route remains
+  unverified.
   Preserve the resident's
   origin and destination from the conversation; ask for either one only when it is missing or
-  ambiguous. When an endpoint is too broad to choose a station, say that route-level accessibility
-  and service status remain unverified, ask for a nearby landmark or address at each broad
-  endpoint, and retain the resident's requested day. Ask that exact endpoint question in the
-  grounded handoff after giving the verified current guidance. Do not suggest a candidate address
-  or entrance in the clarification unless retrieved evidence established it. This capability requires a
-  grounded handoff before any clarification. Do not invent a route, transfer, accessible entrance, outage, or
+  ambiguous. A named venue or landmark is a supplied endpoint. Do not ask for its exact entrance or
+  street address unless the trip planner explicitly rejects it as ambiguous. If the fetched planner
+  returns no itinerary, do not ask for a finer endpoint. Give the cited official planner and recheck
+  guidance, state that route-level accessibility and service status remain unverified, and retain
+  the resident's requested day. This capability requires a grounded handoff before any
+  clarification. Do not suggest a candidate address or entrance unless retrieved evidence
+  established it. Do not invent a route, transfer, accessible entrance, outage, or
   restoration time. State which current status could not be verified if an official page cannot
   be retrieved, while preserving any other verified result. Use and cite the official MTA
   accessible trip planner when a step-by-step route cannot be grounded from the retrieved pages.

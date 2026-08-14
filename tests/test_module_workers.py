@@ -94,5 +94,15 @@ def test_workers_module_loads_with_tool_and_eval():
     from heynyc.eval.cases import load_cases
     cases = [c for c in load_cases(registry) if c.module == "workers"]
     assert cases, "workers should ship eval cases"
-    # the tip-theft case now expects the grounding tool (answered-with-citation, not abstained)
-    assert any("get_worker_rights_guidance" in c.expect_tools for c in cases)
+    by_id = {case.id: case for case in cases}
+    assert by_id["workers_tip_theft"].expect_tools == ["get_worker_rights_guidance"]
+    assert by_id["workers_f154_withheld_wages_immigration_threat"].expect_tools == [
+        "web_fetch"
+    ]
+
+
+def test_worker_guidance_schema_exposes_only_the_supported_topic():
+    topic = _tool().parameters["properties"]["topic"]
+
+    assert topic["enum"] == ["tips"]
+    assert "free text" not in topic["description"].lower()

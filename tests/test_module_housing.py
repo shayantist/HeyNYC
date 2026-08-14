@@ -122,7 +122,7 @@ async def test_hpd_building_lookup_grounds_counts_callouts_and_cites(monkeypatch
 
     # One DATA citation per dataset, inline-cited, in registration order (complaints first).
     mapping = citations.mapping()
-    assert len(mapping) == 2
+    assert len(mapping) == 3
     assert "{cite:S1}" in out and "{cite:S2}" in out
 
     complaints_cite = mapping["S1"]
@@ -147,6 +147,9 @@ async def test_hpd_building_lookup_grounds_counts_callouts_and_cites(monkeypatch
     # The as-of date is the most recent row date, not fetch time.
     assert complaints_cite["valid_as_of"] == "2026-06-15"
     assert violations_cite["valid_as_of"] == "2026-06-20"
+    assert "https://portal.311.nyc.gov/report-problems/" in out
+    assert mapping["S3"]["url"] == "https://portal.311.nyc.gov/report-problems/"
+    assert "{cite:S3}" in out
 
 
 # --- 2. abstention: no building BBL (a bare ZIP / neighborhood) -------------

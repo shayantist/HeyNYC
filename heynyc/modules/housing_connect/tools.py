@@ -132,8 +132,8 @@ def _handoff(no_listing: bool = False) -> str:
     )
     return (
         f"{lead}: {PORTAL} . I can't submit an application for you; you create an account, log in, and "
-        "apply there before the deadline. It's free to apply and open to applicants of any immigration "
-        "status. There's no direct link to an individual listing in the data, so search the listing name "
+        "apply there before the deadline. There's no direct link to an individual listing in the data, "
+        "so search the listing name "
         "on the portal. Don't invent lotteries, deadlines, income limits, unit counts, or set-asides "
         "beyond what's cited above."
     )
@@ -141,6 +141,7 @@ def _handoff(no_listing: bool = False) -> str:
 
 async def _handler(args: dict, ctx: ToolContext) -> str:
     borough_arg = (args.get("borough") or "").strip()
+    limit = int(args.get("limit", 5))
     today = _today()
     where = f"lottery_status='Active' AND lottery_end_date >= '{today}'"
 
@@ -150,8 +151,13 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     boro_note = f" in {_BOROUGH_NAME.get(boro_code, borough_arg)}" if boro_code else ""
 
     try:
-        rows = await query_dataset(DATASET_ID, where=where, order="lottery_end_date",
-                                   limit=200, client=ctx.http)
+        rows = await query_dataset(
+            DATASET_ID,
+            where=where,
+            order="lottery_end_date",
+            limit=limit,
+            client=ctx.http,
+        )
     except httpx.HTTPError:
         return (
             f"I couldn't reach the city's Housing Connect data right now, so I can't list open "
@@ -244,6 +250,16 @@ def get_tools() -> list[Tool]:
                         "type": "string",
                         "description": ("Optional NYC borough to filter to (Bronx, Brooklyn, Manhattan, "
                                         "Queens, Staten Island). Omit to list all open lotteries citywide."),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "default": 5,
+                        "description": (
+                            "Maximum listings to return, ordered by nearest application deadline. "
+                            "Default 5. Use the resident's requested count when they give one."
+                        ),
                     },
                 },
                 "required": [],

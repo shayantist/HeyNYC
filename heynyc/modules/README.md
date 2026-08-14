@@ -38,7 +38,7 @@ heynyc/modules/<name>/
   topics/<topic>/   # optional, a submodule (reuses the parent's tool; own sources + eval)
 ```
 
-The registry auto-discovers every folder under `modules/` at startup and wires it in: its keywords + capability blurb go into the agent's system prompt, its datasets become `nearest()` categories, its seeds get indexed, its known domains guide web-search trust and ranking, and its eval cases join the test gate.
+The registry auto-discovers every folder under `modules/` at startup and wires it in: its keywords + capability blurb go into the agent's system prompt, its datasets become `nearest()` categories, its seeds enter the maintained local corpus, its known domains guide web-search trust and ranking, and its eval cases join the test gate. The corpus is an internal retrieval asset, not a competing model-visible tool.
 
 ---
 
@@ -89,16 +89,19 @@ Everything except `name` is optional. A module with just `name`, `description`, 
 
 ---
 
-## The three grounding tools your module plugs into
+## The grounding tools your module plugs into
 
 You usually don't have to write the tools, but point the module at these shared ones via the manifest:
 
 - **`nearest(category, near)`**, ranks dataset locations by distance from an address.
   Enabled by adding a `datasets:` entry. Used for "where's the nearest …".
-- **`index_search(query)`**, semantic search over your `seeds:` pages. Used for
-  "how do I…/am I eligible…/what do I bring".
 - **`web_search(query)`**, searches the live web for fresh or long-tail information. A module's
   known domains guide trust and ranking without blocking discovery from unlisted sources.
+- **`web_fetch(url, query)`**, opens one known result page when its search excerpt does not contain
+  enough evidence.
+
+The multilingual hybrid index over `seeds:` remains internal. Do not name it in a module prompt or
+make the model choose between the cache and the live web.
 
 Tell the agent which to use in your `prompt:`.
 
@@ -123,7 +126,8 @@ seeds:
   - https://www.nyc.gov/site/dfta/services/find-help.page
 prompt: |
   For senior-center questions, call nearest(category="senior_center", near=<address>)
-  and cite the results. For programs/eligibility, use index_search and link to the official page.
+  and cite the results. For programs or eligibility, search the live web with the DFTA domain
+  preferred, fetch the selected official page when needed, and link it.
 ```
 Confirm + (re)build the index:
 ```bash

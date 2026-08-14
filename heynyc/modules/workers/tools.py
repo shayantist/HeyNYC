@@ -126,22 +126,19 @@ def get_tools() -> list[Tool]:
         Tool(
             name="get_worker_rights_guidance",
             description=(
-                "Return NYC/NYS official, grounded guidance for worker-rights questions, each WITH a "
-                "citation to the official source page. Topic `tips`: an employer who takes, keeps, or "
+                "Return NYC/NYS official, grounded guidance about an employer who takes, keeps, or "
                 "skims an employee's tips or gratuities (New York Labor Law section 196-d) and how "
                 "to file a wage claim with the NYS Department of Labor (in NYC, also the Department "
-                "of Consumer and Worker Protection via 311). Pass `topic` = 'tips' (free text like "
-                "'my boss is keeping our tips' or 'they took my gratuity' is mapped to it). ALWAYS "
-                "use this instead of stating the law, the agency, or a phone number about stolen "
-                "tips from your own knowledge; report only what it returns, cited."
+                "of Consumer and Worker Protection via 311). Use topic `tips`. Use web search and "
+                "fetch for every other worker-rights question."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": ("tips: the worker-rights situation (free text about stolen or "
-                                        "withheld tips is mapped to it)."),
+                        "enum": ["tips"],
+                        "description": "The supported worker-rights topic: tips",
                     },
                 },
                 "required": ["topic"],

@@ -14,7 +14,7 @@
 - id: transit_f234_flushing_met_wheelchair
   tags: [F234, must-win]
   query: "My dad uses a wheelchair. We need to go from Flushing-Main St to the Metropolitan Museum of Art this Saturday. Which route actually has working elevators?"
-  expect_tools: [check_mta_elevators]
+  expect_tools: [web_fetch]
   abstain: false
   capability: dataset_grounding
   test_type: MFT
