@@ -1,8 +1,7 @@
-"""index_search tool, retrieval over the curated NYC corpus (the "skeleton").
+"""Legacy index-search adapter retained outside the active model tool surface.
 
 Returns passages with DOC citations so the agent can ground general questions
-(how a service works, what to bring) that aren't location lookups. When nothing
-matches, it says so, nudging the agent toward web_search or abstention.
+(how a service works, what to bring) that aren't location lookups.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ def index_search_tools(retriever: IndexRetriever) -> list[Tool]:
     async def _handler(args: dict, ctx: ToolContext) -> str:
         hits = retriever.search(args["query"], k=int(args.get("k", 5)))
         if not hits:
-            return "No indexed NYC sources matched. Use web_search for fresh/long-tail info, or abstain."
+            return "No indexed NYC sources matched."
         blocks = []
         for doc, score in hits:
             cite = ctx.citations.register(doc.url, snippet=doc.text[:200], title=doc.title, kind="DOC")
@@ -25,8 +24,8 @@ def index_search_tools(retriever: IndexRetriever) -> list[Tool]:
         Tool(
             name="index_search",
             description=(
-                "Search the curated index of official NYC pages for how-to / eligibility / "
-                "general info about services and events. Use for non-location questions; cite results."
+                "Search the curated index of official NYC pages. This legacy adapter is not "
+                "registered in the active model tool surface."
             ),
             parameters={
                 "type": "object",

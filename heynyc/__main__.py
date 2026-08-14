@@ -47,8 +47,9 @@ def _load_retriever(required: bool):
         if required:
             print("No index found. Run: uv run python -m heynyc index-build")
         return None
-    store = open_store(_INDEX_PATH)
-    return IndexRetriever(store=store, embedder=default_embedder())
+    embedder = default_embedder()
+    store = open_store(_INDEX_PATH, model_id=embedder.model_id)
+    return IndexRetriever(store=store, embedder=embedder)
 
 
 _MANIFEST_TEMPLATE = """\
@@ -193,9 +194,10 @@ async def _cmd_index_build() -> None:
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     config.HEYNYC_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    store = open_store(_INDEX_PATH)
+    embedder = default_embedder()
+    store = open_store(_INDEX_PATH, model_id=embedder.model_id)
     print(f"Building index for {len(registry.seeds())} seed URL(s)...")
-    summary = await build_index(registry, store, default_embedder())
+    summary = await build_index(registry, store, embedder)
     print(f"  ok={summary['ok']}  chunks={summary['chunks']}  failed={len(summary['failed'])}")
     for fail in summary["failed"]:
         print(f"    ✗ {fail['url']}, {fail['error']}")

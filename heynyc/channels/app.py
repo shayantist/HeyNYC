@@ -50,7 +50,11 @@ def _load_retriever():
 
     if not _INDEX_PATH.exists():
         return None
-    return IndexRetriever(store=open_store(_INDEX_PATH), embedder=default_embedder())
+    embedder = default_embedder()
+    return IndexRetriever(
+        store=open_store(_INDEX_PATH, model_id=embedder.model_id),
+        embedder=embedder,
+    )
 
 
 def build_agent() -> Agent:

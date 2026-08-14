@@ -179,7 +179,11 @@ def _load_retriever(data_dir: Path):
     index_path = Path(data_dir) / "index.lance"
     if not index_path.exists():
         return None
-    return IndexRetriever(store=open_store(index_path), embedder=default_embedder())
+    embedder = default_embedder()
+    return IndexRetriever(
+        store=open_store(index_path, model_id=embedder.model_id),
+        embedder=embedder,
+    )
 
 
 def build_console_deps(*, console, model: Optional[Any] = None, data_dir: Optional[Path] = None) -> Deps:

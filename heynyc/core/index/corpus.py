@@ -53,6 +53,12 @@ def chunk_text(text: str, max_chars: int = 1200, overlap: int = 150) -> list[str
 
 
 async def fetch_clean(url: str, client: httpx.AsyncClient) -> tuple[str, str]:
+    from ..tools.web_fetch import (
+        _extract_response,
+        _fetch_rendered_page,
+        _RenderedFetchNeeded,
+    )
+
     response = await client.get(
         url,
         follow_redirects=True,
@@ -60,8 +66,18 @@ async def fetch_clean(url: str, client: httpx.AsyncClient) -> tuple[str, str]:
             "User-Agent": "Mozilla/5.0 (compatible; HeyNYC/0.1; +https://reach4help.org)",
         },
     )
-    response.raise_for_status()
-    return clean_html(response.text)
+    try:
+        response.raise_for_status()
+        final_url, title, text = _extract_response(str(response.url), response)
+    except _RenderedFetchNeeded:
+        final_url, title, text = await _fetch_rendered_page(str(response.url))
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 403:
+            raise
+        final_url, title, text = await _fetch_rendered_page(str(response.url))
+    if title.strip().casefold() == text.strip().casefold():
+        _final_url, title, text = await _fetch_rendered_page(final_url)
+    return title, text
 
 
 async def build_index(
@@ -80,40 +96,43 @@ async def build_index(
     summary = {"urls": 0, "ok": 0, "failed": [], "chunks": 0}
     documents: list[IndexDoc] = []
     try:
+        seeds = {}
         for module in registry.modules:
             for url in module.seeds:
-                summary["urls"] += 1
-                try:
-                    title, text = await fetch_clean(url, client)
-                except Exception as exc:  # dead/blocked seed, record and move on
-                    summary["failed"].append({
-                        "url": url,
-                        "error": str(exc) or type(exc).__name__,
-                    })
-                    continue
-                chunks = chunk_text(text)
-                if not chunks:
-                    summary["failed"].append({"url": url, "error": "no text extracted"})
-                    continue
-                vectors = embedder.embed(chunks)
-                if len(vectors) != len(chunks):
-                    raise RuntimeError(
-                        f"embedder returned {len(vectors)} vector(s) for {len(chunks)} chunk(s)"
-                    )
-                docs = [
-                    IndexDoc(
-                        id=f"{module.name}::{url}::{i}",
-                        text=chunk,
-                        url=url,
-                        title=title or module.name,
-                        module=module.name,
-                        vector=vec,
-                    )
-                    for i, (chunk, vec) in enumerate(zip(chunks, vectors))
-                ]
-                documents.extend(docs)
-                summary["ok"] += 1
-                summary["chunks"] += len(docs)
+                seeds.setdefault(url, module)
+        for url, module in seeds.items():
+            summary["urls"] += 1
+            try:
+                title, text = await fetch_clean(url, client)
+            except Exception as exc:  # dead/blocked seed, record and move on
+                summary["failed"].append({
+                    "url": url,
+                    "error": str(exc) or type(exc).__name__,
+                })
+                continue
+            chunks = chunk_text(text)
+            if not chunks:
+                summary["failed"].append({"url": url, "error": "no text extracted"})
+                continue
+            vectors = embedder.embed(chunks)
+            if len(vectors) != len(chunks):
+                raise RuntimeError(
+                    f"embedder returned {len(vectors)} vector(s) for {len(chunks)} chunk(s)"
+                )
+            docs = [
+                IndexDoc(
+                    id=f"{module.name}::{url}::{i}",
+                    text=chunk,
+                    url=url,
+                    title=title or module.name,
+                    module=module.name,
+                    vector=vec,
+                )
+                for i, (chunk, vec) in enumerate(zip(chunks, vectors))
+            ]
+            documents.extend(docs)
+            summary["ok"] += 1
+            summary["chunks"] += len(docs)
         if documents and not summary["failed"]:
             store.replace(documents)
     finally:

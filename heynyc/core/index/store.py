@@ -1,10 +1,10 @@
-"""Vector store with hybrid retrieval, dense cosine + BM25, fused by Reciprocal Rank Fusion.
+"""Vector stores with hybrid dense and lexical retrieval fused by reciprocal rank fusion.
 
 Two backends behind one interface: InMemoryVectorStore (numpy, zero-config, the small-corpus
-default + tests) and LanceVectorStore (persistent). Ranking follows the documented hybrid
-standard, dense (semantic) + Okapi BM25 (lexical, IDF-weighted), combined with RRF, which fuses
-by *rank* not score so the incompatible scales (cosine ∈ [-1,1] vs unbounded BM25) need no
-normalization. See docs/internal/superpowers/specs/2026-06-29-eval-grading-and-retrieval-amendment.md.
+default + tests) and LanceVectorStore (persistent). The in-memory backend retains the small
+deterministic implementation for tests; the persistent backend uses LanceDB's native vector,
+BM25, and RRF implementation. See
+docs/internal/superpowers/specs/2026-06-29-eval-grading-and-retrieval-amendment.md.
 """
 from __future__ import annotations
 
@@ -129,62 +129,122 @@ class InMemoryVectorStore:
 
 
 class LanceVectorStore:
-    """Persistent backend. Dense top-N from LanceDB, then re-ranked by RRF(cosine, BM25)
-    over that candidate set (BM25 IDF is over the candidates, an accepted approximation)."""
+    """Persistent backend using LanceDB's native dense and full-text hybrid search."""
 
-    def __init__(self, path: Path, table_name: str = "corpus"):
+    def __init__(
+        self,
+        path: Path,
+        table_name: str = "corpus",
+        model_id: Optional[str] = None,
+    ):
         import lancedb
 
         self._db = lancedb.connect(str(path))
+        self._model_id = model_id
+        self._model_id_validated = False
         self._table_name = table_name
         self._table = None
-        if table_name in self._db.table_names():
+        if table_name in self._db.list_tables().tables:
             self._table = self._db.open_table(table_name)
+
+    def _ensure_fts_indices(self, *, replace: bool = False) -> None:
+        if self._table is None:
+            return
+        indexed = {
+            column
+            for index in self._table.list_indices()
+            if index.index_type == "FTS"
+            for column in index.columns
+        }
+        for column in ("title", "text"):
+            if replace or column not in indexed:
+                self._table.create_fts_index(column, replace=replace)
+
+    def _assert_model_id(self) -> None:
+        if self._model_id is None or self._table is None or self._model_id_validated:
+            return
+        if "embedding_model_id" not in self._table.schema.names:
+            raise RuntimeError(
+                "index does not record its embedding model; rebuild the index"
+            )
+        stored = set(
+            self._table.search()
+            .select(["embedding_model_id"])
+            .to_arrow()
+            .column("embedding_model_id")
+            .to_pylist()
+        )
+        if not stored or stored == {None}:
+            raise RuntimeError(
+                "index does not record its embedding model; rebuild the index"
+            )
+        if len(stored) != 1:
+            raise RuntimeError("index contains mixed embedding models; rebuild the index")
+        actual = stored.pop()
+        if actual != self._model_id:
+            raise RuntimeError(
+                f"index was built with {actual}, not {self._model_id}; rebuild the index"
+            )
+        self._model_id_validated = True
 
     def add(self, docs: list[IndexDoc]) -> None:
         rows = [
             {"id": d.id, "text": d.text, "url": d.url, "title": d.title,
-             "module": d.module, "vector": d.vector}
+             "module": d.module, "vector": d.vector,
+             **({"embedding_model_id": self._model_id} if self._model_id else {})}
             for d in docs if d.vector is not None
         ]
         if not rows:
             return
+        self._assert_model_id()
         if self._table is None:
             self._table = self._db.create_table(self._table_name, data=rows)
         else:
             self._table.add(rows)
+        self._model_id_validated = self._model_id is not None
+        self._ensure_fts_indices(replace=True)
 
     def replace(self, docs: list[IndexDoc]) -> None:
         rows = [
             {"id": d.id, "text": d.text, "url": d.url, "title": d.title,
-             "module": d.module, "vector": d.vector}
+             "module": d.module, "vector": d.vector,
+             **({"embedding_model_id": self._model_id} if self._model_id else {})}
             for d in docs if d.vector is not None
         ]
         if rows:
             self._table = self._db.create_table(
                 self._table_name, data=rows, mode="overwrite",
             )
+            self._model_id_validated = self._model_id is not None
+            self._ensure_fts_indices(replace=True)
 
     def count(self) -> int:
         return 0 if self._table is None else self._table.count_rows()
 
     def search(self, query_vec: list[float], query_text: str, k: int = 5) -> list[tuple[IndexDoc, float]]:
-        if self._table is None:
+        if self._table is None or k <= 0:
             return []
-        rows = self._table.search(query_vec).limit(max(k * 4, k)).to_list()
+        self._assert_model_id()
+        from lancedb.rerankers import RRFReranker
+
+        rows = (
+            self._table.search(query_type="hybrid", fts_columns=["title", "text"])
+            .vector(query_vec)
+            .text(query_text)
+            .rerank(RRFReranker())
+            .limit(k)
+            .to_list()
+        )
         docs = [
             IndexDoc(id=row["id"], text=row["text"], url=row["url"],
                      title=row["title"], module=row["module"], vector=list(row["vector"]))
             for row in rows
         ]
-        return _hybrid_rank(docs, query_vec, query_text, k)
+        return [(doc, float(row["_relevance_score"])) for doc, row in zip(docs, rows)]
 
 
-def open_store(path: Optional[Path] = None) -> VectorStore:
+def open_store(path: Optional[Path] = None, model_id: Optional[str] = None) -> VectorStore:
     """LanceVectorStore when a path is given and lancedb is importable, else in-memory."""
     if path is not None:
-        try:
-            return LanceVectorStore(path)
-        except Exception:
-            pass
+        return LanceVectorStore(path, model_id=model_id)
     return InMemoryVectorStore()

@@ -47,18 +47,34 @@ class HashEmbedder:
 class FastEmbedEmbedder:
     """Local ONNX embeddings via fastembed (no PyTorch, no API key)."""
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
-        from fastembed import TextEmbedding
-
-        self._model = TextEmbedding(model_name=model_name)
-        self.dim = 384  # bge-small-en-v1.5
+    def __init__(
+        self,
+        model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    ):
+        self._model_name = model_name
+        self._model = None
         self.model_id = f"fastembed:{model_name}"
 
+    def _load(self):
+        if self._model is not None:
+            return self._model
+        from fastembed import TextEmbedding
+
+        self._model = TextEmbedding(model_name=self._model_name)
+        return self._model
+
+    @property
+    def dim(self) -> int:
+        return int(self._load().embedding_size)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return [list(map(float, vec)) for vec in self._model.embed(texts, batch_size=32)]
+        return [
+            list(map(float, vec))
+            for vec in self._load().embed(texts, batch_size=32)
+        ]
 
 
 @lru_cache(maxsize=1)
 def default_embedder() -> Embedder:
-    """Return the installed production embedder, failing if it cannot initialize."""
+    """Return the production embedder, loading its model on first use."""
     return FastEmbedEmbedder()
