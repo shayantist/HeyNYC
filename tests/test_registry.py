@@ -162,7 +162,9 @@ def test_benefits_manifest_declares_mixed_status_snap_situation():
     assert "the final sentence must ask" not in hint.reminder.lower()
     assert hint.focus_tools == ["web_fetch"]
     _, capabilities = build_module_capabilities(registry, {})
-    capability = next(item for item in capabilities if item.id == "benefits")
+    capability = next(
+        item for item in capabilities if item.id == "benefits-mixed-status-snap"
+    )
     instructions = "\n".join(capability.get_instructions())
     assert "benefits-mixed-status-snap" in instructions
     assert "call `web_fetch` once for each official pages url needed" in instructions.lower()
@@ -176,14 +178,109 @@ def test_benefits_manifest_declares_generic_snap_denial_situation():
 
     assert module_name == "benefits"
     assert hint.high_stakes is True
-    assert any("LDSS_4826A.pdf" in url for url in hint.urls)
+    assert hint.urls == []
+    assert not any("LDSS_4826A.pdf" in url for url in hint.urls)
+    assert "SNAP denial" in hint.query
+    assert "90 days" in hint.query
+    assert "1-800-342-3334" in hint.query
+    assert "authoritative excerpts" in hint.reminder.lower()
     assert "food assistance is additional" in hint.reminder.lower()
-    assert hint.focus_tools == ["web_fetch"]
+    assert "explicitly names snap" in hint.reminder.lower()
+    assert "do not call the page an online request route" in hint.reminder.lower()
+    assert hint.focus_tools == ["web_search"]
     _, capabilities = build_module_capabilities(registry, {})
-    capability = next(item for item in capabilities if item.id == "benefits")
+    capability = next(
+        item
+        for item in capabilities
+        if item.id == "benefits-snap-denial-fair-hearing"
+    )
     instructions = "\n".join(capability.get_instructions())
     assert "benefits-snap-denial-fair-hearing" in instructions
-    assert "call `web_fetch` once for each official pages url needed" in instructions.lower()
+    assert "prioritize tools: web_search" in instructions.lower()
+
+
+def test_benefits_manifest_declares_generic_snap_possible_loss_situation():
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["snap_possible_loss"]
+
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert any("contact" in url for url in hint.urls)
+    assert not any("snap-benefits-food-program" in url for url in hint.urls)
+    assert len(hint.urls) == 1
+    assert "without a notice reason" in hint.definition.lower()
+    assert "do not guess why" in hint.reminder.lower()
+    assert "do not mention a possible reason" in hint.reminder.lower()
+    assert "what it says about the change and dates" in hint.reminder.lower()
+    assert hint.focus_tools == ["web_fetch"]
+
+
+def test_benefits_manifest_declares_urgent_utility_shutoff_situation():
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["utility_shutoff"]
+
+    assert module_name == "benefits"
+    assert hint.high_stakes is True
+    assert hint.focus_tools == ["get_utility_shutoff_guidance"]
+    assert any("file-complaint" in url for url in hint.urls)
+    assert any("electric-utilities" in url for url in hint.urls)
+    assert "utility first" in hint.reminder.lower()
+    assert "48 or 72 hours" in hint.reminder.lower()
+    assert "medical" in hint.reminder.lower()
+    assert "do not infer" in hint.reminder.lower()
+    assert "separate sentence" in hint.reminder.lower()
+    assert "answer whether shutoff can proceed first" in hint.reminder.lower()
+    assert "urgent hold" in hint.reminder.lower()
+    assert "cannot verify an infant-specific protection" in hint.reminder.lower()
+    assert "does not prove that none exists" in hint.reminder.lower()
+
+
+def test_drinking_fountains_manifest_declares_hydrant_heat_safety_situation():
+    from heynyc.core.pydantic_runtime.tools import build_module_capabilities
+
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["hydrant_heat_safety"]
+    module = next(item for item in registry.modules if item.name == module_name)
+
+    assert module_name == "drinking_fountains"
+    assert "hydrant" in module.description.lower()
+    assert hint.high_stakes is True
+    assert hint.focus_tools == ["web_fetch"]
+    assert len(hint.urls) == 2
+    assert all("nyc.gov/site/dep/" in url for url in hint.urls)
+    reminder = hint.reminder.lower()
+    assert "drinking" in reminder and "cooling" in reminder
+    assert "do not infer" in reminder
+    assert "cannot confirm" in reminder
+    assert "do not begin with" in reminder
+    assert "user's language" in reminder
+    assert "index_search" not in reminder
+    _, capabilities = build_module_capabilities(registry, {})
+    assert any(
+        item.id == "drinking-fountains-hydrant-heat-safety"
+        for item in capabilities
+    )
+
+
+def test_snap_centers_manifest_fetches_current_in_person_service_evidence():
+    registry = Registry.discover(Path("heynyc/modules"))
+    module = next(item for item in registry.modules if item.name == "snap_centers")
+
+    assert any("snap-application-frequently-asked-questions" in url for url in module.seeds)
+    assert "snap-application-frequently-asked-questions" in module.prompt
+    assert "completing an online application" in module.prompt.lower()
+
+
+def test_workers_manifest_declares_youth_retaliation_situation():
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["youth_pay_stub_retaliation"]
+
+    assert module_name == "workers"
+    assert hint.high_stakes is True
+    assert any("youthworkers" in url for url in hint.urls)
+    assert any("retaliation" in url for url in hint.urls)
+    assert any("ls223" in url.lower() for url in hint.urls)
+    assert hint.focus_tools == ["web_fetch"]
 
 
 def test_benefits_manifest_declares_medicaid_termination_hearing_situation():
@@ -201,7 +298,11 @@ def test_benefits_manifest_declares_medicaid_termination_hearing_situation():
     assert "resident's language" in hint.reminder.lower()
     assert hint.focus_tools == ["web_fetch"]
     _, capabilities = build_module_capabilities(registry, {})
-    capability = next(item for item in capabilities if item.id == "benefits")
+    capability = next(
+        item
+        for item in capabilities
+        if item.id == "benefits-medicaid-termination-fair-hearing"
+    )
     instructions = "\n".join(capability.get_instructions()).lower()
     assert "benefits-medicaid-termination-fair-hearing" in instructions
     assert "call `web_fetch` once for each official pages url needed" in instructions
@@ -266,8 +367,9 @@ def test_libraries_declares_each_nyc_library_system_as_authoritative():
     for domain in libraries.allowlist:
         assert registry.source_tiers()[domain][0] == "authoritative"
     prompt = " ".join(libraries.prompt.lower().split())
+    assert "find_bpl_branches" in prompt
     assert "current branch page" in prompt
-    assert "systemwide technology page" in prompt
+    assert "systemwide service page" in prompt
 
 
 def test_workers_separates_informal_guidance_from_a_formal_complaint():
@@ -278,6 +380,35 @@ def test_workers_separates_informal_guidance_from_a_formal_complaint():
     assert "informal inquiry" in prompt
     assert "formal complaint" in prompt
     assert "employer notice" in prompt
+    assert "only for tips" in prompt
+    assert "other worker-rights questions" in prompt
+    assert "web_search" in prompt and "web_fetch" in prompt
+
+
+def test_workers_declares_the_unpaid_wage_immigration_threat_situation():
+    registry = Registry.discover(Path("heynyc/modules"))
+    module_name, hint = registry.situation_hints()["unpaid_wage_immigration_threat"]
+
+    assert module_name == "workers"
+    assert hint.high_stakes is True
+    assert hint.focus_tools == ["web_fetch"]
+    assert any("labor-standards-complaint-process" in url for url in hint.urls)
+    assert any("immigrant-workers-rights" in url for url in hint.urls)
+    assert "employer" in hint.reminder.lower()
+    assert "identity" in hint.reminder.lower()
+    assert "keep these as two separate sentences" in hint.reminder.lower()
+    assert "what personal information the employer receives is unknown" in hint.reminder.lower()
+
+
+def test_transit_checks_only_route_stations_supplied_by_evidence_or_the_resident():
+    registry = Registry.discover(Path("heynyc/modules"))
+    transit = next(module for module in registry.modules if module.name == "transit")
+    prompt = " ".join(transit.prompt.lower().split())
+
+    assert "only when the resident named the route" in prompt
+    assert "retrieved itinerary listed the stations" in prompt
+    assert "do not infer candidate stations" in prompt
+    assert "do not call search_tools" in prompt
 
 
 def test_transit_manifest_declares_current_mta_accessibility_sources():
@@ -293,16 +424,19 @@ def test_transit_manifest_declares_current_mta_accessibility_sources():
     assert "route-level accessibility and service status remain unverified" in prompt
     assert "requested day" in prompt
     assert "requires a grounded handoff" in prompt
-    assert "ask that exact endpoint question in the grounded handoff" in prompt
+    assert "do not ask for a finer endpoint" in prompt
     assert "call web_fetch directly" in prompt
     assert "do not use web_search" in prompt
     assert "do not suggest a candidate address or entrance" in prompt
 
 
-def test_childcare_marks_the_official_myschools_service_authoritative():
+def test_childcare_marks_official_school_enrollment_services_authoritative():
     registry = Registry.discover(Path("heynyc/modules"))
+    childcare = next(module for module in registry.modules if module.name == "childcare")
 
     assert registry.source_tiers()["myschools.nyc"][0] == "authoritative"
+    assert registry.source_tiers()["enrollmentsupport.schools.nyc"][0] == "authoritative"
+    assert "enrollmentsupport.schools.nyc" in childcare.allowlist
 
 
 def test_benefits_discovery_does_not_claim_an_unloaded_screening_workflow():

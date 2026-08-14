@@ -1,6 +1,12 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from pydantic_ai.messages import (
+    LoadCapabilityCallPart,
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+)
 from pydantic_ai.tools import ToolDefinition
 
 from heynyc.core.manifest import ServiceModule
@@ -93,7 +99,46 @@ def test_cross_module_no_focus_capability_still_disables_narrowing():
     assert distance.prepare(context, definition) is definition
 
 
-def test_hot_water_situation_is_folded_into_parent_that_owns_its_module_tool():
+def test_new_turn_capability_hides_stale_module_tools():
+    registry = Registry([
+        ServiceModule(name="events", description="Find events"),
+        ServiceModule(name="food", description="Find food help"),
+    ])
+    events = _tool("find_events")
+    events.module = "events"
+    food = _tool("find_food")
+    food.module = "food"
+    _adapted, capabilities = build_module_capabilities(
+        registry,
+        {"find_events": events, "find_food": food},
+    )
+    by_id = {capability.id: capability for capability in capabilities}
+    context = SimpleNamespace(
+        loaded_capability_ids={"events", "food"},
+        messages=[
+            ModelRequest(parts=[UserPromptPart("What events are on?")]),
+            ModelResponse(parts=[LoadCapabilityCallPart(
+                args={"id": "events"}, tool_call_id="load-events"
+            )]),
+            ModelRequest(parts=[UserPromptPart("Now find a food pantry")]),
+            ModelResponse(parts=[LoadCapabilityCallPart(
+                args={"id": "food"}, tool_call_id="load-food"
+            )]),
+        ],
+    )
+    definition = lambda name: ToolDefinition(
+        name=name,
+        description=name,
+        parameters_json_schema={"type": "object", "properties": {}},
+    )
+
+    event_tool = by_id["events"].tools[0]
+    food_tool = by_id["food"].tools[0]
+    assert event_tool.prepare(context, definition("find_events")) is None
+    assert food_tool.prepare(context, definition("find_food")) is not None
+
+
+def test_hot_water_situation_is_its_own_deferred_capability():
     registry = Registry.discover(Path("heynyc/modules"))
     housing_guidance = _tool("get_housing_guidance")
     housing_guidance.module = "housing"
@@ -107,17 +152,52 @@ def test_hot_water_situation_is_folded_into_parent_that_owns_its_module_tool():
         for capability in capabilities
     }
 
-    assert "housing-hot-water-code-section" not in capabilities_by_id
+    assert "housing-hot-water-code-section" in capabilities_by_id
     parent = capabilities_by_id["housing"]
     assert [tool.name for tool in parent.tools].count("get_housing_guidance") == 1
-    instructions = "\n".join(parent.get_instructions())
+    instructions = "\n".join(
+        capabilities_by_id["housing-hot-water-code-section"].get_instructions()
+    )
     assert "housing-hot-water-code-section" in instructions
+    assert "housing-hot-water-code-section" not in "\n".join(parent.get_instructions())
     assert "load the parent `housing` capability" not in instructions
 
 
-def test_active_lockout_uses_the_parent_deferred_capability():
+def test_active_lockout_uses_its_own_deferred_capability():
     registry = Registry.discover(Path("heynyc/modules"))
     _adapted, capabilities = build_module_capabilities(registry, {})
-    capability = next(item for item in capabilities if item.id == "housing")
+    capability = next(item for item in capabilities if item.id == "housing-active-lockout")
     assert capability.defer_loading is True
     assert "housing-active-lockout" in "\n".join(capability.get_instructions())
+
+
+def test_situation_catalog_keeps_detail_in_loaded_instructions():
+    registry = Registry.discover(Path("heynyc/modules"))
+    _adapted, capabilities = build_module_capabilities(registry, {})
+    capability = next(
+        item for item in capabilities if item.id == "benefits-snap-work-rules"
+    )
+    instructions = "\n".join(capability.get_instructions())
+
+    assert capability.description.endswith(".")
+    assert ". " not in capability.description
+    assert capability.description in instructions
+    assert len(instructions) > len(capability.description)
+
+
+def test_cross_module_situation_names_the_capability_that_owns_its_tool():
+    registry = Registry.discover(Path("heynyc/modules"))
+    food_help = _tool("find_foodhelp_locations")
+    food_help.module = "food_pantries"
+
+    _adapted, capabilities = build_module_capabilities(
+        registry,
+        {"find_foodhelp_locations": food_help},
+    )
+    capability = next(
+        item for item in capabilities if item.id == "benefits-snap-work-rules"
+    )
+    instructions = "\n".join(capability.get_instructions())
+
+    assert "Load the parent `food_pantries` capability" in instructions
+    assert "`find_foodhelp_locations`" in instructions

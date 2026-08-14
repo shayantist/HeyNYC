@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
@@ -214,12 +214,21 @@ def citation_evidence(c: dict) -> Optional[str]:
     for key in ("snapshot", "response"):
         if prov.get(key):
             parts.append(_stringify(prov[key]))
+    derivation = prov.get("derivation") or {}
+    for key in ("origin_query", "origin_label"):
+        if derivation.get(key):
+            parts.append(str(derivation[key]))
     if c.get("snippet"):
         parts.append(str(c["snippet"]))
     if c.get("title"):
         parts.append(str(c["title"]))
     if c.get("valid_as_of"):
-        parts.append(str(c["valid_as_of"]))
+        valid_as_of = str(c["valid_as_of"])
+        parts.append(valid_as_of)
+        try:
+            parts.append(datetime.fromisoformat(valid_as_of.replace("Z", "+00:00")).date().isoformat())
+        except ValueError:
+            pass
     return " ".join(parts) if parts else None
 
 
@@ -306,30 +315,31 @@ def _salient_tokens(claim: str) -> list[dict]:
                     "point": (float(match.group(1)), float(match.group(2))),
                     "role": "origin" if query_field == "origin" else "point",
                 })
-    for m in _PHONE_RE.finditer(claim):
+    prose = _URL_RE.sub(" ", claim)
+    for m in _PHONE_RE.finditer(prose):
         d = _digits(m.group())
         if len(d) == 11 and d.startswith("1"):
             d = d[1:]
         if len(d) == 10:
             tokens.append({"kind": "phone", "text": m.group().strip(), "digits": d})
-    for m in _SERVICE_NUMBER_RE.finditer(claim):
+    for m in _SERVICE_NUMBER_RE.finditer(prose):
         tokens.append({
             "kind": "service_number",
             "text": m.group(),
             "digits": m.group(),
         })
-    for m in _MONEY_RE.finditer(claim):
+    for m in _MONEY_RE.finditer(prose):
         d = _digits(m.group())
         if len(d) >= 2:  # skip "$5", too small, a coincidental match is likely
             tokens.append({"kind": "money", "text": m.group().strip(), "digits": d})
-    for m in _UNIT_NUM_RE.finditer(claim):
+    for m in _UNIT_NUM_RE.finditer(prose):
         tokens.append({
             "kind": "unit_number",
             "text": m.group().strip(),
             "digits": m.group(1),
             "unit_category": _unit_category(m.group(2)),
         })
-    for m in _FULL_DATE_RE.finditer(claim):
+    for m in _FULL_DATE_RE.finditer(prose):
         parsed = _parsed_date(m.group())
         numbers = [str(int(value)) for value in re.findall(r"\d+", m.group())]
         tokens.append({
@@ -338,7 +348,7 @@ def _salient_tokens(claim: str) -> list[dict]:
             "numbers": numbers,
             "parsed": parsed,
         })
-    for m in _ADDRESS_RE.finditer(claim):
+    for m in _ADDRESS_RE.finditer(prose):
         full = m.group().strip()
         # Numeric parts (house number AND numbered streets like "107th") match as digit-runs, so
         # "221 W 107th St" grounds against a source that stores "221 W 107 St". Ordinal suffixes,
@@ -348,7 +358,7 @@ def _salient_tokens(claim: str) -> list[dict]:
         words = [w.lower() for w in raw
                  if len(w) >= 3 and w.lower() not in _STREET_TYPES and w.lower() not in _DIRECTIONS]
         tokens.append({"kind": "address", "text": full, "nums": nums, "words": words, "phrase": _norm(full)})
-    for m in _PROPER_NOUN_RE.finditer(claim):
+    for m in _PROPER_NOUN_RE.finditer(prose):
         phrase = m.group().strip()
         sig = [w for w in _norm(phrase).split()
                if len(w) >= 3 and w not in _GENERIC_PN_WORDS and w not in _COMMON_WORDS
@@ -429,6 +439,18 @@ def _parsed_date(text: str) -> date | None:
     return None
 
 
+def _resident_calendar_dates(query: str, current_date: date) -> set[date]:
+    """Dates directly implied by an English ``this/on <weekday>`` resident phrase."""
+    words = _norm(query).split()
+    dates: set[date] = set()
+    for index, word in enumerate(words[1:], 1):
+        weekday = _WEEKDAY_NUMBERS.get(word)
+        if weekday is None or words[index - 1] not in {"this", "on"}:
+            continue
+        dates.add(current_date + timedelta(days=(weekday - current_date.weekday()) % 7))
+    return dates
+
+
 def _token_matches(
     tok: dict,
     blob_norm: str,
@@ -479,9 +501,23 @@ def _token_matches(
                 for match in _FULL_DATE_RE.finditer(blob)
                 if (parsed := _parsed_date(match.group())) is not None
             )
-        return any(
+        if any(
             _parsed_date(match.group()) == tok["parsed"]
             for match in _FULL_DATE_RE.finditer(blob)
+        ):
+            return True
+        parsed = tok["parsed"]
+        month = (
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december",
+        )[parsed.month - 1]
+        words = set(blob_norm.split())
+        return (
+            str(parsed.year) in words
+            and (
+                f"{month} {parsed.day}" in blob_norm
+                or f"{month[:3]} {parsed.day}" in blob_norm
+            )
         )
     if kind == "address":
         if any(nd not in blob_digits for nd in tok["nums"]):
@@ -617,6 +653,7 @@ def check_grounding(
     checked = 0
     nli_checked = 0
     current_date = current_date or datetime.now(ZoneInfo("America/New_York")).date()
+    system_dates = {current_date, *_resident_calendar_dates(query, current_date)}
     for block in re.split(r"\n\s*\n", text):
         cited = list(dict.fromkeys(_CITE_REF_RE.findall(block)))
         if not cited:
@@ -686,7 +723,7 @@ def check_grounding(
             hit = (
                 "system-date"
                 if tok["kind"] == "date"
-                and tok["parsed"] == current_date
+                and tok["parsed"] in system_dates
                 else None
             )
             for cid, blob in blobs.items():

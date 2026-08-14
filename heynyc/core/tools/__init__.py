@@ -10,9 +10,9 @@ __all__ = ["Tool", "ToolContext", "ToolHandler", "build_toolbox"]
 def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
     """Assemble the active tool set.
 
-    Geo tools are always available. index_search is added when an IndexRetriever
-    is provided (a built corpus). web_search is layered on in a later phase. The
-    geo tools self-report when a requested category has no dataset.
+    Geo and web retrieval tools are always available. The local index is kept
+    behind the application boundary rather than exposed as a competing tool.
+    The geo tools self-report when a requested category has no dataset.
     """
     from .about import about_tools
     from .geo import geo_tools
@@ -22,17 +22,14 @@ def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
     tools: dict[str, Tool] = {}
     for tool in geo_tools():
         tools[tool.name] = tool
-    for tool in web_search_tools(registry.allowlist(), registry.source_tiers(), registry.news_tier()):
+    for tool in web_search_tools(
+        registry.allowlist(), registry.source_tiers(), registry.news_tier()
+    ):
         tools[tool.name] = tool
     for tool in web_fetch_tools():
         tools[tool.name] = tool
     for tool in about_tools():
         tools[tool.name] = tool
-    if index is not None:
-        from .index_search import index_search_tools
-
-        for tool in index_search_tools(index):
-            tools[tool.name] = tool
     # Module-specific tools (the extensibility headline): a module may ship tools.py.
     for tool in registry.load_module_tools():
         tools[tool.name] = tool

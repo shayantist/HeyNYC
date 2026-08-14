@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
+from typing import get_type_hints
 
 from pydantic_ai.messages import (
     ModelMessage,
@@ -25,6 +27,7 @@ from heynyc.core.pydantic_runtime import (
 from heynyc.core.pydantic_runtime.runtime import (
     VERIFICATION_ABSTAIN_FALLBACK,
     _authoritative_output_tools,
+    _final_answer,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
@@ -32,6 +35,27 @@ from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
 from scripts import pydantic_ai_ab
 from scripts.pydantic_ai_ab import _parser, build_factories
+
+
+def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
+    return ToolCallPart(
+        "final_answer",
+        {"answer": answer},
+        call_id,
+    )
+
+
+def test_final_answer_schema_keeps_completion_guidance_concise() -> None:
+    assert "answer" in inspect.signature(_final_answer).parameters
+    annotation = get_type_hints(_final_answer, include_extras=True)["answer"]
+    description = annotation.__metadata__[0].description.lower()
+
+    assert "resident-facing prose with inline citation markers" in description
+    assert "every requested outcome that the evidence supports" in description
+    assert "state any unresolved outcome plainly" in description
+    assert "never choose transport from medical facts" in description
+    assert "do not write urls" in description
+    assert len(description.split()) <= 35
 
 
 class _Verifier:
@@ -121,7 +145,9 @@ async def test_structured_data_mismatch_fails_closed_before_semantic_verificatio
         model_calls += 1
         if model_calls == 1:
             return ModelResponse([ToolCallPart("source", {}, "source-1")])
-        return ModelResponse([TextPart("The benefit is $500. {cite:S1}")])
+        return ModelResponse([
+            _cited_answer("The benefit is $500. {cite:S1}", f"answer-{model_calls}")
+        ])
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -181,6 +207,7 @@ async def test_structured_grounding_uses_native_cited_prose() -> None:
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         output_names = {tool.name for tool in info.output_tools}
         assert "grounded_answer" not in output_names
+        assert "final_answer" in output_names
         assert "clarification_request" in output_names
         assert "nonfactual_outcome" in output_names
         system_prompts.extend(
@@ -190,7 +217,7 @@ async def test_structured_grounding_uses_native_cited_prose() -> None:
             if isinstance(part, SystemPromptPart)
         )
         return ModelResponse([
-            TextPart("The office is listed at 123 Main Street. {cite:S1}")
+            _cited_answer("The office is listed at 123 Main Street. {cite:S1}")
         ])
 
     runtime = PydanticRuntimeAdapter(
@@ -210,6 +237,10 @@ async def test_structured_grounding_uses_native_cited_prose() -> None:
     )
     assert any(
         "place each citation marker immediately after" in prompt.lower()
+        for prompt in system_prompts
+    )
+    assert any(
+        "cite every source used by a sentence" in prompt.lower()
         for prompt in system_prompts
     )
 
@@ -324,7 +355,7 @@ async def test_loaded_capability_grounded_handoff_rejects_a_clarification_shortc
             assert "requires a grounded handoff" in str(messages[-1]).lower()
             return ModelResponse([ToolCallPart("web_fetch", {}, "source")])
         return ModelResponse([
-            TextPart(
+            _cited_answer(
                 "Use the MTA accessible trip planner. {cite:S1} "
                 "What nearby landmark should I use?"
             )
@@ -369,7 +400,7 @@ async def test_structured_answer_normalizes_matching_embedded_citation_marker() 
         model_calls += 1
         if model_calls == 1:
             return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
-        return ModelResponse([TextPart("Benefits may change. {cite:S1}")])
+        return ModelResponse([_cited_answer("Benefits may change. {cite:S1}")])
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -413,7 +444,7 @@ async def test_structured_answer_rejects_internal_url_markup() -> None:
             if model_calls == 2
             else "Free legal help is available. {cite:S1}"
         )
-        return ModelResponse([TextPart(text)])
+        return ModelResponse([_cited_answer(text, f"answer-{model_calls}")])
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -438,6 +469,208 @@ async def test_structured_answer_rejects_internal_url_markup() -> None:
     ]
 
 
+async def test_event_answer_uses_the_registered_action_url() -> None:
+    url = "https://www.ticketmaster.com/event/exact"
+
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            url,
+            title="Evening event",
+            kind="DATA",
+            snippet="Evening event at 9 PM",
+        )
+        return f"Evening event at 9 PM. {{cite:{citation_id}}}"
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([
+                ToolCallPart("find_nyc_events", {}, "events-1")
+            ])
+        if model_calls == 2:
+            return ModelResponse([
+                _cited_answer(
+                    "[Evening event](https://www.ticketmaster.com/event/invented) "
+                    "starts at 9 PM. {cite:S1}",
+                    "answer-1",
+                )
+            ])
+        return ModelResponse([
+            _cited_answer("Evening event starts at 9 PM. {cite:S1}", "answer-2")
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_nyc_events": Tool(
+                name="find_nyc_events",
+                description="Find current NYC events",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("What can I do tonight?")
+
+    assert model_calls == 3
+    assert url in result.text
+    assert "invented" not in result.text
+    assert result.diagnostics["validation_rejections"] == [
+        {
+            "attempt": 1,
+            "stage": "unregistered_url",
+            "urls": ["https://www.ticketmaster.com/event/invented"],
+        }
+    ]
+
+
+async def test_answer_preserves_exact_tool_action_url_without_retry() -> None:
+    action_url = "https://housingconnect.nyc.gov/PublicWeb/"
+
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/resource/vy5i-a666.json",
+            title="Housing Connect lotteries",
+            kind="DATA",
+            snippet="An open housing lottery",
+        )
+        return f"Apply at {action_url} {{cite:{citation_id}}}"
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("find_lotteries", {}, "lotteries-1")])
+        return ModelResponse([
+            _cited_answer(
+                f"Apply yourself at {action_url} {{cite:S1}}",
+                "answer-1",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_lotteries": Tool(
+                name="find_lotteries",
+                description="Find open housing lotteries",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("What housing lotteries are open?")
+
+    assert model_calls == 2
+    assert action_url in result.text
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_location_answer_gets_a_map_when_model_omits_it() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/resource/location.json",
+            title="NYC location",
+            kind="DATA",
+            snippet="A nearby public location",
+            provenance={"snapshot": {"lat": 40.76082, "lon": -73.97737}},
+        )
+        return f"A nearby public location. {{cite:{citation_id}}}"
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("find_locations", {}, "locations-1")])
+        return ModelResponse([
+            _cited_answer("A nearby public location. {cite:S1}", "answer-1")
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_locations": Tool(
+                name="find_locations",
+                description="Find public locations",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("What is nearby?")
+
+    assert model_calls == 2
+    assert (
+        "Directions: https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737"
+        in result.text
+    )
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_answer_accepts_an_exact_origin_address_returned_by_a_tool() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        location_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/resource/location.json",
+            title="NYC location",
+            kind="DATA",
+            snippet="575 Fifth Avenue",
+            provenance={
+                "snapshot": {"address": "575 Fifth Avenue"},
+                "derivation": {
+                    "origin_query": "Rockefeller Center",
+                    "origin_label": "Rockefeller Center, 45, Rockefeller Plaza",
+                },
+            },
+        )
+        return (
+            "Resolved Rockefeller Center to Rockefeller Center, 45, Rockefeller Plaza. "
+            f"{{cite:{location_id}}} Nearby option: 575 Fifth Avenue. {{cite:{location_id}}}"
+        )
+
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("find_locations", {}, "locations-1")])
+        return ModelResponse([
+            _cited_answer(
+                "I resolved Rockefeller Center to 45 Rockefeller Plaza. "
+                "{cite:S1} The nearby option is 575 Fifth Avenue. {cite:S1}",
+                "answer-1",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_locations": Tool(
+                name="find_locations",
+                description="Find public locations",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+    ).run("What is near Rockefeller Center?")
+
+    assert model_calls == 2
+    assert "45 Rockefeller Plaza" in result.text
+    assert result.diagnostics["validation_rejections"] == []
+
+
 async def test_structured_answer_rejects_internal_template_placeholders() -> None:
     model_calls = 0
 
@@ -450,7 +683,7 @@ async def test_structured_answer_rejects_internal_template_placeholders() -> Non
             else "What NYC service do you need help with?"
         )
         if model_calls == 1:
-            return ModelResponse([TextPart(text)])
+            return ModelResponse([_cited_answer(text, f"answer-{model_calls}")])
         nonfactual = next(
             tool.name
             for tool in info.output_tools
@@ -511,7 +744,10 @@ async def test_cited_prose_retries_an_unknown_citation_id() -> None:
             assert "Use only citation IDs returned by tools" in feedback
         citation_id = "S3" if model_calls == 2 else "S1"
         return ModelResponse([
-            TextPart(f"Benefits may change. {{cite:{citation_id}}}")
+            _cited_answer(
+                f"Benefits may change. {{cite:{citation_id}}}",
+                f"answer-{model_calls}",
+            )
         ])
 
     runtime = PydanticRuntimeAdapter(
@@ -561,7 +797,7 @@ async def test_mechanical_validator_does_not_infer_claim_ownership() -> None:
         if model_calls == 1:
             return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
         return ModelResponse([
-            TextPart(
+            _cited_answer(
                 "Use the SNAP Application FAQ, then call MOIA for legal help. {cite:S2}"
             )
         ])
@@ -612,7 +848,7 @@ async def test_mechanical_validator_does_not_parse_fact_ownership() -> None:
         if model_calls == 1:
             return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
         return ModelResponse([
-            TextPart(
+            _cited_answer(
                 "The change took effect on July 16, 2026. "
                 "Call 311 for help. {cite:S2}"
             )
@@ -656,7 +892,7 @@ async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
         if calls == 1:
             return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
         return ModelResponse([
-            TextPart("Bellwether can get free immigration legal help. {cite:S1}")
+            _cited_answer("Bellwether can get free immigration legal help. {cite:S1}")
         ])
 
     result = await PydanticRuntimeAdapter(

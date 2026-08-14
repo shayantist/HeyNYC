@@ -61,6 +61,90 @@ async def test_crisis_screen_uses_typed_output_and_reports_native_usage() -> Non
     assert result.requests == 1
 
 
+async def test_crisis_screen_labels_previous_and_current_turns() -> None:
+    async def classify(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        payload = str(messages)
+        assert '"previous_message": "¿está abierto ahora?"' in payload
+        assert '"current_message": "is it open on saturday?"' in payload
+        output = info.output_tools[0]
+        return ModelResponse([
+            ToolCallPart(output.name, {"risk": "none", "language": "en"}, "risk-1")
+        ])
+
+    result = await build_crisis_screen(
+        FunctionModel(classify),
+        model_name="test/safety",
+    )(("¿está abierto ahora?", "is it open on saturday?"))
+
+    assert result.language == "en"
+
+
+async def test_language_switch_retries_answer_in_the_current_turn_language() -> None:
+    answer_calls = 0
+    screen_calls: list[str] = []
+
+    async def answer(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal answer_calls
+        answer_calls += 1
+        answers = (
+            "La despensa esta abierta.",
+            "Todavia esta abierta el sabado.",
+            "It is still open on Saturday.",
+        )
+        output = next(tool for tool in info.output_tools if tool.name == "final_answer")
+        return ModelResponse([
+            ToolCallPart(
+                output.name,
+                {
+                    "answer": answers[answer_calls - 1],
+                },
+                f"answer-{answer_calls}",
+            )
+        ])
+
+    async def screen(user_turns: tuple[str, ...]):
+        current = user_turns[-1]
+        screen_calls.append(current)
+        language = "es" if "despensa" in current or "Todavia" in current else "en"
+        return SimpleNamespace(
+            risk="none",
+            language=language,
+            model="test/safety",
+            input_tokens=2,
+            output_tokens=1,
+            cached_input_tokens=0,
+            requests=1,
+            cost_usd=0.0001,
+            latency_ms=1.0,
+        )
+
+    conversation = PydanticRuntimeAdapter(
+        FunctionModel(answer),
+        registry=Registry([]),
+        tools={},
+        crisis_screen=screen,
+        structured_grounding=True,
+    ).conversation()
+
+    await conversation.send("¿Donde esta la despensa?")
+    result = await conversation.send("is it open on saturday?")
+
+    assert result.text == "It is still open on Saturday."
+    assert answer_calls == 3
+    assert screen_calls == [
+        "¿Donde esta la despensa?",
+        "is it open on saturday?",
+        "Todavia esta abierta el sabado.",
+        "It is still open on Saturday.",
+    ]
+    assert result.usage["language_verifier_requests"] == 2
+    assert result.usage["language_verifier_cost_usd"] == pytest.approx(0.0002)
+    assert result.diagnostics["validation_rejections"][0]["stage"] == "response_language"
+
+
 async def test_semantic_crisis_screen_bypasses_the_answer_model_and_counts_usage() -> None:
     answer_calls = 0
 
@@ -144,6 +228,25 @@ async def test_semantic_crisis_screen_does_not_capture_third_person_help() -> No
     assert answer_calls == 1
     assert result.usage["n_model_calls"] == 2
     assert result.usage["safety_input_tokens"] == 10
+
+
+async def test_semantic_screen_routes_unknown_missed_dose_without_answer_model() -> None:
+    screen, _ = _screen_returning("medication_dose_uncertainty", language="bn")
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(_unreachable_answer()), registry=Registry([]), tools={},
+        crisis_screen=screen,
+    )
+
+    result = await runtime.run(
+        "মায়ের pressure medicine আজ সকালে দিতে ভুলেছি। এখন কি দুইটা tablet দেব?"
+    )
+
+    assert "দ্বিগুণ" in result.text
+    assert "1-800-222-1222" in result.text
+    assert result.citations
+    assert result.diagnostics["deterministic_evidence_citations"] == ["S1", "S2"]
+    assert result.diagnostics["safety_risk"] == "medication_dose_uncertainty"
+    assert result.diagnostics["safety_response_source"] == "deterministic"
 
 
 async def test_unavailable_crisis_screen_fails_closed_before_answering() -> None:

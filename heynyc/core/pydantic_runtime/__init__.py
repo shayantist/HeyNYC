@@ -10,6 +10,7 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.profiles.openai import openai_model_profile
 
 from heynyc.core import config
+from heynyc.core.citations import CitationRegistry
 from heynyc.core.memory import compact_memory, context_capacity, request_tokens
 from heynyc.core.prompts import build_system_prompt_tiers
 from heynyc.core.registry import Registry
@@ -77,7 +78,7 @@ def build_runtime(
     tools: dict[str, Tool] | None = None,
     index: Any = None,
     use_module_capabilities: bool = False,
-    current_awareness: Callable[[], Awaitable[str]] | None = None,
+    current_awareness: Callable[[CitationRegistry], Awaitable[str]] | None = None,
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
     structured_grounding: bool = True,
@@ -119,7 +120,6 @@ def build_runtime(
         extra_capabilities=extra_capabilities,
         usage_limits=UsageLimits(
             request_limit=10 if use_module_capabilities else 8,
-            tool_calls_limit=10,
         ),
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
@@ -180,8 +180,9 @@ def build_configured_runtime(
     *,
     model: Any,
     index: Any = None,
-    current_awareness: Callable[[], Awaitable[str]] | None = None,
+    current_awareness: Callable[[CitationRegistry], Awaitable[str]] | None = None,
     output_guard: Any = None,
+    stream_model_requests: bool = False,
 ) -> PydanticRuntimeAdapter:
     selected_model = configured_model(model) if isinstance(model, str) else model
     safety_model_name = (
@@ -213,7 +214,7 @@ def build_configured_runtime(
             if isinstance(model, str)
             else type(selected_model).__name__
         ),
-        stream_model_requests=False,
+        stream_model_requests=stream_model_requests,
         crisis_screen=build_crisis_screen(
             safety_model,
             model_name=safety_model_name,

@@ -41,7 +41,7 @@ CAPABILITY_TOOLS = {
     },
     "housing_connect": {"find_housing_connect_lotteries"},
     "immigration": set(),
-    "libraries": set(),
+    "libraries": {"find_bpl_branches"},
     "nyc311_status": {"check_311_request", "search_311_complaints"},
     "public_restrooms": {"find_public_restrooms"},
     "snap_centers": set(),
@@ -49,6 +49,10 @@ CAPABILITY_TOOLS = {
     "transit": {"check_mta_elevators"},
     "wic": {"find_wic_sites"},
     "workers": {"get_worker_rights_guidance"},
+}
+
+SITUATION_CAPABILITY_TOOLS = {
+    "benefits-utility-shutoff": {"get_utility_shutoff_guidance"},
 }
 
 
@@ -94,10 +98,37 @@ def test_model_visible_surface_is_pinned():
     )
 
     assert {tool.name for tool in shared} == EAGER_TOOL_NAMES
-    assert {
+    actual_capabilities = {
         capability.id: {tool.name for tool in capability.tools}
         for capability in capabilities
-    } == CAPABILITY_TOOLS
+    }
+    expected_capabilities = dict(CAPABILITY_TOOLS)
+    for module in registry.modules:
+        root = module.parent or module.name
+        module_prefix = root.replace("_", "-")
+        for hint in module.situations:
+            hint_id = hint.name.replace("_", "-").removeprefix(
+                f"{module_prefix}-"
+            )
+            capability_id = f"{module_prefix}-{hint_id}"
+            expected_capabilities[capability_id] = SITUATION_CAPABILITY_TOOLS.get(
+                capability_id, set()
+            )
+    assert actual_capabilities == expected_capabilities
+    tool_owners: dict[str, str] = {}
+    for capability in capabilities:
+        for tool in capability.tools:
+            assert tool.name not in tool_owners, (
+                f"{tool.name} is duplicated by {tool_owners[tool.name]} and {capability.id}"
+            )
+            tool_owners[tool.name] = capability.id
+    utility = next(
+        capability for capability in capabilities
+        if capability.id == "benefits-utility-shutoff"
+    )
+    utility_instructions = "\n".join(utility._instructions)
+    assert "Enabled situation tools: `get_utility_shutoff_guidance`" in utility_instructions
+    assert "Load the parent `benefits` capability" not in utility_instructions
 
     runtime = build_runtime(
         registry,
@@ -109,7 +140,7 @@ def test_model_visible_surface_is_pinned():
     assert {
         definition.name
         for definition in runtime._agent._output_schema.toolset._tool_defs
-    } == {"clarification_request", "nonfactual_outcome"}
+    } == {"final_answer", "clarification_request", "nonfactual_outcome"}
 
 
 def test_tool_parameters_are_described_and_self_consistent():
@@ -150,9 +181,36 @@ def test_output_tool_parameters_are_described():
         definition.name: _missing_descriptions(definition.parameters_json_schema)
         for definition in runtime._agent._output_schema.toolset._tool_defs
     } == {
+        "final_answer": [],
         "clarification_request": [],
         "nonfactual_outcome": [],
     }
+
+
+def test_final_answer_tool_is_one_concise_terminal_prose_contract():
+    runtime = build_runtime(
+        _registry(),
+        model=FunctionModel(lambda *_args: None),
+        tools=_runtime_tools(_registry()),
+        use_module_capabilities=True,
+        structured_grounding=True,
+    )
+    final_answer = next(
+        definition
+        for definition in runtime._agent._output_schema.toolset._tool_defs
+        if definition.name == "final_answer"
+    )
+
+    assert "complete final answer" in final_answer.description.lower()
+    assert "not a status update" in final_answer.description.lower()
+    assert len(final_answer.description.split()) <= 55
+    assert set(final_answer.parameters_json_schema["properties"]) == {"answer"}
+    assert final_answer.parameters_json_schema["required"] == ["answer"]
+    answer_description = final_answer.parameters_json_schema["properties"]["answer"][
+        "description"
+    ].lower()
+    assert "resident-facing prose with inline citation markers" in answer_description
+    assert len(answer_description.split()) <= 35
 
 
 def test_known_schema_contracts_match_handler_behavior():

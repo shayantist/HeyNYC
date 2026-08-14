@@ -31,6 +31,7 @@ from pydantic_ai.usage import RunUsage
 from heynyc.core.telemetry import priced_cost_usd
 
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
+_FINAL_OUTPUT_TOOL = "final_answer"
 _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
 _CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 NONFACTUAL_OUTCOME_TEXT = (
@@ -38,6 +39,7 @@ NONFACTUAL_OUTCOME_TEXT = (
 )
 _OUTPUT_TOOLS = {
     _GROUNDED_OUTPUT_TOOL,
+    _FINAL_OUTPUT_TOOL,
     _NONFACTUAL_OUTPUT_TOOL,
     _CLARIFICATION_OUTPUT_TOOL,
 }
@@ -166,9 +168,15 @@ def _accepted_grounded_outputs(
             )
             if part.tool_name == _GROUNDED_OUTPUT_TOOL
             else (
-                ClarificationRequest.model_validate(part.args_as_dict()).question
-                if part.tool_name == _CLARIFICATION_OUTPUT_TOOL
-                else NONFACTUAL_OUTCOME_TEXT
+                str(part.args_as_dict()["answer"])
+                if part.tool_name == _FINAL_OUTPUT_TOOL
+                else (
+                    ClarificationRequest.model_validate(
+                        part.args_as_dict()
+                    ).question
+                    if part.tool_name == _CLARIFICATION_OUTPUT_TOOL
+                    else NONFACTUAL_OUTCOME_TEXT
+                )
             )
         )
         for message in messages
@@ -462,6 +470,44 @@ def _native_orchestration_history(
             parts = [
                 part for part in message.parts if isinstance(part, request_parts)
             ]
+        if parts:
+            preserved.append(replace(message, parts=parts))
+    return preserved
+
+
+def _conversation_history(messages: Sequence[ModelMessage]) -> list[ModelMessage]:
+    """Keep resident turns, accepted answers, and Pydantic's deferred-loading state."""
+    accepted_outputs = _accepted_grounded_outputs(messages)
+    preserved: list[ModelMessage] = []
+    response_state = (
+        LoadCapabilityCallPart,
+        ToolSearchCallPart,
+        NativeToolSearchCallPart,
+        NativeToolSearchReturnPart,
+    )
+    request_state = (LoadCapabilityReturnPart, ToolSearchReturnPart)
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            parts = [
+                part
+                for part in message.parts
+                if isinstance(part, (UserPromptPart, *request_state))
+            ]
+        else:
+            state = [part for part in message.parts if isinstance(part, response_state)]
+            if state:
+                parts = [
+                    part
+                    for part in message.parts
+                    if isinstance(part, (ThinkingPart, *response_state))
+                ]
+            else:
+                text = _response_text(message, accepted_outputs)
+                parts = [TextPart(text)] if text and not any(
+                    isinstance(part, ToolCallPart)
+                    and part.tool_name not in _OUTPUT_TOOLS
+                    for part in message.parts
+                ) else []
         if parts:
             preserved.append(replace(message, parts=parts))
     return preserved

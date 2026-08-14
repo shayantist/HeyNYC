@@ -53,11 +53,16 @@ class ToolContext:
     resident_facts: dict[str, ResidentFact] = field(default_factory=dict)
     fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
     semantic_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
+    language_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
+    tool_result_urls: set[str] = field(default_factory=set)
     response_priority_citation_ids: set[str] = field(default_factory=set)
+    rendered_fetch_urls: set[str] = field(default_factory=set)
     language: str | None = None
+    verify_output_language: bool = False
     cooling_terminal_result: str | None = None
     cooling_terminal_citation_ids: tuple[str, ...] = ()
+    cooling_terminal_synthesis: bool = False
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

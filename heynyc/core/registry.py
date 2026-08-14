@@ -226,8 +226,9 @@ class Registry:
         return _SOURCE_LABELS.get(module.name, "Official NYC sources")
 
     def _official_link(self, module: ServiceModule) -> str:
-        """A primary official URL: the first index seed if any, else the first
-        allowlisted domain as an https URL, else blank."""
+        """A primary public URL, independent from the module's RAG seed set."""
+        if module.official_link:
+            return module.official_link
         if module.seeds:
             return module.seeds[0]
         if module.allowlist:

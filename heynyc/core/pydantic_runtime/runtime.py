@@ -6,8 +6,9 @@ import re
 import time
 from collections.abc import AsyncIterable, Awaitable, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 
 import httpx
 from pydantic import BaseModel, Field, TypeAdapter
@@ -20,6 +21,8 @@ from pydantic_ai import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelRetry,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
     RunContext,
@@ -34,6 +37,7 @@ from pydantic_ai.capabilities import (
     AbstractCapability,
     Hooks,
     ReinjectSystemPrompt,
+    ToolSearch,
     WrapModelRequestHandler,
 )
 from pydantic_ai.exceptions import SkipModelRequest, ToolFailed
@@ -42,6 +46,7 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     SystemPromptPart,
     TextPart,
     ToolCallPart,
@@ -57,10 +62,17 @@ from pydantic_ai.usage import RunUsage
 
 from heynyc.core import config, events
 from heynyc.core.agent import (
+    _MISSED_DOSE_RESPONSE_EN,
+    _SOURCE_MISSED_DOSE,
+    _SOURCE_POISON_CONTROL,
     AgentResult,
+    _action_url,
+    _attach_event_action_urls,
+    _attach_location_action_urls,
     _delivered_notify_titles,
     _ground_emergency_backstop,
     _unknown_citation_ids,
+    _urls_in,
 )
 from heynyc.core.citations import (
     CitationRegistry,
@@ -90,6 +102,7 @@ from heynyc.core.nli import NLIInput
 from heynyc.core.pii_redaction import redact_sensitive_identifiers
 from heynyc.core.registry import Registry
 from heynyc.core.spend import SpendGuard
+from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 
 from .projection import (
@@ -99,12 +112,14 @@ from .projection import (
     GroundedAnswer,
     _captured_usage,
     _complete_cost,
+    _conversation_history,
     _dynamic_instructions,
     _function_tool_schemas,
     _grounded_block_text,
     _legacy_citation_ids,
     _measurement_messages,
     _native_cache_settings,
+    _native_cost,
     _native_history,
     _native_orchestration_history,
     _openai_messages,
@@ -124,6 +139,7 @@ from .tools import (
 _DEFERRED_REQUESTS = TypeAdapter(DeferredToolRequests)
 _RESIDENT_FACTS = TypeAdapter(dict[str, ResidentFact])
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
+_FINAL_OUTPUT_TOOL = "final_answer"
 _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
 _CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 _INTERNAL_TEMPLATE_TOKEN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
@@ -135,19 +151,50 @@ _GROUNDED_HANDOFF_REQUIREMENT = "requires a grounded handoff"
 _CITED_PROSE_SYSTEM_PROMPT = (
     "Write ordinary conversational prose for the final answer. Place each citation marker "
     "immediately after the factual or procedural text it supports, using only source IDs "
-    "returned by tools in this run, for example {cite:S1}. Do not cite discovery-only search "
-    "snippets. The runtime adds structured source limitations after validation."
+    "returned by tools in this run, for example {cite:S1}. Cite every source used by a sentence. "
+    "Do not cite discovery-only search snippets. The runtime adds structured source limitations "
+    "after validation."
 )
 _MULTI_TOOL_SCOPE_REMINDER = (
     "Keep each tool result within that tool call's own scope. "
     "Do not apply a location, date, audience, or filter from one tool call to another."
 )
-_FINAL_SYNTHESIS_INSTRUCTION = (
-    "Tool use is finished for this turn. Answer now from the useful evidence already retrieved. "
-    "Preserve every supported requested outcome. If one requested fact remains unresolved, "
-    "state the unresolved part as a limitation without discarding supported results. Do not ask "
-    "a clarifying question merely because retrieval could not establish that fact."
+_COOLING_SYNTHESIS_REMINDER = (
+    "The current cooling lookup is definitive for the selected unavailable site. Finish the "
+    "answer now from the conversation and retrieved evidence. Answer each requested condition, "
+    "including unconfirmed amenities and resident-stated access constraints. Do not include the "
+    "unavailable site's name, address, distance, map, route, or destination framing. Preserve "
+    "mobility limits without choosing transport from medical facts. Put City citations only on "
+    "City status or amenity claims; leave resident-provided facts and general medical or route "
+    "cautions uncited."
 )
+_TOOL_SEARCH_DESCRIPTION = (
+    "Discover deferred purpose-built NYC service workflows when the resident needs an "
+    "operation not already visible. Do not use this for general web facts, current events, "
+    "sports, news, or opening a webpage; use `web_search` or `web_fetch` for those. If no "
+    "tools are found, do not retry."
+)
+
+
+def _final_answer(
+    ctx: RunContext[ToolContext],
+    answer: Annotated[
+        str,
+        Field(
+            description=(
+                "Resident-facing prose with inline citation markers. Answer every requested "
+                "outcome that the evidence supports and state any unresolved outcome plainly. "
+                "Never choose transport from medical facts. Do not write URLs; the runtime "
+                "attaches cited links."
+            )
+        ),
+    ],
+) -> str:
+    """Return the complete resident-facing prose answer with inline citations."""
+    del ctx
+    return answer
+
+
 TEMPORARY_FAILURE_FALLBACK = (
     "I hit a temporary problem before I could verify an answer. "
     "Please try again in a moment. If you need help now, call 311 and ask for the service you "
@@ -438,17 +485,41 @@ async def _forward_events(
                 events.ToolStart(
                     tool_call_id=event.part.tool_call_id,
                     name=event.part.tool_name,
+                    args=event.part.args_as_dict(),
                 ),
             )
         elif isinstance(event, FunctionToolResultEvent):
             part = event.part
+            result = event.content if event.content is not None else part.content
             _emit(
                 sink,
                 events.ToolCompleted(
                     tool_call_id=part.tool_call_id,
                     name=part.tool_name,
                     status="ok" if isinstance(part, ToolReturnPart) else "error",
-                    result_summary=str(event.content or "")[:160],
+                    result_summary=str(result or "")[:160],
+                    result=result,
+                ),
+            )
+        elif isinstance(event, OutputToolCallEvent):
+            _emit(
+                sink,
+                events.OutputAttempt(
+                    tool_call_id=event.part.tool_call_id,
+                    name=event.part.tool_name,
+                    args=event.part.args_as_dict(),
+                ),
+            )
+        elif isinstance(event, OutputToolResultEvent) and isinstance(
+            event.part,
+            RetryPromptPart,
+        ):
+            _emit(
+                sink,
+                events.ValidationRejected(
+                    tool_call_id=event.part.tool_call_id,
+                    name=event.part.tool_name,
+                    message=str(event.part.content),
                 ),
             )
         elif isinstance(event, DeferredToolRequestsEvent):
@@ -531,11 +602,23 @@ def _validated_safety_language(language: Any) -> str | None:
 class _ModelTimingCapability(AbstractCapability[ToolContext]):
     """Measure only native provider requests, excluding tools and orchestration."""
 
-    def __init__(self, request_timeout_s: float = _MODEL_REQUEST_TIMEOUT_S) -> None:
+    def __init__(
+        self,
+        model: str = "",
+        request_timeout_s: float = _MODEL_REQUEST_TIMEOUT_S,
+    ) -> None:
+        self.model = model
         self.elapsed_ms = 0.0
         self.request_ms: list[float] = []
         self.request_timeout_s = request_timeout_s
         self.stalled_requests = 0
+        self.event_sink: Callable[[events.Event], None] | None = None
+        self.cumulative_usage = RunUsage()
+        self.cumulative_cost_usd = 0.0
+        self.cost_priced = True
+
+    def bind(self, event_sink: Callable[[events.Event], None] | None) -> None:
+        self.event_sink = event_sink
 
     async def wrap_model_request(
         self,
@@ -544,10 +627,33 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
         request_context: ModelRequestContext,
         handler: WrapModelRequestHandler,
     ) -> ModelResponse:
+        request_number = len(self.request_ms) + 1
+        _emit(
+            self.event_sink,
+            events.ModelRequestStart(request_number=request_number),
+        )
         started = time.perf_counter()
+        response = None
         try:
             async with asyncio.timeout(self.request_timeout_s):
-                return await handler(request_context)
+                response = await handler(request_context)
+                self.cumulative_usage.incr(response.usage)
+                self.cumulative_usage.requests += 1
+                current_cost = priced_cost_usd(
+                    self.model,
+                    self.cumulative_usage.input_tokens,
+                    self.cumulative_usage.output_tokens,
+                    self.cumulative_usage.cache_read_tokens,
+                )
+                if current_cost is not None:
+                    self.cumulative_cost_usd = current_cost
+                else:
+                    request_cost = _native_cost([response])
+                    if request_cost is None:
+                        self.cost_priced = False
+                    elif self.cost_priced:
+                        self.cumulative_cost_usd += request_cost
+                return response
         except TimeoutError:
             self.stalled_requests += 1
             raise
@@ -555,63 +661,22 @@ class _ModelTimingCapability(AbstractCapability[ToolContext]):
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.elapsed_ms += elapsed_ms
             self.request_ms.append(round(elapsed_ms, 3))
-
-
-class _ReserveFinalRequestCapability(AbstractCapability[ToolContext]):
-    """Reserve requests for synthesis and one bounded output retry."""
-
-    def __init__(self, reserved_requests: int, reserved_tool_calls: int = 1) -> None:
-        self.reserved_requests = reserved_requests
-        self.reserved_tool_calls = reserved_tool_calls
-
-    def _reserved(self, ctx: RunContext[ToolContext]) -> bool:
-        request_limit = ctx.usage_limits.request_limit
-        requests_reserved = (
-            request_limit is not None
-            and ctx.usage.requests > 0
-            and ctx.usage.requests
-            >= max(1, request_limit - self.reserved_requests)
-        )
-        tool_limit = ctx.usage_limits.tool_calls_limit
-        tools_reserved = (
-            tool_limit is not None
-            and ctx.usage.tool_calls > 0
-            and ctx.usage.tool_calls
-            >= max(1, tool_limit - self.reserved_tool_calls)
-        )
-        return requests_reserved or tools_reserved
-
-    async def prepare_tools(
-        self,
-        ctx: RunContext[ToolContext],
-        tool_defs: list[ToolDefinition],
-    ) -> list[ToolDefinition]:
-        return [] if self._reserved(ctx) else tool_defs
-
-    async def prepare_output_tools(
-        self,
-        ctx: RunContext[ToolContext],
-        tool_defs: list[ToolDefinition],
-    ) -> list[ToolDefinition]:
-        return [] if self._reserved(ctx) else tool_defs
-
-    async def before_model_request(
-        self,
-        ctx: RunContext[ToolContext],
-        request_context: ModelRequestContext,
-    ) -> ModelRequestContext:
-        if self._reserved(ctx):
-            request_context.model_request_parameters.function_tools = []
-            request = next(
-                message
-                for message in reversed(request_context.messages)
-                if isinstance(message, ModelRequest)
+            _emit(
+                self.event_sink,
+                events.ModelRequestCompleted(
+                    request_number=request_number,
+                    elapsed_ms=round(elapsed_ms, 3),
+                    usage={
+                        "input_tokens": self.cumulative_usage.input_tokens,
+                        "output_tokens": self.cumulative_usage.output_tokens,
+                        "cached_input_tokens": self.cumulative_usage.cache_read_tokens,
+                        "requests": self.cumulative_usage.requests,
+                        "cost_usd": (
+                            self.cumulative_cost_usd if self.cost_priced else None
+                        ),
+                    },
+                ),
             )
-            if _FINAL_SYNTHESIS_INSTRUCTION not in (request.instructions or ""):
-                request.instructions = "\n\n".join(
-                    filter(None, (request.instructions, _FINAL_SYNTHESIS_INSTRUCTION))
-                )
-        return request_context
 
 
 class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
@@ -690,8 +755,40 @@ class _CoolingTerminalCapability(AbstractCapability[ToolContext]):
         }
         if len(returned_tools) > 1:
             return request_context
+        if ctx.deps.cooling_terminal_synthesis:
+            request_context.model_request_parameters = replace(
+                request_context.model_request_parameters,
+                function_tools=[],
+            )
+            request = next(
+                message
+                for message in reversed(messages[turn_start:])
+                if isinstance(message, ModelRequest)
+            )
+            if _COOLING_SYNTHESIS_REMINDER not in (request.instructions or ""):
+                request.instructions = "\n\n".join(
+                    filter(None, (request.instructions, _COOLING_SYNTHESIS_REMINDER))
+                )
+            return request_context
         result = localize(result, ctx.deps.language)
-        raise SkipModelRequest(ModelResponse([TextPart(result)]))
+        mapping = ctx.deps.citations.mapping()
+        citation_ids = sorted(
+            set(ctx.deps.cooling_terminal_citation_ids) & set(mapping)
+        )
+        if citation_ids:
+            result += " " + " ".join(f"{{cite:{citation_id}}}" for citation_id in citation_ids)
+        part = (
+            ToolCallPart(
+                _FINAL_OUTPUT_TOOL,
+                {
+                    "answer": result,
+                },
+                "cooling-terminal",
+            )
+            if self.structured_grounding
+            else TextPart(result)
+        )
+        raise SkipModelRequest(ModelResponse([part]))
 
 
 class PydanticRuntimeAdapter:
@@ -707,7 +804,7 @@ class PydanticRuntimeAdapter:
         prompt_builder: Callable[[str], str] | None = None,
         guard_grounding: bool = True,
         use_module_capabilities: bool = False,
-        current_awareness: Callable[[], Awaitable[str]] | None = None,
+        current_awareness: Callable[[CitationRegistry], Awaitable[str]] | None = None,
         extra_capabilities: Sequence[Any] = (),
         usage_limits: UsageLimits | None = None,
         instrument: InstrumentationSettings | None = None,
@@ -739,7 +836,6 @@ class PydanticRuntimeAdapter:
         self._current_awareness = current_awareness
         self._usage_limits = usage_limits or UsageLimits(
             request_limit=8,
-            tool_calls_limit=10,
         )
         self._answer_model_route = answer_model_route
         self._semantic_verifier = semantic_verifier
@@ -782,9 +878,7 @@ class PydanticRuntimeAdapter:
             capabilities=[
                 ReinjectSystemPrompt(),
                 Hooks(tool_execute_error=_recover_upstream_tool_error),
-                _ReserveFinalRequestCapability(
-                    reserved_requests=2 if structured_grounding else 1,
-                ),
+                ToolSearch(tool_description=_TOOL_SEARCH_DESCRIPTION),
                 _PreserveToolScopesCapability(set(self.tools)),
                 _CoolingTerminalCapability(structured_grounding, set(self.tools)),
                 *(
@@ -803,9 +897,26 @@ class PydanticRuntimeAdapter:
             ],
             system_prompt=system_prompt,
             model_settings=_native_cache_settings(model),
+            end_strategy="early",
             tool_timeout=30,
             output_type=[
-                str,
+                *(
+                    [
+                        ToolOutput(
+                            _final_answer,
+                            name=_FINAL_OUTPUT_TOOL,
+                            description=(
+                                "Return the complete final answer to the resident, not a status "
+                                "update or work-in-progress note. Use the evidence already returned, "
+                                "preserve useful supported information, and state any unresolved "
+                                "part plainly. Include inline citation markers and no internal "
+                                "analysis or instructions."
+                            ),
+                        )
+                    ]
+                    if structured_grounding
+                    else [str]
+                ),
                 *(
                     [
                         ToolOutput(
@@ -876,6 +987,36 @@ class PydanticRuntimeAdapter:
 
         if isinstance(output, DeferredToolRequests):
             return output
+        if (
+            isinstance(output, str)
+            and ctx.deps.verify_output_language
+            and ctx.deps.language is not None
+            and self._crisis_screen is not None
+        ):
+            review = await self._crisis_screen((output,))
+            ctx.deps.language_verifier_runs.append({
+                "model": review.model,
+                "input_tokens": review.input_tokens,
+                "output_tokens": review.output_tokens,
+                "cached_input_tokens": review.cached_input_tokens,
+                "requests": review.requests,
+                "cost_usd": review.cost_usd,
+                "latency_ms": review.latency_ms,
+                "language": review.language,
+            })
+            if _validated_safety_language(review.language) != ctx.deps.language:
+                expected_language = LL30_LANGUAGES.get(
+                    ctx.deps.language,
+                    "English" if ctx.deps.language == "en" else ctx.deps.language,
+                )
+                reject(
+                    "response_language",
+                    "The resident changed languages in the current turn. Return the complete "
+                    f"answer in {expected_language}, preserving citations, official "
+                    "names, addresses, phone numbers, and links.",
+                    expected=ctx.deps.language,
+                    observed=review.language,
+                )
         mapping = ctx.deps.citations.mapping()
         if isinstance(output, GroundedAnswer):
             authored = [
@@ -953,6 +1094,17 @@ class PydanticRuntimeAdapter:
                 "unknown_citation",
                 "Use only citation IDs returned by tools in this run.",
             )
+        registered_urls = {
+            _action_url(citation) for citation in mapping.values()
+            if citation.get("url")
+        } | ctx.deps.tool_result_urls
+        if unregistered_urls := sorted(_urls_in(rendered) - registered_urls):
+            reject(
+                "unregistered_url",
+                "Do not copy URLs into the answer. Use citation markers and let the runtime "
+                "attach the exact registered links.",
+                urls=unregistered_urls,
+            )
         if discovery_ids := used_discovery_citations(rendered, mapping):
             reject(
                 "discovery_only",
@@ -961,14 +1113,19 @@ class PydanticRuntimeAdapter:
                 citation_ids=sorted(discovery_ids)[:_SEMANTIC_RETRY_ITEMS],
             )
         if isinstance(output, (str, GroundedAnswer)):
-            structured_mapping = {
+            exact_fact_mapping = {
                 citation_id: citation
                 for citation_id, citation in mapping.items()
-                if citation.get("kind") == "DATA"
+                if citation.get("kind") in {"DATA", "DOC"}
+                or (
+                    citation.get("kind") == "WEB"
+                    and (citation.get("provenance") or {}).get("source_tier")
+                    == "authoritative"
+                )
             }
             structured = check_grounding(
                 rendered,
-                structured_mapping,
+                exact_fact_mapping,
                 ctx.deps.query,
             )
             exact_failures = (
@@ -1008,7 +1165,8 @@ class PydanticRuntimeAdapter:
                     "structured_grounding",
                     "An exact structured fact does not match its cited city record. "
                     "Return one complete replacement answer using the exact cited value, or "
-                    "state that the value could not be verified.",
+                    "state that the value could not be verified. If a sentence combines facts "
+                    "from multiple sources, cite each supporting source or split the sentence.",
                     items=rejected,
                 )
         if isinstance(output, GroundedAnswer) and self._semantic_verifier is not None:
@@ -1210,6 +1368,47 @@ class PydanticRuntimeAdapter:
         )
 
     @staticmethod
+    def _merge_language_verifier_usage(
+        result: AgentResult,
+        runs: list[dict[str, Any]],
+    ) -> None:
+        if not runs:
+            return
+        input_tokens = sum(int(run["input_tokens"]) for run in runs)
+        output_tokens = sum(int(run["output_tokens"]) for run in runs)
+        cached_tokens = sum(int(run["cached_input_tokens"]) for run in runs)
+        requests = sum(int(run["requests"]) for run in runs)
+        costs = [run.get("cost_usd") for run in runs]
+        cost = (
+            sum(float(item) for item in costs)
+            if all(isinstance(item, (int, float)) for item in costs)
+            else None
+        )
+        result.usage.update({
+            "language_verifier_requests": requests,
+            "language_verifier_input_tokens": input_tokens,
+            "language_verifier_output_tokens": output_tokens,
+            "language_verifier_cached_input_tokens": cached_tokens,
+            "language_verifier_cost_usd": cost,
+            "language_verifier_time_ms": sum(float(run["latency_ms"]) for run in runs),
+        })
+        result.usage["input_tokens"] += input_tokens
+        result.usage["output_tokens"] += output_tokens
+        result.usage["cached_input_tokens"] += cached_tokens
+        result.usage["requests"] += requests
+        result.usage["n_model_calls"] += requests
+        result.usage["model_time_ms"] += result.usage["language_verifier_time_ms"]
+        answer_cost = result.usage.get("cost_usd")
+        result.usage["cost_usd"] = (
+            float(answer_cost) + cost
+            if isinstance(answer_cost, (int, float)) and cost is not None
+            else None
+        )
+        result.usage["cost_status"] = (
+            "priced" if result.usage["cost_usd"] is not None else "unpriced"
+        )
+
+    @staticmethod
     def _merge_fact_review_usage(
         result: AgentResult,
         runs: list[dict[str, Any]],
@@ -1351,6 +1550,7 @@ class PydanticRuntimeAdapter:
         *,
         message_history: Sequence[ModelMessage],
         prior_user_turns: tuple[str, ...],
+        prior_language: str | None,
         reminders: list[str] | None,
         output_dir: Path | None,
         drafts: Any,
@@ -1378,6 +1578,7 @@ class PydanticRuntimeAdapter:
             events.SessionInit(session_id=message_id, model=self.model),
         )
         _emit(event_sink, events.MessageStart(message_id=message_id))
+        timing_capability.bind(event_sink)
         backstop = None
         safety_risk = None
         backstop_sources = frozenset()
@@ -1412,6 +1613,12 @@ class PydanticRuntimeAdapter:
                     safety_risk = screened_risk
                     backstop = crisis_response(screened_risk, language)
                     backstop_sources = frozenset()
+                elif screened_risk == "medication_dose_uncertainty":
+                    safety_risk = screened_risk
+                    backstop = localize(_MISSED_DOSE_RESPONSE_EN, language)
+                    backstop_sources = frozenset(
+                        {_SOURCE_MISSED_DOSE, _SOURCE_POISON_CONTROL}
+                    )
         if backstop is not None:
             backstop = _ground_emergency_backstop(backstop, citations, backstop_sources)
             new_messages: list[ModelMessage] = [
@@ -1465,7 +1672,18 @@ class PydanticRuntimeAdapter:
                 ),
                 **(
                     {"safety_response_source": "deterministic"}
-                    if safety_risk in {"self_harm", "imminent_self_harm"}
+                    if safety_risk in {
+                        "self_harm", "imminent_self_harm", "medication_dose_uncertainty"
+                    }
+                    else {}
+                ),
+                **(
+                    {
+                        "deterministic_evidence_citations": sorted(
+                            used_citations(backstop, citations.mapping())
+                        )
+                    }
+                    if backstop_sources
                     else {}
                 ),
             }
@@ -1492,6 +1710,11 @@ class PydanticRuntimeAdapter:
                 else set()
             ),
             language=language,
+            verify_output_language=(
+                prior_language is not None
+                and language is not None
+                and prior_language != language
+            ),
         )
         instructions = list(reminders or ())
         if pii_redacted:
@@ -1500,7 +1723,7 @@ class PydanticRuntimeAdapter:
         if reply_language:
             instructions.append(_REPLY_LANGUAGE_INSTRUCTION.format(language=reply_language))
         if self._current_awareness is not None:
-            awareness = await self._current_awareness()
+            awareness = await self._current_awareness(citations)
             if awareness:
                 instructions.append(
                     _follow_up_awareness(awareness, delivered_notify_titles)
@@ -1593,6 +1816,9 @@ class PydanticRuntimeAdapter:
                 citation_ids=set(citations.mapping()) - prior_citation_ids,
             )
             self._merge_safety_usage(result, safety_run)
+            self._merge_language_verifier_usage(result, deps.language_verifier_runs)
+            if deps.language_verifier_runs:
+                result.diagnostics["language_verifier_runs"] = deps.language_verifier_runs
             if safety_error:
                 result.diagnostics["safety_error"] = safety_error
             if (
@@ -1646,6 +1872,7 @@ class PydanticRuntimeAdapter:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self._merge_fact_review_usage(result, deps.fact_review_runs)
         self._merge_semantic_usage(result, deps.semantic_verifier_runs)
+        self._merge_language_verifier_usage(result, deps.language_verifier_runs)
         self._merge_safety_usage(result, safety_run)
         result.diagnostics = {
             **(
@@ -1654,6 +1881,11 @@ class PydanticRuntimeAdapter:
                 else {}
             ),
             "semantic_verifier_runs": deps.semantic_verifier_runs,
+            **(
+                {"language_verifier_runs": deps.language_verifier_runs}
+                if deps.language_verifier_runs
+                else {}
+            ),
             "validation_rejections": deps.validation_rejections,
             **(
                 {"safety_language": language}
@@ -1721,6 +1953,7 @@ class PydanticRuntimeAdapter:
             and not isinstance(part, ToolSearchCallPart)
             and part.tool_name not in {
                 _GROUNDED_OUTPUT_TOOL,
+                _FINAL_OUTPUT_TOOL,
                 _CLARIFICATION_OUTPUT_TOOL,
                 _NONFACTUAL_OUTPUT_TOOL,
             }
@@ -1745,6 +1978,7 @@ class PydanticRuntimeAdapter:
             and not isinstance(part, ToolSearchReturnPart)
             and part.tool_name not in {
                 _GROUNDED_OUTPUT_TOOL,
+                _FINAL_OUTPUT_TOOL,
                 _CLARIFICATION_OUTPUT_TOOL,
                 _NONFACTUAL_OUTPUT_TOOL,
             }
@@ -1764,6 +1998,16 @@ class PydanticRuntimeAdapter:
                 else str(output)
             )
             if isinstance(output, (str, GroundedAnswer)):
+                if "find_nyc_events" in executed_tool_calls:
+                    rendered = _attach_event_action_urls(
+                        rendered,
+                        citations.mapping(),
+                    )
+                rendered = _attach_location_action_urls(
+                    rendered,
+                    citations.mapping(),
+                    include_source_limits=False,
+                )
                 rendered = _attach_source_limits(
                     rendered,
                     citations.mapping(),
@@ -2116,13 +2360,14 @@ class _PydanticConversation:
             )
             else None
         )
-        timing_capability = _ModelTimingCapability()
+        timing_capability = _ModelTimingCapability(self.runtime.model)
         try:
             try:
                 result, new_messages, self._pending = await self.runtime._run(
                     user_message,
-                    message_history=_native_history(_resident_history(self._history)),
+                    message_history=_conversation_history(self._history),
                     prior_user_turns=self._user_turns,
+                    prior_language=self._safety_language,
                     reminders=reminders,
                     output_dir=output_dir,
                     drafts=drafts,
@@ -2198,7 +2443,8 @@ class _PydanticConversation:
             events.SessionInit(session_id=message_id, model=self.runtime.model),
         )
         _emit(event_sink, events.MessageStart(message_id=message_id))
-        timing_capability = _ModelTimingCapability()
+        timing_capability = _ModelTimingCapability(self.runtime.model)
+        timing_capability.bind(event_sink)
         try:
             with capture_run_messages() as captured:
                 async with asyncio.timeout(self.runtime._run_timeout_s):

@@ -24,16 +24,29 @@ def test_system_prompt_injects_current_nyc_datetime():
     assert "GROUND EVERYTHING" in prompt
 
 
-def test_system_prompt_teaches_orient_then_verify():
-    """RULED (2026-07-18): when a reference is ambiguous or abbreviated, the first tool call
-    is one broad allowlisted web_search with a short noun-phrase query, orient, then gather
-    citable evidence. Audited live: searching the resident's whole sentence returns garbage."""
+def test_system_prompt_teaches_broad_search_for_an_ambiguous_reference():
+    """An ambiguous reference starts with a short broad search, not the whole message."""
     prompt = build_system_prompt(Registry([]))
     low = prompt.lower()
-    assert "orient" in low
-    assert "noun-phrase" in low or "noun phrase" in low
-    assert "whole sentence" in low or "full sentence" in low
-    assert "then" in low and "evidence" in low
+    assert "ambiguous or unfamiliar reference" in low
+    assert "start with one broad `web_search`" in low
+    assert "reference itself plus at most a date or \"nyc\"" in low
+    assert "not the resident's whole sentence" in low
+
+
+def test_system_prompt_routes_retrieval_by_evidence_shape_instead_of_a_fixed_chain():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "first `index_search`" not in low
+    assert "index_search" not in low
+    assert "choose the available tool whose operation matches the evidence gap" in low
+
+
+def test_system_prompt_does_not_date_filter_standing_official_guidance():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "standing official guidance without publication bounds" in low
+    assert "recent change itself" in low
 
 
 def test_system_prompt_bans_internal_jargon_in_replies():
@@ -84,34 +97,31 @@ def test_system_prompt_refuses_obfuscated_encoded_instructions():
 
 
 def test_system_prompt_forbids_uncited_authority_on_substantive_facts():
-    # Grounding-discipline fix: an ungrounded substantive claim must not be framed as authoritative;
-    # the agent grounds it via a tool or gives it as general guidance routed to 311/official — while
-    # still correcting harmful misconceptions (never over-abstaining).
+    # Grounding discipline has one rule: retrieve and cite, otherwise state the gap and route.
     low = build_system_prompt(Registry([])).lower()
-    assert "authoritative answer" in low            # the anti-pattern it must avoid
-    assert "general information" in low             # the allowed ungrounded framing
-    assert "misconception" in low                   # must still correct false premises
-    assert "emtali" in low or "emtala" in low       # names the find_clinic grounding route
+    assert "general information, not an official ruling" not in low
+    assert "if retrieval does not support the claim, state the gap" in low
+    assert "an uncited substantive claim is not" in low
+    assert "misconception" in low
 
 
 def test_system_prompt_requires_citations_on_the_supported_sentence_or_bullet():
     low = build_system_prompt(Registry([])).lower()
     assert "same sentence or bullet" in low
     assert "elsewhere in a paragraph or list does not count" in low
+    assert "separate facts from different sources into separate sentences or bullets" in low
     assert "never put braces around a url" in low
 
 
 def test_system_prompt_describes_data_practices_accurately():
-    # Privacy-accuracy fix: the prompt must NOT let the agent claim it "stores nothing"; it should
-    # describe the in-progress application draft honestly and match the PIA.
+    # Product-policy details live behind the eagerly available documentation tool.
     low = build_system_prompt(Registry([])).lower()
-    assert "draft" in low
-    assert "profile" in low                          # "don't build a profile"
-    assert "store nothing" in low or "retain nothing" in low  # named as the claim to AVOID
-    assert "encrypted conversation" in low
-    assert "configured retention period" in low
-    assert "deletion through the channel controls" not in low
-    assert "don't carry a chat history between separate conversations" not in low
+    assert "about_heynyc" in low
+    assert "product-policy questions from memory" in low
+    assert "ssn" in low and "sensitive id" in low
+    assert "encrypted conversation" not in low
+    assert "configured retention period" not in low
+    assert "delete my data" not in low
 
 
 def test_system_prompt_sets_plain_language_reading_level():
@@ -135,6 +145,17 @@ def test_contested_legal_matter_protocol_lives_in_global_policy():
     assert "web_search" in low
 
 
+def test_web_search_query_contract_separates_independent_facts():
+    from heynyc.core.tools.web_search import web_search_tools
+
+    tool = web_search_tools(["nyc.gov"], {}, set())[0]
+    description = tool.parameters["properties"]["query"]["description"].lower()
+
+    assert "one fact-finding objective" in description
+    assert "parallel" in description
+    assert "independent" in description
+
+
 def test_system_prompt_emergency_no_medical_dosing():
     # Red-team ES09 fix: an emergency (heart-attack signs) gets 911 only — NO drug names or dosages,
     # not even aspirin. The English path already held; this makes the standard explicit for all langs.
@@ -142,6 +163,25 @@ def test_system_prompt_emergency_no_medical_dosing():
     assert "911" in low
     assert "no medical instructions" in low or "no dosages" in low
     assert "aspirin" in low  # named as the exact thing NOT to dose
+
+
+def test_system_prompt_does_not_generalize_unknown_medication_instructions():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "unknown medication" in low
+    assert "do not infer its instructions from other drugs" in low
+    assert "dispensing pharmacist or prescriber" in low
+    assert "poison control" in low and "extra dose" in low
+
+
+def test_system_prompt_does_not_make_personalized_medical_mobility_decisions():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "health condition or recovery" in low
+    assert "do not recommend walking, driving, or another transport mode based on medical facts" in low
+    assert "clinician's instructions" in low
+    assert "verified logistical facts" in low
+    assert "do not follow that limitation with a vehicle, escort, or walking recommendation" in low
 
 
 def test_system_prompt_public_charge_snap_guardrail():
@@ -196,21 +236,27 @@ def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
     assert "equal dignity" not in volatile.lower()
 
 
+def test_system_prompt_answers_broadly_without_topic_suppression():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "answer broadly" in low
+    assert "do not suppress" in low
+    assert "stay in scope" not in low
+    assert "outside what you help with" not in low
+
+
 def test_system_prompt_teaches_per_turn_composition_in_stable_tier():
-    # HYBRID (RULED 2026-07-21): composition guidance with the worked commute example lands in the
-    # cacheable stable tier; it unlocks advisories+closures composition without a forced lane, and
-    # keeps the retrieve-first floor for high-stakes situations in any language.
+    # Composition guidance belongs in the cacheable stable tier without a topic-specific example.
     from heynyc.core.prompts import build_system_prompt_tiers
 
     stable, volatile = build_system_prompt_tiers(Registry([]))
     low = stable.lower()
     assert "tool menu" in low
-    assert "commute" in low
-    assert "current advisories and disruptions" in low
-    assert "cooling centers near their route" in low
+    assert "what each result means on its own and alongside the last one" in low
+    assert "parallelize only independent tool calls" in low
+    assert "return the final resident answer immediately" in low
     assert "official guidance first, in any language" in low
-    # Stable, not volatile.
-    assert "cooling centers near their route" not in volatile.lower()
+    assert "return the final resident answer immediately" not in volatile.lower()
 
 
 def test_system_prompt_sequences_dependent_tool_calls():
@@ -221,9 +267,51 @@ def test_system_prompt_sequences_dependent_tool_calls():
 
 def test_system_prompt_stops_retrieval_once_requested_constraints_are_supported():
     low = build_system_prompt(Registry([])).lower()
-    assert "once the tool results support every requested constraint" in low
-    assert "compose the answer instead of searching for a better result" in low
-    assert "one required fact is still missing" in low
+    assert low.count("return the final resident answer immediately") == 1
+    assert "call `final_answer`" not in low
+    assert "call the real tool most likely to resolve that specific gap" in low
+    assert "no available tool can resolve it" in low
+    assert "supported information" in low
+    assert "state the limit plainly" in low
+    assert "do not repeat a search or fetch that already answered the same question" in low
+
+
+def test_system_prompt_does_not_prescribe_removed_regeneration_or_deferred_module_tools():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "regenerated once" not in low
+    assert "find_clinics" not in low
+    assert "search_benefits" not in low
+    assert "cooling centers near their route" not in low
+
+
+def test_system_prompt_separates_partial_matches_from_exact_results():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "treat partial matches as alternatives, not exact matches" in low
+    assert "do not infer a missing property" in low
+    assert "related fallback" not in low
+    assert "systemwide statement supports a specific location only" in low
+    assert "names that location" in low
+
+
+def test_system_prompt_preserves_source_time_and_population_scope():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "source's as-of date" in low
+    assert "sample or shortlist" in low
+    assert "complete population" in low
+    assert "current, permanent, temporary, or citywide" in low
+    assert "does not substantiate a premise" in low
+    assert "do not assert the opposite" in low
+
+
+def test_system_prompt_preserves_official_handoff_without_reasking_named_landmarks():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "best retrieved official next step" in low
+    assert "named venue or landmark" in low
+    assert "already-supplied endpoint" in low
 
 
 def test_system_prompt_minimizes_missing_attachment_recovery():

@@ -86,6 +86,24 @@ async def test_pydantic_plain_output_accepts_authoritative_excerpt_citation_id()
     assert await runtime._validate_grounding(context, output) == output
 
 
+async def test_pydantic_plain_output_accepts_curated_search_excerpt_citation_id():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://www.nytimes.com/athletic/knicks-captain",
+        title="Knicks captain",
+        snippet="Jalen Brunson is the captain of the New York Knicks.",
+        kind="WEB",
+        provenance={"evidence_grade": "search_excerpt", "source_tier": "news"},
+    )
+    runtime = object.__new__(PydanticRuntimeAdapter)
+    runtime._semantic_verifier = None
+    context = SimpleNamespace(deps=ToolContext(citations=citations, registry=None))
+
+    output = f"Jalen Brunson is the Knicks captain. {{cite:{citation_id}}}"
+
+    assert await runtime._validate_grounding(context, output) == output
+
+
 async def test_pydantic_plain_output_rejects_mismatched_structured_fact():
     citations = CitationRegistry()
     citation_id = citations.register(

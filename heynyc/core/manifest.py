@@ -80,6 +80,7 @@ class ServiceModule(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     examples: list[str] = Field(default_factory=list)  # user-facing example queries, the single source for capability discovery
     datasets: list[DatasetBinding] = Field(default_factory=list)
+    official_link: str = ""  # public service link, independent from RAG index seeds
     seeds: list[str] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)
     prompt: str = ""  # capability blurb injected into the system prompt

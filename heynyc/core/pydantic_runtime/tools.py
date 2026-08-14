@@ -16,6 +16,7 @@ from pydantic_ai import (
     ToolOutput,
 )
 from pydantic_ai.capabilities import AbstractCapability, Capability
+from pydantic_ai.messages import LoadCapabilityCallPart, ModelRequest, UserPromptPart
 from pydantic_ai.output import StructuredDict
 from pydantic_ai.tools import Tool as PydanticTool
 
@@ -23,6 +24,7 @@ from heynyc.core.pii_redaction import redact_pii
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
+from heynyc.core.agent import _urls_in
 
 from .projection import GroundedAnswer
 
@@ -386,7 +388,10 @@ def adapt_tool(
             )
 
     async def invoke(ctx: RunContext[ToolContext], **kwargs: object) -> str:
-        return await tool.handler(dict(kwargs), ctx.deps)
+        result = await tool.handler(dict(kwargs), ctx.deps)
+        if tool.name not in {"web_search", "web_fetch"}:
+            ctx.deps.tool_result_urls.update(_urls_in(result))
+        return result
 
     adapted = PydanticTool.from_schema(
         invoke,
@@ -513,6 +518,67 @@ def build_module_capabilities(
         descendants.setdefault(root_name(module.name), []).append(module)
     root_modules = frozenset(descendants)
 
+    def situation_id(module: Any, hint: Any) -> str:
+        module_prefix = module.name.replace("_", "-")
+        hint_id = hint.name.replace("_", "-").removeprefix(f"{module_prefix}-")
+        return f"{module_prefix}-{hint_id}"
+
+    def capability_owners(capability_ids: Sequence[str]) -> set[str]:
+        return {
+            module_name
+            for capability_id in capability_ids
+            for module_name in sorted(root_modules, key=len, reverse=True)
+            if capability_id == module_name
+            or capability_id.startswith(f"{module_name}-")
+            or capability_id.startswith(f"{module_name.replace('_', '-')}-")
+        }
+
+    def current_turn_owners(ctx: Any) -> set[str]:
+        messages = getattr(ctx, "messages", ())
+        current_turn = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if isinstance(message, ModelRequest)
+                and any(isinstance(part, UserPromptPart) for part in message.parts)
+            ),
+            default=len(messages),
+        )
+        loaded = {
+            str(part.args_as_dict().get("id") or "")
+            for message in messages[current_turn + 1:]
+            for part in message.parts
+            if isinstance(part, LoadCapabilityCallPart)
+        }
+        return capability_owners(loaded)
+
+    for owner, owned_tools in (
+        *module_tools.items(),
+        *((owner, tools) for (owner, _), tools in governed_tools.items()),
+        *((owner, tools) for (owner, _), tools in approval_tools.items()),
+    ):
+        for tool in owned_tools:
+            previous_prepare = tool.prepare
+
+            def focus_current_turn(
+                ctx: Any,
+                definition: Any,
+                *,
+                module_name: str = owner,
+                prepare: Any = previous_prepare,
+            ) -> Any:
+                current_owners = current_turn_owners(ctx)
+                loaded_owners = capability_owners(ctx.loaded_capability_ids)
+                if (
+                    current_owners
+                    and module_name in loaded_owners
+                    and module_name not in current_owners
+                ):
+                    return None
+                return prepare(ctx, definition) if prepare else definition
+
+            tool.prepare = focus_current_turn
+
     focus_by_capability: dict[str, tuple[str, frozenset[str], bool]] = {}
     for module in registry.modules:
         if module.parent:
@@ -527,11 +593,7 @@ def build_module_capabilities(
             for hint in member.situations:
                 if not hint.focus_tools:
                     continue
-                normalized_module = module.name.replace("_", "-")
-                hint_id = hint.name.replace("_", "-").removeprefix(
-                    f"{normalized_module}-"
-                )
-                focus_by_capability[f"{module.name}-{hint_id}"] = (
+                focus_by_capability[situation_id(module, hint)] = (
                     module.name,
                     frozenset(hint.focus_tools),
                     True,
@@ -550,6 +612,7 @@ def build_module_capabilities(
                 for module_name in root_modules
                 if capability_id == module_name
                 or capability_id.startswith(f"{module_name}-")
+                or capability_id.startswith(f"{module_name.replace('_', '-')}-")
             }
             if len(loaded_owners) != 1:
                 return definition
@@ -567,18 +630,49 @@ def build_module_capabilities(
         tool.prepare = focus
 
     capabilities: list[AbstractCapability[ToolContext]] = []
+    tool_owners = {
+        tool.name: module_name
+        for module_name, available in module_tools.items()
+        for tool in available
+    }
+    situation_references: dict[str, list[str]] = {}
+    for module in registry.modules:
+        if module.parent:
+            continue
+        for member in descendants[module.name]:
+            for hint in member.situations:
+                for name in hint.focus_tools:
+                    if tool_owners.get(name) == module.name:
+                        situation_references.setdefault(name, []).append(
+                            situation_id(module, hint)
+                        )
+    situation_tool_capabilities = {
+        name: capability_ids[0]
+        for name, capability_ids in situation_references.items()
+        if len(capability_ids) == 1
+    }
 
     def situation_instructions(module: Any, hint: Any, available_names: set[str]) -> str:
-        module_prefix = module.name.replace("_", "-")
-        hint_id = hint.name.replace("_", "-").removeprefix(f"{module_prefix}-")
-        situation_id = f"{module.name}-{hint_id}"
+        capability_id = situation_id(module, hint)
         owned_focus_tools = [
             name for name in hint.focus_tools if name in available_names
         ]
+        direct_focus_tools = [
+            name for name in owned_focus_tools
+            if situation_tool_capabilities.get(name) == capability_id
+        ]
+        parent_focus_tools = [
+            name for name in owned_focus_tools if name not in direct_focus_tools
+        ]
+        external_focus_tools: dict[str, list[str]] = {}
+        for name in hint.focus_tools:
+            owner = tool_owners.get(name)
+            if owner and owner != module.name:
+                external_focus_tools.setdefault(owner, []).append(name)
         return "\n".join(
             part
             for part in (
-                f"Situation: {situation_id}",
+                f"Situation: {capability_id}",
                 hint.definition,
                 (
                     "Retrieve a current official source before answering."
@@ -587,9 +681,19 @@ def build_module_capabilities(
                 f"Current-source query: {hint.query}" if hint.query else "",
                 "Official pages: " + ", ".join(hint.urls) if hint.urls else "",
                 (
-                    "Use module tools: "
-                    + ", ".join(f"`{name}`" for name in owned_focus_tools)
-                    if owned_focus_tools else ""
+                    f"Load the parent `{module.name}` capability if you need module tools: "
+                    + ", ".join(f"`{name}`" for name in parent_focus_tools)
+                    if parent_focus_tools else ""
+                ),
+                (
+                    "Enabled situation tools: "
+                    + ", ".join(f"`{name}`" for name in direct_focus_tools)
+                    if direct_focus_tools else ""
+                ),
+                *(
+                    f"Load the parent `{owner}` capability if you need its tools: "
+                    + ", ".join(f"`{name}`" for name in names)
+                    for owner, names in external_focus_tools.items()
                 ),
                 (
                     "Call `web_fetch` once for each Official pages URL needed to support "
@@ -624,7 +728,11 @@ def build_module_capabilities(
             for member in descendants[module.name]
             if member.prompt.strip()
         )
-        guidance_tools = module_tools.get(module.name, ())
+        all_guidance_tools = module_tools.get(module.name, ())
+        guidance_tools = [
+            tool for tool in all_guidance_tools
+            if tool.name not in situation_tool_capabilities
+        ]
         available_tools = [*guidance_tools, *governed_available_tools]
         availability = (
             "Enabled module action tools: "
@@ -637,12 +745,7 @@ def build_module_capabilities(
             " Other workflows may be available through the deferred capability catalog. "
             "Do not collect inputs for or claim to perform an action unless its tool is loaded."
         )
-        available_tool_names = {tool.name for tool in guidance_tools}
-        situations = "\n\n".join(
-            situation_instructions(module, hint, available_tool_names)
-            for member in descendants[module.name]
-            for hint in member.situations
-        )
+        available_tool_names = {tool.name for tool in all_guidance_tools}
         governed_workflows = "\n\n".join(
             (
                 f"The resident explicitly asked for or accepted {governed[tool_name].title or tool_name}. "
@@ -678,9 +781,7 @@ def build_module_capabilities(
             for tool_name, _available in governed_entries
         )
         instructions = "\n\n".join(
-            part
-            for part in (instructions, situations, governed_workflows, availability)
-            if part
+            part for part in (instructions, governed_workflows, availability) if part
         )
         description = module.description or f"NYC {module.category} help"
         if governed_entries:
@@ -704,6 +805,23 @@ def build_module_capabilities(
                 defer_loading=True,
             )
         )
+        for member in descendants[module.name]:
+            for hint in member.situations:
+                capability_id = situation_id(module, hint)
+                capabilities.append(
+                    Capability(
+                        id=capability_id,
+                        description=hint.definition.partition(". ")[0].rstrip(".") + ".",
+                        instructions=situation_instructions(
+                            module, hint, available_tool_names
+                        ),
+                        tools=[
+                            tool for tool in all_guidance_tools
+                            if situation_tool_capabilities.get(tool.name) == capability_id
+                        ],
+                        defer_loading=True,
+                    )
+                )
     for (module_name, tool_name), available_tools in approval_tools.items():
         tool = approval_sources[tool_name]
         purpose = tool.description.partition(". ")[0].rstrip(".")

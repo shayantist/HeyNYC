@@ -13,6 +13,18 @@ def test_build_toolbox_includes_module_and_websearch_tools():
     assert {"geocode", "nearest", "distance", "web_search", "find_nyc_events"} <= set(tools)
 
 
+def test_build_toolbox_keeps_the_local_index_out_of_the_model_tool_surface():
+    class Index:
+        def search(self, _query, k=5):
+            return []
+
+    tools = build_toolbox(Registry.discover(config.MODULES_DIR), index=Index())
+
+    assert "web_search" in tools
+    assert "index_search" not in tools
+    assert "search_official_guidance" not in tools
+
+
 def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names():
     tools = build_toolbox(Registry.discover(config.MODULES_DIR))
 

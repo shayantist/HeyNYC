@@ -17,6 +17,14 @@ from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 
 
+def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
+    return ToolCallPart(
+        "final_answer",
+        {"answer": answer},
+        call_id,
+    )
+
+
 async def test_structured_runtime_preserves_a_nonfactual_plain_text_decline() -> None:
     async def model(
         _messages: list[ModelMessage],
@@ -76,7 +84,7 @@ async def test_nonfactual_outcome_remains_in_conversation_history() -> None:
                     if tool.name == "nonfactual_outcome"
                 ),
                 {"kind": "unknowable"},
-                f"answer-{calls}",
+                "answer-1",
             )
         ])
 
@@ -113,7 +121,7 @@ async def test_mechanical_guard_does_not_classify_uncited_prose() -> None:
             for part in message.parts
         ):
             return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
-        return ModelResponse([TextPart("The office is open on Mondays.")])
+        return ModelResponse([_cited_answer("The office is open on Mondays.")])
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -154,7 +162,7 @@ async def test_authoritative_evidence_supports_native_cited_prose() -> None:
         ):
             return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
         return ModelResponse([
-            TextPart("The official office is open on Mondays. {cite:S1}")
+            _cited_answer("The official office is open on Mondays. {cite:S1}")
         ])
 
     result = await PydanticRuntimeAdapter(
@@ -175,12 +183,60 @@ async def test_authoritative_evidence_supports_native_cited_prose() -> None:
     assert result.text.startswith("The official office is open on Mondays.")
 
 
+async def test_grounded_answer_does_not_need_completion_metadata() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official example",
+            kind="DATA",
+            snippet="No current locations are confirmed open.",
+        )
+        return f"No current locations are confirmed open. {{cite:{citation_id}}}"
+
+    async def model(
+        messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([
+            ToolCallPart(
+                "final_answer",
+                {
+                    "answer": "No current locations are confirmed open.",
+                },
+                "answer-1",
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Retrieve official evidence",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+    ).run("Is any location open now?")
+
+    assert result.text == "No current locations are confirmed open."
+    assert result.diagnostics["validation_rejections"] == []
+
+
 async def test_mechanical_guard_does_not_classify_prose_before_retrieval() -> None:
     async def model(
         _messages: list[ModelMessage],
         _info: AgentInfo,
     ) -> ModelResponse:
-        return ModelResponse([TextPart("The office is open on Mondays.")])
+        return ModelResponse([_cited_answer("The office is open on Mondays.")])
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -332,7 +388,7 @@ async def test_mechanical_boundary_does_not_parse_phone_semantics() -> None:
         ):
             return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
         return ModelResponse([
-            TextPart("Call the unsupported number 212-555-1212. {cite:S1}")
+            _cited_answer("Call the unsupported number 212-555-1212. {cite:S1}")
         ])
 
     result = await PydanticRuntimeAdapter(
@@ -351,4 +407,61 @@ async def test_mechanical_boundary_does_not_parse_phone_semantics() -> None:
 
     assert result.status == "success"
     assert result.text == "Call the unsupported number 212-555-1212. {cite:S1}"
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_exact_fact_guard_keeps_cited_document_evidence() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        clinic_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/example",
+            title="Clinic row",
+            kind="DATA",
+            snippet="Apicha Community Health Center at 82-11 37th Ave.",
+            provenance={"snapshot": {"name": "Apicha Community Health Center"}},
+        )
+        care_id = ctx.citations.register(
+            "https://access.nyc.gov/programs/nyc-care/",
+            title="NYC Care",
+            kind="DOC",
+            snippet="Enroll in NYC Care at 646-692-2273.",
+        )
+        return f"Clinic {{cite:{clinic_id}}}; enrollment {{cite:{care_id}}}"
+
+    calls = 0
+
+    async def model(
+        messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([
+            _cited_answer(
+                "Apicha is one option. Call NYC Care at 646-692-2273. "
+                "{cite:S1} {cite:S2}"
+            )
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Retrieve clinic and maintained program evidence",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+    ).run("Where can I get care without insurance?")
+
+    assert calls == 2
+    assert result.status == "success"
     assert result.diagnostics["validation_rejections"] == []

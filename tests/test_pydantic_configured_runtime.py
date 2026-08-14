@@ -1,7 +1,16 @@
+import pytest
+from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from heynyc.core.pydantic_runtime import build_configured_runtime, configured_model
+from heynyc.core import config
+from heynyc.core.pydantic_runtime import (
+    build_configured_runtime,
+    build_runtime,
+    configured_model,
+)
 from heynyc.core.registry import Registry
+from heynyc.core.tools import build_toolbox
 
 
 def test_configured_runtime_uses_structured_grounding_without_uncalibrated_semantic_filter(
@@ -162,3 +171,70 @@ def test_configured_luna_disables_rejected_native_tool_search(monkeypatch) -> No
         tool.__name__ for tool in model.profile["supported_native_tools"]
     }
     assert "ToolSearchTool" not in native_names
+
+
+@pytest.mark.parametrize("with_index", [False, True])
+async def test_configured_luna_prepared_request_hides_undiscovered_tools(
+    monkeypatch,
+    with_index,
+) -> None:
+    captured = {}
+
+    class Index:
+        def search(self, _query, k=5):
+            return []
+
+    async def capture(_messages, info):
+        captured["parameters"] = info.model_request_parameters
+        captured["settings"] = info.model_settings
+        return ModelResponse([
+            ToolCallPart("final_answer", {"answer": "No factual claim."}, "final-1")
+        ])
+
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    index = Index() if with_index else None
+    runtime = build_runtime(
+        registry,
+        model=FunctionModel(capture),
+        tools=build_toolbox(registry, index=index),
+        use_module_capabilities=True,
+        structured_grounding=True,
+    )
+    await runtime.run("hello")
+
+    raw_names = {tool.name for tool in captured["parameters"].function_tools}
+    assert {"index_search", "search_official_guidance"}.isdisjoint(raw_names)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime._uses_openai_responses",
+        lambda _model: True,
+    )
+    model = configured_model("openai/gpt-5.6-luna", reasoning_effort="low")
+    _, prepared = model.prepare_request(
+        captured["settings"], captured["parameters"]
+    )
+    names = {tool.name for tool in prepared.function_tools}
+
+    expected = {
+        "load_capability",
+        "geocode",
+        "nearest",
+        "distance",
+        "web_search",
+        "web_fetch",
+        "about_heynyc",
+        "search_tools",
+    }
+    assert names == expected
+    search_tools = next(
+        tool for tool in prepared.function_tools if tool.name == "search_tools"
+    )
+    assert "purpose-built NYC service workflows" in search_tools.description
+    assert "general web facts" in search_tools.description
+    assert {tool.name for tool in prepared.output_tools} == {
+        "final_answer",
+        "clarification_request",
+        "nonfactual_outcome",
+    }
+    assert not any(tool.defer_loading for tool in prepared.function_tools)

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 from heynyc.core.citations import content_hash
-from heynyc.core.grounding import _split_claims, check_grounding
+from heynyc.core.grounding import _split_claims, check_grounding, citation_evidence
 
 
 def _data_cite(snapshot: dict, *, snippet="", url="https://data.cityofnewyork.us/x/row-9.json"):
@@ -34,12 +34,35 @@ def test_grounded_answer_passes_and_is_not_blocking():
     assert not res.hard_failures
 
 
+def test_location_citation_evidence_includes_resolved_origin() -> None:
+    citation = _data_cite({"address": "575 Fifth Avenue"})
+    citation["provenance"]["derivation"] = {
+        "origin_query": "Rockefeller Center",
+        "origin_label": "Rockefeller Center, 45, Rockefeller Plaza",
+    }
+
+    evidence = citation_evidence(citation)
+
+    assert evidence is not None
+    assert "Rockefeller Center" in evidence
+    assert "45, Rockefeller Plaza" in evidence
+
+
 def test_clock_claim_is_not_semantically_parsed():
     snapshot = {"estimated_return": "08/31/2026 11:59:00 PM"}
 
     result = check_grounding(
         "Estimated return is 11:59 PM. {cite:S1}",
         {"S1": _data_cite(snapshot)},
+    )
+
+    assert result is None
+
+
+def test_url_path_does_not_create_a_structured_date_claim():
+    result = check_grounding(
+        "See [details](https://www.nycgovparks.org/events/2026/08/14/40-in-focus). {cite:S1}",
+        {"S1": _data_cite({}, snippet="An official event details page")},
     )
 
     assert result is None
@@ -194,6 +217,39 @@ def test_current_date_does_not_need_source_support():
     assert any(item["where"] == "system-date" for item in res.locations)
 
 
+def test_date_derived_from_resident_weekday_does_not_need_source_support():
+    citation = _data_cite({}, snippet="Use the MTA trip planner for an accessible route.")
+
+    for query in (
+        "Which accessible route should we take this Saturday?",
+        "Is it open on Saturday?",
+    ):
+        res = check_grounding(
+            "For Saturday, August 15, 2026, check the MTA trip planner. {cite:S1}",
+            {"S1": citation},
+            query=query,
+            current_date=date(2026, 8, 13),
+        )
+
+        assert res is not None
+        assert res.passed
+        assert any(item["where"] == "system-date" for item in res.locations)
+
+
+def test_unrelated_future_date_still_requires_source_support():
+    citation = _data_cite({}, snippet="Use the MTA trip planner for an accessible route.")
+
+    res = check_grounding(
+        "For Saturday, August 22, 2026, check the MTA trip planner. {cite:S1}",
+        {"S1": citation},
+        query="Which accessible route should we take this Saturday?",
+        current_date=date(2026, 8, 13),
+    )
+
+    assert res is not None
+    assert res.blocking
+
+
 def test_full_month_date_matches_abbreviated_source_month():
     citations = {
         "S1": _data_cite(
@@ -209,6 +265,42 @@ def test_full_month_date_matches_abbreviated_source_month():
     wrong = check_grounding(
         "The notice was published November 29, 2025. {cite:S1}",
         citations,
+    )
+
+    assert supported is not None and supported.passed
+    assert wrong is not None and wrong.blocking
+
+
+def test_full_date_matches_yearless_schedule_row_with_same_year_context():
+    citation = _data_cite(
+        {},
+        snippet="2026 schedule: Tue. Oct 20, 7:00 PM EDT, 76ers at Knicks.",
+    )
+
+    supported = check_grounding(
+        "The next game is October 20, 2026. {cite:S1}",
+        {"S1": citation},
+    )
+    wrong_year = check_grounding(
+        "The next game is October 20, 2027. {cite:S1}",
+        {"S1": citation},
+    )
+
+    assert supported is not None and supported.passed
+    assert wrong_year is not None and wrong_year.blocking
+
+
+def test_human_date_matches_citation_iso_timestamp():
+    citation = _data_cite({"facility_name": "Sobelsohn Park"})
+    citation["valid_as_of"] = "2025-06-27T13:37:17.684Z"
+
+    supported = check_grounding(
+        "The record is dated June 27, 2025. {cite:S1}",
+        {"S1": citation},
+    )
+    wrong = check_grounding(
+        "The record is dated June 28, 2025. {cite:S1}",
+        {"S1": citation},
     )
 
     assert supported is not None and supported.passed
