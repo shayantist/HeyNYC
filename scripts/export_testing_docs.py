@@ -266,7 +266,7 @@ _CATEGORY_TAXONOMY = (
     "location-usefulness",
     "emergency-safety",
 )
-_TAG_RE = re.compile(r"\*\*([a-z][a-z-]*)\*\*")
+_TAG_RE = re.compile(r"\*\*([a-z][a-z-]*)")
 
 
 def _category_tag(category_cell: str) -> str:
@@ -284,7 +284,7 @@ def _failure_rows(raw: str) -> list[tuple[int, str, str, str, str]]:
             if i > 0:
                 part = "| " + part  # restore the leading pipe the split consumed
             cells = [c.strip() for c in part.strip().strip("|").split("|")]
-            if len(cells) < 3 or not cells[0].startswith("F"):
+            if len(cells) < 3 or not re.fullmatch(r"F\d{3}", cells[0]):
                 continue
             fid = cells[0]
             observed = cells[1]
@@ -318,6 +318,10 @@ def export_failure_register(raw: str, source_rel: str) -> str:
         "of the project's operational risk register (internal decision records, spend "
         "figures, and internal paths removed). The named tests and eval cases are runnable "
         "public evidence: they ship in this repository.\n\n"
+        "Failure IDs are append-only, so gaps are allowed. `FIXED LOCALLY` means the named "
+        "offline regression passes but live behavior is not yet accepted. `CLOSED LOCALLY "
+        "AND LIVE` means the row names accepted live evidence. Older status wording retains "
+        "the evidence standard stated in its row.\n\n"
         f"**Total: {len(rows)} failures across {len(ordered)} categories.**\n\n"
         "Families (cross-row root-cause clusters, named as the rows name them): "
         "**over-denial** (F069, F071, F075), where a plausibly-NYC need is denied at the "

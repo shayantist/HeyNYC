@@ -139,6 +139,15 @@ def test_normalize_em_dashes_negative():
 def test_category_tag_reads_the_first_bold_token():
     assert xp._category_tag("**scope-gating** · over-denial on register") == "scope-gating"
     assert xp._category_tag("**scope-gating**-adjacent wrong remedy") == "scope-gating"
+    assert xp._category_tag("**resident-outcome / retry-exhaustion** · lost answer") == "resident-outcome"
+
+
+def test_failure_rows_excludes_trace_matrix_labels():
+    raw = """\
+| F188 | Canonical failure | **operations** · detail | evidence | OPEN |
+| F188 Notify NYC cost | WI1 | NI1 |
+"""
+    assert [row[1] for row in xp._failure_rows(raw)] == ["F188"]
 
 
 # --------------------------------------------------------------------------- #
@@ -179,6 +188,10 @@ def test_failure_register_is_grouped_by_taxonomy_with_total_and_families():
     # no row is dropped in grouping and none is duplicated
     ids = re.findall(r"^\| (F\d+) \|", reg, re.M)
     assert len(ids) == len(set(ids))
+    assert "**Total: 257 failures" in reg
+    assert "## (uncategorized)" not in reg
+    assert "Failure IDs are append-only" in reg
+    assert "`FIXED LOCALLY` means" in reg
     assert "F001" in ids and "F080" in ids
     # runnable public evidence (a pinned test name) survives
     assert "test_scope_denial_stops_before_main_model_or_tools" in reg
