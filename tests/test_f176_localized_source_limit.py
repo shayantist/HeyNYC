@@ -2,7 +2,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import RunUsage
 
@@ -98,7 +98,15 @@ async def test_f176_missing_localized_limit_is_added_without_a_model_retry() -> 
         if calls == 1:
             return ModelResponse([ToolCallPart("nearest", {}, "nearest-1")])
         return ModelResponse([
-            TextPart("Queens SNAP Center tiene un horario habitual {cite:S1}")
+            ToolCallPart(
+                "final_answer",
+                {
+                    "answer": (
+                        "Queens SNAP Center tiene un horario habitual {cite:S1}"
+                    ),
+                },
+                "answer-1",
+            )
         ])
 
     async def crisis_screen(_turns):

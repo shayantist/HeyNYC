@@ -12,6 +12,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.models import ModelRequestParameters, ModelSettings
@@ -47,12 +48,22 @@ class VerificationFallbackProbeModel(WrapperModel):
                 model_settings,
                 model_request_parameters,
             )
-        return ModelResponse([
-            TextPart(
-                "Llama al número no respaldado 212-555-1212. "
-                f"{{cite:{citation_id}}}"
-            )
-        ])
+        answer = (
+            "Llama al número no respaldado 212-555-1212. "
+            f"{{cite:{citation_id}}}"
+        )
+        if any(
+            tool.name == "final_answer"
+            for tool in model_request_parameters.output_tools
+        ):
+            return ModelResponse([
+                ToolCallPart(
+                    "final_answer",
+                    {"answer": answer},
+                    "answer-1",
+                )
+            ])
+        return ModelResponse([TextPart(answer)])
 
 
 def verified_fallback_probe(result: Any, expected: str) -> bool:

@@ -7,6 +7,7 @@ groundedness on top; the free default Agent judge reads these traces directly.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -196,6 +197,7 @@ def check_citation_references(cr: CaseResult) -> Optional[CheckResult]:
 
 
 LinkChecker = Callable[[str], Awaitable[int]]
+_LINK_CHECK_TIMEOUT_S = 20.0
 
 
 async def _default_link_checker(url: str) -> int:
@@ -227,10 +229,9 @@ def _strip_url_punctuation(url: str) -> str:
 async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = None) -> Optional[CheckResult]:
     # Only check links the agent actually surfaced to the user (cited inline in its answer).
     # A search tool may register many candidates as citations; the ones the user never sees
-    # aren't user-facing, so a dead link among them isn't a real failure. Fall back to all
-    # registered citations when the answer cites none inline (preserves prior behavior).
+    # aren't user-facing, so a dead link among them isn't a real failure.
     referenced = set(_CITE_REF_RE.findall(cr.text or ""))
-    ids = referenced or set(cr.citations)
+    ids = referenced
     urls = [c["url"] for cid, c in cr.citations.items() if cid in ids and c.get("url")]
     urls.extend(_strip_url_punctuation(url) for url in _URL_RE.findall(cr.text or ""))
     urls = list(dict.fromkeys(urls))
@@ -243,15 +244,66 @@ async def check_link_liveness(cr: CaseResult, checker: Optional[LinkChecker] = N
     # is NOT counted as dead: doing so makes the gate flaky and non-reproducible. 2xx/3xx/5xx
     # mean the page exists. (Unreachable links are surfaced by the agent-judge, not the gate.)
     _DEAD = {404, 410}
-    dead = []
-    for url in urls:
-        status = await checker(url)
-        if status in _DEAD:
-            dead.append((url, status))
+
+    async def bounded_status(url: str) -> int:
+        try:
+            return await asyncio.wait_for(checker(url), _LINK_CHECK_TIMEOUT_S)
+        except Exception:
+            return 0
+
+    statuses = await asyncio.gather(*(bounded_status(url) for url in urls))
+    dead = [
+        (url, status)
+        for url, status in zip(urls, statuses)
+        if status in _DEAD
+    ]
     return CheckResult(
         "link_liveness",
         passed=not dead,
         detail="" if not dead else f"dead links: {dead}",
+    )
+
+
+def check_url_provenance(cr: CaseResult) -> Optional[CheckResult]:
+    """Require every direct answer URL to have come from captured tool evidence."""
+    direct = {_strip_url_punctuation(url).rstrip("/") for url in _URL_RE.findall(cr.text or "")}
+    if not direct:
+        return None
+    captured = {
+        _strip_url_punctuation(citation["url"]).rstrip("/")
+        for citation in cr.citations.values()
+        if citation.get("url")
+    }
+    messages = [
+        *cr.messages,
+        *(message for turn in cr.turn_results for message in getattr(turn, "messages", [])),
+    ]
+    captured.update(
+        _strip_url_punctuation(url).rstrip("/")
+        for message in messages
+        if message.get("role") == "tool"
+        for url in _URL_RE.findall(str(message.get("content", "")))
+    )
+    from ..core.tools.geo import maps_link
+
+    for citation in cr.citations.values():
+        if citation.get("kind") != "DATA":
+            continue
+        provenance = citation.get("provenance") or {}
+        snapshot = provenance.get("snapshot") or {}
+        point = (provenance.get("derivation") or {}).get("point") or [
+            snapshot.get("latitude", snapshot.get("lat")),
+            snapshot.get("longitude", snapshot.get("lon", snapshot.get("lng"))),
+        ]
+        try:
+            captured.add(maps_link(float(point[0]), float(point[1])))
+        except (IndexError, TypeError, ValueError):
+            continue
+    unsupported = sorted(direct - captured)
+    return CheckResult(
+        "url_provenance",
+        passed=not unsupported,
+        detail="" if not unsupported else f"URLs absent from tool evidence: {', '.join(unsupported)}",
     )
 
 
@@ -319,7 +371,7 @@ def check_cited_claim_grounding(cr: CaseResult) -> Optional[CheckResult]:
 # too noisy on a couple of sentences. No external dependency, a small self-contained FK estimator.
 _READABILITY_MAX_GRADE = 9.0        # target ~6-8; a little headroom for unavoidable proper nouns
 _READABILITY_MIN_WORDS = 30         # below this, FK grade is too noisy to be meaningful
-_URL_RE = re.compile(r"https?://\S+")
+_URL_RE = re.compile(r"https?://[^\s)>\]]+")
 # Line breaks end a thought in phone-format answers (the voice rules demand dash lists with
 # no terminal periods); without \n here a six-bullet list scores as one forty-word run-on.
 _SENTENCE_RE = re.compile(r"[.!?]+|\n+")
@@ -374,7 +426,7 @@ async def run_checks(cr: CaseResult, link_checker: Optional[LinkChecker] = None)
         check_forbidden_tools(cr),
         check_cite_kinds(cr),
         check_citation_references(cr),
-        await check_link_liveness(cr, link_checker),
+        check_url_provenance(cr),
     ]
     checks.extend(fn(cr) for fn in _EXTRA_CHECKS)  # domain verifiers (e.g. check_data_grounding)
     return [c for c in checks if c is not None]

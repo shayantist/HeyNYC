@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from heynyc.core import config
@@ -60,6 +61,7 @@ def test_load_cases_from_real_modules():
     assert "clinic_cross_module_pregnancy_care" in ids
     assert "cross_module_family_events_and_cooling_preserve_evidence" in ids
     assert "convo_spanish_snap_screen_and_food_tonight" in ids
+    assert "global_f174_identified_medication_inverse" in ids
     # every module's abstain cases are present
     assert any(c.abstain for c in cases)
 
@@ -195,8 +197,12 @@ def test_looks_like_abstention():
 
 
 async def test_link_liveness_with_mock_checker():
-    cr = _result(_case(), citations={"S1": {"url": "https://a.gov", "kind": "WEB"},
-                                     "S2": {"url": "https://dead.gov", "kind": "WEB"}})
+    cr = _result(
+        _case(),
+        text="Sources {cite:S1} {cite:S2}",
+        citations={"S1": {"url": "https://a.gov", "kind": "WEB"},
+                   "S2": {"url": "https://dead.gov", "kind": "WEB"}},
+    )
 
     async def checker(url):
         return 200 if "dead" not in url else 404
@@ -308,6 +314,27 @@ async def test_link_liveness_unreachable_is_not_dead():
         return 404
 
     assert not (await check_link_liveness(cr, checker=gone)).passed
+
+
+async def test_link_liveness_bounds_a_stalled_checker(monkeypatch):
+    import heynyc.eval.checks as checks
+
+    async def stalled(_url):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(checks, "_LINK_CHECK_TIMEOUT_S", 0.01, raising=False)
+    cr = _result(
+        _case(),
+        text="Apply at {cite:S1}.",
+        citations={"S1": {"url": "https://slow.example", "kind": "WEB"}},
+    )
+
+    result = await asyncio.wait_for(
+        check_link_liveness(cr, checker=stalled),
+        timeout=0.1,
+    )
+
+    assert result.passed
 
 
 # --- end-to-end gate with a fake agent ------------------------------------
@@ -657,10 +684,10 @@ async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, m
             "n_tool_calls": 1,
         }
 
-    async def fake_run_all(factory, cases, reminders=None, on_case=None):
+    async def fake_run_all(factory, cases, reminders=None, on_case=None, event_sink_factory=None):
         return [initial]
 
-    async def fake_run_repeated(factory, target, k, reminders=None):
+    async def fake_run_repeated(factory, target, k, reminders=None, event_sink_factory=None):
         assert target is case
         assert k == 2
         return extras
@@ -723,10 +750,10 @@ async def test_eval_repeat_failure_blocks_the_run_and_report(tmp_path, monkeypat
     initial = _result(case, text="initial", tools=["needed"])
     failed_repeat = _result(case, text="missed tool")
 
-    async def fake_run_all(factory, cases, reminders=None, on_case=None):
+    async def fake_run_all(factory, cases, reminders=None, on_case=None, event_sink_factory=None):
         return [initial]
 
-    async def fake_run_repeated(factory, target, k, reminders=None):
+    async def fake_run_repeated(factory, target, k, reminders=None, event_sink_factory=None):
         return [failed_repeat]
 
     monkeypatch.setattr(
@@ -1155,6 +1182,12 @@ def test_multi_turn_case_schema_derives_final_query(tmp_path):
     assert cases["convo_case"].turns == ["first question", "and a follow-up?"]
     assert cases["convo_case"].query == "and a follow-up?"  # checks apply to the final turn
     assert cases["single_case"].turns == ["one shot"]  # single-turn stays the degenerate case
+
+
+def test_f199_regression_case_includes_the_prior_pantry_turn():
+    cases = {case.id: case for case in load_cases(Registry.discover(config.MODULES_DIR))}
+
+    assert len(cases["food_follow_up_keeps_site"].turns) == 2
 
 
 def test_public_capability_gate_stays_compact_and_complete():
