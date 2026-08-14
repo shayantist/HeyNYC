@@ -44,7 +44,7 @@ async def test_web_search_keeps_unlisted_results_and_marks_them_unverified():
     assert len(ctx.citations) == 2
 
 
-async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
+async def test_web_search_returns_evidence_without_answer_policy():
     snippet = "x" * 250 + " decisive detail"
 
     async def fake_search(query, domains, published_after=None, published_before=None, count=5):
@@ -61,8 +61,8 @@ async def test_web_search_preserves_shown_evidence_and_explains_when_to_fetch():
     out = await tool.handler({"query": "current SNAP rule"}, ctx)
 
     assert "decisive detail" in ctx.citations.mapping()["S1"]["snippet"]
-    assert "call web_fetch" in out
-    assert "details beyond an excerpt" in out
+    assert "call web_fetch" not in out
+    assert "details beyond an excerpt" not in out
 
 
 async def test_web_search_marks_an_official_excerpt_as_bounded_answer_evidence():
@@ -88,7 +88,32 @@ async def test_web_search_marks_an_official_excerpt_as_bounded_answer_evidence()
         "evidence_grade": "authoritative_excerpt",
         "source_tier": "authoritative",
     }
-    assert "only claims directly supported by an official excerpt" in out.lower()
+    assert "only claims directly supported by an official excerpt" not in out.lower()
+
+
+@pytest.mark.parametrize("tier", ["editorial", "news"])
+async def test_web_search_marks_curated_excerpts_as_bounded_answer_evidence(tier):
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
+        return [{
+            "title": "Knicks captain",
+            "url": "https://example-news.com/knicks",
+            "snippet": "Jalen Brunson is the captain of the New York Knicks.",
+        }]
+
+    tool = web_search_tools(
+        ["example-news.com"],
+        source_tiers={"example-news.com": (tier, "events")},
+        search_fn=fake_search,
+    )[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await tool.handler({"query": "current Knicks captain"}, ctx)
+
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "search_excerpt",
+        "source_tier": tier,
+    }
+    assert "cite only what the excerpt states" in out.lower()
 
 
 async def test_web_search_marks_archived_results_as_not_current():
@@ -121,6 +146,8 @@ async def test_web_search_no_results_abstains():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
     out = await tool.handler({"query": "x"}, ctx)
     assert "couldn't find" in out.lower() or "no results" in out.lower()
+    assert "tell the user" not in out.lower()
+    assert "rather than guessing" not in out.lower()
 
 
 async def test_tavily_transport_failure_degrades_to_no_results(monkeypatch):
@@ -278,22 +305,56 @@ async def test_web_search_keeps_ugc_off_allowlist_as_an_unverified_lead():
 
 
 async def test_web_search_prefer_boosts_domain():
-    async def fake_search(query, allowed, published_after=None, published_before=None, count=5):
+    calls = []
+
+    async def fake_search(
+        query,
+        allowed,
+        published_after=None,
+        published_before=None,
+        count=5,
+        include_domains=None,
+    ):
+        calls.append(include_domains)
+        if include_domains:
+            return [{"title": "WorldCup NYC", "url": "https://worldcup.nyc/b", "snippet": "s"}]
         return [
             {"title": "Time Out", "url": "https://timeout.com/a", "snippet": "s"},
-            {"title": "WorldCup NYC", "url": "https://worldcup.nyc/b", "snippet": "s"},
         ]
 
     tiers = {"timeout.com": ("editorial", "events"), "worldcup.nyc": ("editorial", "world_cup")}
     tool = web_search_tools(["timeout.com", "worldcup.nyc"], source_tiers=tiers, search_fn=fake_search)[0]
     out = await _run(tool, "watch party", prefer=["worldcup.nyc"])
     assert out.index("worldcup.nyc") < out.index("timeout.com")  # preferred domain first
+    assert calls == [None, ["worldcup.nyc"]]
+
+
+async def test_web_search_does_not_repeat_when_preferred_domain_is_already_present():
+    calls = 0
+
+    async def fake_search(query, allowed, published_after=None, published_before=None, count=5, include_domains=None):
+        nonlocal calls
+        calls += 1
+        return [{"title": "NYC", "url": "https://nyc.gov/a", "snippet": "s"}]
+
+    tool = web_search_tools(["nyc.gov"], search_fn=fake_search)[0]
+    await _run(tool, "parks", prefer=["nyc.gov"])
+    assert calls == 1
 
 
 # --- One search operation with optional recency and source grading ---
 
 def _by_name(allow, tiers=None, news=None, search_fn=None):
     return {t.name: t for t in web_search_tools(allow, source_tiers=tiers, news_tier=news, search_fn=search_fn)}
+
+
+def test_web_search_contract_explains_curated_excerpts_and_preferred_retrieval():
+    tool = _by_name(["nyc.gov"])["web_search"]
+
+    assert "curated editorial/news excerpts" in tool.description
+    prefer = tool.parameters["properties"]["prefer"]["description"]
+    assert "targeted search" in prefer
+    assert "does not discard" in prefer
 
 
 async def test_default_web_search_keeps_trust_domains_as_ranking_metadata():
@@ -509,17 +570,18 @@ def test_web_search_stays_available_for_fresh_event_context():
     assert "always available" in desc
 
 
-def test_web_search_description_caps_repeated_search_for_one_missing_fact():
+def test_web_search_description_does_not_duplicate_answer_policy():
     desc = web_search_tools(["nyc.gov"])[0].description.lower()
-    assert "same missing fact" in desc
-    assert "one focused search" in desc
-    assert "say you could not confirm it" in desc
+    assert "same missing fact" not in desc
+    assert "final_answer" not in desc
+    assert "say you could not confirm" not in desc
 
 
 def test_web_search_parameter_descriptions_state_real_limits():
     properties = web_search_tools(["nyc.gov"])[0].parameters["properties"]
+    assert "use `prefer` instead of `site:`" in properties["query"]["description"].lower()
     assert "publication or last-update date" in properties["published_after"]["description"]
     assert "not the date of an event" in properties["published_after"]["description"]
     assert "exclusive" in properties["published_before"]["description"]
-    assert "ranks only the results returned" in properties["prefer"]["description"]
-    assert "does not restrict" in properties["prefer"]["description"]
+    assert "targeted search" in properties["prefer"]["description"]
+    assert "does not discard" in properties["prefer"]["description"]

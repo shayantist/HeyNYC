@@ -17,7 +17,8 @@ from .. import config
 from ..registry import TIER_RANK
 from .base import Tool, ToolContext
 
-# (query, allowed_domains, published_after=None, published_before=None, count=5)
+# (query, allowed_domains, published_after=None, published_before=None, count=5,
+#  include_domains=None)
 # -> result dictionaries
 SearchFn = Callable[..., Awaitable[list[dict]]]
 
@@ -102,20 +103,26 @@ async def _search_with_fallback(
     *,
     published_after: Optional[str] = None,
     published_before: Optional[str] = None,
+    include_domains: Optional[list[str]] = None,
     count: int = 5,
     **tavily_options,
 ) -> list[dict]:
     try:
-        return await _tavily(
-            query, allowed_domains, max_results=count, **tavily_options
-        )
+        options = dict(tavily_options)
+        if include_domains:
+            options["include_domains"] = include_domains
+        return await _tavily(query, allowed_domains, max_results=count, **options)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 432:
             raise
         if published_after or published_before:
             return []
+        fallback_query = query
+        if include_domains:
+            sites = " OR ".join(f"site:{domain}" for domain in include_domains)
+            fallback_query = f"{query} ({sites})"
         return await _duckduckgo(
-            query,
+            fallback_query,
             allowed_domains,
             count=count,
         )
@@ -127,6 +134,7 @@ async def tavily_search(
     published_after: Optional[str] = None,
     published_before: Optional[str] = None,
     count: int = 5,
+    include_domains: Optional[list[str]] = None,
 ) -> list[dict]:
     """Tavily Basic search with optional publication-date bounds."""
     options = {}
@@ -139,6 +147,7 @@ async def tavily_search(
         allowed_domains,
         published_after=published_after,
         published_before=published_before,
+        include_domains=include_domains,
         count=count,
         **options,
     )
@@ -179,7 +188,8 @@ def _prefers(url: str, prefer: list[str]) -> bool:
 # Per-tier presentation label for a result block (falls back to the bare tier name).
 _TIER_LABELS = {
     "community": "⚠️ community-posted, confirm before you go",
-    "news": "📰 news, recent/developing, verify against the official source",
+    "editorial": "editorial source, cite only what the excerpt states",
+    "news": "📰 news source, cite only what the excerpt states",
     "unverified": "⚠️ unverified source, check before relying on it",
 }
 
@@ -215,6 +225,19 @@ def _make_handler(
             search_options["published_before"] = before.isoformat()
         results = await search(query, domains, **search_options)
         results = [r for r in results if r.get("url")]
+        if prefer and not any(_prefers(r["url"], prefer) for r in results):
+            preferred = await search(
+                query,
+                domains,
+                include_domains=prefer,
+                **search_options,
+            )
+            seen = set()
+            results = [
+                result
+                for result in [*preferred, *results]
+                if result.get("url") and not (result["url"] in seen or seen.add(result["url"]))
+            ]
         results = results[:max(1, min(count, 10))]
         if not results:
             return abstain_msg
@@ -234,6 +257,11 @@ def _make_handler(
                     "evidence_grade": "authoritative_excerpt",
                     "source_tier": "authoritative",
                 }
+            elif tier in {"editorial", "news"} and not warning:
+                provenance = {
+                    "evidence_grade": "search_excerpt",
+                    "source_tier": tier,
+                }
             elif tier == "unverified":
                 provenance["source_tier"] = "unverified"
             cite = ctx.citations.register(
@@ -247,14 +275,7 @@ def _make_handler(
             blocks.append(
                 f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{snippet}"
             )
-        guidance = (
-            "\n\nYou may cite only claims directly supported by an official excerpt. "
-            "For details beyond an excerpt, call web_fetch with its URL and a focused query. "
-            "Editorial, news, community, and archived results remain discovery only."
-            if any(tier == "authoritative" for _result, tier in tagged)
-            else ""
-        )
-        return "\n\n".join(blocks) + guidance
+        return "\n\n".join(blocks)
 
     return _handler
 
@@ -272,10 +293,7 @@ def web_search_tools(
 
     web_search = _make_handler(
         search, search_domains, source_tiers, news_tier,
-        abstain_msg=(
-            "No results from the live web for that query. Tell the user you couldn't verify it rather than "
-            "guessing."
-        ),
+        abstain_msg="No results from the live web for that query.",
     )
 
     prefer_param = {
@@ -286,9 +304,9 @@ def web_search_tools(
                 "description": "One domain to rank ahead of other returned results",
             },
             "description": (
-                "Optional domains to rank first after search. This ranks only the results "
-                "returned by the provider; it does not restrict domains or guarantee that "
-                "a preferred domain is retrieved."
+                "Optional domains to rank first. When none appear in the initial results, "
+                "one targeted search tries those domains and merges its results; it does not discard "
+                "unlisted sources."
             ),
         },
     }
@@ -323,18 +341,25 @@ def web_search_tools(
         Tool(
             name="web_search",
             description=(
-                "Search the live web for current facts, current events, long-tail information, or an ambiguous "
-                "reference that a structured NYC tool does not cover. Use a short noun-phrase query, "
-                "optionally with NYC or a date, rather than the resident's whole sentence. Results "
-                "rank known sources by trust but retain unlisted sources as leads. Authoritative "
-                "excerpts may support only the claims stated in the excerpt; use `web_fetch` when "
-                "the needed detail is on the result page. This tool is always available. For the "
-                "same missing fact, make one focused search, then say you could not confirm it."
+                "Search the live web for current facts, current events, long-tail information, or "
+                "an ambiguous reference. This tool is always available. Use a short noun-phrase "
+                "query, optionally with NYC or a date, rather than the resident's whole sentence. "
+                "Results rank known sources by trust but retain unlisted sources. Authoritative "
+                "excerpts and curated editorial/news excerpts support only the claims they state. Use "
+                "`web_fetch` when the result page contains the needed detail."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The search query."},
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "A short search query for one fact-finding objective, including the constraints "
+                            "that change that fact. For multiple independent facts, call `web_search` in "
+                            "parallel with one focused query per fact. "
+                            "Use `prefer` instead of `site:` so other useful sources remain discoverable."
+                        ),
+                    },
                     **prefer_param,
                     **publication_params,
                     **count_param,

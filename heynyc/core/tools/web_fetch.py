@@ -10,8 +10,9 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import httpx
 from pydantic_ai._ssrf import safe_download, validate_and_resolve_url
 from pypdf import PdfReader
-from trafilatura import html2txt
+from trafilatura import extract, html2txt
 
+from .. import config
 from ..citations import canonical_source_url
 from ..index.corpus import chunk_text, clean_html
 from .base import Tool, ToolContext
@@ -19,11 +20,12 @@ from .web_search import archive_warning
 
 _STOPWORDS = {
     "and", "are", "can", "current", "for", "from", "how", "new", "nyc", "official",
-    "the", "their", "this", "what", "with", "york",
+    "site", "the", "their", "this", "what", "with", "york",
 }
 _ACCESS_WALL_MARKERS = (
     "access denied",
     "complete the security challenge",
+    "enable javascript to run this app",
     "enable javascript and cookies to continue",
     "javascript is required",
 )
@@ -31,6 +33,7 @@ _BROWSER_EXECUTABLE_CANDIDATES = (
     Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
 )
 _MAX_RESPONSE_BYTES = 5_000_000
+_MAX_FULL_PAGE_TOKENS = 2_000
 _MIN_STATIC_TEXT_CHARS = 200
 
 
@@ -58,11 +61,27 @@ def _browser_context_options() -> dict:
 
 
 def _rendered_page_text(html: str, visible_text: str) -> tuple[str, str]:
-    title, text = clean_html(html)
+    title, text = _extract_html(html)
     if visible_text.strip():
         return title, visible_text.strip()
-    full_text = html2txt(html).strip()
-    return title, full_text if full_text and full_text != text else text
+    return title, text
+
+
+def _extract_html(html: str, url: str = "") -> tuple[str, str]:
+    title, cleaned = clean_html(html)
+    text = (
+        extract(
+            html,
+            url=url or None,
+            output_format="markdown",
+            include_comments=False,
+            include_tables=True,
+            include_links=True,
+            favor_recall=True,
+        )
+        or ""
+    ).strip()
+    return title, text or html2txt(html).strip() or cleaned.strip()
 
 
 def _words(text: str) -> list[str]:
@@ -110,6 +129,18 @@ def _relevant_chunks(text: str, query: str, limit: int = 2) -> list[str]:
         reverse=True,
     )[:limit]
     return [chunk for _, chunk, _score in ranked]
+
+
+def _text_tokens(text: str) -> int:
+    import litellm
+
+    return int(litellm.token_counter(model=config.HEYNYC_MODEL, text=text))
+
+
+def _evidence_chunks(text: str, query: str) -> list[str]:
+    if _text_tokens(text) <= _MAX_FULL_PAGE_TOKENS:
+        return [text]
+    return _relevant_chunks(text, query) if query else chunk_text(text)[:2]
 
 
 def _approval_key(url: str) -> str:
@@ -175,7 +206,7 @@ async def _fetch_rendered_page(
             context = await browser.new_context(**_browser_context_options())
             page = await context.new_page()
             await page.route("**/*", _route_public_request)
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+            response = await page.goto(url, wait_until="load", timeout=15_000)
             if response is not None and response.status >= 400:
                 raise ValueError(f"rendered official source returned HTTP {response.status}")
             try:
@@ -270,10 +301,7 @@ def _extract_response(url: str, response) -> tuple[str, str, str]:
         reader = PdfReader(BytesIO(response.content))
         text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
         return url, "Official PDF", text
-    title, text = clean_html(response.text)
-    full_text = html2txt(response.text).strip()
-    if full_text and full_text != text:
-        text = f"{text}\n{full_text}"
+    title, text = _extract_html(response.text, url)
     if not text.strip() or _is_access_wall(title, text):
         raise _RenderedFetchNeeded
     return url, title, text
@@ -283,7 +311,11 @@ async def _fetch_page_with_browser(
     url: str,
     client,
     query: str,
+    *,
+    render: bool = False,
 ) -> tuple[str, str, str]:
+    if render:
+        return await _fetch_rendered_page(url)
     try:
         fetched = await _fetch_page(url, client)
     except _RenderedFetchNeeded:
@@ -292,9 +324,10 @@ async def _fetch_page_with_browser(
         if exc.response.status_code != 403:
             raise
         return await _fetch_rendered_page(url)
-    if (client is None and len(fetched[2].strip()) < _MIN_STATIC_TEXT_CHARS) or (
-        query and not _relevant_chunks(fetched[2], query)
-    ):
+    if client is None and len(fetched[2].strip()) < _MIN_STATIC_TEXT_CHARS:
+        return await _fetch_rendered_page(url)
+    wanted = _terms(query)
+    if wanted and not wanted & _terms(fetched[2]):
         return await _fetch_rendered_page(url)
     return fetched
 
@@ -302,37 +335,45 @@ async def _fetch_page_with_browser(
 def web_fetch_tools() -> list[Tool]:
     async def _handler(args: dict, ctx: ToolContext) -> str:
         url = str(args["url"]).strip()
-        query = str(args.get("query") or "").strip()
+        query = str(args.get("query") or ctx.query).strip()
+        evidence_scope = str(args.get("evidence_scope") or "").strip()
+        render = bool(args.get("render", False))
+        render_key = _approval_key(url)
+        if render and render_key in ctx.rendered_fetch_urls:
+            return "Rendered acquisition was already attempted for this URL in this turn."
+        if render:
+            ctx.rendered_fetch_urls.add(render_key)
         try:
             final_url, title, text = await _fetch_page_with_browser(
                 url,
                 ctx.http,
                 query,
+                render=render,
             )
         except Exception:
-            return (
-                "The page could not be fetched. Do not guess. Preserve other "
-                "verified results and state which requested claim could not be verified; route to "
-                "the relevant official service when no useful result remains."
-            )
-        chunks = _relevant_chunks(text, query) if query else chunk_text(text)[:2]
+            return "The page could not be fetched."
+        chunks = _evidence_chunks(text, query)
         if not chunks:
-            return (
-                "The page was fetched but did not contain text relevant to the requested claim. "
-                "Do not guess from the page title or navigation."
-            )
+            return "The page was fetched but did not contain text relevant to the requested query."
+        content_scope = (
+            "full extracted page" if chunks == [text] else "query-selected excerpts"
+        )
         evidence = "\n\n".join(chunks)
         warning = archive_warning(final_url, title)
-        from .web_search import _tier_of
+        from .web_search import _TIER_LABELS, _tier_of
 
         tier = _tier_of(
             final_url, ctx.registry.source_tiers(), ctx.registry.news_tier(),
         )
         authoritative = tier == "authoritative" and not warning
+        if tier != "authoritative":
+            evidence = f"SOURCE TRUST: {_TIER_LABELS.get(tier, tier)}\n\n{evidence}"
         if warning:
             evidence = f"{warning}\n\n{evidence}"
         provenance = {
-            "evidence_grade": "authoritative" if authoritative else "discovery",
+            "evidence_grade": (
+                "discovery" if warning else "authoritative" if authoritative else "fetched"
+            ),
             "source_tier": tier,
         }
         cite = ctx.citations.register(
@@ -342,7 +383,12 @@ def web_fetch_tools() -> list[Tool]:
             kind="WEB",
             provenance=provenance,
         )
-        return f"{title or 'Fetched page'} ({final_url})\n{evidence} {{cite:{cite}}}"
+        scope_prefix = f"EVIDENCE SCOPE: {evidence_scope}\n" if evidence_scope else ""
+        return (
+            f"{scope_prefix}SOURCE {cite}: {title or 'Fetched page'} ({final_url})\n"
+            f"CONTENT SCOPE: {content_scope}\n"
+            f"{evidence} {{cite:{cite}}}"
+        )
 
     return [
         Tool(
@@ -350,13 +396,37 @@ def web_fetch_tools() -> list[Tool]:
             description=(
                 "Fetch and extract one known public web page. Use it after search when the page itself "
                 "is needed as evidence. Source trust is graded separately; fetching a page does not "
-                "make it authoritative."
+                "make it authoritative. A full extracted page will not reveal different text when the "
+                "same URL is fetched with another query. If static text omits JavaScript-loaded content, "
+                "retry the same URL once with render=true. Otherwise search another page or state that "
+                "the missing detail could not be verified."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "Public HTTPS URL to fetch."},
-                    "query": {"type": "string", "description": "Optional claim or detail to find."},
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Claim or detail to find. Omit only when the resident's current request "
+                            "already states it clearly."
+                        ),
+                    },
+                    "render": {
+                        "type": "boolean",
+                        "description": (
+                            "Use true only after a static fetch omitted content likely loaded by "
+                            "JavaScript. This uses the browser and is slower."
+                        ),
+                        "default": False,
+                    },
+                    "evidence_scope": {
+                        "type": "string",
+                        "description": (
+                            "Optional short label for the claim this fetch is meant to support. "
+                            "Copy the label unchanged when a coordinator supplies one."
+                        ),
+                    },
                 },
                 "required": ["url"],
             },
