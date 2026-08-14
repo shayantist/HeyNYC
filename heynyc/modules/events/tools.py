@@ -166,24 +166,26 @@ def _future_only(events: list[Event], today: str) -> list[Event]:
 
 
 def _not_ended_today(events: list[Event], now: datetime) -> list[Event]:
-    """Drop same-day rows only when their source supplies an end time that has passed."""
+    """Keep same-day rows only when their structured time shows they remain attendable."""
     current_time = now.replace(tzinfo=None).time()
-    return [
-        event
-        for event in events
-        if event.start_date != now.date().isoformat()
-        or (end := _parse_start_time(event.end_time)) is None
-        or end >= current_time
-    ]
+    kept = []
+    for event in events:
+        if event.start_date != now.date().isoformat():
+            kept.append(event)
+            continue
+        end = _parse_start_time(event.end_time)
+        start = _parse_start_time(event.start_time)
+        if (end is not None and end >= current_time) or (
+            not event.end_time.strip()
+            and start is not None
+            and start >= current_time
+        ):
+            kept.append(event)
+    return kept
 
 
 def _shortlist(events: list[Event], limit: int) -> list[Event]:
-    """Cap the merged lanes without letting append order (Ticketmaster, then Parks, then
-    permitted) saturate the cap. A broad weekend query collapses ~70 Ticketmaster+Parks rows
-    onto the window's one or two dates; a plain stable date sort then breaks every tie by lane
-    order and `[:limit]` truncates the last-appended permitted lane to zero. Instead rank each
-    event within its own source by date, then order by that rank so every source's soonest
-    events compete before any source's later ones (ties break on date)."""
+    """Cap the merged lanes while preserving source and requested-date coverage."""
     unique: list[Event] = []
     identities: set[tuple[str, ...]] = set()
     for event in events:
@@ -201,11 +203,12 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
             continue
         identities.add(identity)
         unique.append(event)
-    seen: dict[str, int] = {}
+    seen: dict[tuple[str, str], int] = {}
     ranked: list[tuple[int, str, Event]] = []
     for event in sorted(unique, key=lambda e: e.start_date):
-        rank = seen.get(event.source, 0)
-        seen[event.source] = rank + 1
+        group = (event.source, event.start_date)
+        rank = seen.get(group, 0)
+        seen[group] = rank + 1
         ranked.append((rank, event.start_date, event))
     ranked.sort(key=lambda item: (item[0], item[1]))
     return [event for _, _, event in ranked[:limit]]
@@ -244,9 +247,7 @@ def _requested_window(query: str, today: str) -> tuple[str, str | None]:
 
 _NO_RESULTS = (
     "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
-    "NYC Permitted Events). "
-    "Don't invent events. Say that this lookup could not confirm a match; do not claim that "
-    "no matching events exist."
+    "NYC Permitted Events)."
 )
 
 _TIME_FORMATS = ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M")
@@ -283,11 +284,12 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
     where = f" @ {ev.venue}" if ev.venue else ""
     timing = _today_timing_note(ev, now) if now else ""
+    end = f"; ends {ev.end_time}" if ev.end_time else ""
     free = "; free" if ev.free_evidence else ""
     audience = f"; {ev.audience}" if ev.audience else ""
     details = f"\n  Details: {ev.url}" if ev.url else ""
     return (
-        f"- {ev.name}{where}, {when}{timing}{free}{audience} "
+        f"- {ev.name}{where}, {when}{timing}{end}{free}{audience} "
         f"({ev.source}) {{cite:{cite}}}{details}"
     )
 
@@ -344,8 +346,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     classification = (args.get("classification") or "").strip() or None
     borough = (args.get("borough") or "").strip().lower()
     audience = (args.get("audience") or "").strip().lower()
+    web_query = (args.get("web_query") or "").strip()
+    setting = (args.get("setting") or "").strip().lower()
     if audience not in {"", "kids"}:
         raise ValueError(f"Unsupported audience: {audience}")
+    if setting not in {"", "indoor", "outdoor"}:
+        raise ValueError(f"Unsupported setting: {setting}")
     limit = max(1, min(int(args.get("limit") or 12), 20))
 
     now = datetime.now(NYC_TZ)
@@ -383,7 +389,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             where += f" AND startdate <= '{window_end}T23:59:59'"
         return await query_dataset(
             PARKS_DATASET_ID, where=where, order="startdate",
-            q=keyword, limit=50, client=ctx.http,
+            q=keyword, client=ctx.http,
         )
 
     # Select the public street-event slice by the dataset's own agency/type FIELDS (never by
@@ -402,7 +408,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     async def permitted_source():
         return await query_dataset(
             PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
-            q=keyword, limit=50, client=ctx.http,
+            q=keyword, client=ctx.http,
         )
     catalog_sources = {
         "ticketmaster": ticketmaster_source,
@@ -416,8 +422,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     }
     sources = [(name, source()) for name, source in catalog_sources.items()]
     broad_web = (
-        not keyword
-        and not classification
+        (bool(web_query) or (not keyword and not classification))
         and bool(ctx.query.strip())
         and ctx.toolbox is not None
         and "web_search" in ctx.toolbox
@@ -426,7 +431,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         sources.append((
             "broad_web",
             ctx.toolbox["web_search"].handler(
-                {"query": ctx.query.strip(), "count": 5}, ctx
+                {"query": web_query or ctx.query.strip(), "count": 5}, ctx
             ),
         ))
     gathered = await asyncio.gather(*(
@@ -453,13 +458,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     if web_failed:
         web_context = None
     web_appendix = (
-        "\n\nCurrent web event leads, searched in parallel with the structured catalogs. "
-        "Keep each result's evidence grade and verification warning:\n"
+        "\n\nCurrent web event leads, searched in parallel with the structured catalogs:\n"
         f"{web_context}"
         if web_context
         else (
-            "\n\nCurrent web event leads were unavailable. Results are partial; do not claim "
-            "complete coverage or that no other event exists."
+            "\n\nCurrent web event leads were unavailable. Results are partial."
             if web_failed
             else ""
         )
@@ -500,14 +503,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             catalog_labels[name] for name in catalog_sources if name in limited_catalog
         )
         coverage_note = (
-            f"Sources unavailable for part of this lookup: {names}. Results are partial; "
-            "do not claim complete coverage or that no matching event exists.\n"
+            f"Sources unavailable for part of this lookup: {names}. Results are partial.\n"
         )
     no_results = (
-        f"{coverage_note}No matching events were confirmed from the sources that responded. "
-        "Do not treat that as proof that no matching event exists."
+        f"{coverage_note}No matching events were confirmed from the sources that responded."
         if coverage_note
         else _NO_RESULTS
+    )
+    setting_note = (
+        f"Requested setting: {setting}. Structured catalog rows do not have a source-backed "
+        "indoor or outdoor field, so do not infer indoor or outdoor from a venue name.\n"
+        if setting
+        else ""
     )
     if not events:
         parks_cite = ctx.citations.register(
@@ -527,12 +534,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         no_results += (
             f" Official indexes the resident can check directly: NYC Parks {PARKS_SOURCE_URL} "
             f"{{cite:{parks_cite}}} and NYC Permitted Events {PERMITTED_SOURCE_URL} "
-            f"{{cite:{permitted_cite}}}. Use the resident's own time wording in the answer. "
-            "Do not convert a relative window such as this weekend into exact dates or weekdays "
-            "because these index citations do not evidence that calendar conversion."
+            f"{{cite:{permitted_cite}}}."
         )
     if not events:
-        return no_results + web_appendix
+        return setting_note + no_results + web_appendix
 
     blocks = []
     for ev in events:
@@ -562,11 +567,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     window = f" for {window_start} through {window_end}" if window_end else ""
     free_scope = " whose official source evidence says free" if "free" in ctx.query.lower() else ""
     header = (
-        f"{coverage_note}"
+        f"{setting_note}{coverage_note}"
         f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
         "NYC Permitted Events, the Street Activity Permit Office feed of street fairs, farmers "
-        "markets, block parties, parades, and plaza events). "
-        "Each links to its official page, cite them and don't add events that aren't listed here:\n"
+        "markets, block parties, parades, and plaza events):\n"
     )
     catalog = header + "\n".join(blocks) if blocks else no_results
     return catalog + web_appendix
@@ -587,7 +591,9 @@ def get_tools() -> list[Tool]:
                 "For a specific event topic, web_search remains available for fresh context, "
                 "named-event details, and gaps the structured listings do not cover. Pass `keyword` "
                 "for a specific event topic, plus "
-                "optional `classification`, `borough`, source-backed `audience`, and date window."
+                "optional `classification`, `borough`, source-backed `audience`, and date window. "
+                "For a constrained request, pass `web_query` as a short noun phrase that preserves "
+                "every requested constraint so the coordinator runs one matching web lane."
             ),
             parameters={
                 "type": "object",
@@ -608,9 +614,27 @@ def get_tools() -> list[Tool]:
                         ),
                     },
                     "audience": {"type": "string", "enum": ["kids"], "description": "Optional evidence-backed audience filter. Use `kids` only when the resident asks for children's events; returned rows must carry a source audience label for kids."},
+                    "web_query": {
+                        "type": "string",
+                        "description": (
+                            "Short noun phrase for the coordinator's single current-web lane. "
+                            "Preserve every requested constraint, including place, date, audience, "
+                            "cost, and indoor or outdoor setting. Omit for an unconstrained broad "
+                            "request, which uses the resident's message."
+                        ),
+                    },
+                    "setting": {
+                        "type": "string",
+                        "enum": ["indoor", "outdoor"],
+                        "description": (
+                            "Requested physical setting. Pass only when the resident explicitly "
+                            "asks for indoor or outdoor options. Structured catalogs do not carry "
+                            "this field; it preserves the constraint for the web lane and makes "
+                            "the catalog limitation explicit."
+                        ),
+                    },
                     "window_start": {"type": "string", "format": "date", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
                     "window_end": {"type": "string", "format": "date", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 12, "description": "Max events to return."},
                 },
             },
             handler=_handler,

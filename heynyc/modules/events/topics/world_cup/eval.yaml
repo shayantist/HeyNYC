@@ -11,10 +11,10 @@
 - id: wc_official_fan_events
   tags: [F189, general-chat, must-win]
   query: "What are the official FIFA fan events for the World Cup around NYC?"
-  expect_tools: [index_search]
-  expect_cite_kinds: [DOC]
+  expect_tools: [web_search]
+  expect_cite_kinds: [WEB]
   abstain: false
-  notes: Catalogued official pages — ground via index_search and cite, don't web-roulette.
+  notes: Find current official pages through web search, fetch details when needed, and cite them.
 
 - id: wc_made_up_match
   query: "Did Brazil win their World Cup match at MetLife yesterday, and what was the score?"

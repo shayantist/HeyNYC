@@ -26,7 +26,7 @@ from datetime import date, datetime, timedelta, timezone
 from time import monotonic
 from zoneinfo import ZoneInfo
 
-from heynyc.core.citations import data_provenance
+from heynyc.core.citations import CitationRegistry, data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.notify_nyc import (
     Advisory,
@@ -36,7 +36,8 @@ from heynyc.core.tools.notify_nyc import (
     fetch_recent_advisories,
 )
 
-OFFICIAL = "Notify NYC (nyc.gov/notifynyc) or call 311"
+NOTIFY_NYC_URL = "https://www.nyc.gov/notifynyc"
+OFFICIAL = f"Notify NYC ({NOTIFY_NYC_URL}) or call 311"
 NYC_TZ = ZoneInfo("America/New_York")
 PLAN_RELEVANCE = (
     "When the resident asks which notices could affect a current or future plan, compare each "
@@ -66,7 +67,7 @@ COULD_NOT_CONFIRM = (
     "advisories. Do NOT tell the user the city is clear or that nothing is active, and do NOT state "
     "an all-clear. Tell them plainly that we could not confirm active advisories at the moment and "
     "that an emergency may still be in effect, then send them to the official live source, Notify NYC "
-    "at nyc.gov/notifynyc, and to 311 for current advisories. For a life-threatening emergency, tell "
+    f"at {NOTIFY_NYC_URL}, and to 311 for current advisories. For a life-threatening emergency, tell "
     "them to call 911 right away. Offer to check again."
 )
 
@@ -117,12 +118,15 @@ def _advisory_block(advisory: Advisory, cite: str) -> str:
     return "\n".join(parts)
 
 
-def _recent_citation(ctx: ToolContext, note: RecentNote) -> str:
+def _register_recent_citation(
+    citations: CitationRegistry,
+    note: RecentNote,
+) -> str:
     """DATA citation for a live "recent messages" note, grounded in the resolvable Notify NYC endpoint.
     `valid_as_of` is the notification's own ISSUE time (temporal provenance), never fetch time."""
     snapshot = {"title": note.title, "body": note.body, "pubDate": note.issued_raw}
     provenance = data_provenance(snapshot, record_id=note.guid, field_pointer="/")
-    return ctx.citations.register(
+    return citations.register(
         note.source_url,
         snippet=f"{note.title} (issued {note.issued_raw}). {note.body}".strip(),
         title=note.title or "Notify NYC notification",
@@ -130,6 +134,10 @@ def _recent_citation(ctx: ToolContext, note: RecentNote) -> str:
         valid_as_of=note.issued or note.issued_raw,
         provenance=provenance,
     )
+
+
+def _recent_citation(ctx: ToolContext, note: RecentNote) -> str:
+    return _register_recent_citation(ctx.citations, note)
 
 
 def _recent_block(note: RecentNote, cite: str) -> str:
@@ -140,7 +148,12 @@ def _recent_block(note: RecentNote, cite: str) -> str:
     return "\n".join(parts)
 
 
-def _recent_awareness(feed, today: date) -> str:
+def _recent_awareness(
+    feed,
+    today: date,
+    *,
+    citations: CitationRegistry | None = None,
+) -> str:
     cutoff = today - timedelta(days=6)
     notes = [
         note for note in feed.notes
@@ -152,8 +165,9 @@ def _recent_awareness(feed, today: date) -> str:
     lines = [
         "Notify NYC notifications from the last seven days (NYC Emergency Management), full "
         "text below. They are "
-        "discovery hints, not evidence for a user-facing claim: if one materially affects the "
-        "resident's question, call `check_notify_nyc` for its citable record. Judge each notice by "
+        "exact cached messages. When citation markers are present, they are registered DATA "
+        "evidence for the message text and issue time; call `check_notify_nyc` when the resident "
+        "asks for a refresh, CAP severity or expiry, or more advisory detail. Judge each notice by "
         "its meaning:",
         "- A notice about immediate personal safety: surface it proactively even when you do not "
         "know where the resident is — state its area and let them judge (\"if you're in the "
@@ -166,6 +180,8 @@ def _recent_awareness(feed, today: date) -> str:
     omitted = 0
     for index, note in enumerate(notes):
         block = f"- {note.issued_raw}: {note.title}"
+        if citations is not None:
+            block += f" {{cite:{_register_recent_citation(citations, note)}}}"
         if note.body:
             block += f"\n  {note.body}"
         if len("\n".join((*lines, block))) > _AWARENESS_MAX_CHARS:
@@ -180,7 +196,9 @@ def _recent_awareness(feed, today: date) -> str:
     return "\n".join(lines)
 
 
-async def current_awareness() -> str:
+async def current_awareness(
+    citations: CitationRegistry | None = None,
+) -> str:
     global _awareness_cache
 
     now = monotonic()
@@ -189,7 +207,9 @@ async def current_awareness() -> str:
             _awareness_cache[1].values(), key=lambda note: note.issued, reverse=True,
         )
         return _recent_awareness(
-            RecentFeed(confirmed=bool(notes), notes=notes), datetime.now(NYC_TZ).date(),
+            RecentFeed(confirmed=bool(notes), notes=notes),
+            datetime.now(NYC_TZ).date(),
+            citations=citations,
         )
     async with _awareness_lock:
         now = monotonic()
@@ -198,7 +218,9 @@ async def current_awareness() -> str:
                 _awareness_cache[1].values(), key=lambda note: note.issued, reverse=True,
             )
             return _recent_awareness(
-                RecentFeed(confirmed=bool(notes), notes=notes), datetime.now(NYC_TZ).date(),
+                RecentFeed(confirmed=bool(notes), notes=notes),
+                datetime.now(NYC_TZ).date(),
+                citations=citations,
             )
         feed = await fetch_recent_advisories()
         today = datetime.now(NYC_TZ).date()
@@ -214,7 +236,9 @@ async def current_awareness() -> str:
             _awareness_cache = (monotonic(), cached)
         notes = sorted(cached.values(), key=lambda note: note.issued, reverse=True)
         awareness = _recent_awareness(
-            RecentFeed(confirmed=bool(notes), notes=notes), today,
+            RecentFeed(confirmed=bool(notes), notes=notes),
+            today,
+            citations=citations,
         )
         if not feed.confirmed and awareness:
             return "Notify NYC refresh failed; showing unexpired cached messages.\n" + awareness
@@ -253,7 +277,7 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
     machine-readable severity/expiry), so we show each note's ISSUE time instead of an invented one."""
     lines = [
         "The Notify NYC CAP feed was empty or unreachable, so these are the CITY'S OWN live Notify "
-        "NYC notifications (newest first) from the nyc.gov/notifynyc source. This live source gives "
+        f"NYC notifications (newest first) from {NOTIFY_NYC_URL}. This live source gives "
         "an ISSUE TIME, not a machine-readable 'in effect until', so state each notification's issue "
         "time and let the user judge how current it is. Report ONLY these, cite each, and do NOT "
         "invent a severity or an expiry:",
@@ -269,7 +293,7 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
     lines.append(
         "Limits: this live fallback lists recent notifications without a structured expiry, so "
         "confirm currency by the issue time, and for the fullest picture also point the user to "
-        "nyc.gov/notifynyc and 311. If a HEAT notification is active, also offer cooling centers; for "
+        f"{NOTIFY_NYC_URL} and 311. If a HEAT notification is active, also offer cooling centers; for "
         "FLOODING, pass along any safe-location or road-safety guidance in the notification text. For "
         "a life-threatening emergency, tell the user to call 911 right away."
     )

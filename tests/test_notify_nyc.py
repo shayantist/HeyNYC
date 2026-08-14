@@ -525,6 +525,35 @@ def test_recent_awareness_carries_notice_text_without_scope_parsing():
     assert "broad scope confirmed" not in text
 
 
+def test_recent_awareness_registers_exact_cached_messages_as_data_evidence():
+    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
+        notify_nyc.RecentNote(
+            title="Notify NYC - Flash Flood Warning",
+            body="Move to higher ground in parts of Queens.",
+            issued="2026-07-16T13:25:40-04:00",
+            issued_raw="07/16/2026 13:25:40",
+            source_url=RECENT_MESSAGES_URL,
+            guid="ffw-cached",
+        ),
+    ])
+    citations = CitationRegistry()
+
+    text = advisory_tools._recent_awareness(
+        feed,
+        date(2026, 7, 16),
+        citations=citations,
+    )
+
+    assert "{cite:S1}" in text
+    citation = citations.mapping()["S1"]
+    assert citation["kind"] == "DATA"
+    assert citation["snippet"] == (
+        "Notify NYC - Flash Flood Warning (issued 07/16/2026 13:25:40). "
+        "Move to higher ground in parts of Queens."
+    )
+    assert citation["provenance"]["record_id"] == "ffw-cached"
+
+
 def test_recent_awareness_carries_full_text_and_fail_open_safety_policy():
     """F061 (RULED 2026-07-18): the model, not a regex, decides what to surface — so the index
     carries each notice's full text, safety notices fail OPEN with their area stated even when
@@ -629,6 +658,7 @@ async def test_check_notify_nyc_falls_back_to_recent_when_cap_empty():
     assert "flood advisory" in low                        # today's real alert surfaced
     assert "could not confirm" not in low                 # we DID confirm via the live source
     assert "no active notify nyc advisories" not in low   # not a false all-clear
+    assert "https://www.nyc.gov/notifynyc" in out
     assert len(citations) >= 1                             # grounded + cited
     assert any("recentmessages" in c["url"].lower() for c in citations.mapping().values())
     flood = next(c for c in citations.mapping().values() if "Flood Advisory" in c["title"])

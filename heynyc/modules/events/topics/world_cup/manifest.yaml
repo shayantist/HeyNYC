@@ -50,8 +50,9 @@ source_tiers:
 prompt: |
   World Cup 2026 topic notes (the parent events guidance already covers which tools to
   call; the coordinator keyword is "world cup"): ground official fan-event details with
-  index_search over the catalogued pages, and pass prefer=["nynjfwc26.com","worldcup.nyc"]
-  on any web_search. Some venues (Central Park, Brooklyn Bridge Park) require a free
+  web_search using prefer=["nynjfwc26.com","worldcup.nyc"], then fetch the selected
+  official page when its excerpt lacks the needed detail. Some venues (Central Park,
+  Brooklyn Bridge Park) require a free
   ticket; always link the official page, and never invent match results, scores, or watch
   parties that aren't grounded.
 eval: eval.yaml

@@ -187,10 +187,18 @@ def test_known_finished_events_do_not_block_current_results():
         "Concert", "2026-07-18", "20:00", "Park", "Queens", "u3",
         "Ticketmaster", "authoritative",
     )
+    unknown_start = Event(
+        "Date-only listing", "2026-07-18", "", "Arena", "Queens", "u4",
+        "Ticketmaster", "authoritative",
+    )
+    later = Event(
+        "Late show", "2026-07-18", "23:30", "Arena", "Queens", "u5",
+        "Ticketmaster", "authoritative",
+    )
 
     assert events._not_ended_today(
-        [finished, still_open, unknown_end], now,
-    ) == [still_open, unknown_end]
+        [finished, still_open, unknown_end, unknown_start, later], now,
+    ) == [still_open, later]
 
 
 def test_requested_window_resolves_this_weekend_from_nyc_date():
@@ -343,6 +351,53 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
     assert "Three things happening today" in output
 
 
+async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypatch):
+    calls = []
+
+    async def no_ticketmaster(**kwargs):
+        return []
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    async def web_handler(args, ctx):
+        calls.append(args)
+        return "[S1] Official constrained event lead"
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="what free things can I do with a toddler in Flushing this Saturday if it rains?",
+        toolbox={
+            "web_search": Tool(
+                name="web_search",
+                description="search",
+                parameters={"type": "object"},
+                handler=web_handler,
+            )
+        },
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "audience": "kids",
+            "setting": "indoor",
+            "borough": "Queens",
+            "window_start": "2099-08-15",
+            "window_end": "2099-08-15",
+            "web_query": "free indoor toddler events Flushing 2099-08-15",
+        },
+        ctx,
+    )
+
+    assert calls == [{"query": "free indoor toddler events Flushing 2099-08-15", "count": 5}]
+    assert "Official constrained event lead" in output
+    assert "Requested setting: indoor" in output
+    assert "do not infer indoor or outdoor" in output
+
+
 async def test_broad_event_lookup_discloses_an_unavailable_web_lane(monkeypatch):
     async def no_ticketmaster(**kwargs):
         return []
@@ -384,7 +439,7 @@ async def test_broad_event_lookup_discloses_an_unavailable_web_lane(monkeypatch)
     assert "Evening Concert" in output
     assert "Current web event leads were unavailable" in output
     assert "Results are partial" in output
-    assert "do not claim complete coverage" in output
+    assert "do not claim complete coverage" not in output
 
 
 async def test_specific_event_lookup_leaves_web_search_for_model_followup(monkeypatch):
@@ -444,6 +499,7 @@ def test_event_block_flags_a_today_event_whose_start_time_already_passed():
         "u", "NYC Permitted Events", "authoritative", end_time="6:00 PM",
     )
     assert "in progress" in events._event_block(in_progress, "S5", now)
+    assert "ends 6:00 PM" in events._event_block(in_progress, "S5", now)
     # Back-compat: without a `now` reference there is no annotation (existing callers/tests).
     assert "already started or ended" not in events._event_block(started, "S1")
     assert "starts later today" not in events._event_block(upcoming, "S2")
@@ -585,15 +641,15 @@ async def test_find_nyc_events_grounds_the_official_indexes_when_no_event_matche
 
     assert f"NYC Parks {events.PARKS_SOURCE_URL}" in output
     assert f"NYC Permitted Events {events.PERMITTED_SOURCE_URL}" in output
-    assert "Say that this lookup could not confirm a match" in output
-    assert "do not claim that no matching events exist" in output
+    assert "Say that this lookup could not confirm a match" not in output
+    assert "do not claim that no matching events exist" not in output
     assert output.count("{cite:") == 2
     assert {citation["url"] for citation in citations.mapping().values()} == {
         events.PARKS_SOURCE_URL,
         events.PERMITTED_SOURCE_URL,
     }
     assert {citation["kind"] for citation in citations.mapping().values()} == {"WEB"}
-    assert "Use the resident's own time wording" in output
+    assert "Use the resident's own time wording" not in output
 
 
 def test_find_nyc_events_borough_schema_keeps_citywide_requests_citywide():
@@ -667,7 +723,8 @@ async def test_find_nyc_events_discloses_a_catalog_source_that_stays_unavailable
 
     assert attempts == 2
     assert "Sources unavailable for part of this lookup: Ticketmaster" in output
-    assert "do not claim complete coverage or that no matching event exists" in output
+    assert "Results are partial" in output
+    assert "do not claim complete coverage or that no matching event exists" not in output
     assert "No matching events were confirmed from the sources that responded" in output
     assert "No upcoming NYC events matched" not in output
 
@@ -1170,6 +1227,7 @@ def test_find_nyc_events_schema_enforces_documented_dates_and_limit():
     properties = get_tools()[0].parameters["properties"]
     assert properties["window_start"]["format"] == "date"
     assert properties["window_end"]["format"] == "date"
-    assert properties["limit"]["default"] == 12
-    assert properties["limit"]["minimum"] == 1
-    assert properties["limit"]["maximum"] == 20
+    assert "limit" not in properties
+    assert "short noun phrase" in properties["web_query"]["description"].lower()
+    assert "every requested constraint" in properties["web_query"]["description"]
+    assert properties["setting"]["enum"] == ["indoor", "outdoor"]
