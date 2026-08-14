@@ -688,6 +688,46 @@ def _eval_run_metadata(
     return metadata
 
 
+def _live_eval_sink(directory: Path, case_id: str):
+    """Persist the native event stream and print a compact live trajectory."""
+    import time
+
+    from heynyc.eval.report import event_writer
+
+    write = event_writer(directory, case_id)
+    started = time.monotonic()
+    tool_calls = 0
+    print(f"\n[{case_id}] started")
+
+    def on_event(event) -> None:
+        nonlocal tool_calls
+        write(event)
+        elapsed = time.monotonic() - started
+        if isinstance(event, events.ToolStart):
+            tool_calls += 1
+            print(f"[{case_id}] {elapsed:6.1f}s  tool {tool_calls}: {event.name}", flush=True)
+        elif isinstance(event, events.ToolCompleted):
+            summary = f"  {event.result_summary}" if event.result_summary else ""
+            print(f"[{case_id}] {elapsed:6.1f}s  {event.name}: {event.status}{summary}", flush=True)
+        elif isinstance(event, events.ErrorEvent):
+            print(f"[{case_id}] {elapsed:6.1f}s  error: {event.message}", flush=True)
+        elif isinstance(event, events.Done):
+            usage = getattr(event.result, "usage", {}) or {}
+            calls = int(usage.get("n_model_calls", 0) or usage.get("requests", 0) or 0)
+            tokens = int(usage.get("input_tokens", 0) or 0) + int(
+                usage.get("output_tokens", 0) or 0
+            )
+            cost = usage.get("cost_usd")
+            cost_text = f"${cost:.5f}" if isinstance(cost, (int, float)) else "unpriced"
+            print(
+                f"[{case_id}] {elapsed:6.1f}s  done: {calls} model calls, "
+                f"{tool_calls} tool calls, {tokens} tokens, {cost_text}",
+                flush=True,
+            )
+
+    return on_event
+
+
 async def _cmd_eval(
     use_api_judge: bool,
     repeat: int = 1,
@@ -744,6 +784,7 @@ async def _cmd_eval(
         cases,
         reminders=_default_reminders(),
         on_case=progress_writer(run_dir),
+        event_sink_factory=lambda case: _live_eval_sink(run_dir, case.id),
     )
     judge = None
     if use_api_judge:
@@ -776,6 +817,10 @@ async def _cmd_eval(
                     case,
                     k=repeat - 1,
                     reminders=_default_reminders(),
+                    event_sink_factory=lambda repeated_case, index: _live_eval_sink(
+                        run_dir / "repeats" / repeated_case.id / f"run-{index + 2:02d}",
+                        repeated_case.id,
+                    ),
                 )
             )
             billed_results.extend(runs[1:])

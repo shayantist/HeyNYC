@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -216,6 +217,25 @@ def progress_writer(directory: Path):
             handle.flush()
 
     return on_case
+
+
+def event_writer(directory: Path, case_id: str):
+    """Persist each native runtime event immediately so an interrupted paid run stays inspectable."""
+    directory = Path(directory) / "events"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{case_id.replace('/', '_')}.jsonl"
+
+    def on_event(event) -> None:
+        row = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": event.type,
+            **event.audit_data(),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+
+    return on_event
 
 
 def write_run(

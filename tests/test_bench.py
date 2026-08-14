@@ -50,8 +50,8 @@ def test_build_eval_agent_uses_configured_runtime(monkeypatch):
 
     calls = []
 
-    def fake_pydantic(registry, *, model, index, current_awareness):
-        calls.append((registry, model, index, current_awareness))
+    def fake_pydantic(registry, *, model, index, current_awareness, stream_model_requests):
+        calls.append((registry, model, index, current_awareness, stream_model_requests))
         return "pydantic-agent"
 
     monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "pydantic")
@@ -65,6 +65,7 @@ def test_build_eval_agent_uses_configured_runtime(monkeypatch):
     assert isinstance(agent, PydanticEvalAgent)
     assert agent.runtime == "pydantic-agent"
     assert calls[0][:3] == ("registry", "model", "index")
+    assert calls[0][4] is True
 
 
 def test_build_eval_agent_keeps_legacy_rollback(monkeypatch):
@@ -85,6 +86,30 @@ def test_build_eval_agent_keeps_legacy_rollback(monkeypatch):
     assert agent.kwargs["model"] == "model"
     assert agent.kwargs["index"] == "index"
     assert agent.kwargs["scope_gate"] is True
+
+
+def test_configured_runtime_forwards_eval_streaming(monkeypatch):
+    from heynyc.core import pydantic_runtime
+
+    captured = {}
+    monkeypatch.setattr(pydantic_runtime, "configured_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(pydantic_runtime, "build_toolbox", lambda *args, **kwargs: {})
+    monkeypatch.setattr(pydantic_runtime, "build_crisis_screen", lambda *args, **kwargs: None)
+
+    def fake_build_runtime(registry, **kwargs):
+        captured.update(kwargs)
+        return "runtime"
+
+    monkeypatch.setattr(pydantic_runtime, "build_runtime", fake_build_runtime)
+
+    runtime = pydantic_runtime.build_configured_runtime(
+        "registry",
+        model="openai/test",
+        stream_model_requests=True,
+    )
+
+    assert runtime == "runtime"
+    assert captured["stream_model_requests"] is True
 
 
 async def test_run_bench_isolates_a_failing_model(monkeypatch):

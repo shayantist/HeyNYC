@@ -153,7 +153,12 @@ class CaseResult:
     error: Optional[str] = None
 
 
-async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None) -> CaseResult:
+async def run_case(
+    agent,
+    case: EvalCase,
+    reminders: Optional[list[str]] = None,
+    event_sink=None,
+) -> CaseResult:
     try:
         turn_results = []
         turn_started_at = []
@@ -161,15 +166,21 @@ async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None)
             # A conversational case plays through one Conversation so history flows exactly
             # as it does for the live surfaces; checks grade the final turn's result.
             convo = agent.conversation()
+            send_kwargs = {"reminders": reminders}
+            if event_sink is not None:
+                send_kwargs["event_sink"] = event_sink
             for turn in case.turns[:-1]:
                 turn_started_at.append(datetime.now(NYC_TZ).isoformat(timespec="seconds"))
-                turn_results.append(await convo.send(turn, reminders=reminders))
+                turn_results.append(await convo.send(turn, **send_kwargs))
             turn_started_at.append(datetime.now(NYC_TZ).isoformat(timespec="seconds"))
-            result = await convo.send(case.turns[-1], reminders=reminders)
+            result = await convo.send(case.turns[-1], **send_kwargs)
             turn_results.append(result)
         else:
             turn_started_at.append(datetime.now(NYC_TZ).isoformat(timespec="seconds"))
-            result = await agent.run(case.query, reminders=reminders)
+            kwargs = {"reminders": reminders}
+            if event_sink is not None:
+                kwargs["event_sink"] = event_sink
+            result = await agent.run(case.query, **kwargs)
             turn_results.append(result)
     except Exception as exc:  # a crash is a failed case, not a crashed run
         partial = getattr(exc, "partial_result", None)
@@ -202,10 +213,22 @@ async def run_case(agent, case: EvalCase, reminders: Optional[list[str]] = None)
 
 
 async def run_repeated(
-    agent_factory, case: EvalCase, k: int = 3, reminders: Optional[list[str]] = None
+    agent_factory,
+    case: EvalCase,
+    k: int = 3,
+    reminders: Optional[list[str]] = None,
+    event_sink_factory=None,
 ) -> list[CaseResult]:
     """Run one case k times with a fresh agent each time (for pass^k reliability)."""
-    return [await run_case(agent_factory(), case, reminders=reminders) for _ in range(k)]
+    return [
+        await run_case(
+            agent_factory(),
+            case,
+            reminders=reminders,
+            event_sink=event_sink_factory(case, index) if event_sink_factory else None,
+        )
+        for index in range(k)
+    ]
 
 
 async def run_all(
@@ -213,6 +236,7 @@ async def run_all(
     cases: list[EvalCase],
     reminders: Optional[list[str]] = None,
     on_case=None,
+    event_sink_factory=None,
 ) -> list[CaseResult]:
     """Run each case with a fresh agent (so state never leaks between cases).
 
@@ -223,7 +247,12 @@ async def run_all(
     """
     results = []
     for case in cases:
-        result = await run_case(agent_factory(), case, reminders=reminders)
+        result = await run_case(
+            agent_factory(),
+            case,
+            reminders=reminders,
+            event_sink=event_sink_factory(case) if event_sink_factory else None,
+        )
         results.append(result)
         if on_case is not None:
             on_case(result)

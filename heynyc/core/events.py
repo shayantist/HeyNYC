@@ -17,6 +17,9 @@ class Event:
     def sse_data(self) -> dict:
         return {}
 
+    def audit_data(self) -> dict:
+        return self.sse_data()
+
 
 @dataclass
 class SessionInit(Event):
@@ -47,6 +50,32 @@ class MessageStart(Event):
 
 
 @dataclass
+class ModelRequestStart(Event):
+    type: ClassVar[str] = "model.request.start"
+    request_number: int
+
+    def sse_data(self) -> dict:
+        return {"request_number": self.request_number}
+
+
+@dataclass
+class ModelRequestCompleted(Event):
+    type: ClassVar[str] = "model.request.completed"
+    request_number: int
+    elapsed_ms: float
+    usage: dict = field(default_factory=dict)
+
+    def sse_data(self) -> dict:
+        return {
+            "request_number": self.request_number,
+            "elapsed_ms": self.elapsed_ms,
+        }
+
+    def audit_data(self) -> dict:
+        return {**self.sse_data(), "usage": self.usage}
+
+
+@dataclass
 class TextDelta(Event):
     type: ClassVar[str] = "text.delta"
     message_id: str
@@ -62,9 +91,13 @@ class ToolStart(Event):
     tool_call_id: str
     name: str
     label: str = ""
+    args: dict = field(default_factory=dict)
 
     def sse_data(self) -> dict:
         return {"tool_call_id": self.tool_call_id, "name": self.name, "label": self.label}
+
+    def audit_data(self) -> dict:
+        return {**self.sse_data(), "args": self.args}
 
 
 @dataclass
@@ -74,6 +107,7 @@ class ToolCompleted(Event):
     name: str
     status: str  # "ok" | "error"
     result_summary: str = ""
+    result: Any = None
 
     def sse_data(self) -> dict:
         return {
@@ -82,6 +116,37 @@ class ToolCompleted(Event):
             "status": self.status,
             "result_summary": self.result_summary,
         }
+
+    def audit_data(self) -> dict:
+        return {**self.sse_data(), "result": self.result}
+
+
+@dataclass
+class OutputAttempt(Event):
+    type: ClassVar[str] = "output.attempt"
+    tool_call_id: str
+    name: str
+    args: dict = field(default_factory=dict)
+
+    def sse_data(self) -> dict:
+        return {"tool_call_id": self.tool_call_id, "name": self.name}
+
+    def audit_data(self) -> dict:
+        return {**self.sse_data(), "args": self.args}
+
+
+@dataclass
+class ValidationRejected(Event):
+    type: ClassVar[str] = "validation.rejected"
+    tool_call_id: str
+    name: str
+    message: str
+
+    def sse_data(self) -> dict:
+        return {"tool_call_id": self.tool_call_id, "name": self.name}
+
+    def audit_data(self) -> dict:
+        return {**self.sse_data(), "message": self.message}
 
 
 @dataclass
