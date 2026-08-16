@@ -12,6 +12,14 @@ Run [`deploy_via_ssh.sh`](deploy_via_ssh.sh) on the Mac to deploy the latest pus
 
 It connects to Windows through the operator's private SSH configuration, enters WSL, fast-forwards the checkout, and invokes [`deploy.sh`](deploy.sh) there. Run `deploy.sh` directly only from the target Linux host.
 
+The WSL pilot needs one interactive privilege bootstrap:
+
+```bash
+./scripts/install_deploy_privileges.sh
+```
+
+The installer copies a four-operation root-owned helper and its narrow sudo policy. After that, `deploy_via_ssh.sh` can stop and start only `heynyc.service`, run the existing snapshot-retention cleanup, and verify that permission without a password. It cannot run repository code as root or invoke arbitrary system commands. A new host must complete one ordinary interactive deployment first so its browser dependencies and retention policy already exist.
+
 There is no `serve.sh`. `serve` is an application command implemented by HeyNYC itself:
 
 ```bash
@@ -39,6 +47,7 @@ The npm-style analogy is:
 |---|---|---|---|
 | [`deploy_via_ssh.sh`](deploy_via_ssh.sh) | Mac | Connects to the private Windows host, updates the WSL checkout, and invokes the target deploy script | Starts a real deployment |
 | [`deploy.sh`](deploy.sh) | Target Linux or WSL host | Builds an exact release and fresh index, snapshots resident state, switches the service, checks health, and reconciles Twilio metadata | Contacts configured external services |
+| [`install_deploy_privileges.sh`](install_deploy_privileges.sh) | Target Linux or WSL host, once | Installs the root-owned fixed-operation helper and validates its sudo policy | Changes local administrative policy after an interactive sudo approval |
 | [`serve_demo.sh`](serve_demo.sh) | Mac | Runs the Twilio server and ngrok tunnel until interrupted | Resident requests can spend model budget |
 | [`health_watch.sh`](health_watch.sh) | Mac cron or operator shell | Checks the public health endpoint at a bounded cadence and notifies on outage transitions | Public HTTP checks only |
 | [`state_snapshot.py`](state_snapshot.py) | Target host | Creates, verifies, or restores resident-state snapshots | Local resident-state operation |

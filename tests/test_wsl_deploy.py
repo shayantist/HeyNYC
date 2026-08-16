@@ -5,6 +5,9 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "deploy.sh"
 LOCAL_DEPLOY_SCRIPT = Path(__file__).parents[1] / "scripts" / "deploy_via_ssh.sh"
+PRIVILEGED_HELPER = Path(__file__).parents[1] / "scripts" / "heynyc-deploy-privileged"
+PRIVILEGE_INSTALLER = Path(__file__).parents[1] / "scripts" / "install_deploy_privileges.sh"
+SUDOERS_POLICY = Path(__file__).parents[1] / "scripts" / "heynyc-deploy.sudoers"
 NEW_SHA = "2" * 40
 OLD_SHA = "1" * 40
 
@@ -82,7 +85,7 @@ def _deploy_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "  'merge-base --is-ancestor') [ \"$4\" = \"$EXPECTED_DEPLOY_REF\" ] ;;\n"
         "esac\n",
     )
-    _executable(fake_bin / "uv", "#!/bin/sh\nexit 0\n")
+    _executable(fake_bin / "uv", f"#!/bin/sh\necho \"uv $*\" >> {log}\nexit 0\n")
     _executable(
         fake_bin / "systemd-tmpfiles",
         "#!/bin/sh\n"
@@ -158,6 +161,103 @@ def test_wsl_deploy_finds_uv_in_the_standard_user_install(tmp_path: Path) -> Non
     result = _run_deploy(env)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_wsl_deploy_uses_only_the_installed_privileged_helper(tmp_path: Path) -> None:
+    env, root, _, log = _deploy_fixture(tmp_path)
+    config = Path(env["HEYNYC_TMPFILES_CONFIG"])
+    config.write_text(f"d {root / 'backups'} 0700 - - mM:30d -\n")
+    helper = Path(env["PATH"].split(":", 1)[0]) / "heynyc-deploy-privileged"
+    _executable(
+        helper,
+        "#!/bin/sh\n"
+        f"echo \"helper $*\" >> {log}\n"
+        "case \"$1\" in\n"
+        "  check) exit 0 ;;\n"
+        "  retention-clean) systemctl enable --now systemd-tmpfiles-clean.timer; systemd-tmpfiles --clean \"$HEYNYC_TMPFILES_CONFIG\" ;;\n"
+        "  service-start) systemctl start heynyc ;;\n"
+        "  service-stop) systemctl stop heynyc ;;\n"
+        "  *) exit 64 ;;\n"
+        "esac\n",
+    )
+    sudo = Path(env["PATH"].split(":", 1)[0]) / "sudo"
+    _executable(
+        sudo,
+        "#!/bin/sh\n"
+        "[ \"${1:-}\" = -n ] || exit 77\n"
+        "shift\n"
+        "[ \"${1:-}\" = \"$HEYNYC_DEPLOY_PRIVILEGED_HELPER\" ] || exit 77\n"
+        "exec \"$@\"\n",
+    )
+    env["HEYNYC_DEPLOY_PRIVILEGED_HELPER"] = str(helper)
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    commands = log.read_text()
+    assert "helper check" in commands
+    assert "helper service-stop" in commands
+    assert "helper service-start" in commands
+    assert "helper retention-clean" in commands
+    assert "uv run playwright install --only-shell chromium" in commands
+    assert "uv run playwright install --with-deps" not in commands
+
+
+def test_privileged_helper_and_installer_are_narrow() -> None:
+    helper = PRIVILEGED_HELPER.read_text()
+    installer = PRIVILEGE_INSTALLER.read_text()
+    sudoers = SUDOERS_POLICY.read_text()
+
+    for operation in ("check", "service-start", "service-stop", "retention-clean"):
+        assert f"{operation})" in helper
+    assert "eval" not in helper
+    assert "deploy.sh" not in helper
+    assert "/usr/bin/systemctl" in helper
+    assert "/usr/bin/systemd-tmpfiles" in helper
+    assert "ExecStartEx" in helper
+    for property_name in (
+        "ExecConditionEx",
+        "ExecStartPreEx",
+        "ExecStartPostEx",
+        "ExecStopEx",
+        "ExecStopPostEx",
+    ):
+        assert property_name in helper
+    assert "property=Type --value" in helper
+    assert '"$unit_user" = shayan' in helper
+    assert '"$dynamic_user" = no' in helper
+    assert "flags= ;" in helper
+    assert "service-stop)\n        validate_service" in helper
+    assert "/usr/bin/stat -c %u" in helper
+    assert "/usr/bin/find" in helper and "-perm /022" in helper
+    assert "NOPASSWD:" in sudoers
+    allowed = {line.strip() for line in sudoers.splitlines() if line.strip()}
+    assert allowed == {
+        f"shayan ALL=(root) NOPASSWD: /usr/local/sbin/heynyc-deploy-privileged {operation}"
+        for operation in ("check", "service-start", "service-stop", "retention-clean")
+    }
+    assert "visudo -cf" in installer
+    assert "install -o root -g root" in installer
+    subprocess.run(["sh", "-n", PRIVILEGED_HELPER], check=True)
+    subprocess.run(["sh", "-n", PRIVILEGE_INSTALLER], check=True)
+
+
+def test_wsl_deploy_rejects_helper_mode_for_non_pilot_overrides(tmp_path: Path) -> None:
+    env, _, _, _ = _deploy_fixture(tmp_path)
+    env["HEYNYC_DEPLOY_PRIVILEGED_HELPER"] = (
+        "/usr/local/sbin/heynyc-deploy-privileged"
+    )
+    sudo = Path(env["PATH"].split(":", 1)[0]) / "sudo"
+    _executable(
+        sudo,
+        "#!/bin/sh\n"
+        "[ \"$*\" = '-n /usr/local/sbin/heynyc-deploy-privileged check' ]\n",
+    )
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 78
+    assert "supports only the WSL pilot defaults" in result.stderr
 
 
 def test_deploy_via_ssh_uses_only_a_local_ssh_alias(tmp_path: Path) -> None:
@@ -292,11 +392,11 @@ def test_wsl_deploy_prepares_before_the_short_stopped_window() -> None:
     text = SCRIPT.read_text()
 
     sync = text.index("sync --frozen --extra whatsapp --extra pydantic-ai")
-    stop = text.index('systemctl stop "$SERVICE"')
+    stop = text.index("\nservice_stop\n")
     snapshot = text.index('state_snapshot.py" create')
     application_check = text.index('state_snapshot.py" verify')
     switch = text.index('mv -Tf "$next_pointer" "$CURRENT"')
-    start = text.index('systemctl start "$SERVICE"', switch)
+    start = text.index("service_start", switch)
     local_health = text.index("http://127.0.0.1:$PORT/health")
     public_health = text.index('https://$HEYNYC_NGROK_DOMAIN/health')
     reconcile = text.index("reconcile_twilio.py")
@@ -312,9 +412,10 @@ def test_wsl_deploy_installs_only_the_headless_browser_fallback() -> None:
     text = SCRIPT.read_text()
 
     assert "--extra browser" in text
+    assert "playwright install --only-shell chromium" in text
     assert "playwright install --with-deps --only-shell chromium" in text
     assert text.index("playwright install --with-deps --only-shell chromium") < text.index(
-        'systemctl stop "$SERVICE"'
+        "\nservice_stop\n"
     )
 
 
@@ -324,7 +425,7 @@ def test_wsl_deploy_builds_and_probes_a_fresh_index_before_stopping() -> None:
     build = text.index("-m heynyc index-build")
     faq_probe = text.index("Notify NYC mobile app cost")
     terms_probe = text.index("Notify NYC short code message data rates")
-    stop = text.index('systemctl stop "$SERVICE"')
+    stop = text.index("\nservice_stop\n")
     snapshot = text.index('state_snapshot.py" create')
     swap = text.index('mv "$fresh_index" "$active_index"')
 
@@ -587,7 +688,8 @@ def test_wsl_deploy_fails_closed_and_parses_as_posix_shell() -> None:
     assert "sudo -v" in text
     assert "sudo -n true" in text
     assert "Automatic state rollback is intentionally disabled" in text
-    assert text.count('systemctl stop "$SERVICE"') >= 2
+    assert 'sudo systemctl stop "$SERVICE"' in text
+    assert text.count("service_stop") >= 5
     assert "TWILIO_FROM" in text and "TWILIO_WHATSAPP_FROM" in text
     assert '[ -L "$candidate/.env" ]' in text
     assert '[ -x "$candidate/.venv/bin/python" ]' in text

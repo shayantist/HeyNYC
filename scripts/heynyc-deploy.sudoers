@@ -1,0 +1,4 @@
+shayan ALL=(root) NOPASSWD: /usr/local/sbin/heynyc-deploy-privileged check
+shayan ALL=(root) NOPASSWD: /usr/local/sbin/heynyc-deploy-privileged service-start
+shayan ALL=(root) NOPASSWD: /usr/local/sbin/heynyc-deploy-privileged service-stop
+shayan ALL=(root) NOPASSWD: /usr/local/sbin/heynyc-deploy-privileged retention-clean

@@ -35,8 +35,9 @@ BACKUPS="$ROOT/backups"
 TMPFILES_CONFIG="${HEYNYC_TMPFILES_CONFIG:-/etc/tmpfiles.d/heynyc-backups.conf}"
 SERVICE="${HEYNYC_SYSTEMD_SERVICE:-heynyc}"
 PORT="${HEYNYC_PORT:-8791}"
+PRIVILEGED_HELPER="${HEYNYC_DEPLOY_PRIVILEGED_HELPER:-/usr/local/sbin/heynyc-deploy-privileged}"
 readonly DEPLOY_PROTOCOL deploy_locked prepared_release requested_sha ROOT SOURCE SHARED RELEASES CURRENT
-readonly BACKUPS TMPFILES_CONFIG SERVICE PORT
+readonly BACKUPS TMPFILES_CONFIG SERVICE PORT PRIVILEGED_HELPER
 
 mkdir -p "$ROOT" "$RELEASES" "$BACKUPS"
 if [ "$deploy_locked" = 1 ]; then
@@ -48,14 +49,44 @@ else
     exec 9>"$ROOT/deploy.lock"
     flock -n 9 || { echo "another deployment holds $ROOT/deploy.lock" >&2; exit 75; }
 fi
-if [ -t 0 ]; then
+if sudo -n "$PRIVILEGED_HELPER" check >/dev/null 2>&1; then
+    privileged_helper=1
+elif [ -t 0 ]; then
     sudo -v
+    privileged_helper=0
 else
     sudo -n true 2>/dev/null || {
         echo "sudo authorization is not cached; run this deployment from an interactive terminal" >&2
         exit 77
     }
+    privileged_helper=0
 fi
+readonly privileged_helper
+if [ "$privileged_helper" = 1 ] && [ "$PRIVILEGED_HELPER" = /usr/local/sbin/heynyc-deploy-privileged ]; then
+    [ "$ROOT" = /home/shayan/services/heynyc ] &&
+        [ "$SERVICE" = heynyc ] &&
+        [ "$TMPFILES_CONFIG" = /etc/tmpfiles.d/heynyc-backups.conf ] &&
+        [ "$PORT" = 8791 ] || {
+        echo "the installed privilege helper supports only the WSL pilot defaults" >&2
+        exit 78
+    }
+fi
+
+service_start() {
+    if [ "$privileged_helper" = 1 ]; then
+        sudo -n "$PRIVILEGED_HELPER" service-start
+    else
+        sudo systemctl start "$SERVICE"
+    fi
+}
+
+service_stop() {
+    if [ "$privileged_helper" = 1 ]; then
+        sudo -n "$PRIVILEGED_HELPER" service-stop
+    else
+        sudo systemctl stop "$SERVICE"
+    fi
+}
 [ -f "$SHARED/.env" ] || { echo "missing shared .env at $SHARED/.env" >&2; exit 66; }
 [ -d "$SHARED/data" ] || { echo "missing shared data at $SHARED/data" >&2; exit 66; }
 
@@ -113,12 +144,12 @@ filesystem_id() {
 [ -L "$CURRENT" ] || { echo "$CURRENT must be a release symlink" >&2; exit 78; }
 previous="$(readlink -f "$CURRENT")"
 validate_release "$previous" || { echo "current release target is not a valid release" >&2; exit 78; }
-working_directory="$(sudo systemctl show -p WorkingDirectory --value "$SERVICE")"
+working_directory="$(systemctl show -p WorkingDirectory --value "$SERVICE")"
 [ "$working_directory" = "$CURRENT" ] || {
     echo "$SERVICE must use WorkingDirectory=$CURRENT before release deployments" >&2
     exit 78
 }
-exec_start="$(sudo systemctl show -p ExecStart --value "$SERVICE")"
+exec_start="$(systemctl show -p ExecStart --value "$SERVICE")"
 expected_exec="$CURRENT/.venv/bin/python -m heynyc serve --provider twilio --port $PORT"
 case "$exec_start" in
     "{ path=$CURRENT/.venv/bin/python ; argv[]=$expected_exec ; "*) ;;
@@ -179,7 +210,11 @@ else
         cd "$release"
         "$uv_command" sync --frozen --extra whatsapp --extra pydantic-ai --extra browser
         echo "Installing the headless browser fallback"
-        "$uv_command" run playwright install --with-deps --only-shell chromium
+        if [ "$privileged_helper" = 1 ]; then
+            "$uv_command" run playwright install --only-shell chromium
+        else
+            "$uv_command" run playwright install --with-deps --only-shell chromium
+        fi
     )
     : > "$release/.heynyc-ready"
     validate_release "$release" "$sha" || { echo "release directory is not ready for requested SHA" >&2; exit 78; }
@@ -262,10 +297,18 @@ if [ -e "$TMPFILES_CONFIG" ] || [ -L "$TMPFILES_CONFIG" ]; then
         exit 78
     }
 else
+    if [ "$privileged_helper" = 1 ]; then
+        echo "missing snapshot retention config; run the interactive privilege installer" >&2
+        exit 78
+    fi
     printf '%s\n' "$tmpfiles_rule" | sudo tee "$TMPFILES_CONFIG" >/dev/null
 fi
-sudo systemctl enable --now systemd-tmpfiles-clean.timer
-sudo systemd-tmpfiles --clean "$TMPFILES_CONFIG"
+if [ "$privileged_helper" = 1 ]; then
+    sudo -n "$PRIVILEGED_HELPER" retention-clean
+else
+    sudo systemctl enable --now systemd-tmpfiles-clean.timer
+    sudo systemd-tmpfiles --clean "$TMPFILES_CONFIG"
+fi
 prestart_recovery=0
 startup_attempted=0
 index_change_started=0
@@ -310,10 +353,10 @@ recover_before_start() {
             elif ! restore_previous_index; then
                 rollback_ok=0
             fi
-            if [ "$rollback_ok" -eq 1 ] && ! sudo systemctl start "$SERVICE" 2>/dev/null; then
+            if [ "$rollback_ok" -eq 1 ] && ! service_start 2>/dev/null; then
                 rollback_ok=0
             fi
-        elif ! sudo systemctl start "$SERVICE" 2>/dev/null; then
+        elif ! service_start 2>/dev/null; then
             rollback_ok=0
         fi
         if [ "$rollback_ok" -eq 1 ]; then
@@ -335,7 +378,7 @@ trap 'recover_before_start 143' TERM
 
 # The old release serves while Git and dependencies prepare. The stopped window begins here.
 prestart_recovery=1
-sudo systemctl stop "$SERVICE"
+service_stop
 if ! "$python" "$release/scripts/state_snapshot.py" create \
     --data-dir "$SHARED/data" --output "$snapshot" --app-sha "$sha" --quiesced; then
     echo "snapshot failed before the release pointer changed" >&2
@@ -368,10 +411,10 @@ mv "$fresh_index" "$active_index"
 ln -s "$release" "$next_pointer"
 mv -Tf "$next_pointer" "$CURRENT"
 startup_attempted=1
-if ! sudo systemctl start "$SERVICE"; then
+if ! service_start; then
     prestart_recovery=0
     trap - EXIT HUP INT TERM
-    sudo systemctl stop "$SERVICE" 2>/dev/null || true
+    service_stop 2>/dev/null || true
     echo "new service failed to start" >&2
     echo "Automatic state rollback is intentionally disabled after startup; snapshot: $snapshot" >&2
     echo "Previous release: ${previous:-none}" >&2
@@ -391,7 +434,7 @@ health_check() {
 }
 
 if ! health_check "http://127.0.0.1:$PORT/health"; then
-    if ! sudo systemctl stop "$SERVICE"; then
+    if ! service_stop; then
         echo "could not stop the unhealthy new service" >&2
     fi
     echo "local health failed" >&2
@@ -400,7 +443,7 @@ if ! health_check "http://127.0.0.1:$PORT/health"; then
     exit 1
 fi
 if ! health_check "https://$HEYNYC_NGROK_DOMAIN/health"; then
-    if ! sudo systemctl stop "$SERVICE"; then
+    if ! service_stop; then
         echo "could not stop the unhealthy new service" >&2
     fi
     echo "public health failed" >&2

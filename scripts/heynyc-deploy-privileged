@@ -1,0 +1,70 @@
+#!/bin/sh
+# Root-owned fixed operations for unattended HeyNYC deployment
+set -eu
+
+[ "$(/usr/bin/id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 77; }
+[ "$#" -eq 1 ] || { echo "usage: $0 check|service-start|service-stop|retention-clean" >&2; exit 64; }
+
+validate_service() {
+    unit_user=$(/usr/bin/systemctl show --property=User --value heynyc)
+    dynamic_user=$(/usr/bin/systemctl show --property=DynamicUser --value heynyc)
+    service_type=$(/usr/bin/systemctl show --property=Type --value heynyc)
+    exec_start=$(/usr/bin/systemctl show --property=ExecStartEx --value heynyc)
+    unexpected_hooks=$(/usr/bin/systemctl show \
+        --property=ExecConditionEx \
+        --property=ExecStartPreEx \
+        --property=ExecStartPostEx \
+        --property=ExecStopEx \
+        --property=ExecStopPostEx \
+        --value heynyc)
+    expected_exec='{ path=/home/shayan/services/heynyc/current/.venv/bin/python ; argv[]=/home/shayan/services/heynyc/current/.venv/bin/python -m heynyc serve --provider twilio --port 8791 ; flags= ; '
+    [ "$unit_user" = shayan ] && [ "$dynamic_user" = no ] && [ "$service_type" = simple ] || {
+        echo "heynyc.service must run as the unprivileged shayan user" >&2
+        exit 78
+    }
+    case "$exec_start" in
+        "$expected_exec"*'}') ;;
+        *) echo "heynyc.service has an unexpected or privileged command" >&2; exit 78 ;;
+    esac
+    case "$exec_start" in
+        *'} {'*) echo "heynyc.service must have exactly one start command" >&2; exit 78 ;;
+    esac
+    [ -z "$unexpected_hooks" ] || {
+        echo "heynyc.service must not define condition, pre, post, or stop commands" >&2
+        exit 78
+    }
+}
+
+validate_retention_config() {
+    config=/etc/tmpfiles.d/heynyc-backups.conf
+    [ -f "$config" ] && [ ! -L "$config" ] &&
+        [ "$(/usr/bin/stat -c %u "$config")" = 0 ] &&
+        [ -z "$(/usr/bin/find "$config" -maxdepth 0 -perm /022 -print)" ] || {
+        echo "HeyNYC retention config must be a root-owned, non-writable regular file" >&2
+        exit 78
+    }
+}
+
+case "$1" in
+    check)
+        validate_service
+        validate_retention_config
+        ;;
+    service-start)
+        validate_service
+        /usr/bin/systemctl start heynyc
+        ;;
+    service-stop)
+        validate_service
+        /usr/bin/systemctl stop heynyc
+        ;;
+    retention-clean)
+        validate_retention_config
+        /usr/bin/systemctl enable --now systemd-tmpfiles-clean.timer
+        /usr/bin/systemd-tmpfiles --clean /etc/tmpfiles.d/heynyc-backups.conf
+        ;;
+    *)
+        echo "unknown operation: $1" >&2
+        exit 64
+        ;;
+esac
