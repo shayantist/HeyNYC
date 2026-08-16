@@ -52,6 +52,11 @@ _PARK_BOROUGHS = {
 _TICKETMASTER_NYC_CITIES = {
     "bronx", "brooklyn", "new york", "new york city", "queens", "staten island",
 }
+_SOURCE_PRIORITY = {
+    "NYC Parks": 0,
+    "NYC Permitted Events": 1,
+    "Ticketmaster Discovery": 2,
+}
 
 
 @dataclass
@@ -252,7 +257,11 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
         rank = seen.get(group, 0)
         seen[group] = rank + 1
         ranked.append((rank, event.start_date, event))
-    ranked.sort(key=lambda item: (item[0], item[1]))
+    ranked.sort(key=lambda item: (
+        item[0],
+        item[1],
+        _SOURCE_PRIORITY.get(item[2].source, len(_SOURCE_PRIORITY)),
+    ))
     return [event for _, _, event in ranked[:limit]]
 
 
@@ -482,17 +491,34 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     }
     sources = [(name, source()) for name, source in catalog_sources.items()]
     broad_web = (
-        (bool(web_query) or (not keyword and not classification))
+        (bool(web_query) or ctx.event_turn == "discovery" or (not keyword and not classification))
         and bool(ctx.query.strip())
         and ctx.toolbox is not None
         and "web_search" in ctx.toolbox
     )
     if broad_web:
+        query_terms = [
+            term for term in (keyword or classification, borough, audience, setting) if term
+        ]
+        start_day = date.fromisoformat(window_start)
+        search_parts = [
+            "NYC",
+            *query_terms,
+            "events",
+            f"{start_day.strftime('%B')} {start_day.day}, {start_day.year}",
+        ]
+        if window_end and window_end != window_start:
+            end_day = date.fromisoformat(window_end)
+            search_parts.append(
+                f"to {end_day.strftime('%B')} {end_day.day}, {end_day.year}"
+            )
+        search_query = web_query or (
+            " ".join(search_parts) if query_terms else ctx.query.strip()
+        )
+        web_args = {"query": search_query, "count": 10}
         sources.append((
             "broad_web",
-            ctx.toolbox["web_search"].handler(
-                {"query": web_query or ctx.query.strip(), "count": 5}, ctx
-            ),
+            ctx.toolbox["web_search"].handler(web_args, ctx),
         ))
     gathered = await asyncio.gather(*(
         asyncio.wait_for(call, timeout=_SOURCE_TIMEOUT_S) for _, call in sources
@@ -519,9 +545,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         web_context = None
     web_appendix = (
         "\n\nCurrent web event leads, searched in parallel with the structured catalogs:\n"
-        "Context only, not additional event choices. Use a current web lead only by "
-        "replacing a structured choice, after verifying every resident constraint and keeping "
-        "the complete answer within the requested result limit:\n"
+        "Candidate event choices. Choose by exact date and topic match first. Among equally "
+        "matching pages, prefer an organizer, venue, or city page over a ticket marketplace. "
+        "Keep the complete answer within the requested result limit:\n"
         f"{web_context}"
         if web_context
         else (
@@ -576,6 +602,16 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             kept = [e for e in kept if borough in e.borough.lower()]
         if audience == "kids":
             kept = [e for e in kept if "kids" in e.audience.lower()]
+        if broad_web and not resident_requested_count:
+            marketplace_count = 0
+            diverse = []
+            for event in kept:
+                if event.source == "Ticketmaster Discovery":
+                    marketplace_count += 1
+                    if marketplace_count > 2:
+                        continue
+                diverse.append(event)
+            kept = diverse
         return _shortlist(kept, limit)
 
     events = _window_filter(events)
@@ -757,7 +793,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "markets, block parties, parades, and plaza events):\n"
     )
     catalog = header + "\n".join(blocks) if blocks else no_results
-    followup = "\nOffer to narrow or list more matching events." if not resident_requested_count else ""
+    followup = (
+        "\nThis is a shortlist, not every matching event. Offer to narrow or list more."
+        if not resident_requested_count
+        else ""
+    )
     return catalog + web_appendix + followup
 
 
@@ -768,7 +808,7 @@ def get_tools() -> list[Tool]:
             description=(
                 "Find structured NYC event listings by date, borough, audience, topic, or category. "
                 "It combines live Ticketmaster, NYC Parks, and NYC Permitted Events into grounded, "
-                "dated, linked listings. For broad requests such as things to do today, it also "
+                "dated, linked listings. For event discovery requests, it also "
                 "searches the current web in parallel so the model does not need to coordinate a "
                 "second required call. Use it when the "
                 "resident wants event choices or wants to filter earlier choices. Do not use it for "
@@ -804,8 +844,8 @@ def get_tools() -> list[Tool]:
                         "description": (
                             "Short noun phrase for the coordinator's single current-web lane. "
                             "Preserve every requested constraint, including place, date, audience, "
-                            "cost, and indoor or outdoor setting. Omit for an unconstrained broad "
-                            "request, which uses the resident's message."
+                            "cost, and indoor or outdoor setting. Omit when the resident's message "
+                            "already states the complete request."
                         ),
                     },
                     "setting": {

@@ -1354,6 +1354,28 @@ class PydanticRuntimeAdapter:
             rendered = NONFACTUAL_OUTCOME_TEXT
         else:
             rendered = output
+        default_event_shortlist = any(
+            isinstance(part, ToolReturnPart)
+            and part.tool_name == "find_nyc_events"
+            and "This is a shortlist, not every matching event." in str(part.content)
+            for message in messages[current_turn + 1:]
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        answer_without_trailing_citations = re.sub(
+            r"(?:\s*\{cite:S\d+\})+\s*$", "", rendered
+        ).rstrip()
+        if (
+            isinstance(output, str)
+            and default_event_shortlist
+            and not answer_without_trailing_citations.endswith(("?", "؟", "？"))
+        ):
+            reject(
+                "shortlist_next_step",
+                "The event tool returned a default shortlist. End the complete answer with one "
+                "brief resident-facing question offering more choices or a narrower search. "
+                "Use the evidence already retrieved and do not search again.",
+            )
         if "{URL:" in rendered.upper() or _INTERNAL_TEMPLATE_TOKEN.search(rendered):
             reject(
                 "internal_markup",

@@ -498,7 +498,7 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
 
     output = await get_tools()[0].handler({}, ctx)
 
-    assert calls == [{"query": "what to do in nyc today", "count": 5}]
+    assert calls == [{"query": "what to do in nyc today", "count": 10}]
     assert "Current web event leads" in output
     assert "Three things happening today" in output
 
@@ -544,7 +544,7 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
         ctx,
     )
 
-    assert calls == [{"query": "free indoor toddler events Flushing 2099-08-15", "count": 5}]
+    assert calls == [{"query": "free indoor toddler events Flushing 2099-08-15", "count": 10}]
     assert "Official constrained event lead" in output
     assert "Requested setting: indoor" in output
     assert "do not infer indoor or outdoor" in output
@@ -1405,13 +1405,13 @@ async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
     } == {events.PARKS_SOURCE_URL, events.PERMITTED_SOURCE_URL}
 
 
-def test_find_nyc_events_contract_explains_broad_and_specific_search_ownership():
+def test_find_nyc_events_contract_explains_structured_and_web_search_ownership():
     from heynyc.modules.events.tools import get_tools
 
     desc = get_tools()[0].description.lower()
     assert "structured" in desc
     assert "listings" in desc
-    assert "broad requests" in desc
+    assert "event discovery requests" in desc
     assert "current web" in desc
     assert "specific" in desc and "web_search remains available" in desc
     assert "the source" not in desc
@@ -1511,4 +1511,5 @@ async def test_find_nyc_events_enforces_default_unless_resident_asks_for_count(
     )
 
     assert output.count("- Resident choice") == expected
+    assert ("This is a shortlist, not every matching event" in output) is (expected == 5)
     assert ("Offer to narrow or list more" in output) is (expected == 5)

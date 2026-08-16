@@ -67,6 +67,27 @@
     in progress instead of later or ended.
   notes: Exact public-channel query that abstained after a successful live events lookup.
 
+- id: events_f268_primary_sources_and_shortlist_followup
+  turns:
+    - "what to do in nyc today"
+    - "Anything music related?"
+  expect_tools: [find_nyc_events]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [F268, F269, conversation, general-chat, must-win]
+  utility_criterion: >-
+    Treat the second turn as a music filter on today's event search. Prefer relevant organizer,
+    venue, and city event pages over ticket marketplaces when both support a choice. Ticketmaster
+    may fill a gap or remain the primary ticket route for a major game or concert, but it must not
+    crowd out supported primary sources. Say that the default result set is a shortlist rather than
+    every matching event, then offer one useful next step such as more choices or narrowing by
+    neighborhood, price, or music type.
+  notes: >-
+    Pins the public WhatsApp conversation that returned only Ticketmaster music listings and made
+    the default result cap look exhaustive.
+
 - id: events_private_excluded
   query: "Find me a house party in Bushwick tonight — DM for address type thing."
   abstain: true

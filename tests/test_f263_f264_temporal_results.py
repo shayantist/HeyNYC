@@ -231,5 +231,5 @@ async def test_f264_web_leads_are_context_not_extra_choices(monkeypatch) -> None
         {"window_start": "2099-08-15", "window_end": "2099-08-15"}, ctx,
     )
 
-    assert output.count("(Ticketmaster Discovery)") == 5
-    assert "Context only, not additional event choices" in output
+    assert output.count("(Ticketmaster Discovery)") == 2
+    assert "Candidate event choices" in output

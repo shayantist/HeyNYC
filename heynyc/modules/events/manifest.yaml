@@ -27,6 +27,7 @@ official_only: false
 allowlist:
   - nyctourism.com
   - nycgovparks.org
+  - cityparksfoundation.org
   - timeout.com
   - secretnyc.co
   - nycforfree.co
@@ -35,6 +36,10 @@ allowlist:
   - cntraveler.com
   - bkmag.com
   - nba.com
+  - lu.ma
+  - ma.to
+  - partiful.com
+  - msg.com
 source_tiers:
   authoritative:
     - nyc.gov
@@ -42,6 +47,8 @@ source_tiers:
     - nyctourism.com
     - cityofnewyork.us
     - nba.com
+    - cityparksfoundation.org
+    - msg.com
   editorial:
     - timeout.com
     - secretnyc.co
@@ -52,11 +59,14 @@ source_tiers:
     - bkmag.com
   community:
     - eventbrite.com
+    - lu.ma
+    - ma.to
+    - partiful.com
 prompt: |
   For requests for event choices, such as "what's on," festivals, or things to do this weekend,
   call find_nyc_events. It searches live Ticketmaster, NYC Parks, and NYC Permitted Events
-  listings, and broad requests also include one current-web search lane. Do not call web_search
-  again merely to repeat that broad lookup. Do not use the event tool for general facts merely
+  listings, plus one current-web search lane. Do not call web_search again merely to repeat that
+  lookup. Do not use the event tool for general facts merely
   because they concern sports, music, or entertainment. web_search remains available for specific
   named-event details and a requested fact the event result did not cover. Pass `keyword` (the topic), optional `classification`
   (Music/Sports/Arts & Theatre), `borough`, and `audience="kids"` when the resident asks for
@@ -66,8 +76,12 @@ prompt: |
   or outdoor setting, and pass `setting=indoor` or `setting=outdoor` when explicitly requested.
   The coordinator runs that current-web lane with the structured catalogs, so
   do not repeat it manually.
-  For a generic event-choice request, present no more than five choices and end by asking whether
-  the resident wants narrower criteria or more choices. When the user asks for free events, do not call an
+  For general discovery, require the exact date and topic match before comparing source types.
+  Among equally matching choices, prefer an organizer, venue, or city event page over a ticket marketplace.
+  Use Ticketmaster when it is the primary ticket route or the only supported match, including major
+  games and concerts, but do not let it crowd out primary sources. For a generic event-choice request,
+  present no more than five choices, say it is a shortlist, and end by asking whether the resident
+  wants narrower criteria or more choices. When the user asks for free events, do not call an
   event free unless the retrieved source explicitly establishes its cost; the NYC Parks feed
   itself has no price field. Say when cost could not be confirmed. If a result satisfies only some requested constraints,
   do not present it as a matching option. State that the exact combination was not verified and give
