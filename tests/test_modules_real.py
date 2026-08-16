@@ -35,6 +35,9 @@ def test_advisories_declares_current_official_notify_cost_sources():
     registry = Registry.discover(config.MODULES_DIR)
     module = next(module for module in registry.modules if module.name == "advisories")
 
+    assert module.official_link == "https://www.nyc.gov/notifynyc"
+    assert "https://a858-nycnotify.nyc.gov/notifynyc/Home" in module.seeds
+    assert "https://www.nyc.gov/notifynyc" not in module.seeds
     assert "https://a858-nycnotify.nyc.gov/Home/FAQ" in module.seeds
     assert (
         "https://www.nyc.gov/site/em/resources/notify_nyc/"

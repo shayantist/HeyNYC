@@ -18,8 +18,9 @@ examples:
   - "Is it safe to be outside today?"
 tools: tools.py
 eval: eval.yaml
+official_link: https://www.nyc.gov/notifynyc
 seeds:
-  - https://www.nyc.gov/notifynyc
+  - https://a858-nycnotify.nyc.gov/notifynyc/Home
   - https://a858-nycnotify.nyc.gov/Home/FAQ
   - https://www.nyc.gov/site/em/resources/notify_nyc/notify-nyc-short-code-terms-conditions-privacy-policy-information.page
 allowlist:
@@ -55,5 +56,5 @@ prompt: |
     - Its geography is often citywide (all five boroughs) even for a locally-scoped event, so an
       advisory listing every borough does not necessarily mean it affects a specific block.
     - It can lag the SMS/email alerts by a few minutes.
-  NEVER invent an advisory, a severity, or an expiry. If nothing is active, don't manufacture one —
+  NEVER invent an advisory, a severity, or an expiry. If nothing is active, don't manufacture one,
   point the user to Notify NYC (nyc.gov/notifynyc) or 311 and offer to check again.

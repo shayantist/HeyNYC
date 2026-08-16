@@ -238,8 +238,22 @@ def test_privileged_helper_and_installer_are_narrow() -> None:
     }
     assert "visudo -cf" in installer
     assert "install -o root -g root" in installer
+    assert "playwright install-deps chromium" in installer
+    assert installer.index("playwright install-deps chromium") < installer.index(
+        "install -o root -g root"
+    )
     subprocess.run(["sh", "-n", PRIVILEGED_HELPER], check=True)
     subprocess.run(["sh", "-n", PRIVILEGE_INSTALLER], check=True)
+
+
+def test_privilege_installer_converges_on_fixed_paths() -> None:
+    installer = PRIVILEGE_INSTALLER.read_text()
+
+    assert installer.count("/usr/local/sbin/heynyc-deploy-privileged") == 2
+    assert installer.count("/etc/sudoers.d/heynyc-deploy") == 2
+    assert ">>" not in installer
+    assert "tee -a" not in installer
+    assert "cp -n" not in installer
 
 
 def test_wsl_deploy_rejects_helper_mode_for_non_pilot_overrides(tmp_path: Path) -> None:
