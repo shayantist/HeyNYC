@@ -68,7 +68,7 @@ datasets:                         # OPTIONAL, enables "nearest X" via NYC Open D
 seeds:                            # OPTIONAL, official pages indexed for how-to/eligibility
   - https://finder.nyc.gov/coolingcenters/
 
-allowlist:                        # OPTIONAL, extra trusted domains for scoped web search
+allowlist:                        # OPTIONAL, extra preferred domains for scoped web search
   - finder.nyc.gov
 
 prompt: |                         # the behavior rules: how to help, what to cite, when to abstain
@@ -96,7 +96,11 @@ You usually don't have to write the tools, but point the module at these shared 
 - **`nearest(category, near)`**, ranks dataset locations by distance from an address.
   Enabled by adding a `datasets:` entry. Used for "where's the nearest …".
 - **`web_search(query)`**, searches the live web for fresh or long-tail information. A module's
-  known domains guide trust and ranking without blocking discovery from unlisted sources.
+  known domains guide trust and ranking without blocking discovery from unlisted sources. For an
+  explicitly low-stakes module, an unverified excerpt may support only the claim it states and
+  remains labeled unverified. High-stakes modules require authoritative evidence from a sufficient
+  direct excerpt or fetched page
+  ([source trust grading](../core/tools/web_search.py)).
 - **`web_fetch(url, query)`**, opens one known result page when its search excerpt does not contain
   enough evidence.
 
