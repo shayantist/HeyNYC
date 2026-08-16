@@ -18,6 +18,7 @@ from .orchestrator import Deps, handle
 from .store import PENDING_APPROVAL_OUTBOX_KEY, InboxPayloadError
 
 _TYPING_URL = "https://messaging.twilio.com/v3/Indicators/Typing.json"
+_TYPING_REFRESH_SECONDS = 20
 _TEXT_LIMIT = 1600
 _PAGE_PREFIX_RESERVE = 16
 logger = logging.getLogger("heynyc.channels.twilio")
@@ -98,6 +99,8 @@ class TwilioOutboxReplier:
         self.store = store
         self.parts: list[dict] = []
         self._typing = TwilioReplier(client, from_=from_, to=to, message_id=message_id)
+        self._typing_enabled = from_.startswith("whatsapp:") and message_id.startswith(("SM", "MM"))
+        self._typing_task: asyncio.Task | None = None
         self._message_id = message_id
         self._finalized = False
 
@@ -116,8 +119,26 @@ class TwilioOutboxReplier:
 
     async def indicate_typing(self) -> None:
         await self._typing.indicate_typing()
+        if self._typing_enabled and self._typing_task is None:
+            self._typing_task = asyncio.create_task(self._refresh_typing())
+
+    async def _refresh_typing(self) -> None:
+        while True:
+            await asyncio.sleep(_TYPING_REFRESH_SECONDS)
+            await self._typing.indicate_typing()
+
+    async def stop_typing(self) -> None:
+        if self._typing_task is None:
+            return
+        task, self._typing_task = self._typing_task, None
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def finalize(self) -> None:
+        await self.stop_typing()
         if not self._finalized:
             self.store.stage_outbox(self._message_id, self.parts)
             self._finalized = True
@@ -214,6 +235,8 @@ class TwilioInboxWorker:
                 self.deps.store.fail(message.message_id, retry_after_s=retry_after_s)
                 logger.exception("Twilio inbox message generation failed")
                 return True
+            finally:
+                await buffered.stop_typing()
             parts = buffered.parts
             delivered_parts = 0
         replier = TwilioReplier(

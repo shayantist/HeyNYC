@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -7,7 +8,12 @@ pytest.importorskip("twilio")
 pytest.importorskip("fastapi")
 
 from heynyc.channels.store import ChannelStore
-from heynyc.channels.twilio import TwilioReplier, public_url, to_inbound
+from heynyc.channels.twilio import (
+    TwilioOutboxReplier,
+    TwilioReplier,
+    public_url,
+    to_inbound,
+)
 from heynyc.core import pii_crypto
 
 
@@ -137,6 +143,35 @@ async def test_twilio_typing_indicator_is_a_noop_for_sms():
     await replier.indicate_typing()
 
     assert client.requests == []
+
+
+async def test_twilio_outbox_refreshes_typing_until_reply_is_ready(monkeypatch):
+    from heynyc.channels import twilio
+
+    class Store:
+        def stage_outbox(self, message_id, parts):
+            return None
+
+    monkeypatch.setattr(twilio, "_TYPING_REFRESH_SECONDS", 0, raising=False)
+    client = FakeClient()
+    replier = TwilioOutboxReplier(
+        Store(),
+        client,
+        from_="whatsapp:+14155238886",
+        to="whatsapp:+1555",
+        message_id="SM1",
+    )
+
+    await replier.indicate_typing()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert len(client.requests) > 1
+    await replier.finalize()
+    request_count = len(client.requests)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert len(client.requests) == request_count
 
 
 def test_public_url_honors_forwarded_headers():
