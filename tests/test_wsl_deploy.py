@@ -437,7 +437,9 @@ def test_wsl_deploy_builds_and_probes_a_fresh_index_before_stopping() -> None:
     text = SCRIPT.read_text()
 
     build = text.index("-m heynyc index-build")
-    faq_probe = text.index("Notify NYC mobile app cost")
+    faq_probe = text.index(
+        "Notify NYC frequently asked questions mobile application free"
+    )
     terms_probe = text.index("Notify NYC short code message data rates")
     stop = text.index("\nservice_stop\n")
     snapshot = text.index('state_snapshot.py" create')

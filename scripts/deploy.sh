@@ -277,7 +277,7 @@ if [ -L "$fresh_index" ] || [ ! -d "$fresh_index" ]; then
 fi
 faq_probe="$index_quarantine/notify-faq-probe.log"
 HEYNYC_DATA_DIR="$index_build_data" "$python" -m heynyc index-search --urls-only \
-    "Notify NYC mobile app cost money in-app purchases free" >"$faq_probe"
+    "Notify NYC frequently asked questions mobile application free" >"$faq_probe"
 grep -Fxq 'https://a858-nycnotify.nyc.gov/Home/FAQ' "$faq_probe" || {
     echo "fresh index did not retrieve the Notify NYC FAQ; evidence preserved at $index_quarantine" >&2
     exit 1
