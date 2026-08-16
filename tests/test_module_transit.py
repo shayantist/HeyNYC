@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import httpx
 
-from heynyc.core.citations import CitationRegistry
 from heynyc.core import config
+from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import ToolContext
 from heynyc.modules.transit.tools import get_tools

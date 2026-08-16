@@ -1,7 +1,7 @@
+from heynyc.core.citations import data_provenance
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.checks import run_checks
 from heynyc.eval.runner import CaseResult
-from heynyc.core.citations import data_provenance
 
 
 def _result(text: str, citations: dict) -> CaseResult:
