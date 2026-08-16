@@ -161,10 +161,21 @@ async def test_twilio_outbox_refreshes_typing_until_reply_is_ready(monkeypatch):
         to="whatsapp:+1555",
         message_id="SM1",
     )
+    refreshed = asyncio.Event()
+    typing_calls = 0
+    indicate_typing = replier._typing.indicate_typing
+
+    async def observe_typing():
+        nonlocal typing_calls
+        typing_calls += 1
+        await indicate_typing()
+        if typing_calls > 1:
+            refreshed.set()
+
+    replier._typing.indicate_typing = observe_typing
 
     await replier.indicate_typing()
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(refreshed.wait(), timeout=1)
 
     assert len(client.requests) > 1
     await replier.finalize()

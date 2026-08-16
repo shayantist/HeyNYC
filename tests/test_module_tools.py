@@ -25,7 +25,8 @@ def test_build_toolbox_keeps_the_local_index_out_of_the_model_tool_surface():
     assert "search_official_guidance" not in tools
 
 
-def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names():
+def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names(monkeypatch):
+    monkeypatch.setattr(config, "screening_creds", lambda: ("", "", ""))
     tools = build_toolbox(Registry.discover(config.MODULES_DIR))
 
     assert {
@@ -37,8 +38,8 @@ def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names():
         "find_child_care_connect_programs",
         "find_foodhelp_locations",
         "find_housing_connect_lotteries",
-        "screen_access_nyc_eligibility",
     } <= set(tools)
+    assert "screen_access_nyc_eligibility" not in tools
     assert {
         "recent_developments",
         "official_sources",
