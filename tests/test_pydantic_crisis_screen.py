@@ -13,9 +13,10 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import RequestUsage
 
 from heynyc.core.crisis_lines import CRISIS_LINES, crisis_response
+from heynyc.core.manifest import ServiceModule
 from heynyc.core.pydantic_runtime import PydanticRunFailure, PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.runtime import _reply_language
-from heynyc.core.pydantic_runtime.safety import build_crisis_screen
+from heynyc.core.pydantic_runtime.safety import build_crisis_screen, build_scope_screen
 from heynyc.core.registry import Registry
 
 
@@ -58,6 +59,36 @@ async def test_crisis_screen_uses_typed_output_and_reports_native_usage() -> Non
     assert result.input_tokens == 20
     assert result.output_tokens == 3
     assert result.cached_input_tokens == 5
+    assert result.requests == 1
+
+
+async def test_scope_screen_reuses_the_typed_scope_checklist() -> None:
+    async def classify(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        output = info.output_tools[0]
+        return ModelResponse([
+            ToolCallPart(
+                output.name,
+                {
+                    "event_turn": "discovery",
+                    "modules": ["events"],
+                    "situations": [],
+                },
+                "scope-1",
+            )
+        ])
+
+    result = await build_scope_screen(
+        FunctionModel(classify),
+        model_name="test/scope",
+        registry=Registry([ServiceModule(name="events")]),
+    )(("What events are on?", "Tell me more about that event."))
+
+    assert result.event_turn == "discovery"
+    assert result.modules == ("events",)
+    assert result.situations == ()
     assert result.requests == 1
 
 

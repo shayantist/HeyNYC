@@ -3,6 +3,12 @@ msgstr ""
 "Language: zh_CN\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "Sources"
+msgstr "来源"
+
+msgid "Source note"
+msgstr "来源说明"
+
 msgid "I hit a temporary problem before I could verify an answer. Please try again in a moment. If you need help now, call 311 and ask for the service you need."
 msgstr "我在核实答案之前遇到了暂时性问题。请稍后再试。如果您现在需要帮助，请拨打 311，并说明您需要的服务。"
 
@@ -20,3 +26,6 @@ msgstr "目前没有确认开放的室内 Cool Options。我无法安全地推�
 
 msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
 msgstr "目前没有确认开放的 Cool Options。我无法安全地推荐目的地。请拨打 311，寻求帮助查找目前开放的避暑场所。如果有人呼吸困难，请拨打 911。"
+
+msgid "Verification note for {source}: this source is a search-result excerpt. I could not confirm it from the full page."
+msgstr "{source} 的核实说明：此来源只是搜索结果摘要，我无法从完整页面确认该信息。"

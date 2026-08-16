@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import ipaddress
 import unicodedata
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
+from pydantic import BaseModel, ConfigDict
 from pydantic_ai._ssrf import safe_download, validate_and_resolve_url
 from pypdf import PdfReader
 from trafilatura import extract, html2txt
@@ -39,6 +42,58 @@ _MIN_STATIC_TEXT_CHARS = 200
 
 class _RenderedFetchNeeded(Exception):
     pass
+
+
+class WebFetchAcquisition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requested_url: str
+    final_url: str
+    citation_url: str
+    route: Literal["http", "browser"]
+    fetched_at: datetime
+    status_code: int | None = None
+    content_type: str | None = None
+    body_bytes: int | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+    cache_control: str | None = None
+    response_date: str | None = None
+
+
+class _FetchedPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    final_url: str
+    title: str
+    text: str
+    acquisition: WebFetchAcquisition
+
+
+def _acquisition(
+    requested_url: str,
+    final_url: str,
+    route: Literal["http", "browser"],
+    *,
+    response=None,
+    headers=None,
+    body_bytes: int | None = None,
+) -> WebFetchAcquisition:
+    headers = headers or getattr(response, "headers", {}) or {}
+    return WebFetchAcquisition(
+        requested_url=requested_url,
+        final_url=final_url,
+        citation_url=canonical_source_url(final_url),
+        route=route,
+        fetched_at=datetime.now().astimezone(),
+        status_code=getattr(response, "status_code", None) or getattr(response, "status", None),
+        content_type=headers.get("content-type") or None,
+        body_bytes=body_bytes,
+        etag=headers.get("etag") or None,
+        last_modified=headers.get("last-modified") or None,
+        cache_control=headers.get("cache-control") or None,
+        response_date=headers.get("date") or None,
+    )
 
 
 def _browser_launch_options() -> dict:
@@ -195,7 +250,8 @@ async def _route_public_request(route, request) -> None:
 
 async def _fetch_rendered_page(
     url: str,
-) -> tuple[str, str, str]:
+) -> _FetchedPage:
+    from playwright.async_api import Error as PlaywrightError
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     from playwright.async_api import async_playwright
 
@@ -220,6 +276,15 @@ async def _fetch_rendered_page(
             await _validate_public_url(final_url)
             visible_text = await page.locator("body").inner_text()
             html = await page.content()
+            response_headers = (
+                await response.all_headers()
+                if response is not None and hasattr(response, "all_headers")
+                else {}
+            )
+            try:
+                response_body = await response.body() if response is not None else None
+            except PlaywrightError:
+                response_body = None
         finally:
             if page is not None:
                 await page.unroute_all(behavior="ignoreErrors")
@@ -228,13 +293,25 @@ async def _fetch_rendered_page(
     title, text = _rendered_page_text(html, visible_text)
     if not text.strip() or _is_access_wall(title, text):
         raise ValueError("rendered official source did not expose usable text")
-    return final_url, title, text
+    return _FetchedPage(
+        final_url=final_url,
+        title=title,
+        text=text,
+        acquisition=_acquisition(
+            url,
+            final_url,
+            "browser",
+            response=response,
+            headers=response_headers,
+            body_bytes=len(response_body) if response_body is not None else None,
+        ),
+    )
 
 
 async def _fetch_page(
     url: str,
     client,
-) -> tuple[str, str, str]:
+) -> _FetchedPage:
     if not _url_safe_shape(url):
         raise ValueError("URL must be public HTTPS without credentials")
     if client is None:
@@ -264,8 +341,21 @@ async def _fetch_page(
             raise ValueError("page exceeds the fetch size limit")
         if len(response.content) > _MAX_RESPONSE_BYTES:
             raise ValueError("page exceeds the fetch size limit")
-        return _extract_response(current, response)
+        final_url, title, text = _extract_response(current, response)
+        return _FetchedPage(
+            final_url=final_url,
+            title=title,
+            text=text,
+            acquisition=_acquisition(
+                url,
+                final_url,
+                "http",
+                response=response,
+                body_bytes=len(response.content),
+            ),
+        )
 
+    requested_url = url
     current = url
     for _ in range(4):
         await _validate_public_url(current)
@@ -291,7 +381,19 @@ async def _fetch_page(
         response.raise_for_status()
         if len(response.content) > _MAX_RESPONSE_BYTES:
             raise ValueError("page exceeds the fetch size limit")
-        return _extract_response(current, response)
+        final_url, title, text = _extract_response(current, response)
+        return _FetchedPage(
+            final_url=final_url,
+            title=title,
+            text=text,
+            acquisition=_acquisition(
+                requested_url,
+                final_url,
+                "http",
+                response=response,
+                body_bytes=len(response.content),
+            ),
+        )
     raise ValueError("official source redirected too many times")
 
 
@@ -313,7 +415,7 @@ async def _fetch_page_with_browser(
     query: str,
     *,
     render: bool = False,
-) -> tuple[str, str, str]:
+) -> _FetchedPage:
     if render:
         return await _fetch_rendered_page(url)
     try:
@@ -324,10 +426,10 @@ async def _fetch_page_with_browser(
         if exc.response.status_code != 403:
             raise
         return await _fetch_rendered_page(url)
-    if client is None and len(fetched[2].strip()) < _MIN_STATIC_TEXT_CHARS:
+    if client is None and len(fetched.text.strip()) < _MIN_STATIC_TEXT_CHARS:
         return await _fetch_rendered_page(url)
     wanted = _terms(query)
-    if wanted and not wanted & _terms(fetched[2]):
+    if wanted and not wanted & _terms(fetched.text):
         return await _fetch_rendered_page(url)
     return fetched
 
@@ -344,7 +446,7 @@ def web_fetch_tools() -> list[Tool]:
         if render:
             ctx.rendered_fetch_urls.add(render_key)
         try:
-            final_url, title, text = await _fetch_page_with_browser(
+            fetched = await _fetch_page_with_browser(
                 url,
                 ctx.http,
                 query,
@@ -352,6 +454,7 @@ def web_fetch_tools() -> list[Tool]:
             )
         except Exception:
             return "The page could not be fetched."
+        final_url, title, text = fetched.final_url, fetched.title, fetched.text
         chunks = _evidence_chunks(text, query)
         if not chunks:
             return "The page was fetched but did not contain text relevant to the requested query."
@@ -375,6 +478,7 @@ def web_fetch_tools() -> list[Tool]:
                 "discovery" if warning else "authoritative" if authoritative else "fetched"
             ),
             "source_tier": tier,
+            "acquisition": fetched.acquisition.model_dump(mode="json"),
         }
         cite = ctx.citations.register(
             final_url,

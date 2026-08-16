@@ -31,7 +31,7 @@ from .projection import (
     _semantic_citation_evidence,
 )
 from .runtime import PydanticRunFailure, PydanticRuntimeAdapter
-from .safety import build_crisis_screen, build_output_moderator
+from .safety import build_crisis_screen, build_output_moderator, build_scope_screen
 from .tools import (
     _resident_fact_errors,
     adapt_tool,
@@ -59,6 +59,7 @@ __all__ = (
     "approval_review_text",
     "build_configured_runtime",
     "build_crisis_screen",
+    "build_scope_screen",
     "build_output_moderator",
     "build_module_capabilities",
     "build_runtime",
@@ -87,7 +88,9 @@ def build_runtime(
     fact_review_model_name: str = "",
     stream_model_requests: bool = False,
     crisis_screen: Any = None,
+    scope_screen: Any = None,
     output_guard: Any = None,
+    retrieval_cache_path: Any = None,
 ) -> PydanticRuntimeAdapter:
     """Build the isolated parity runtime around a caller-selected Pydantic model."""
     runtime_tools = tools if tools is not None else build_toolbox(registry, index=index)
@@ -128,7 +131,10 @@ def build_runtime(
         fact_review_model_name=fact_review_model_name,
         stream_model_requests=stream_model_requests,
         crisis_screen=crisis_screen,
+        scope_screen=scope_screen,
         output_guard=output_guard,
+        embedder=getattr(index, "embedder", None),
+        retrieval_cache_path=retrieval_cache_path,
     )
 
 
@@ -199,6 +205,8 @@ def build_configured_runtime(
         registry,
         model=selected_model,
         tools=build_toolbox(registry, index=index),
+        index=index,
+        retrieval_cache_path=config.HEYNYC_DATA_DIR / "catalogs.lance",
         use_module_capabilities=True,
         current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
@@ -218,6 +226,11 @@ def build_configured_runtime(
         crisis_screen=build_crisis_screen(
             safety_model,
             model_name=safety_model_name,
+        ),
+        scope_screen=build_scope_screen(
+            safety_model,
+            model_name=safety_model_name,
+            registry=registry,
         ),
         output_guard=output_guard,
     )

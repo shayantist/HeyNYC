@@ -1279,7 +1279,7 @@ def test_broad_event_feedback_handles_citywide_cap_advisory():
     assert "Heat Health Emergency" in feedback
 
 
-def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
+def test_broad_event_feedback_does_not_require_direct_links_for_cited_event_sources():
     from heynyc.core.agent import _broad_event_context_feedback
 
     citations = {
@@ -1303,9 +1303,6 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         ["find_nyc_events"],
     )
 
-    assert feedback is not None
-    assert "direct URL" in feedback
-
     linked = (
         "- FIFA Museum on Sunday: https://www.nycforfree.co/events/fifa-museum {cite:S1}\n"
         "- Free Yoga on Saturday: https://www.nycgovparks.org/events/free-yoga {cite:S2}"
@@ -1316,6 +1313,8 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         citations,
         ["find_nyc_events"],
     ) is None
+
+    assert feedback is None
 
     linked_continuation = (
         "- FIFA Museum on Sunday. {cite:S1}\n"
@@ -1340,7 +1339,7 @@ def test_broad_event_feedback_requires_direct_links_for_cited_event_sources():
         footer_only,
         citations,
         ["find_nyc_events"],
-    ) is not None
+    ) is None
 
 
 def test_event_preparation_query_detection():
@@ -1572,7 +1571,7 @@ async def test_event_preparation_turn_keeps_free_web_search_after_events_tool(em
     assert "bronze final" in result.text
 
 
-async def test_event_preparation_grounded_plan_passes_with_direct_link(empty_registry):
+async def test_event_preparation_grounded_plan_preserves_model_prose(empty_registry):
     async def events_tool(args, ctx):
         cite = ctx.citations.register(
             "https://www.nycgovparks.org/events/watch-party",
@@ -1596,7 +1595,7 @@ async def test_event_preparation_grounded_plan_passes_with_direct_link(empty_reg
     result = await agent.run("What to prepare for tomorrows WC game")
 
     assert "bronze final" in result.text
-    assert "Details: https://www.nycgovparks.org/events/watch-party" in result.text
+    assert "Details: https://www.nycgovparks.org/events/watch-party" not in result.text
 
 
 def test_broad_event_feedback_ignores_a_source_url_trailing_slash():
@@ -1621,7 +1620,7 @@ def test_broad_event_feedback_ignores_a_source_url_trailing_slash():
     ) is None
 
 
-def test_broad_event_feedback_does_not_accept_a_longer_lookalike_url():
+def test_broad_event_feedback_does_not_require_matching_event_urls():
     from heynyc.core.agent import _broad_event_context_feedback
 
     citations = {
@@ -1637,7 +1636,7 @@ def test_broad_event_feedback_does_not_accept_a_longer_lookalike_url():
         "- Event A: https://example.org/events/abc {cite:S1}",
         citations,
         ["find_nyc_events"],
-    ) is not None
+    ) is None
 
 
 def test_broad_event_feedback_ignores_registered_but_hidden_sources():
@@ -1768,7 +1767,28 @@ def test_attach_location_action_urls_does_not_add_search_beside_directions():
     assert text.count("https://www.google.com/maps/") == 1
 
 
-def test_attach_location_action_urls_keeps_dataset_limit_once():
+def test_attach_location_action_urls_recognizes_directions_after_a_paragraph_break():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    directions = (
+        "https://www.google.com/maps/dir/?api=1&origin=40.75000,-73.99000"
+        "&destination=40.76082,-73.97737"
+    )
+    text = _attach_location_action_urls(
+        f"- City fountain {{cite:S1}}\n\n[Directions]({directions})",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {"snapshot": {"lat": 40.76082, "lon": -73.97737}},
+            },
+        },
+        available_citation_ids={"S1"},
+    )
+
+    assert text.count("https://www.google.com/maps/") == 1
+
+
+def test_attach_location_action_urls_does_not_append_dataset_limit():
     from heynyc.core.agent import _attach_location_action_urls
 
     limitation = (
@@ -1800,7 +1820,7 @@ def test_attach_location_action_urls_keeps_dataset_limit_once():
         "- One {cite:S1}\n- Two {cite:S2}", citations,
     )
 
-    assert text.count(f"Source limit: {limitation}") == 1
+    assert "Source limit:" not in text
 
 
 def test_attach_location_action_urls_does_not_repeat_live_guarantee_limit():
@@ -1856,7 +1876,7 @@ def test_attach_location_action_urls_recognizes_formatted_limit_paraphrase():
     assert "Source limit:" not in text
 
 
-def test_attach_location_action_urls_preserves_scheduled_cooling_status():
+def test_attach_location_action_urls_does_not_rewrite_cooling_status():
     from heynyc.core.agent import _attach_location_action_urls
 
     text = _attach_location_action_urls(
@@ -1870,11 +1890,11 @@ def test_attach_location_action_urls_preserves_scheduled_cooling_status():
         },
     )
 
-    assert "scheduled open today 10a-6p" in text
-    assert "scheduled scheduled" not in text
+    assert "open today 10a-6p" in text
+    assert "scheduled open" not in text
 
 
-def test_scheduled_cooling_status_does_not_rewrite_other_location():
+def test_location_action_urls_do_not_rewrite_mixed_location_statuses():
     from heynyc.core.agent import _attach_location_action_urls
 
     text = _attach_location_action_urls(
@@ -1894,10 +1914,11 @@ def test_scheduled_cooling_status_does_not_rewrite_other_location():
     )
 
     assert "- Museum, open today" in text
-    assert "- Cooling library, scheduled open today" in text
+    assert "- Cooling library, open today" in text
+    assert "scheduled open" not in text
 
 
-def test_scheduled_cooling_status_is_scoped_in_numbered_lists():
+def test_location_action_urls_do_not_rewrite_numbered_list_statuses():
     from heynyc.core.agent import _attach_location_action_urls
 
     text = _attach_location_action_urls(
@@ -1917,10 +1938,11 @@ def test_scheduled_cooling_status_is_scoped_in_numbered_lists():
     )
 
     assert "1. Museum, open today" in text
-    assert "2. Cooling library, scheduled open today" in text
+    assert "2. Cooling library, open today" in text
+    assert "scheduled open" not in text
 
 
-async def test_broad_event_answer_attaches_action_url_without_a_retry(empty_registry):
+async def test_broad_event_answer_preserves_model_prose_without_a_retry(empty_registry):
     from heynyc.core.agent import EVENT_CONTEXT_ABSTAIN_FALLBACK
 
     async def event_context(args, ctx):
@@ -1944,7 +1966,8 @@ async def test_broad_event_answer_attaches_action_url_without_a_retry(empty_regi
     result = await agent.run("What free events are happening in NYC this weekend?")
 
     assert result.text != EVENT_CONTEXT_ABSTAIN_FALLBACK
-    assert "https://www.nycgovparks.org/events/free-yoga" in result.text
+    assert "Free Yoga is Saturday. {cite:S1}" in result.text
+    assert "https://www.nycgovparks.org/events/free-yoga" not in result.text
     assert result.iterations == 2
 
 

@@ -8,6 +8,7 @@ from heynyc.core.tools.datasets import (
     dataset_url,
     normalize,
     query_dataset,
+    query_dataset_pages,
     row_url,
 )
 
@@ -63,6 +64,67 @@ async def test_query_dataset_sends_fulltext_q():
 
     assert seen["params"]["$q"] == "food stamps"
     assert seen["params"]["$limit"] == "5"
+
+
+async def test_query_dataset_sends_offset_for_provider_paging():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json=[])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await query_dataset("abc-1234", offset=1000, client=client)
+    await client.aclose()
+
+    assert seen["params"]["$offset"] == "1000"
+
+
+async def test_query_dataset_pages_exhausts_stably_ordered_results():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        requests.append(params)
+        offset = int(params.get("$offset", 0))
+        rows = [
+            {":id": f"row-{index}", "startdate": f"2026-08-{index + 1:02d}"}
+            for index in range(offset, min(offset + 2, 3))
+        ]
+        return httpx.Response(200, json=rows)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await query_dataset_pages(
+        "abc-1234",
+        order="startdate",
+        page_size=2,
+        client=client,
+    )
+    await client.aclose()
+
+    assert [row[":id"] for row in result.records] == ["row-0", "row-1", "row-2"]
+    assert result.complete is True
+    assert result.pages_fetched == 2
+    assert result.next_offset is None
+    assert [request.get("$offset", "0") for request in requests] == ["0", "2"]
+    assert all(request["$order"] == "startdate, :id" for request in requests)
+
+
+async def test_query_dataset_pages_preserves_rows_when_a_later_page_fails():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("$offset") == "2":
+            raise httpx.ReadTimeout("later page failed")
+        return httpx.Response(200, json=[{":id": "row-1"}, {":id": "row-2"}])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await query_dataset_pages("abc-1234", page_size=2, client=client)
+    await client.aclose()
+
+    assert [row[":id"] for row in result.records] == ["row-1", "row-2"]
+    assert result.complete is False
+    assert result.pages_fetched == 1
+    assert result.next_offset == 2
+    assert result.error == "transport_error"
 
 
 async def test_query_dataset_no_token_header_when_blank():

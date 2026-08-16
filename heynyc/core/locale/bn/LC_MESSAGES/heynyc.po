@@ -3,6 +3,12 @@ msgstr ""
 "Language: bn\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "Sources"
+msgstr "উৎসসমূহ"
+
+msgid "Source note"
+msgstr "উৎসের নোট"
+
 msgid "I can't tell you to double the missed dose. Follow the medicine label and contact the dispensing pharmacist or prescriber now. If an extra dose was already taken, call Poison Control at 1-800-222-1222. Call 911 for emergency symptoms."
 msgstr "আমি বাদ পড়া ডোজের জন্য দ্বিগুণ ট্যাবলেট নিতে বলতে পারি না। ওষুধের লেবেলের নির্দেশনা মেনে চলুন এবং এখনই ওষুধ সরবরাহকারী ফার্মাসিস্ট বা যিনি ওষুধ লিখেছেন তাঁর সঙ্গে যোগাযোগ করুন। অতিরিক্ত ডোজ ইতিমধ্যে নেওয়া হয়ে থাকলে Poison Control-এ 1-800-222-1222 নম্বরে ফোন করুন। জরুরি উপসর্গ হলে 911-এ ফোন করুন।"
 
@@ -11,3 +17,6 @@ msgstr "এখন কোনো ইনডোর Cool Options খোলা আছ�
 
 msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
 msgstr "এখন কোনো Cool Options খোলা আছে বলে নিশ্চিত হওয়া যায়নি। আমি নিরাপদভাবে কোনো গন্তব্য সুপারিশ করতে পারছি না। এখন খোলা কোনো শীতল জায়গা খুঁজে পেতে সাহায্যের জন্য 311-এ ফোন করুন। কারও শ্বাসকষ্ট হলে 911-এ ফোন করুন।"
+
+msgid "Verification note for {source}: this source is a search-result excerpt. I could not confirm it from the full page."
+msgstr "{source}-এর জন্য যাচাইকরণ নোট: এই উৎসটি একটি অনুসন্ধান ফলাফলের অংশ। আমি সম্পূর্ণ পৃষ্ঠা থেকে এটি নিশ্চিত করতে পারিনি।"

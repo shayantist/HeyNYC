@@ -6,154 +6,178 @@ raw generation or the citation record that the session and telemetry persist."""
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from heynyc.core.citations import used_citations
+from heynyc.core.localization import localize, localized_source_limit
 
 WA_LIMIT = 4096
 _CITE = re.compile(r"\s*\{cite:S\d+\}")
 _ATTACH = re.compile(r"\s*\[attached:[^\]]*\]")   # delivered out-of-band; never shown in text
-_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
-_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
-_URL = re.compile(r"https?://\S+")
-_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MULTILINE)
-# A URL the model wrapped in braces, e.g. `[Details]({https://...})` seen live. Presentation-only
-# cleanup: the braces are never part of the address, so strip them before any link handling.
-_BRACED_URL = re.compile(r"\{(https?://[^\s{}]+)\}")
-# A model may put the citation marker where a Markdown link target belongs, then copy the real
-# direct URL on the following Details or Directions line. Recover that already-generated URL at
-# the presentation boundary without changing the stored answer or citation record.
-_CITE_TARGET_LINK = re.compile(
-    r"\[(Details|Map|Directions)\]\(\s*(\{cite:(S\d+)\})\s*\n\s*"
-    r"(Details|Directions):\s*(https?://[^\s)]+)"
-    r"((?:\s*\n\s*(?:Details|Directions):\s*https?://[^\s)]+)*)\s*\)",
-    re.IGNORECASE,
-)
-# A Socrata single-row API permalink: /resource/{4x4}/{:id}.json (see core.tools.datasets.row_url).
-# Its resident-facing equivalent is the dataset's human landing page /d/{4x4}.
-_SOCRATA_ROW = re.compile(r"(https?://[^/]+)/resource/([a-z0-9]{4}-[a-z0-9]{4})/[^/?#\s]+\.json", re.I)
+_MARKDOWN = MarkdownIt(
+    "commonmark",
+    {"linkify": True},
+).enable(("strikethrough", "linkify"))
 
 
 def _strip_markers(text: str) -> str:
     return _ATTACH.sub("", _CITE.sub("", text or "")).replace("\N{EM DASH}", "-").strip()
 
 
-def _official_page(url: str) -> str:
-    """A Socrata row-JSON permalink -> its human dataset page; anything else unchanged."""
-    match = _SOCRATA_ROW.fullmatch(url)
-    return f"{match.group(1)}/d/{match.group(2)}" if match else url
+def _inline_text(tokens: list[Token], *, whatsapp: bool) -> str:
+    output: list[str] = []
+    links: list[tuple[str, int]] = []
+    wrappers = {
+        "strong_open": "*" if whatsapp else "",
+        "strong_close": "*" if whatsapp else "",
+        "em_open": "_" if whatsapp else "",
+        "em_close": "_" if whatsapp else "",
+        "s_open": "~" if whatsapp else "",
+        "s_close": "~" if whatsapp else "",
+    }
+    for token in tokens:
+        if token.type == "text":
+            output.append(token.content)
+        elif token.type in wrappers:
+            output.append(wrappers[token.type])
+        elif token.type in {"softbreak", "hardbreak"}:
+            output.append("\n")
+        elif token.type == "code_inline":
+            markup = token.markup or "`"
+            output.append(f"{markup}{token.content}{markup}")
+        elif token.type == "link_open":
+            links.append((token.attrGet("href") or "", len(output)))
+        elif token.type == "link_close" and links:
+            url, start = links.pop()
+            label = "".join(output[start:]).strip()
+            if url and _canonical_url(label) != _canonical_url(url):
+                output.append(f": {url}")
+        elif token.type == "image":
+            label = token.content or token.attrGet("alt") or "Image"
+            url = token.attrGet("src") or ""
+            output.append(f"{label}: {url}" if url else label)
+        elif token.type == "html_inline":
+            output.append(token.content)
+    return "".join(output)
 
 
-def _clean_body_links(text: str, citations: dict) -> str:
-    """Deterministic, presentation-only link fixes for the resident-facing body. Never touches the
-    stored citation record: `citations` is read to decide WHICH links we vouch for, not mutated."""
-    text = _BRACED_URL.sub(r"\1", text)                 # {https://...} -> https://...
-    for citation in citations.values():                 # only rewrite links this answer cited
-        url = citation.get("url", "")
-        page = _official_page(url)
-        if page != url:
-            text = text.replace(url, page)
-    return text
-
-
-def _repair_citation_target_links(text: str, citations: dict) -> str:
-    def repair(match: re.Match) -> str:
-        label, marker, citation_id, kind, url, extra = match.groups()
-        citation_url = (citations.get(citation_id) or {}).get("url", "")
-        parsed = urlparse(url)
-        trusted_map = (
-            label.lower() in {"map", "directions"}
-            and kind.lower() == "directions"
-            and parsed.scheme == "https"
-            and parsed.netloc in {"www.google.com", "maps.google.com"}
-            and parsed.path.startswith("/maps/")
-        )
-        trusted_detail = (
-            label.lower() == "details"
-            and kind.lower() == "details"
-            and citation_url
-            and _canonical_url(url) == _canonical_url(citation_url)
-        )
-        if not (trusted_map or trusted_detail):
-            return match.group()
-        return f"[{label}]({url}) {marker}{extra}"
-
-    return _apply_outside_code(text, lambda part: _CITE_TARGET_LINK.sub(repair, part))
-
-
-def _apply_outside_code(text: str, convert) -> str:
-    """Run `convert` on every span except fenced/inline code, which passes through verbatim."""
-    pieces: list[str] = []
-    start = 0
-    for match in _CODE.finditer(text):
-        pieces.extend((convert(text[start:match.start()]), match.group()))
-        start = match.end()
-    pieces.append(convert(text[start:]))
-    return "".join(pieces)
-
-
-def _protect_urls(part: str, convert) -> str:
-    """Stash URLs so markup substitutions can't corrupt them, run `convert`, restore them."""
-    urls: list[str] = []
-
-    def stash(match: re.Match) -> str:
-        urls.append(match.group())
-        return f"\x00{len(urls) - 1}\x00"
-
-    part = _URL.sub(stash, _LINK.sub(r"\1: \2", part))
-    part = convert(part)
-    part = re.sub(r"^[ \t]*[+*][ \t]+", "- ", part, flags=re.MULTILINE)
-    for index, url in enumerate(urls):
-        part = part.replace(f"\x00{index}\x00", url)
-    return part
-
-
-def _whatsapp_markup(text: str) -> str:
-    """Convert common model Markdown to WhatsApp's smaller text dialect (native *bold*)."""
-    def convert(part: str) -> str:
-        part = re.sub(r"\*\*(\S(?:.*?\S)?)\*\*", r"*\1*", part)
-        part = _HEADING.sub(
-            lambda m: m.group(1).strip()
-            if m.group(1).strip().startswith("*") and m.group(1).strip().endswith("*")
-            else f"*{m.group(1).strip()}*",
-            part,
-        )
-        return re.sub(r"~~(\S(?:.*?\S)?)~~", r"~\1~", part)
-
-    return _apply_outside_code(text, lambda part: _protect_urls(part, convert))
-
-
-def _plain_markup(text: str) -> str:
-    """Strip the same Markdown to plain text for SMS: no bold/heading/strike delimiters."""
-    def convert(part: str) -> str:
-        part = re.sub(r"\*\*(\S(?:.*?\S)?)\*\*", r"\1", part)
-        part = _HEADING.sub(lambda m: m.group(1).strip(), part)
-        return re.sub(r"~~(\S(?:.*?\S)?)~~", r"\1", part)
-
-    return _apply_outside_code(text, lambda part: _protect_urls(part, convert))
+def _render_markdown(text: str, *, whatsapp: bool) -> str:
+    """Render CommonMark from parsed tokens, never by rewriting prose with regexes."""
+    output: list[str] = []
+    lists: list[dict[str, int | str]] = []
+    heading = False
+    quote_depth = 0
+    for token in _MARKDOWN.parse(text):
+        if token.type == "inline":
+            content = _inline_text(token.children or [], whatsapp=whatsapp)
+            if heading and whatsapp and not (
+                content.startswith("*") and content.endswith("*")
+            ):
+                content = f"*{content}*"
+            if quote_depth:
+                prefix = "> " * quote_depth
+                current_line = "".join(output).rsplit("\n", 1)[-1]
+                content = content.replace("\n", f"\n{prefix}")
+                if not current_line.startswith(prefix):
+                    content = prefix + content
+            output.append(content)
+        elif token.type == "heading_open":
+            heading = True
+        elif token.type == "heading_close":
+            output.append("\n")
+            heading = False
+        elif token.type == "paragraph_close" and not token.hidden and not heading:
+            output.append("\n")
+        elif token.type == "bullet_list_open":
+            if lists and output and not output[-1].endswith("\n"):
+                output.append("\n")
+            lists.append({"kind": "bullet", "next": 0})
+        elif token.type == "ordered_list_open":
+            if lists and output and not output[-1].endswith("\n"):
+                output.append("\n")
+            lists.append({"kind": "ordered", "next": int(token.attrGet("start") or 1)})
+        elif token.type in {"bullet_list_close", "ordered_list_close"}:
+            lists.pop()
+        elif token.type == "list_item_open":
+            prefix = "- "
+            if lists and lists[-1]["kind"] == "ordered":
+                prefix = f"{lists[-1]['next']}. "
+                lists[-1]["next"] = int(lists[-1]["next"]) + 1
+            quote = "> " * quote_depth
+            output.append(f"{quote}{'  ' * max(0, len(lists) - 1)}{prefix}")
+        elif token.type == "list_item_close":
+            if not output or not output[-1].endswith("\n"):
+                output.append("\n")
+        elif token.type == "blockquote_open":
+            quote_depth += 1
+        elif token.type == "blockquote_close":
+            quote_depth -= 1
+        elif token.type == "hr":
+            output.append("---\n")
+        elif token.type == "fence":
+            markup = token.markup or "```"
+            info = token.info.strip()
+            output.append(f"{markup}{info}\n{token.content}{markup}\n")
+        elif token.type == "code_block":
+            output.append(f"```\n{token.content}```\n")
+        elif token.type == "html_block":
+            output.append(token.content)
+    return "".join(output).strip()
 
 
 def _canonical_url(url: str) -> str:
     return url.rstrip(".,;:!?").split("#:~:text=", 1)[0].rstrip("/")
 
 
-def _sources_footer(citations: dict, inline_urls: set[str] | None = None) -> str:
+def _sources_footer(
+    citations: dict,
+    inline_urls: set[str] | None = None,
+    action_links: tuple = (),
+    language: str | None = None,
+) -> str:
     if not citations:
         return ""
     inline_urls = inline_urls or set()
-    lines = ["Sources:"]
+    actions_by_citation: dict[str, list] = {}
+    for action in action_links:
+        actions_by_citation.setdefault(action.citation_id, []).append(action)
+    lines = [f"{localize('Sources', language)}:"]
     seen: set[tuple[str, str]] = set()
+    rendered_actions: set[str] = set()
+    rendered_notes: set[str] = set()
     for c in citations.values():
         title = c.get("title") or c.get("url", "")
         url = c["url"].split("#:~:text=", 1)[0]
-        if c.get("kind") == "DATA" and "/FeatureServer/" in url and "/query?" in url:
-            url = url.split("/query?", 1)[0]
-        if _canonical_url(url) in inline_urls:
-            continue
-        if (title, url) in seen:
-            continue
-        seen.add((title, url))
-        lines.append(f"• {title} - {url}")
+        if _canonical_url(url) not in inline_urls and (title, url) not in seen:
+            seen.add((title, url))
+            lines.append(f"• {title} - {url}")
+        provenance = c.get("provenance") or {}
+        if (
+            provenance.get("evidence_grade") == "search_excerpt"
+            and provenance.get("source_tier") == "unverified"
+        ):
+            lines.append(localize(
+                "Verification note for {source}: this source is a search-result excerpt. "
+                "I could not confirm it from the full page.",
+                language,
+            ).format(source=title))
+        for action in actions_by_citation.get(c.get("id", ""), ()):
+            canonical_action = _canonical_url(action.url)
+            if (
+                canonical_action not in inline_urls
+                and canonical_action not in rendered_actions
+            ):
+                rendered_actions.add(canonical_action)
+                lines.append(f"  {action.label} - {action.url}")
+        limitation = str(
+            (c.get("provenance") or {}).get("derivation", {}).get("limitations") or ""
+        ).strip()
+        source_note = localized_source_limit(limitation, language)
+        if source_note and source_note not in rendered_notes:
+            rendered_notes.add(source_note)
+            lines.append(f"  {localize('Source note', language)} - {source_note}")
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
@@ -223,27 +247,53 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         # The REPL is the rich surface: inline {cite:Sn} markers STAY visible (texters lose
         # them only because SMS/WhatsApp can't render them usefully), markdown stays raw for
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
-        repaired = _repair_citation_target_links(result.text, result.citations)
-        body = _link_markers(_clean_body_links(repaired, result.citations), result.citations)
+        body = _link_markers(result.text, result.citations)
     else:
-        repaired = _repair_citation_target_links(result.text, result.citations)
-        text = _clean_body_links(_strip_markers(repaired), result.citations)
-        body = _plain_markup(text) if channel.startswith("sms") else _whatsapp_markup(text)
-    inline_urls = {_canonical_url(match.group()) for match in _URL.finditer(body)}
+        text = _strip_markers(result.text)
+        body = _render_markdown(text, whatsapp=not channel.startswith("sms"))
+    action_links = tuple(getattr(result, "action_links", ()))
+    candidate_urls = [
+        str(citation.get("url") or "")
+        for citation in result.citations.values()
+    ] + [action.url for action in action_links]
+    inline_urls = {
+        _canonical_url(url)
+        for url in candidate_urls
+        if url and _canonical_url(url) in body
+    }
     # Sources footer is unchanged per channel: it keeps every cited source (row-addressed permalinks
     # included) so the audit record on screen matches the stored one. SMS length is bounded downstream
     # by the Twilio adapter's own per-message segment budget.
     cited = used_citations(result.text, result.citations)
     if channel == "console":
+        actions_by_citation = {}
+        seen_action_urls: set[str] = set()
+        for action in action_links:
+            canonical_action = _canonical_url(action.url)
+            if canonical_action in seen_action_urls:
+                continue
+            seen_action_urls.add(canonical_action)
+            actions_by_citation[action.citation_id] = action
         rows = [
             # Markdown list items: single newlines are soft breaks that Markdown() collapses
             # into spaces (observed live as one wrapped blob), list items render one per line.
             f"- [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
+            + (
+                f" - [{actions_by_citation[cid].label}](<{actions_by_citation[cid].url}>)"
+                if cid in actions_by_citation
+                and _canonical_url(actions_by_citation[cid].url) not in inline_urls
+                else ""
+            )
             for cid, c in cited.items()
         ]
         footer = "Sources:\n" + "\n".join(rows) if rows else ""
     else:
-        footer = _sources_footer(cited, inline_urls)
+        footer = _sources_footer(
+            cited,
+            inline_urls,
+            action_links,
+            (getattr(result, "diagnostics", {}) or {}).get("safety_language"),
+        )
     if not footer:
         return _split(body, WA_LIMIT) or [""]
     return _split(f"{body}\n\n{footer}", WA_LIMIT)

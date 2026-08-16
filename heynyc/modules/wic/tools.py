@@ -16,20 +16,24 @@ always be open, so we flag it and say to call ahead.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
+from urllib.parse import urlencode
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core import config
 from heynyc.core.citations import data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
-    _clarify_message,
-    _resolution_note,
-    format_distance,
+    GeoPoint,
+    current_resolved_location,
     geocode,
     miles,
+    origin_precision,
     rank_nearby,
+    resolved_location_citation,
 )
 
 # The live backend of Health Data NY's WIC Program Site Information map - verified public + tokenless.
@@ -39,8 +43,147 @@ WIC_URL = f"{WIC_HOST}/resource/{WIC_DATASET}.json"
 # NYC scope: the five boroughs, by the dataset's `counties_boroughs_served` labels (Kings=Brooklyn,
 # Richmond=Staten Island, New York=Manhattan). Every NYC physical site carries one of these.
 WHERE_NYC = "counties_boroughs_served in('Bronx','Kings','New York','Queens','Richmond')"
-OFFICIAL = "the NY State WIC info at health.ny.gov/prevention/nutrition/wic or call 311"
 WIC_APPLY_URL = "https://www.health.ny.gov/prevention/nutrition/wic/how_to_apply.htm"
+WIC_LIMIT = 500
+WIC_QUERY_URL = f"{WIC_URL}?" + urlencode({
+    "$where": WHERE_NYC,
+    "$limit": WIC_LIMIT,
+    "$order": ":id",
+    "$$exclude_system_fields": "false",
+})
+
+
+class WicSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["not_called", "ok", "partial", "unavailable"]
+    url: str = WIC_QUERY_URL
+    fetched_at: datetime | None = None
+    returned_count: int | None = None
+    usable_count: int | None = None
+    complete: bool | None = None
+    pages_fetched: int = 0
+    page_size: int = WIC_LIMIT
+    next_offset: int | None = None
+    error: Literal["transport_error", "invalid_response"] | None = None
+
+
+class WicOrigin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resident_query: str
+    label: str
+    latitude: float
+    longitude: float
+    match_type: str | None = None
+    provider_id: str | None = None
+    confidence: float | None = None
+    low_confidence: bool
+    precision: Literal["precise", "approximate"]
+
+
+class WicOrganization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    name: str
+
+
+class WicService(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: Literal["WIC"] = "WIC"
+    eligibility_description: None = None
+    required_document: None = None
+    language: None = None
+
+
+class WicLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    physical_address: str | None = None
+    latitude: float
+    longitude: float
+    borough: str | None = None
+    accessibility: None = None
+
+
+class WicServiceAtLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    service_id: str
+    location_id: str
+    site_number: str | None = None
+    site_type: str | None = None
+
+
+class WicPhone(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    number: str
+
+
+class WicRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization: WicOrganization
+    service: WicService
+    location: WicLocation
+    service_at_location: WicServiceAtLocation
+    phone: WicPhone | None = None
+    website: str | None = None
+    hours: None = None
+    appointment_required: None = None
+    distance_miles: float
+    distance_method: Literal["haversine"] = "haversine"
+    origin_precision: Literal["precise", "approximate"]
+    valid_as_of: date | None = None
+    citation_id: str
+    action_url: str
+
+
+class WicApplicationRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = WIC_APPLY_URL
+    citation_id: str
+
+
+WicOutcome = Literal[
+    "success",
+    "missing_origin",
+    "location_not_found",
+    "location_ambiguous",
+    "source_partial",
+    "source_unavailable",
+    "no_results",
+]
+
+
+class WicResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: WicOutcome
+    origin: WicOrigin | None = None
+    origin_citation_id: str | None = None
+    primary_citation_id: str | None = None
+    source: WicSource
+    records: list[WicRecord] = Field(default_factory=list)
+    application_route: WicApplicationRoute | None = None
+    requested_count: int | None = None
+
+
+class _WicQueryPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[dict]
+    pages_fetched: int
+    complete: bool
+    error: Literal["transport_error", "invalid_response"] | None = None
 
 
 def _clean(value) -> str:
@@ -49,6 +192,52 @@ def _clean(value) -> str:
         return ""
     text = str(value).strip()
     return "" if text.upper() == "NULL" else text
+
+
+def _result(
+    outcome: WicOutcome,
+    *,
+    source_status: Literal["not_called", "ok", "unavailable"] = "not_called",
+    source_error: Literal["transport_error", "invalid_response"] | None = None,
+    source_fetched_at: datetime | None = None,
+    **updates,
+) -> WicResult:
+    return WicResult(
+        outcome=outcome,
+        source=WicSource(
+            status=source_status,
+            fetched_at=source_fetched_at,
+            error=(
+                source_error
+                or ("transport_error" if source_status == "unavailable" else None)
+            ),
+        ),
+        **updates,
+    )
+
+
+def _origin_result(point: GeoPoint, query: str) -> WicOrigin:
+    return WicOrigin(
+        resident_query=point.resident_query or query,
+        label=point.label,
+        latitude=point.lat,
+        longitude=point.lon,
+        match_type=point.match_type or None,
+        provider_id=point.provider_id or None,
+        confidence=point.confidence,
+        low_confidence=point.low_confidence,
+        precision=origin_precision(query, point),
+    )
+
+
+def _application_route(ctx: ToolContext) -> WicApplicationRoute:
+    citation_id = ctx.citations.register(
+        WIC_APPLY_URL,
+        snippet="Apply or recertify for WIC by contacting a local WIC office",
+        title="Apply or Recertify for WIC, New York State Department of Health",
+        kind="DOC",
+    )
+    return WicApplicationRoute(citation_id=citation_id)
 
 
 def _row_permalink(row_id: str) -> str:
@@ -159,22 +348,80 @@ async def _query_wic(
     client: httpx.AsyncClient | None,
     *,
     where: str,
-    limit: int = 500,
-) -> list[dict]:
-    """Fetch WIC site rows from the Health Data NY Socrata dataset (raises httpx.HTTPError on a bad
-    status). Points at health.data.ny.gov, not the NYC SOCRATA_BASE, so we build the request here
-    rather than reuse `datasets.query_dataset`; `$$exclude_system_fields=false` returns the `:id` /
-    `:updated_at` fields so each row is addressable and carries its own 'as of' date."""
-    params: dict = {"$where": where, "$limit": limit, "$$exclude_system_fields": "false"}
+    limit: int = WIC_LIMIT,
+) -> _WicQueryPage:
+    """Read every stable Health Data NY Socrata page needed for citywide distance ranking."""
+    if limit <= 0:
+        raise ValueError("limit must be positive")
     headers: dict = {}
     if config.SOCRATA_APP_TOKEN:
         headers["X-App-Token"] = config.SOCRATA_APP_TOKEN
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
+    rows: list[dict] = []
+    seen_ids: set[str] = set()
+    pages_fetched = 0
     try:
-        response = await client.get(WIC_URL, params=params, headers=headers)
-        response.raise_for_status()
-        return response.json() or []
+        while True:
+            try:
+                response = await client.get(
+                    WIC_URL,
+                    params={
+                        "$where": where,
+                        "$limit": limit,
+                        "$offset": len(rows),
+                        "$order": ":id",
+                        "$$exclude_system_fields": "false",
+                    },
+                    headers=headers,
+                )
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list) or any(
+                    not isinstance(record, dict) for record in page
+                ):
+                    raise ValueError("WIC Socrata response must be a list of objects")
+            except httpx.HTTPError:
+                if not rows:
+                    raise
+                return _WicQueryPage(
+                    rows=rows,
+                    pages_fetched=pages_fetched,
+                    complete=False,
+                    error="transport_error",
+                )
+            except (ValueError, TypeError, AttributeError):
+                if not rows:
+                    raise
+                return _WicQueryPage(
+                    rows=rows,
+                    pages_fetched=pages_fetched,
+                    complete=False,
+                    error="invalid_response",
+                )
+            if not page:
+                return _WicQueryPage(
+                    rows=rows,
+                    pages_fetched=pages_fetched,
+                    complete=True,
+                )
+            page_ids = [str(record.get(":id") or "") for record in page]
+            if (
+                any(not row_id for row_id in page_ids)
+                or len(set(page_ids)) != len(page_ids)
+                or seen_ids.intersection(page_ids)
+            ):
+                if not rows:
+                    raise ValueError("WIC Socrata page lacks stable unique row IDs")
+                return _WicQueryPage(
+                    rows=rows,
+                    pages_fetched=pages_fetched,
+                    complete=False,
+                    error="invalid_response",
+                )
+            seen_ids.update(page_ids)
+            rows.extend(page)
+            pages_fetched += 1
     finally:
         if own_client:
             await client.aclose()
@@ -204,47 +451,83 @@ def _site_citation(ctx: ToolContext, site: WicSite, *,
     )
 
 
-def _site_block(site: WicSite, cite: str, distance: str, fallback_cite: str = "") -> str:
-    temp = " (temporary/rotating site - call to confirm it's open)" if \
-        site.site_type.lower() == "temporary" else ""
-    parts = [f"- {site.name}{temp} ({site.address or 'NYC'}) - "
-             f"{distance} {{cite:{cite}}}"]
-    if site.phone:
-        parts.append(f"  Phone: {site.phone} - call for hours and to book an appointment")
-    if site.website:
-        parts.append(f"  Website: {site.website}")
-    if not site.phone and not site.website:
-        parts.append(f"  Contact: {WIC_APPLY_URL} {{cite:{fallback_cite}}}")
-    parts.append(f"  Directions: {directions_link(site.lat, site.lon)}")
-    parts.append(f"  As of: {site.valid_as_of or 'Source date unavailable'}")
-    return "\n".join(parts)
-
-
-async def _handler(args: dict, ctx: ToolContext) -> str:
+async def _handler(args: dict, ctx: ToolContext) -> WicResult:
     near = (args.get("near") or "").strip()
     if not near:
-        return ("Ask the user where they are (an NYC address or neighborhood) before searching - "
-                "never guess a WIC site location.")
+        return _result("missing_origin")
 
-    origin = await geocode(near, client=ctx.http)
+    stored_origin = current_resolved_location(near, ctx)
+    origin = stored_origin or await geocode(near, client=ctx.http)
     if origin is None:
-        return (f"I couldn't locate '{near}' in NYC, so I can't find a nearby WIC site. Ask the "
-                f"user for a specific NYC address or neighborhood - don't guess a site.")
+        return _result(
+            "location_not_found",
+            application_route=_application_route(ctx),
+        )
     if origin.low_confidence:
-        return _clarify_message(near)
+        return _result(
+            "location_ambiguous",
+            origin=_origin_result(origin, near),
+            application_route=_application_route(ctx),
+        )
+    if origin.resident_query:
+        ctx.current_location = origin
 
+    fetched_at = datetime.now().astimezone()
     try:
-        records = await _query_wic(ctx.http, where=WHERE_NYC)
+        page = await _query_wic(ctx.http, where=WHERE_NYC)
     except httpx.HTTPError:
-        return (f"I couldn't reach the NY State WIC site data right now - don't guess a WIC site. "
-                f"Point the user to {OFFICIAL}.")
+        return _result(
+            "source_unavailable",
+            source_status="unavailable",
+            source_fetched_at=fetched_at,
+            origin=_origin_result(origin, near),
+            application_route=_application_route(ctx),
+        )
+    except (ValueError, TypeError, AttributeError):
+        return _result(
+            "source_unavailable",
+            source_status="unavailable",
+            source_error="invalid_response",
+            source_fetched_at=fetched_at,
+            origin=_origin_result(origin, near),
+            application_route=_application_route(ctx),
+        )
 
-    sites = [s for s in (_to_site(r) for r in records) if s is not None]
+    sites = [s for s in (_to_site(row) for row in page.rows) if s is not None]
+    if not page.complete:
+        return WicResult(
+            outcome="source_partial",
+            origin=_origin_result(origin, near),
+            origin_citation_id=resolved_location_citation(ctx, origin),
+            source=WicSource(
+                status="partial",
+                fetched_at=fetched_at,
+                returned_count=len(page.rows),
+                usable_count=len(sites),
+                complete=False,
+                pages_fetched=page.pages_fetched,
+                next_offset=len(page.rows),
+                error=page.error,
+            ),
+            application_route=_application_route(ctx),
+        )
     if not sites:
-        return (f"No NYC WIC sites came back from the NY State WIC data. Don't invent one - "
-                f"point the user to {OFFICIAL}.")
+        return WicResult(
+            outcome="no_results",
+            origin=_origin_result(origin, near),
+            origin_citation_id=resolved_location_citation(ctx, origin),
+            source=WicSource(
+                status="ok",
+                fetched_at=fetched_at,
+                returned_count=len(page.rows),
+                usable_count=0,
+                complete=page.complete,
+                pages_fetched=page.pages_fetched,
+            ),
+            application_route=_application_route(ctx),
+        )
 
-    k = int(args.get("k") or 5)
+    k = max(1, min(int(args.get("k") or 5), 10))
     ranked = rank_nearby(
         origin,
         sites,
@@ -255,40 +538,65 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         ),
         limit=k,
     )
-
-    lines = [
-        f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
-        _resolution_note(near, origin),
-        "NYC WIC sites from NY State WIC Program Site Information (Health Data NY) - report only "
-        "these, cite each:",
-    ]
-    apply_cite = ""
+    application_route = _application_route(ctx)
+    typed_records = []
     for site, distance_m in ranked:
         dist_mi = miles(distance_m)
-        cite = _site_citation(ctx, site, origin_lat=origin.lat, origin_lon=origin.lon,
-                              dist_mi=dist_mi)
-        if not site.phone and not site.website and not apply_cite:
-            apply_cite = ctx.citations.register(
-                WIC_APPLY_URL,
-                snippet="Apply or recertify for WIC by contacting a local WIC office",
-                title="Apply or Recertify for WIC, New York State Department of Health",
-                kind="DOC",
-            )
-        lines.append(_site_block(
-            site, cite, format_distance(near, origin, dist_mi), apply_cite,
-        ))
-    if not apply_cite:
-        apply_cite = ctx.citations.register(
-            WIC_APPLY_URL,
-            snippet="Apply or recertify for WIC by contacting a local WIC office",
-            title="Apply or Recertify for WIC, New York State Department of Health",
-            kind="DOC",
+        cite = _site_citation(
+            ctx,
+            site,
+            origin_lat=origin.lat,
+            origin_lon=origin.lon,
+            dist_mi=dist_mi,
         )
-    lines.append("This data has NO hours and NO appointment info - tell the user to call the site "
-                 "for hours and to book. WIC has income and category rules (pregnant, postpartum, "
-                 "infants, and children under 5); don't assert eligibility from this list - point "
-                 f"to {WIC_APPLY_URL} {{cite:{apply_cite}}} to apply and check eligibility.")
-    return "\n".join(lines)
+        record_id = site.row_id or f"{site.lat:.5f},{site.lon:.5f}"
+        service_id = f"{record_id}:service"
+        location_id = f"{record_id}:location"
+        typed_records.append(WicRecord(
+            organization=WicOrganization(name=site.name),
+            service=WicService(id=service_id),
+            location=WicLocation(
+                id=location_id,
+                name=site.name,
+                physical_address=site.address or None,
+                latitude=site.lat,
+                longitude=site.lon,
+                borough=site.borough or None,
+            ),
+            service_at_location=WicServiceAtLocation(
+                id=record_id,
+                service_id=service_id,
+                location_id=location_id,
+                site_number=site.site_number or None,
+                site_type=site.site_type or None,
+            ),
+            phone=WicPhone(number=site.phone) if site.phone else None,
+            website=site.website or None,
+            distance_miles=dist_mi,
+            origin_precision=origin_precision(near, origin),
+            valid_as_of=(
+                date.fromisoformat(site.valid_as_of) if site.valid_as_of else None
+            ),
+            citation_id=cite,
+            action_url=directions_link(site.lat, site.lon),
+        ))
+    return WicResult(
+        outcome="success",
+        origin=_origin_result(origin, near),
+        origin_citation_id=resolved_location_citation(ctx, origin),
+        primary_citation_id=typed_records[0].citation_id,
+        source=WicSource(
+            status="ok",
+            fetched_at=fetched_at,
+            returned_count=len(page.rows),
+            usable_count=len(sites),
+            complete=page.complete,
+            pages_fetched=page.pages_fetched,
+        ),
+        records=typed_records,
+        application_route=application_route,
+        requested_count=k,
+    )
 
 
 def get_tools() -> list[Tool]:
@@ -315,6 +623,7 @@ def get_tools() -> list[Tool]:
                 "required": ["near"],
             },
             handler=_handler,
+            return_type=WicResult,
             open_world=True,  # hits the live Health Data NY Socrata dataset + geocoder
         )
     ]

@@ -99,7 +99,11 @@ async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_tu
             return ModelResponse([
                 ToolCallPart(
                     "find_cool_options",
-                    {"near": "Times Square", "kind": "indoor"},
+                    {
+                        "near": "Times Square",
+                        "kind": "indoor",
+                        "open_now_only": True,
+                    },
                     f"cool-{len(calls)}",
                 )
             ])
@@ -419,7 +423,7 @@ async def test_f222_no_open_indoor_option_keeps_heat_safety_next_steps(monkeypat
     ctx = ToolContext(citations=citations, registry=Registry([]))
 
     result = await cooling.get_tools()[0].handler(
-        {"near": "Times Square", "kind": "indoor"},
+        {"near": "Times Square", "kind": "indoor", "open_now_only": True},
         ctx,
     )
 
@@ -437,7 +441,7 @@ async def test_f222_open_indoor_option_does_not_append_emergency_backstop(monkey
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
 
     result = await cooling.get_tools()[0].handler(
-        {"near": "Times Square", "kind": "indoor"},
+        {"near": "Times Square", "kind": "indoor", "open_now_only": True},
         ctx,
     )
 
@@ -493,7 +497,7 @@ async def test_all_cooling_terminal_cites_every_evaluated_row(monkeypatch):
     ctx = ToolContext(citations=citations, registry=Registry([]), user_turns=("查找所有 Cool Options",))
 
     result = await cooling.get_tools()[0].handler(
-        {"near": "Times Square", "kind": "all"},
+        {"near": "Times Square", "kind": "all", "open_now_only": True},
         ctx,
     )
 

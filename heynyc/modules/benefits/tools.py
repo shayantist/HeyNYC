@@ -145,17 +145,24 @@ def _doc_text(record: dict) -> str:
     return " ".join(filter(None, (_clean(record.get(f)) for f in _SEARCH_FIELDS)))
 
 
-def _retrieve(catalog: list[dict], query: str, limit: int, embedder) -> list[dict]:
+def _retrieve(
+    catalog: list[dict],
+    query: str,
+    limit: int,
+    embedder,
+    cache_path=None,
+) -> list[dict]:
     """Rank the catalog against the query with the project's hybrid retriever.
 
-    Reuses the index stack (`Embedder` + `InMemoryVectorStore`, the same hybrid
+    Reuses the index stack (`Embedder` + `VectorStore`, the same hybrid
     semantic+keyword scoring `index_search` uses) rather than a bespoke ranker.
     Socrata's server-side `$q` is conjunctive, a verbose query like "food stamps
     SNAP WIC" returns ZERO (caught by the live eval), so we fetch the small catalog
     and rank locally. Hybrid retrieval over a small structured catalog is the
     documented best practice (lexical catches acronyms like SNAP/IDNYC; embeddings
     catch meaning like "can't afford food" → SNAP). The embedded store is cached
-    (`index.cache`) so the catalog is embedded once per (content, model), not per call."""
+    (`index.cache`) so the catalog is embedded once per (content, model), including across
+    configured-runtime restarts through LanceDB."""
     from heynyc.core.index import default_embedder
     from heynyc.core.index.cache import embedded_store
     from heynyc.core.index.store import IndexDoc
@@ -167,7 +174,7 @@ def _retrieve(catalog: list[dict], query: str, limit: int, embedder) -> list[dic
         IndexDoc(id=str(i), text=_doc_text(r), title=_clean(r.get("program_name")))
         for i, r in enumerate(catalog)
     ]
-    store = embedded_store(docs, embedder)  # embeds once per (content, model), then reuses
+    store = embedded_store(docs, embedder, path=cache_path)
     # RRF ranks; it has no absolute relevance floor (every doc gets a positive rank score), so
     # we return the top-k candidates and let the agent judge relevance / abstain (agent-as-judge).
     hits = store.search(embedder.embed([query])[0], query, k=limit)
@@ -285,7 +292,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     # Collapse any language-variant rows to one per program, preferring the user's language
     # (English by default / fallback) so the official translation surfaces, then rank.
     catalog = _prefer_language(catalog, lang)
-    records = _retrieve(catalog, query, limit, ctx.embedder)
+    records = _retrieve(
+        catalog, query, limit, ctx.embedder, ctx.retrieval_cache_path
+    )
     if not records:
         return (
             f"No NYC benefit programs in the dataset matched '{query}'. "
@@ -445,7 +454,9 @@ async def _screen_handler(args: dict, ctx: ToolContext) -> str:
             )
         eligible_rows = [by_code[program.get("code", "")] for program in eligible
                          if program.get("code", "") in by_code]
-        ranked_rows = _retrieve(eligible_rows, goal, 3, ctx.embedder)
+        ranked_rows = _retrieve(
+            eligible_rows, goal, 3, ctx.embedder, ctx.retrieval_cache_path
+        )
         programs_by_code = {program.get("code", ""): program for program in eligible}
         displayed = [programs_by_code[_clean(row.get("program_code"))] for row in ranked_rows]
         if not displayed:

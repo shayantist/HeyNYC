@@ -13,19 +13,21 @@ from heynyc.core.tools.geo import (
     _detect_borough,
     _distance_handler,
     _fallback_landmark_identity_matches,
+    _geocode_handler,
     _geosearch_geocode,
     _geosearch_params,
     _in_nyc,
     _looks_like_intersection,
     _nearest_handler,
     _point_in_named_borough,
-    _resolution_note,
     _zip_centroid,
     format_distance,
+    geo_tools,
     geocode,
     haversine_m,
     miles,
     origin_precision,
+    resolved_location_citation,
     travel_distance,
 )
 
@@ -242,6 +244,7 @@ async def test_geosearch_geocode_extracts_bbl_from_pad_addendum():
     # properties.addendum.pad.bbl — the tax-lot key for building-level datasets.
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"features": [{
+            "id": "geosearch.2030600032",
             "geometry": {"coordinates": [-73.9010, 40.8536]},
             "properties": {"label": "1910 Monterey Ave, Bronx",
                            "addendum": {"pad": {"bbl": "2030600032"}}},
@@ -252,6 +255,16 @@ async def test_geosearch_geocode_extracts_bbl_from_pad_addendum():
     await client.aclose()
     assert point is not None
     assert point.bbl == "2030600032"
+    assert point.resident_query == "1910 Monterey Ave Bronx"
+    assert point.provider_id == "geosearch.2030600032"
+    assert point.provider_payload == {
+        "id": "geosearch.2030600032",
+        "geometry": {"coordinates": [-73.9010, 40.8536]},
+        "properties": {
+            "label": "1910 Monterey Ave, Bronx",
+            "addendum": {"pad": {"bbl": "2030600032"}},
+        },
+    }
 
 
 async def test_geosearch_geocode_leaves_bbl_empty_without_addendum():
@@ -624,6 +637,87 @@ async def test_low_confidence_origin_makes_nearest_clarify(monkeypatch):
     assert "- " not in out  # no location list emitted
 
 
+async def test_geocode_tool_returns_and_stores_the_typed_provider_result(monkeypatch):
+    point = GeoPoint(
+        40.75926,
+        -73.97996,
+        "45 Rockefeller Plaza, Manhattan",
+        confidence=1.0,
+        match_type="nominatim",
+        resident_query="Rockefeller Center",
+        provider_id="123",
+        provider_payload={"place_id": 123},
+    )
+
+    async def fake_geocode(_text, **_kwargs):
+        return point
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=_registry_with_cooling(),
+        query="I'm at Rockefeller Center",
+    )
+
+    result = await _geocode_handler(
+        {"text": "Rockefeller Center", "as_current_location": True},
+        ctx,
+    )
+
+    assert result is point
+    assert ctx.current_location is point
+    assert geo_tools()[0].return_type == GeoPoint | None
+
+
+async def test_geocode_tool_does_not_replace_origin_with_a_destination(monkeypatch):
+    origin = GeoPoint(40.75926, -73.97996, "Rockefeller Center", resident_query="Rockefeller Center")
+    destination = GeoPoint(40.75273, -73.97723, "Grand Central Terminal")
+
+    async def fake_geocode(_text, **_kwargs):
+        return destination
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=_registry_with_cooling(),
+        query="How far is Grand Central Terminal?",
+        current_location=origin,
+    )
+
+    result = await _geocode_handler(
+        {"text": "Grand Central Terminal", "as_current_location": False},
+        ctx,
+    )
+
+    assert result is destination
+    assert ctx.current_location is origin
+
+
+def test_resolved_location_citation_owns_the_origin_and_provider_result():
+    point = GeoPoint(
+        40.74723,
+        -73.88396,
+        "82nd Street & Roosevelt Avenue, Queens, NY 11372",
+        match_type="nominatim",
+        resident_query="82nd St and Roosevelt Ave in Queens",
+        provider_id="123",
+        provider_payload={"place_id": 123, "type": "intersection"},
+    )
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling())
+
+    citation_id = resolved_location_citation(ctx, point)
+    citation = ctx.citations.mapping()[citation_id]
+
+    assert citation["title"] == "Resolved NYC location"
+    assert citation["provenance"]["snapshot"] == point.provider_payload
+    assert citation["provenance"]["derivation"] == {
+        "point": [40.74723, -73.88396],
+        "origin_query": "82nd St and Roosevelt Ave in Queens",
+        "origin_label": "82nd Street & Roosevelt Avenue, Queens, NY 11372",
+    }
+    assert "40.74723,-73.88396" in citation["url"]
+
+
 async def test_nearest_rejects_a_citywide_origin(monkeypatch):
     async def should_not_geocode(_text, **_kwargs):
         raise AssertionError("citywide placeholder reached the geocoder")
@@ -679,11 +773,9 @@ async def test_nearest_handler_ranks_and_cites():
     # Citations registered as DATA, inline cite ids present
     assert ctx.citations.mapping()["S1"]["kind"] == "DATA"
     assert "{cite:S1}" in out
-    # Transparency: the resolved origin label is surfaced
-    assert "Resolved '40.7500,-73.9900'" in out
-    assert next(line for line in out.splitlines() if line.startswith("(Resolved")).endswith(
-        "{cite:S1}"
-    )
+    # Transparency: the resolved origin label is surfaced as typed result data
+    assert out.startswith("Origin: 40.75000,-73.99000")
+    assert out.splitlines()[0].endswith("{cite:S1}")
     # A deterministic Google Maps link is offered per place (navigation handoff)
     assert "google.com/maps" in out
     assert "record updated=2025-06-27" in lines[0]
@@ -982,7 +1074,7 @@ async def test_neighborhood_normalization_and_aliases():
         assert borough in point.label, query
 
 
-def test_neighborhood_resolution_note_names_official_nta_source():
+def test_neighborhood_resolution_is_area_precision():
     point = GeoPoint(
         40.760197,
         -73.832301,
@@ -991,18 +1083,10 @@ def test_neighborhood_resolution_note_names_official_nta_source():
         match_type="nta",
     )
 
-    note = _resolution_note("Flushing", point)
-
-    assert note == (
-        "(Resolved 'Flushing' to 'Flushing, Queens' via official NYC neighborhood data. "
-        "Distances are a rough estimate from the resolved place point, not a street address.)"
-    )
-    assert "official NYC neighborhood data" in note
-    assert "rough estimate from the resolved place point" in note
-    assert "map search" not in note
+    assert origin_precision("Flushing", point) == "approximate"
 
 
-def test_street_address_resolution_note_does_not_call_distance_a_neighborhood_estimate():
+def test_street_address_resolution_is_precise():
     point = GeoPoint(
         40.760197,
         -73.832301,
@@ -1011,9 +1095,7 @@ def test_street_address_resolution_note_does_not_call_distance_a_neighborhood_es
         match_type="geosearch",
     )
 
-    note = _resolution_note("123 Main Street, Queens", point)
-
-    assert "rough neighborhood-center estimate" not in note
+    assert origin_precision("123 Main Street, Queens", point) == "precise"
 
 
 def test_distance_precision_classifier_formats_live_provider_point_as_rough():
@@ -1132,20 +1214,6 @@ def test_distance_precision_classifier_accepts_identity_matched_intersections():
     )
 
     assert origin_precision("Main Street and 41st Avenue, Queens", point) == "precise"
-
-
-def test_resolution_note_does_not_call_an_accepted_intersection_imprecise():
-    point = GeoPoint(
-        40.765,
-        -73.832,
-        "Main Street and 41st Avenue, Queens",
-        match_type="geosearch",
-    )
-
-    note = _resolution_note("Main Street and 41st Avenue, Queens", point)
-
-    assert "Intersections geocode imprecisely" not in note
-    assert "If that's not the intended spot" in note
 
 
 async def test_neighborhood_with_contradictory_borough_falls_through():

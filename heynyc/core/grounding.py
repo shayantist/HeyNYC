@@ -121,7 +121,7 @@ _PROPER_NOUN_RE = re.compile(rf"{_CAP}(?:\s+(?:{_CONNECTOR}\s+)?{_CAP})+")
 # "Google Maps", or a borough asserts nothing the cited row must contain. Stripping these is the main
 # guard against false-failing on civic/geographic boilerplate the agent adds for readability.
 _GENERIC_PN_WORDS = {
-    "new", "nueva", "york", "city", "ciudad", "nyc", "manhattan", "brooklyn", "queens", "bronx", "staten", "island",
+    "new", "nueva", "york", "yorkers", "city", "ciudad", "nyc", "manhattan", "brooklyn", "queens", "bronx", "staten", "island",
     "united", "states", "america", "usa", "google", "maps", "map", "borough", "the", "and", "for",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     "january", "february", "march", "april", "may", "june", "july", "august", "september",
@@ -149,6 +149,7 @@ _COMMON_WORDS = {
     # gerund/verb forms the agent opens headings and clauses with ("Applying for SNAP", "Getting …")
     "applying", "getting", "finding", "calling", "visiting", "bringing", "filing", "looking",
     "planning", "paying", "filling", "choosing", "picking", "booking", "scheduling", "checking",
+    "starting",
     "here's", "heres",
 }
 
@@ -439,7 +440,7 @@ def _parsed_date(text: str) -> date | None:
     return None
 
 
-def _resident_calendar_dates(query: str, current_date: date) -> set[date]:
+def resident_calendar_dates(query: str, current_date: date) -> set[date]:
     """Dates directly implied by an English ``this/on <weekday>`` resident phrase."""
     words = _norm(query).split()
     dates: set[date] = set()
@@ -653,7 +654,7 @@ def check_grounding(
     checked = 0
     nli_checked = 0
     current_date = current_date or datetime.now(ZoneInfo("America/New_York")).date()
-    system_dates = {current_date, *_resident_calendar_dates(query, current_date)}
+    system_dates = {current_date, *resident_calendar_dates(query, current_date)}
     for block in re.split(r"\n\s*\n", text):
         cited = list(dict.fromkeys(_CITE_REF_RE.findall(block)))
         if not cited:

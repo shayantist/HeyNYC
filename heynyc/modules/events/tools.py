@@ -8,15 +8,26 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from heynyc.core.citations import data_provenance
 from heynyc.core.index.corpus import clean_html
-from heynyc.core.ticketmaster import ticketmaster_events
+from heynyc.core.ticketmaster import (
+    DISCOVERY_URL,
+    TicketmasterSearchResult,
+    ticketmaster_events,
+)
 from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.datasets import query_dataset, row_url
+from heynyc.core.tools.datasets import (
+    dataset_url,
+    query_dataset,
+    query_dataset_pages,
+    row_url,
+)
 
 PARKS_DATASET_ID = "w3wp-dpdi"  # NYC Parks Public Events (clean, upcoming, free/park-focused)
 PARKS_SOURCE_URL = "https://www.nycgovparks.org/events"
@@ -51,11 +62,22 @@ class Event:
     venue: str
     borough: str
     url: str
-    source: str  # "Ticketmaster" | "NYC Parks" | "NYC Permitted Events"
+    source: str  # "Ticketmaster Discovery" | "NYC Parks" | "NYC Permitted Events"
     tier: str    # authoritative | editorial | community
     free_evidence: str = ""
     audience: str = ""
     end_time: str = ""
+    provider_status: str = ""
+    timezone: str = ""
+    public_sale_start: str = ""
+    public_sale_end: str = ""
+    public_sale_start_tbd: bool | None = None
+    accessibility_info: str = ""
+    venue_accessibility: str = ""
+    publishing_source: str = ""
+    provider_id: str = ""
+    provider_record: dict = field(default_factory=dict)
+    retrieved_at: str = ""
 
 
 def _iso_date(value: object) -> str:
@@ -78,7 +100,7 @@ def _parks_time(value: object) -> str:
     return parsed.strftime("%I:%M %p").lstrip("0")
 
 
-def _from_ticketmaster(raw: dict) -> Optional[Event]:
+def _from_ticketmaster(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     dates = raw.get("dates") or {}
     if ((dates.get("status") or {}).get("code") or "").lower() in {
         "canceled", "cancelled", "postponed",
@@ -93,14 +115,28 @@ def _from_ticketmaster(raw: dict) -> Optional[Event]:
     borough = (venues[0].get("city") or {}).get("name", "") if venues else ""
     if borough and borough.strip().casefold() not in _TICKETMASTER_NYC_CITIES:
         return None
+    public_sale = (raw.get("sales") or {}).get("public") or {}
+    start_tbd = public_sale.get("startTBD")
+    source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
     return Event(
         name=raw.get("name") or "", start_date=start_date,
         start_time=start.get("localTime") or "", venue=venue, borough=borough,
-        url=raw.get("url", ""), source="Ticketmaster", tier="authoritative",
+        url=raw.get("url", ""), source="Ticketmaster Discovery", tier="authoritative",
+        provider_status=((dates.get("status") or {}).get("code") or "").lower(),
+        timezone=dates.get("timezone") or "",
+        public_sale_start=public_sale.get("startDateTime") or "",
+        public_sale_end=public_sale.get("endDateTime") or "",
+        public_sale_start_tbd=start_tbd if isinstance(start_tbd, bool) else None,
+        accessibility_info=(raw.get("accessibility") or {}).get("info") or "",
+        venue_accessibility=(venues[0].get("accessibleSeatingDetail") or "") if venues else "",
+        publishing_source=source.get("name") or source.get("id") or "",
+        provider_id=str(raw.get("id") or raw.get("url") or ""),
+        provider_record=raw,
+        retrieved_at=retrieved_at,
     )
 
 
-def _from_parks(raw: dict) -> Optional[Event]:
+def _from_parks(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     title = raw.get("title") or ""
     if title.lower().startswith(("cancelled", "canceled", "postponed")):
         return None
@@ -134,10 +170,13 @@ def _from_parks(raw: dict) -> Optional[Event]:
         borough=_PARK_BOROUGHS.get(park_id[:1], ""),
         url=url or PARKS_SOURCE_URL, source="NYC Parks", tier="authoritative",
         free_evidence=free_evidence, audience=audience,
+        provider_id=str(raw.get(":id") or url or title),
+        provider_record=raw,
+        retrieved_at=retrieved_at,
     )
 
 
-def _from_permitted(raw: dict) -> Optional[Event]:
+def _from_permitted(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     name = raw.get("event_name") or ""
     # No status column exists on this permit dataset, so mirror the Parks/Ticketmaster
     # cancellation discipline off the name: a permit marked cancelled/postponed is not happening.
@@ -157,6 +196,9 @@ def _from_permitted(raw: dict) -> Optional[Event]:
         url=row_url(PERMITTED_DATASET_ID, row_id) if row_id else PERMITTED_SOURCE_URL,
         source="NYC Permitted Events", tier="authoritative",
         end_time=end_time,
+        provider_id=row_id or str(raw.get("event_id") or ""),
+        provider_record=raw,
+        retrieved_at=retrieved_at,
     )
 
 
@@ -212,6 +254,18 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
         ranked.append((rank, event.start_date, event))
     ranked.sort(key=lambda item: (item[0], item[1]))
     return [event for _, _, event in ranked[:limit]]
+
+
+def _resident_limit(query: str) -> tuple[int, bool]:
+    match = re.search(
+        r"\b(?:show|give|list|find|send)(?:\s+me)?\s+(?:up to\s+)?(\d{1,2})\b"
+        r"|\b(\d{1,2})\s+(?:events?|options?|choices?)\b",
+        query,
+        re.IGNORECASE,
+    )
+    if not match:
+        return 5, False
+    return max(1, min(int(next(group for group in match.groups() if group)), 20)), True
 
 
 def _requested_window(query: str, today: str) -> tuple[str, str | None]:
@@ -287,9 +341,15 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     end = f"; ends {ev.end_time}" if ev.end_time else ""
     free = "; free" if ev.free_evidence else ""
     audience = f"; {ev.audience}" if ev.audience else ""
+    status = f"; status {ev.provider_status}" if ev.provider_status else ""
+    accessibility = (
+        f"; accessibility: {ev.accessibility_info or ev.venue_accessibility}"
+        if ev.accessibility_info or ev.venue_accessibility
+        else ""
+    )
     details = f"\n  Details: {ev.url}" if ev.url else ""
     return (
-        f"- {ev.name}{where}, {when}{timing}{end}{free}{audience} "
+        f"- {ev.name}{where}, {when}{timing}{end}{free}{audience}{status}{accessibility} "
         f"({ev.source}) {{cite:{cite}}}{details}"
     )
 
@@ -352,7 +412,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         raise ValueError(f"Unsupported audience: {audience}")
     if setting not in {"", "indoor", "outdoor"}:
         raise ValueError(f"Unsupported setting: {setting}")
-    limit = max(1, min(int(args.get("limit") or 12), 20))
+    limit, resident_requested_count = _resident_limit(ctx.query)
 
     now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
@@ -387,9 +447,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         where = f"startdate >= '{window_start}'"
         if window_end:
             where += f" AND startdate <= '{window_end}T23:59:59'"
-        return await query_dataset(
+        return await query_dataset_pages(
             PARKS_DATASET_ID, where=where, order="startdate",
-            q=keyword, client=ctx.http,
+            client=ctx.http, _query=query_dataset,
         )
 
     # Select the public street-event slice by the dataset's own agency/type FIELDS (never by
@@ -406,9 +466,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
 
     async def permitted_source():
-        return await query_dataset(
+        return await query_dataset_pages(
             PERMITTED_DATASET_ID, where=permitted_where, order="start_date_time",
-            q=keyword, client=ctx.http,
+            client=ctx.http, _query=query_dataset,
         )
     catalog_sources = {
         "ticketmaster": ticketmaster_source,
@@ -459,6 +519,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         web_context = None
     web_appendix = (
         "\n\nCurrent web event leads, searched in parallel with the structured catalogs:\n"
+        "Context only, not additional event choices. Use a current web lead only by "
+        "replacing a structured choice, after verifying every resident constraint and keeping "
+        "the complete answer within the requested result limit:\n"
         f"{web_context}"
         if web_context
         else (
@@ -467,17 +530,37 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             else ""
         )
     )
-    raw_tm = [] if isinstance(results["ticketmaster"], BaseException) else results["ticketmaster"]
-    raw_parks = [] if isinstance(results["parks"], BaseException) else results["parks"]
-    raw_permitted = [] if isinstance(results["permitted"], BaseException) else results["permitted"]
-    events = [e for e in (_from_ticketmaster(r) for r in raw_tm) if e]
-    events += [e for e in (_from_parks(r) for r in raw_parks) if e]
-    events += [e for e in (_from_permitted(r) for r in raw_permitted) if e]
+    ticketmaster_result = results["ticketmaster"]
+    if not isinstance(ticketmaster_result, BaseException):
+        if ticketmaster_result.status == "unavailable":
+            unavailable_catalog.append("ticketmaster")
+        raw_tm = ticketmaster_result.events
+    else:
+        raw_tm = []
+    raw_parks = [] if isinstance(results["parks"], BaseException) else results["parks"].records
+    raw_permitted = (
+        [] if isinstance(results["permitted"], BaseException) else results["permitted"].records
+    )
+    retrieved_at = now.astimezone(timezone.utc).isoformat()
+    partial_socrata = {
+        name: results[name]
+        for name in ("parks", "permitted")
+        if not isinstance(results[name], BaseException) and not results[name].complete
+    }
+    events = [
+        e for e in (
+            _from_ticketmaster(r, retrieved_at=ticketmaster_result.retrieved_at)
+            for r in raw_tm
+        ) if e
+    ]
+    events += [e for e in (_from_parks(r, retrieved_at=retrieved_at) for r in raw_parks) if e]
+    events += [
+        e for e in (_from_permitted(r, retrieved_at=retrieved_at) for r in raw_permitted) if e
+    ]
     if keyword:
         events = [
             event for event in events
-            if event.source == "Ticketmaster"
-            or event.source == "NYC Permitted Events"
+            if event.source == "Ticketmaster Discovery"
             or _matches_keyword(event, keyword)
         ]
 
@@ -504,6 +587,79 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         )
         coverage_note = (
             f"Sources unavailable for part of this lookup: {names}. Results are partial.\n"
+        )
+    for name, result in partial_socrata.items():
+        dataset_id = PARKS_DATASET_ID if name == "parks" else PERMITTED_DATASET_ID
+        snapshot = {
+            "dataset_id": dataset_id,
+            "complete": result.complete,
+            "pages_fetched": result.pages_fetched,
+            "returned_count": len(result.records),
+            "next_offset": result.next_offset,
+            "error": result.error,
+            "retrieved_at": retrieved_at,
+        }
+        coverage_cite = ctx.citations.register(
+            dataset_url(dataset_id),
+            snippet=(
+                f"{catalog_labels[name]} returned {len(result.records)} rows before "
+                f"{result.error or 'an incomplete page'} at offset {result.next_offset}."
+            ),
+            title=f"{catalog_labels[name]} search coverage",
+            kind="DATA",
+            provenance=data_provenance(
+                snapshot,
+                record_id=f"{dataset_id}:query:{retrieved_at}",
+                field_pointer="/",
+            ),
+        )
+        coverage_note += (
+            f"{catalog_labels[name]} returned partial results after {result.pages_fetched} page(s) "
+            f"{{cite:{coverage_cite}}}; do not claim complete catalog coverage.\n"
+        )
+    if (
+        isinstance(ticketmaster_result, TicketmasterSearchResult)
+        and ticketmaster_result.status == "partial"
+    ):
+        returned = len(ticketmaster_result.events)
+        total = ticketmaster_result.total_elements
+        coverage_snapshot = {
+            "status": ticketmaster_result.status,
+            "page_number": ticketmaster_result.page_number,
+            "page_size": ticketmaster_result.page_size,
+            "returned": returned,
+            "total_elements": total,
+            "total_pages": ticketmaster_result.total_pages,
+            "next_page": ticketmaster_result.next_page,
+            "retrieved_at": ticketmaster_result.retrieved_at,
+        }
+        coverage_cite = ctx.citations.register(
+            DISCOVERY_URL,
+            snippet=(
+                f"Ticketmaster returned page {ticketmaster_result.page_number or 0} with "
+                f"{returned} of {total} listings."
+                if total is not None
+                else f"Ticketmaster returned one page with {returned} listings."
+            ),
+            title="Ticketmaster search coverage",
+            kind="DATA",
+            provenance=data_provenance(
+                coverage_snapshot,
+                record_id=(
+                    f"ticketmaster:page:{ticketmaster_result.page_number or 0}:"
+                    f"{ticketmaster_result.retrieved_at}"
+                ),
+                field_pointer="/",
+            ),
+        )
+        coverage_note += (
+            f"Ticketmaster returned one page ({returned} of {total} listings) "
+            f"{{cite:{coverage_cite}}}; its catalog "
+            "coverage is partial.\n"
+            if total is not None
+            else f"Ticketmaster returned one page without complete paging metadata "
+            f"{{cite:{coverage_cite}}}; its catalog "
+            "coverage is partial.\n"
         )
     no_results = (
         f"{coverage_note}No matching events were confirmed from the sources that responded."
@@ -555,12 +711,40 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"Timing at lookup: {timing}" if timing else "",
             f"Cost evidence: {ev.free_evidence}" if ev.free_evidence else "",
             f"Audience: {ev.audience}" if ev.audience else "",
+            f"Ticketmaster status: {ev.provider_status}" if ev.provider_status else "",
+            f"Timezone: {ev.timezone}" if ev.timezone else "",
+            f"Public sale start: {ev.public_sale_start}" if ev.public_sale_start else "",
+            f"Public sale end: {ev.public_sale_end}" if ev.public_sale_end else "",
+            (
+                f"Public sale start TBD: {ev.public_sale_start_tbd}"
+                if ev.public_sale_start_tbd is not None
+                else ""
+            ),
+            f"Accessibility: {ev.accessibility_info}" if ev.accessibility_info else "",
+            (
+                f"Venue accessibility: {ev.venue_accessibility}"
+                if ev.venue_accessibility
+                else ""
+            ),
             f"Source: {ev.source}",
         ]
+        provenance = data_provenance(
+            ev.provider_record,
+            record_id=ev.provider_id,
+            field_pointer="/",
+        )
+        provenance["acquisition"] = {"retrieved_at": ev.retrieved_at}
+        if ev.source == "Ticketmaster Discovery":
+            provenance.update({
+                "provider": "Ticketmaster Discovery API",
+                "publishing_source": ev.publishing_source or None,
+                "destination_host": (urlsplit(ev.url).hostname or "").removeprefix("www."),
+            })
         cite = ctx.citations.register(
             ev.url or PARKS_SOURCE_URL,
             snippet="; ".join(bit for bit in snippet_bits if bit).strip(),
-            title=ev.name or "NYC event", kind="DATA", valid_as_of=ev.start_date,
+            title=ev.name or "NYC event", kind="DATA",
+            provenance=provenance,
         )
         blocks.append(_event_block(ev, cite, now))
 
@@ -573,7 +757,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "markets, block parties, parades, and plaza events):\n"
     )
     catalog = header + "\n".join(blocks) if blocks else no_results
-    return catalog + web_appendix
+    followup = "\nOffer to narrow or list more matching events." if not resident_requested_count else ""
+    return catalog + web_appendix + followup
 
 
 def get_tools() -> list[Tool]:
@@ -635,6 +820,16 @@ def get_tools() -> list[Tool]:
                     },
                     "window_start": {"type": "string", "format": "date", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
                     "window_end": {"type": "string", "format": "date", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 5,
+                        "description": (
+                            "Maximum structured listings to return. Default to five; pass another "
+                            "count only when the resident asks for it."
+                        ),
+                    },
                 },
             },
             handler=_handler,

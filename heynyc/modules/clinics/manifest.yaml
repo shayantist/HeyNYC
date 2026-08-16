@@ -77,6 +77,11 @@ allowlist:
   - justice.gov
   - uscis.gov
   - cms.gov
+source_tiers:
+  authoritative:
+    - nyccare.nyc
+    - nychealthandhospitals.org
+    - poison.org
 prompt: |
   For "I need to see a doctor" when the person has no insurance, can't afford care, is on a low
   income, or is worried about immigration status (doctor / clinic / free clinic / community health

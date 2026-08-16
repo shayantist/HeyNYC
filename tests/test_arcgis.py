@@ -3,13 +3,18 @@
 Mirrors the injectability of datasets.query_dataset: an httpx client is injected so no
 live ArcGIS call is made. This adapter is the reusable seam the coverage-map spec anticipated
 (clinics / IDNYC / immigrant-services finders reuse the same ArcGIS pattern), so it stays
-generic — not pantry-specific.
+generic, not pantry-specific.
 """
 from __future__ import annotations
 
 import httpx
+import pytest
 
-from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
+from heynyc.core.tools.arcgis import (
+    feature_query_url,
+    query_feature_service,
+    query_feature_service_page,
+)
 
 
 def _fc(*features: dict) -> dict:
@@ -48,9 +53,139 @@ async def test_query_feature_service_hits_geojson_query_endpoint():
     assert len(out) == 1 and out[0]["program"] == "A"
 
 
+async def test_query_feature_service_page_preserves_provider_paging_metadata():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = _fc(_point_feature(-73.99, 40.75, program="A"))
+        payload.update({
+            "exceededTransferLimit": True,
+            "resultPaginationToken": "next-page-token",
+        })
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    page = await query_feature_service_page(
+        "https://arcgis.example/FeatureServer/0",
+        result_record_count=25,
+        result_offset=50,
+        client=client,
+    )
+    await client.aclose()
+
+    assert page.records[0]["program"] == "A"
+    assert page.exceeded_transfer_limit is True
+    assert page.complete is False
+    assert page.next_offset == 51
+    assert page.pagination_token == "next-page-token"
+
+
+async def test_query_feature_service_exhausts_provider_pages():
+    offsets = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["resultOffset"])
+        offsets.append(offset)
+        payload = _fc(
+            _point_feature(
+                -73.99 + offset,
+                40.75,
+                OBJECTID=offset + 1,
+            )
+        )
+        payload["exceededTransferLimit"] = offset == 0
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    records = await query_feature_service(
+        "https://arcgis.example/FeatureServer/0",
+        result_record_count=2,
+        client=client,
+    )
+    await client.aclose()
+
+    assert offsets == [0, 1]
+    assert [record["OBJECTID"] for record in records] == [1, 2]
+
+
+async def test_query_feature_service_uses_provider_pagination_token_without_offset():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        requests.append(params)
+        if len(requests) == 1:
+            payload = _fc(_point_feature(-73.99, 40.75, OBJECTID=1))
+            payload.update({
+                "exceededTransferLimit": True,
+                "resultPaginationToken": "next-page-token",
+            })
+            return httpx.Response(200, json=payload)
+        assert params["resultPaginationToken"] == "next-page-token"
+        assert "resultOffset" not in params
+        payload = _fc(_point_feature(-73.98, 40.76, OBJECTID=2))
+        payload["exceededTransferLimit"] = False
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    records = await query_feature_service(
+        "https://arcgis.example/FeatureServer/0",
+        result_record_count=1,
+        client=client,
+    )
+    await client.aclose()
+
+    assert [record["OBJECTID"] for record in records] == [1, 2]
+
+
+async def test_query_feature_service_rejects_an_empty_incomplete_page():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "type": "FeatureCollection",
+                "features": [],
+                "exceededTransferLimit": True,
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(ValueError, match="incomplete page"):
+        await query_feature_service(
+            "https://arcgis.example/FeatureServer/0",
+            result_record_count=1,
+            client=client,
+        )
+    await client.aclose()
+
+
+async def test_query_feature_service_rejects_a_repeated_incomplete_page():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = _fc(_point_feature(-73.99, 40.75, OBJECTID=1))
+        payload["exceededTransferLimit"] = True
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(ValueError, match="repeated incomplete page"):
+        await query_feature_service(
+            "https://arcgis.example/FeatureServer/0",
+            result_record_count=1,
+            client=client,
+        )
+    await client.aclose()
+
+
+async def test_query_feature_service_page_rejects_missing_features():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"foo": "bar"}))
+    )
+
+    with pytest.raises(ValueError, match="features"):
+        await query_feature_service_page("https://arcgis.example/FeatureServer/0", client=client)
+    await client.aclose()
+
+
 async def test_query_feature_service_merges_geometry_lat_lon():
     def handler(request: httpx.Request) -> httpx.Response:
-        # GeoJSON coordinates are [lon, lat] in WGS84 — the adapter must surface them as lat/lon.
+        # GeoJSON coordinates are [lon, lat] in WGS84; surface them as lat/lon
         return httpx.Response(200, json=_fc(_point_feature(-73.9857, 40.7484, program="Midtown Pantry")))
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

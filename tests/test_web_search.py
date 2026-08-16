@@ -197,6 +197,135 @@ async def test_tavily_basic_search_does_not_restrict_results_to_known_domains(mo
     assert "include_domains" not in request_json
 
 
+async def test_tavily_preserves_result_score_and_publication_date(monkeypatch):
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": [{
+                "title": "Current status",
+                "url": "https://example.com/current",
+                "content": "The current status is active.",
+                "score": 0.91,
+                "published_date": "2026-08-14T10:30:00Z",
+            }]}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr(web_search_mod.config, "TAVILY_API_KEY", "configured")
+    monkeypatch.setattr(web_search_mod.httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    assert await web_search_mod._tavily("current status", []) == [{
+        "title": "Current status",
+        "url": "https://example.com/current",
+        "snippet": "The current status is active.",
+        "search_provider": "Tavily Search API",
+        "score": 0.91,
+        "published_date": "2026-08-14T10:30:00Z",
+    }]
+
+
+async def test_web_search_exposes_tavily_metadata_and_uses_score_as_a_tiebreaker():
+    async def fake_search(
+        query, domains, published_after=None, published_before=None, count=5,
+    ):
+        return [
+            {
+                "title": "Lower relevance",
+                "url": "https://www.nyc.gov/lower",
+                "snippet": "Older support.",
+                "search_provider": "Tavily Search API",
+                "score": 0.61,
+                "published_date": "2026-08-01T10:00:00Z",
+            },
+            {
+                "title": "Higher relevance",
+                "url": "https://www.nyc.gov/higher",
+                "snippet": "Current support.",
+                "search_provider": "Tavily Search API",
+                "score": 0.94,
+                "published_date": "2026-08-14T10:00:00Z",
+            },
+        ]
+
+    ctx = _ctx()
+    out = await web_search_tools(["nyc.gov"], search_fn=fake_search)[0].handler(
+        {"query": "current status"}, ctx,
+    )
+
+    assert out.index("Higher relevance") < out.index("Lower relevance")
+    assert "Published: 2026-08-14T10:00:00Z" in out
+    assert "Provider relevance score: 0.94 (not truth confidence)" in out
+    assert ctx.citations.mapping()["S1"]["provenance"]["search"] == {
+        "provider": "Tavily Search API",
+        "score": 0.94,
+        "published_date": "2026-08-14T10:00:00Z",
+    }
+
+
+async def test_web_search_reports_degraded_provider_scope_once():
+    async def degraded_search(
+        query, domains, published_after=None, published_before=None, count=5, topic=None,
+    ):
+        return [
+            {
+                "title": f"Result {index}",
+                "url": f"https://example.com/{index}",
+                "snippet": "Current lead",
+                "search_provider": "DuckDuckGo",
+                "degraded_from_topic": "news",
+            }
+            for index in range(2)
+        ]
+
+    ctx = _ctx()
+    out = await web_search_tools([], search_fn=degraded_search)[0].handler(
+        {"query": "current reporting", "topic": "news"}, ctx,
+    )
+
+    assert out.count("Search provider: DuckDuckGo") == 1
+    assert out.count("general fallback without provider publication-date guarantees") == 1
+    assert all(
+        citation["provenance"]["search"]["degraded_from_topic"] == "news"
+        for citation in ctx.citations.mapping().values()
+    )
+
+
+async def test_web_search_exposes_news_publisher_metadata():
+    async def news_search(
+        query, domains, published_after=None, published_before=None, count=5, topic=None,
+    ):
+        return [{
+            "title": "Current captain interview",
+            "url": "https://example.com/current-captain",
+            "snippet": "The current captain discussed the coming season.",
+            "search_provider": "DuckDuckGo News",
+            "published_date": "2026-08-15T11:30:00+00:00",
+            "publisher": "Example Sports",
+        }]
+
+    ctx = _ctx()
+    out = await web_search_tools([], search_fn=news_search)[0].handler(
+        {"query": "current captain", "topic": "news"}, ctx,
+    )
+
+    assert "Publisher: Example Sports" in out
+    assert ctx.citations.mapping()["S1"]["provenance"]["search"] == {
+        "provider": "DuckDuckGo News",
+        "published_date": "2026-08-15T11:30:00+00:00",
+        "publisher": "Example Sports",
+    }
+
+
 async def test_tavily_http_status_failure_is_not_reported_as_no_results(monkeypatch):
     class _Response:
         def raise_for_status(self):
@@ -231,10 +360,11 @@ async def test_search_falls_back_to_duckduckgo_when_tavily_plan_is_exhausted(mon
             response=httpx.Response(432),
         )
 
-    async def fallback(query, allowed_domains, count=5):
+    async def fallback(query, allowed_domains, count=5, topic=None):
         assert query == "current NYC service"
         assert allowed_domains == ["nyc.gov"]
         assert count == 7
+        assert topic is None
         return [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
 
     monkeypatch.setattr(web_search_mod, "_tavily", exhausted)
@@ -242,7 +372,42 @@ async def test_search_falls_back_to_duckduckgo_when_tavily_plan_is_exhausted(mon
 
     assert await web_search_mod.tavily_search(
         "current NYC service", ["nyc.gov"], count=7
-    ) == [{"title": "Official", "url": "https://nyc.gov/service", "snippet": "Current"}]
+    ) == [{
+        "title": "Official",
+        "url": "https://nyc.gov/service",
+        "snippet": "Current",
+        "search_provider": "DuckDuckGo",
+    }]
+
+
+async def test_duckduckgo_news_fallback_preserves_publication_metadata(monkeypatch):
+    import ddgs
+
+    class FakeDDGS:
+        def news(self, query, max_results):
+            return [{
+                "date": "2026-08-15T11:30:00+00:00",
+                "title": "Current captain interview",
+                "body": "The current team captain discussed the coming season.",
+                "url": "https://example.com/current-captain",
+                "source": "Example Sports",
+            }]
+
+    monkeypatch.setattr(ddgs, "DDGS", FakeDDGS)
+
+    assert await web_search_mod._duckduckgo(
+        "current team captain",
+        [],
+        count=3,
+        topic="news",
+    ) == [{
+        "title": "Current captain interview",
+        "url": "https://example.com/current-captain",
+        "snippet": "The current team captain discussed the coming season.",
+        "search_provider": "DuckDuckGo News",
+        "published_date": "2026-08-15T11:30:00+00:00",
+        "publisher": "Example Sports",
+    }]
 
 
 async def test_search_does_not_hide_non_plan_tavily_status_errors(monkeypatch):
@@ -445,6 +610,18 @@ async def test_web_search_passes_publication_date_bounds_to_tavily(monkeypatch):
     assert calls[0]["end_date"] == "2025-12-01"
 
 
+async def test_web_search_passes_news_topic_to_tavily(monkeypatch):
+    calls = _capture_tavily(monkeypatch)
+    tools = _real_backend_tools()
+
+    await tools["web_search"].handler(
+        {"query": "current NYC sports news", "topic": "news"},
+        _ctx(),
+    )
+
+    assert calls[0]["topic"] == "news"
+
+
 async def test_web_search_rejects_invalid_or_reversed_publication_bounds():
     async def must_not_search(*_args, **_kwargs):
         raise AssertionError("invalid date bounds must not reach the backend")
@@ -486,6 +663,35 @@ async def test_bounded_search_does_not_use_an_untimed_fallback(monkeypatch):
     ) == []
 
 
+async def test_topic_specific_search_marks_the_general_fallback_as_degraded(monkeypatch):
+    async def exhausted(*_args, **_kwargs):
+        raise httpx.HTTPStatusError(
+            "plan limit exceeded",
+            request=httpx.Request("POST", "https://api.tavily.com/search"),
+            response=httpx.Response(432),
+        )
+
+    async def fallback(*_args, **_kwargs):
+        return [{
+            "title": "Current reporting",
+            "url": "https://example.com/current",
+            "snippet": "Current lead",
+        }]
+
+    monkeypatch.setattr(web_search_mod, "_tavily", exhausted)
+    monkeypatch.setattr(web_search_mod, "_duckduckgo", fallback)
+
+    assert await web_search_mod.tavily_search(
+        "current sports reporting", [], topic="news",
+    ) == [{
+        "title": "Current reporting",
+        "url": "https://example.com/current",
+        "snippet": "Current lead",
+        "search_provider": "DuckDuckGo",
+        "degraded_from_topic": "news",
+    }]
+
+
 async def test_web_search_without_publication_bounds_stays_untimed(monkeypatch):
     calls = _capture_tavily(monkeypatch)
     tools = _real_backend_tools()
@@ -512,6 +718,13 @@ def test_web_search_exposes_publication_date_bounds():
     assert "exclusive upper bound" in properties["published_before"]["description"]
     assert "published_within" not in properties
     assert "recency" not in properties
+
+
+def test_web_search_exposes_tavily_topic_without_changing_the_default():
+    properties = web_search_tools(["nyc.gov"])[0].parameters["properties"]
+
+    assert properties["topic"]["enum"] == ["general", "news", "finance"]
+    assert "publication dates" in properties["topic"]["description"]
 
 
 async def test_web_search_count_bounds_the_returned_results():

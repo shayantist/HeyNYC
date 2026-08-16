@@ -4,6 +4,7 @@ import inspect
 from types import SimpleNamespace
 from typing import get_type_hints
 
+import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -26,6 +27,7 @@ from heynyc.core.pydantic_runtime import (
 )
 from heynyc.core.pydantic_runtime.runtime import (
     VERIFICATION_ABSTAIN_FALLBACK,
+    PydanticRunFailure,
     _authoritative_output_tools,
     _final_answer,
 )
@@ -149,22 +151,23 @@ async def test_structured_data_mismatch_fails_closed_before_semantic_verificatio
             _cited_answer("The benefit is $500. {cite:S1}", f"answer-{model_calls}")
         ])
 
-    result = await PydanticRuntimeAdapter(
-        FunctionModel(model),
-        registry=Registry([]),
-        tools={
-            "source": Tool(
-                name="source",
-                description="Return one structured city record",
-                parameters={"type": "object", "properties": {}},
-                handler=source,
-            )
-        },
-        structured_grounding=True,
-    ).run("What is the benefit amount?")
+    with pytest.raises(PydanticRunFailure) as raised:
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={
+                "source": Tool(
+                    name="source",
+                    description="Return one structured city record",
+                    parameters={"type": "object", "properties": {}},
+                    handler=source,
+                )
+            },
+            structured_grounding=True,
+        ).run("What is the benefit amount?")
 
-    assert "$500" not in result.text
-    assert result.diagnostics["validation_rejections"] == [
+    assert "$500" not in raised.value.partial_result.text
+    assert raised.value.partial_result.diagnostics["validation_rejections"] == [
         {
             "attempt": 1,
             "stage": "structured_grounding",
@@ -174,7 +177,11 @@ async def test_structured_data_mismatch_fails_closed_before_semantic_verificatio
             "attempt": 2,
             "stage": "structured_grounding",
             "items": [{"kind": "money", "text": "$500"}],
-            "retry_exhausted": True,
+        },
+        {
+            "attempt": 3,
+            "stage": "structured_grounding",
+            "items": [{"kind": "money", "text": "$500"}],
         },
     ]
 
@@ -206,7 +213,7 @@ async def test_structured_grounding_uses_native_cited_prose() -> None:
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         output_names = {tool.name for tool in info.output_tools}
-        assert "grounded_answer" not in output_names
+        assert "grounded_answer" in output_names
         assert "final_answer" in output_names
         assert "clarification_request" in output_names
         assert "nonfactual_outcome" in output_names
@@ -469,17 +476,27 @@ async def test_structured_answer_rejects_internal_url_markup() -> None:
     ]
 
 
-async def test_event_answer_uses_the_registered_action_url() -> None:
-    url = "https://www.ticketmaster.com/event/exact"
+async def test_event_answer_preserves_adjacent_citations_without_rewriting() -> None:
+    first_url = "https://www.ticketmaster.com/event/first"
+    second_url = "https://www.ticketmaster.com/event/second"
 
     async def source(_args: dict, ctx: ToolContext) -> str:
-        citation_id = ctx.citations.register(
-            url,
+        first_id = ctx.citations.register(
+            first_url,
             title="Evening event",
             kind="DATA",
             snippet="Evening event at 9 PM",
         )
-        return f"Evening event at 9 PM. {{cite:{citation_id}}}"
+        second_id = ctx.citations.register(
+            second_url,
+            title="Morning event",
+            kind="DATA",
+            snippet="Morning event at 10 AM",
+        )
+        return (
+            f"Evening event at 9 PM. {{cite:{first_id}}}\n"
+            f"Morning event at 10 AM. {{cite:{second_id}}}"
+        )
 
     model_calls = 0
 
@@ -493,14 +510,12 @@ async def test_event_answer_uses_the_registered_action_url() -> None:
         if model_calls == 2:
             return ModelResponse([
                 _cited_answer(
-                    "[Evening event](https://www.ticketmaster.com/event/invented) "
-                    "starts at 9 PM. {cite:S1}",
+                    "Evening event starts at 9 PM. {cite:S1}\n"
+                    "Morning event starts at 10 AM. {cite:S2}",
                     "answer-1",
                 )
             ])
-        return ModelResponse([
-            _cited_answer("Evening event starts at 9 PM. {cite:S1}", "answer-2")
-        ])
+        raise AssertionError("the first grounded answer should be accepted")
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -516,16 +531,14 @@ async def test_event_answer_uses_the_registered_action_url() -> None:
         structured_grounding=True,
     ).run("What can I do tonight?")
 
-    assert model_calls == 3
-    assert url in result.text
-    assert "invented" not in result.text
-    assert result.diagnostics["validation_rejections"] == [
-        {
-            "attempt": 1,
-            "stage": "unregistered_url",
-            "urls": ["https://www.ticketmaster.com/event/invented"],
-        }
-    ]
+    assert model_calls == 2
+    assert result.text == (
+        "Evening event starts at 9 PM. {cite:S1}\n"
+        "Morning event starts at 10 AM. {cite:S2}"
+    )
+    assert first_url not in result.text
+    assert second_url not in result.text
+    assert result.diagnostics["validation_rejections"] == []
 
 
 async def test_answer_preserves_exact_tool_action_url_without_retry() -> None:
@@ -684,14 +697,8 @@ async def test_structured_answer_rejects_internal_template_placeholders() -> Non
         )
         if model_calls == 1:
             return ModelResponse([_cited_answer(text, f"answer-{model_calls}")])
-        nonfactual = next(
-            tool.name
-            for tool in info.output_tools
-            if tool.name == "nonfactual_outcome"
-        )
-        return ModelResponse([
-            ToolCallPart(nonfactual, {"kind": "unknowable"}, f"final-{model_calls}")
-        ])
+        assert {tool.name for tool in info.output_tools} == {"final_answer"}
+        return ModelResponse([_cited_answer(text, f"answer-{model_calls}")])
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -701,9 +708,7 @@ async def test_structured_answer_rejects_internal_template_placeholders() -> Non
     ).run("Can you help?")
 
     assert model_calls == 2
-    assert result.text == (
-        "I can't know that yet. I can help with the practical NYC part instead."
-    )
+    assert result.text == "What NYC service do you need help with?"
     assert result.diagnostics["validation_rejections"] == [
         {"attempt": 1, "stage": "internal_markup"},
     ]

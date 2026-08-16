@@ -351,7 +351,7 @@ async def test_native_runtime_state_commits_atomically_and_resumes(tmp_path):
     ]
 
 
-async def test_native_session_projects_pending_approval_review():
+async def test_native_session_projects_and_persists_pending_approval_review(tmp_path):
     class NativeConversation:
         def __init__(self, state="new"):
             self.state = state
@@ -386,7 +386,8 @@ async def test_native_session_projects_pending_approval_review():
         def conversation_from_state(self, state):
             return NativeConversation(state.decode())
 
-    session = Session(agent=NativeAgent(), id="approval")
+    path = tmp_path / "approval.jsonl"
+    session = Session(agent=NativeAgent(), id="approval", path=path)
     pending = await session.prepare("submit it")
 
     assert "submit_request" in pending.result.text
@@ -394,7 +395,8 @@ async def test_native_session_projects_pending_approval_review():
     assert "Reply YES to approve, or NO to deny" in pending.result.text
 
     session.commit(pending)
-    assert session.convo.pending_approvals == {}
+    assert session.convo.pending_approvals
+    assert Session.load(NativeAgent(), "approval", path).convo.pending_approvals
 
 
 async def test_native_runtime_hydrates_existing_legacy_transcript(tmp_path):

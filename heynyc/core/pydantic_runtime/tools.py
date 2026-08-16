@@ -6,13 +6,16 @@ from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
+from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import (
     Agent,
     DeferredToolRequests,
     ModelRetry,
     RunContext,
+    ToolFailed,
     ToolOutput,
 )
 from pydantic_ai.capabilities import AbstractCapability, Capability
@@ -20,11 +23,11 @@ from pydantic_ai.messages import LoadCapabilityCallPart, ModelRequest, UserPromp
 from pydantic_ai.output import StructuredDict
 from pydantic_ai.tools import Tool as PydanticTool
 
+from heynyc.core.agent import _urls_in
 from heynyc.core.pii_redaction import redact_pii
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
-from heynyc.core.agent import _urls_in
 
 from .projection import GroundedAnswer
 
@@ -365,6 +368,7 @@ def adapt_tool(
     """Wrap one existing HeyNYC tool without changing its handler or schema."""
     schema = tool._input_schema()
     validator = Draft202012Validator(schema)
+    return_adapter = TypeAdapter(tool.return_type) if tool.return_type is not None else None
 
     def validate(ctx: RunContext[ToolContext], **kwargs: object) -> None:
         errors = sorted(
@@ -387,10 +391,59 @@ def adapt_tool(
                 "with the exact profile for resident confirmation."
             )
 
-    async def invoke(ctx: RunContext[ToolContext], **kwargs: object) -> str:
+    def result_urls(value: Any) -> set[str]:
+        if isinstance(value, str):
+            return _urls_in(value)
+        if isinstance(value, dict):
+            return set().union(*(result_urls(child) for child in value.values()), set())
+        if isinstance(value, (list, tuple)):
+            return set().union(*(result_urls(child) for child in value), set())
+        return set()
+
+    def action_urls_are_valid(value: Any) -> bool:
+        if isinstance(value, dict):
+            action_url = value.get("action_url")
+            if action_url is not None:
+                if not isinstance(action_url, str):
+                    return False
+                parsed = urlparse(action_url)
+                if parsed.scheme != "https" or not parsed.netloc:
+                    return False
+            return all(action_urls_are_valid(child) for child in value.values())
+        if isinstance(value, (list, tuple)):
+            return all(action_urls_are_valid(child) for child in value)
+        return True
+
+    def response_anchor_citations(value: Any) -> set[str]:
+        if not isinstance(value, dict):
+            return set()
+        primary = value.get("primary_citation_id")
+        if isinstance(primary, str):
+            return {primary}
+        origin = value.get("origin_citation_id")
+        return {origin} if isinstance(origin, str) else set()
+
+    async def invoke(ctx: RunContext[ToolContext], **kwargs: object) -> Any:
         result = await tool.handler(dict(kwargs), ctx.deps)
+        if return_adapter is not None:
+            try:
+                result = return_adapter.validate_python(result)
+            except ValidationError:
+                raise ToolFailed(
+                    f"{tool.name} returned an invalid structured result"
+                ) from None
+            json_result = return_adapter.dump_python(result, mode="json")
+        else:
+            json_result = result
+        if not action_urls_are_valid(json_result):
+            raise ToolFailed(f"{tool.name} returned invalid action metadata")
+        ctx.deps.required_response_citation_ids.update(
+            response_anchor_citations(json_result).intersection(
+                ctx.deps.citations.mapping()
+            )
+        )
         if tool.name not in {"web_search", "web_fetch"}:
-            ctx.deps.tool_result_urls.update(_urls_in(result))
+            ctx.deps.tool_result_urls.update(result_urls(json_result))
         return result
 
     adapted = PydanticTool.from_schema(
@@ -550,7 +603,7 @@ def build_module_capabilities(
             for part in message.parts
             if isinstance(part, LoadCapabilityCallPart)
         }
-        return capability_owners(loaded)
+        return capability_owners(loaded) or set(ctx.deps.current_turn_modules)
 
     for owner, owned_tools in (
         *module_tools.items(),
@@ -614,6 +667,10 @@ def build_module_capabilities(
                 or capability_id.startswith(f"{module_name}-")
                 or capability_id.startswith(f"{module_name.replace('_', '-')}-")
             }
+            if tool_name == "web_search":
+                ctx.deps.allow_unverified_search_excerpts = (
+                    registry.allows_unverified_search_excerpts(current_turn_owners(ctx))
+                )
             if len(loaded_owners) != 1:
                 return definition
             loaded = [

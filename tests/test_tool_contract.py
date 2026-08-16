@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import FunctionModel
 
 from heynyc.core import config
+from heynyc.core.citations import CitationRegistry
 from heynyc.core.pydantic_runtime import build_runtime
 from heynyc.core.pydantic_runtime.tools import (
+    adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
+from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.modules.benefits.tools import screen_access_nyc_eligibility_tool
 
 EAGER_TOOL_NAMES = {
@@ -91,6 +103,153 @@ def _missing_descriptions(schema: dict, path: str = "") -> list[str]:
     return missing
 
 
+async def test_adapter_preserves_declared_nested_pydantic_result() -> None:
+    class ResultRow(BaseModel):
+        name: str
+        hours: str | None
+        citations: list[str]
+        action_url: str
+
+    class ProviderResult(BaseModel):
+        records: list[ResultRow]
+        next_cursor: str | None
+        error: str | None
+
+    async def handler(_args: dict, _ctx: ToolContext) -> dict:
+        return {
+            "records": [{
+                "name": "Example center",
+                "hours": None,
+                "citations": ["S1"],
+                "action_url": "https://www.nyc.gov/example/center",
+            }],
+            "next_cursor": None,
+            "error": None,
+        }
+
+    source = Tool(
+        name="typed_lookup",
+        description="Return one typed provider result",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        return_type=ProviderResult,
+    )
+    seen: list[object] = []
+
+    async def model(messages: list[ModelMessage], _info) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            return ModelResponse([ToolCallPart("typed_lookup", {}, "lookup-1")])
+        seen.append(returns[-1].content)
+        return ModelResponse([TextPart("Done")])
+
+    context = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    await Agent(
+        FunctionModel(model),
+        deps_type=ToolContext,
+        tools=[adapt_tool(source)],
+    ).run("Find it", deps=context)
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], ProviderResult)
+    assert seen[0].model_dump() == {
+        "records": [{
+            "name": "Example center",
+            "hours": None,
+            "citations": ["S1"],
+            "action_url": "https://www.nyc.gov/example/center",
+        }],
+        "next_cursor": None,
+        "error": None,
+    }
+    assert context.tool_result_urls == {"https://www.nyc.gov/example/center"}
+
+
+async def test_adapter_reports_invalid_declared_result_as_terminal_tool_failure() -> None:
+    class ProviderResult(BaseModel):
+        count: int
+
+    async def handler(_args: dict, _ctx: ToolContext) -> dict:
+        return {"count": {"invalid": True}}
+
+    source = Tool(
+        name="typed_lookup",
+        description="Return one typed provider result",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        return_type=ProviderResult,
+    )
+    failures: list[str] = []
+
+    async def model(messages: list[ModelMessage], _info) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            return ModelResponse([ToolCallPart("typed_lookup", {}, "lookup-1")])
+        failures.append(str(returns[-1].content))
+        return ModelResponse([TextPart("The provider result was unavailable.")])
+
+    context = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    result = await Agent(
+        FunctionModel(model),
+        deps_type=ToolContext,
+        tools=[adapt_tool(source)],
+    ).run("Find it", deps=context)
+
+    assert result.output == "The provider result was unavailable."
+    assert failures == ["typed_lookup returned an invalid structured result"]
+
+
+async def test_adapter_rejects_invalid_structured_action_url_before_model_use() -> None:
+    class ProviderResult(BaseModel):
+        action_url: str
+
+    async def handler(_args: dict, _ctx: ToolContext) -> ProviderResult:
+        return ProviderResult(action_url="http://example.com/unsafe")
+
+    source = Tool(
+        name="typed_lookup",
+        description="Return one typed provider result",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        return_type=ProviderResult,
+    )
+    failures: list[str] = []
+
+    async def model(messages: list[ModelMessage], _info) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            return ModelResponse([ToolCallPart("typed_lookup", {}, "lookup-1")])
+        failures.append(str(returns[-1].content))
+        return ModelResponse([TextPart("The action link was unavailable.")])
+
+    result = await Agent(
+        FunctionModel(model),
+        deps_type=ToolContext,
+        tools=[adapt_tool(source)],
+    ).run(
+        "Find it",
+        deps=ToolContext(citations=CitationRegistry(), registry=Registry([])),
+    )
+
+    assert result.output == "The action link was unavailable."
+    assert failures == ["typed_lookup returned invalid action metadata"]
+
+
 def test_model_visible_surface_is_pinned():
     registry = _registry()
     shared, capabilities = build_module_capabilities(
@@ -140,7 +299,12 @@ def test_model_visible_surface_is_pinned():
     assert {
         definition.name
         for definition in runtime._agent._output_schema.toolset._tool_defs
-    } == {"final_answer", "clarification_request", "nonfactual_outcome"}
+    } == {
+        "final_answer",
+        "grounded_answer",
+        "clarification_request",
+        "nonfactual_outcome",
+    }
 
 
 def test_tool_parameters_are_described_and_self_consistent():
@@ -182,6 +346,7 @@ def test_output_tool_parameters_are_described():
         for definition in runtime._agent._output_schema.toolset._tool_defs
     } == {
         "final_answer": [],
+        "grounded_answer": [],
         "clarification_request": [],
         "nonfactual_outcome": [],
     }

@@ -9,9 +9,17 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
+from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
     AgentStreamEvent,
@@ -42,8 +50,8 @@ from pydantic_ai.capabilities import (
 )
 from pydantic_ai.exceptions import SkipModelRequest, ToolFailed
 from pydantic_ai.messages import (
+    LoadCapabilityCallPart,
     ModelMessage,
-    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
@@ -65,9 +73,9 @@ from heynyc.core.agent import (
     _MISSED_DOSE_RESPONSE_EN,
     _SOURCE_MISSED_DOSE,
     _SOURCE_POISON_CONTROL,
+    ActionLink,
     AgentResult,
     _action_url,
-    _attach_event_action_urls,
     _attach_location_action_urls,
     _delivered_notify_titles,
     _ground_emergency_backstop,
@@ -78,6 +86,7 @@ from heynyc.core.citations import (
     CitationRegistry,
     used_citations,
     used_discovery_citations,
+    used_unverified_citations,
 )
 from heynyc.core.crisis_lines import (
     LL30_LANGUAGES,
@@ -85,7 +94,7 @@ from heynyc.core.crisis_lines import (
 )
 from heynyc.core.freshness import attach_temporal_provenance
 from heynyc.core.grounding import check_grounding
-from heynyc.core.localization import localize, localized_source_limit
+from heynyc.core.localization import localize
 from heynyc.core.memory import (
     CompactFn,
     ContextCapacityError,
@@ -104,6 +113,7 @@ from heynyc.core.registry import Registry
 from heynyc.core.spend import SpendGuard
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
+from heynyc.core.tools.geo import GeoPoint
 
 from .projection import (
     _CITATION_MARKUP_RE,
@@ -136,8 +146,6 @@ from .tools import (
     resident_fact_confirmation_tool,
 )
 
-_DEFERRED_REQUESTS = TypeAdapter(DeferredToolRequests)
-_RESIDENT_FACTS = TypeAdapter(dict[str, ResidentFact])
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
 _FINAL_OUTPUT_TOOL = "final_answer"
 _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
@@ -152,12 +160,23 @@ _CITED_PROSE_SYSTEM_PROMPT = (
     "Write ordinary conversational prose for the final answer. Place each citation marker "
     "immediately after the factual or procedural text it supports, using only source IDs "
     "returned by tools in this run, for example {cite:S1}. Cite every source used by a sentence. "
-    "Do not cite discovery-only search snippets. The runtime adds structured source limitations "
-    "after validation."
+    "Do not cite discovery-only search snippets. Explain relevant limitations and unknown fields "
+    "reported by tools instead of guessing or searching again for data the tool says it lacks. "
+    "When a structured finder returns a selected records list, cover every returned record and "
+    "the resolved origin in the final answer."
 )
 _MULTI_TOOL_SCOPE_REMINDER = (
     "Keep each tool result within that tool call's own scope. "
     "Do not apply a location, date, audience, or filter from one tool call to another."
+)
+_OUTPUT_CORRECTION_REMINDER = (
+    "Correct the rejected final answer now using only evidence already in the conversation. "
+    "Preserve every supported requested part, state any unresolved part plainly, and return the "
+    "complete resident answer."
+)
+_DISCOVERY_CORRECTION_REMINDER = (
+    "The rejected answer relied on a search snippet. Fetch that known source once with "
+    "web_fetch, or omit the unsupported claim, then return the complete resident answer."
 )
 _COOLING_SYNTHESIS_REMINDER = (
     "The current cooling lookup is definitive for the selected unavailable site. Finish the "
@@ -174,6 +193,29 @@ _TOOL_SEARCH_DESCRIPTION = (
     "sports, news, or opening a webpage; use `web_search` or `web_fetch` for those. If no "
     "tools are found, do not retry."
 )
+
+
+def _answer_correction_tool_name(ctx: RunContext[ToolContext]) -> str | None:
+    return next(
+        (
+            part.tool_name
+            for message in reversed(ctx.messages)
+            if isinstance(message, ModelRequest)
+            for part in reversed(message.parts)
+            if isinstance(part, RetryPromptPart)
+            and part.tool_name in {_FINAL_OUTPUT_TOOL, _GROUNDED_OUTPUT_TOOL}
+        ),
+        None,
+    )
+
+
+def _answer_correction_requested(ctx: RunContext[ToolContext]) -> bool:
+    return _answer_correction_tool_name(ctx) is not None
+
+
+def _latest_validation_stage(ctx: RunContext[ToolContext]) -> str | None:
+    rejections = getattr(getattr(ctx, "deps", None), "validation_rejections", ())
+    return rejections[-1].get("stage") if rejections else None
 
 
 def _final_answer(
@@ -242,6 +284,50 @@ def _degraded_failure_text(
     lines = [text, "", localize(OFFICIAL_PAGES_REACHED_HEADING, language)]
     lines += [f"- {title}: {url}" for url, title in list(seen.items())[:3]]
     return "\n".join(lines)
+
+
+def _validation_warning_text(
+    messages: Sequence[ModelMessage],
+    rejections: Sequence[dict[str, Any]],
+    citations: CitationRegistry,
+    language: str | None,
+) -> str | None:
+    if not rejections or any(
+        rejection.get("stage") != "discovery_only" for rejection in rejections
+    ):
+        return None
+    answer = next(
+        (
+            value
+            for message in reversed(messages)
+            if isinstance(message, ModelResponse)
+            for part in reversed(message.parts)
+            if isinstance(part, ToolCallPart)
+            and part.tool_name == _FINAL_OUTPUT_TOOL
+            and isinstance((value := part.args_as_dict().get("answer")), str)
+            and value.strip()
+        ),
+        None,
+    )
+    if answer is None:
+        return None
+    mapping = citations.mapping()
+    latest = rejections[-1]
+    sources = [
+        f"{mapping[citation_id].get('title') or mapping[citation_id].get('url') or citation_id} "
+        f"({citation_id})"
+        for citation_id in latest.get("citation_ids", ())
+        if citation_id in mapping
+    ]
+    if not sources:
+        return None
+    source = ", ".join(sources)
+    notice = localize(
+        "Verification note for {source}: this source is a search-result excerpt. "
+        "I could not confirm it from the full page.",
+        language,
+    )
+    return f"{answer.strip()}\n\n{notice.format(source=source)}"
 class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"] = Field(
         description="Use unknowable only when no retrieval could establish an answer"
@@ -270,13 +356,6 @@ def _reply_language(safety_run: Any, user_turns: Sequence[str]) -> str:
     if not code:
         return ""
     return LL30_LANGUAGES.get(code, "English" if code == "en" else code)
-
-
-def _caused_by(error: BaseException, expected: type[BaseException]) -> bool:
-    while error := error.__cause__:
-        if isinstance(error, expected):
-            return True
-    return False
 
 
 async def _recover_upstream_tool_error(
@@ -367,40 +446,81 @@ def _notify_titles_from_result(result: AgentResult) -> frozenset:
     ])
 
 
-def _missing_source_limits(
-    text: str,
-    citations: dict[str, dict],
-    language: str | None,
-) -> dict[str, str]:
-    limits: dict[str, str] = {}
-    for citation_id, citation in used_citations(text, citations).items():
-        if citation.get("kind") != "DATA":
+def _typed_action_links(
+    messages: Sequence[ModelMessage],
+    citation_ids: set[str],
+) -> tuple[ActionLink, ...]:
+    """Extract exact action URLs from validated structured tool results."""
+    found: list[ActionLink] = []
+    seen: set[tuple[str, str]] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, BaseModel):
+            visit(value.model_dump(mode="json"))
+            return
+        if isinstance(value, dict):
+            citation_id = value.get("citation_id")
+            url = value.get("action_url")
+            if (
+                isinstance(citation_id, str)
+                and citation_id in citation_ids
+                and isinstance(url, str)
+            ):
+                key = (citation_id, url)
+                if key not in seen:
+                    try:
+                        action = ActionLink(citation_id=citation_id, url=url)
+                    except ValidationError:
+                        pass
+                    else:
+                        seen.add(key)
+                        found.append(action)
+            for child in value.values():
+                visit(child)
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for message in messages:
+        if not isinstance(message, ModelRequest):
             continue
-        limitation = str(
-            (citation.get("provenance") or {})
-            .get("derivation", {})
-            .get("limitations")
-            or ""
-        ).strip()
-        localized = localized_source_limit(limitation, language)
-        if localized:
-            limits.setdefault(localized, citation_id)
-    return limits
+        for part in message.parts:
+            if isinstance(part, ToolReturnPart):
+                visit(part.content)
+    return tuple(found)
 
 
-def _attach_source_limits(
-    text: str,
-    citations: dict[str, dict],
-    language: str | None,
-) -> str:
-    limits = _missing_source_limits(text, citations, language)
-    if not limits:
-        return text
-    notes = "\n".join(
-        f"{limitation} {{cite:{citation_id}}}"
-        for limitation, citation_id in limits.items()
-    )
-    return f"{text.rstrip()}\n\n{notes}"
+def _typed_result_citation_ids(
+    messages: Sequence[ModelMessage],
+    citation_ids: set[str],
+    typed_tool_names: set[str],
+) -> set[str]:
+    """Return registered citations carried by validated structured tool results."""
+    found: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, BaseModel):
+            visit(value.model_dump(mode="json"))
+        elif isinstance(value, dict):
+            for key in ("citation_id", "origin_citation_id"):
+                if isinstance(value.get(key), str) and value[key] in citation_ids:
+                    found.add(value[key])
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            for part in message.parts:
+                if (
+                    isinstance(part, ToolReturnPart)
+                    and part.tool_name in typed_tool_names
+                ):
+                    visit(part.content)
+    return found
 
 
 def _follow_up_awareness(awareness: str, delivered_titles: frozenset) -> str:
@@ -571,7 +691,7 @@ class PydanticRunFailure(RuntimeError):
 class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
     """Adapt HeyNYC memory at PydanticAI's complete-request seam."""
 
-    def __init__(self, conversation: "_PydanticConversation") -> None:
+    def __init__(self, conversation: "PydanticAgentSession") -> None:
         self.conversation = conversation
         self.visible_history: list[dict] | None = None
         self.compacted = False
@@ -597,6 +717,65 @@ _VALID_SAFETY_LANGUAGES = frozenset(("en", *LL30_LANGUAGES))
 
 def _validated_safety_language(language: Any) -> str | None:
     return language if isinstance(language, str) and language in _VALID_SAFETY_LANGUAGES else None
+
+
+class ConversationState(BaseModel):
+    """Versioned application state persisted between PydanticAI runs."""
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="forbid",
+        validate_assignment=True,
+    )
+
+    schema_version: Literal[1] = 1
+    conversation_id: str = Field(default_factory=lambda: str(uuid4()))
+    messages: list[ModelMessage] = Field(default_factory=list)
+    user_turns: tuple[str, ...] = ()
+    pending: DeferredToolRequests | None = None
+    resident_facts: dict[str, ResidentFact] = Field(default_factory=dict)
+    response_priority_citation_ids: set[str] = Field(default_factory=set)
+    continuity: ContinuityRecord | None = None
+    citations: CitationRegistry = Field(default_factory=CitationRegistry)
+    delivered_notify_titles: frozenset[str] = frozenset()
+    safety_language: str | None = None
+    current_location: GeoPoint | None = None
+    action_links: tuple[ActionLink, ...] = ()
+    typed_result_citation_ids: set[str] = Field(default_factory=set)
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _load_citations(cls, value: Any) -> CitationRegistry:
+        return CitationRegistry.from_state(value) if isinstance(value, dict) else value
+
+    @field_serializer("citations")
+    def _dump_citations(self, value: CitationRegistry) -> dict:
+        return value.dump_state()
+
+    @field_validator("safety_language", mode="before")
+    @classmethod
+    def _normalize_safety_language(cls, value: Any) -> str | None:
+        return _validated_safety_language(value)
+
+
+def _migrate_conversation_state(
+    payload: dict[str, Any],
+    *,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    version = payload.get("schema_version", 0)
+    if version == 1:
+        return payload
+    if version != 0:
+        raise ValueError(f"Unsupported conversation state version: {version!r}")
+    migrated = dict(payload)
+    migrated["schema_version"] = 1
+    migrated.setdefault("conversation_id", conversation_id or str(uuid4()))
+    migrated.setdefault("current_location", None)
+    if "citations" not in migrated and "pending_citations" in migrated:
+        migrated["citations"] = migrated["pending_citations"]
+    migrated.pop("pending_citations", None)
+    return migrated
 
 
 class _ModelTimingCapability(AbstractCapability[ToolContext]):
@@ -721,6 +900,56 @@ class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
         return request_context
 
 
+class _OutputCorrectionCapability(AbstractCapability[ToolContext]):
+    """Use bounded output retries for correction or one known-page fetch."""
+
+    async def prepare_tools(
+        self,
+        ctx: RunContext[ToolContext],
+        tool_defs: list[ToolDefinition],
+    ) -> list[ToolDefinition]:
+        if not _answer_correction_requested(ctx):
+            return tool_defs
+        if _latest_validation_stage(ctx) == "discovery_only":
+            return [tool for tool in tool_defs if tool.name == "web_fetch"]
+        return []
+
+    async def prepare_output_tools(
+        self,
+        ctx: RunContext[ToolContext],
+        tool_defs: list[ToolDefinition],
+    ) -> list[ToolDefinition]:
+        correction_tool = _answer_correction_tool_name(ctx)
+        if correction_tool is None:
+            return tool_defs
+        if _latest_validation_stage(ctx) == "high_stakes_format":
+            return [tool for tool in tool_defs if tool.name == _GROUNDED_OUTPUT_TOOL]
+        return [tool for tool in tool_defs if tool.name == correction_tool]
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[ToolContext],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        if not _answer_correction_requested(ctx):
+            return request_context
+        request = next(
+            message
+            for message in reversed(request_context.messages)
+            if isinstance(message, ModelRequest)
+        )
+        reminder = (
+            _DISCOVERY_CORRECTION_REMINDER
+            if _latest_validation_stage(ctx) == "discovery_only"
+            else _OUTPUT_CORRECTION_REMINDER
+        )
+        if reminder not in (request.instructions or ""):
+            request.instructions = "\n\n".join(
+                filter(None, (request.instructions, reminder))
+            )
+        return request_context
+
+
 class _CoolingTerminalCapability(AbstractCapability[ToolContext]):
     """End a definitive current cooling absence before another retrieval request."""
 
@@ -819,7 +1048,10 @@ class PydanticRuntimeAdapter:
         stream_model_requests: bool = False,
         run_timeout_s: float = 180,
         crisis_screen: Callable[[tuple[str, ...]], Awaitable[Any]] | None = None,
+        scope_screen: Callable[[tuple[str, ...]], Awaitable[Any]] | None = None,
         output_guard: Callable[[str], Awaitable[frozenset[str]]] | None = None,
+        embedder: Any = None,
+        retrieval_cache_path: Any = None,
     ) -> None:
         self.registry = registry
         self.tools = dict(tools)
@@ -842,8 +1074,18 @@ class PydanticRuntimeAdapter:
         self._stream_model_requests = stream_model_requests
         self._run_timeout_s = run_timeout_s
         self._crisis_screen = crisis_screen
+        self._scope_screen = scope_screen
         self._output_guard = output_guard
+        self._embedder = embedder
+        self._retrieval_cache_path = retrieval_cache_path
         self._structured_grounding = structured_grounding
+        self._high_stakes_capability_ids = frozenset(
+            f"{module.name.replace('_', '-')}-"
+            f"{hint.name.replace('_', '-').removeprefix(module.name.replace('_', '-') + '-')}"
+            for module in registry.modules
+            for hint in module.situations
+            if hint.high_stakes
+        )
         # F154: attaching an event handler is what makes PydanticAI stream the model request
         # A structured run already DISCARDS its text deltas (`include_text` below), so when
         # nothing consumes validated text deltas, so streaming buys nothing and exposes the final
@@ -894,6 +1136,7 @@ class PydanticRuntimeAdapter:
                 ),
                 *capabilities,
                 *extra_capabilities,
+                _OutputCorrectionCapability(),
             ],
             system_prompt=system_prompt,
             model_settings=_native_cache_settings(model),
@@ -912,7 +1155,16 @@ class PydanticRuntimeAdapter:
                                 "part plainly. Include inline citation markers and no internal "
                                 "analysis or instructions."
                             ),
-                        )
+                        ),
+                        ToolOutput(
+                            GroundedAnswer,
+                            name=_GROUNDED_OUTPUT_TOOL,
+                            description=(
+                                "Use for high-stakes guidance. Put each factual or procedural "
+                                "claim in its own block with the authoritative source IDs that "
+                                "directly support it."
+                            ),
+                        ),
                     ]
                     if structured_grounding
                     else [str]
@@ -950,7 +1202,7 @@ class PydanticRuntimeAdapter:
                 ),
                 DeferredToolRequests,
             ],
-            retries={"tools": 1, "output": 1},
+            retries={"tools": 1, "output": 2},
         )
         if prompt_builder is not None:
             self._agent.instructions(lambda ctx: prompt_builder(ctx.deps.query))
@@ -987,6 +1239,24 @@ class PydanticRuntimeAdapter:
 
         if isinstance(output, DeferredToolRequests):
             return output
+        messages = getattr(ctx, "messages", ())
+        current_turn = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if isinstance(message, ModelRequest)
+                and any(isinstance(part, UserPromptPart) for part in message.parts)
+            ),
+            default=len(messages),
+        )
+        high_stakes = ctx.deps.current_turn_high_stakes or bool(
+            getattr(self, "_high_stakes_capability_ids", frozenset()).intersection(
+                str(part.args_as_dict().get("id") or "")
+                for message in messages[current_turn + 1:]
+                for part in message.parts
+                if isinstance(part, LoadCapabilityCallPart)
+            )
+        )
         if (
             isinstance(output, str)
             and ctx.deps.verify_output_language
@@ -1094,6 +1364,18 @@ class PydanticRuntimeAdapter:
                 "unknown_citation",
                 "Use only citation IDs returned by tools in this run.",
             )
+        missing_response_citations = sorted(
+            ctx.deps.required_response_citation_ids
+            - set(used_citations(rendered, mapping))
+        )
+        if missing_response_citations:
+            reject(
+                "response_coverage",
+                "A structured finder already returned answer-grade evidence. Finish now with "
+                "its primary record, or its resolved origin when no record was found, using the "
+                "supplied citation ID. Do not search again. Other alternatives are optional.",
+                citation_ids=missing_response_citations,
+            )
         registered_urls = {
             _action_url(citation) for citation in mapping.values()
             if citation.get("url")
@@ -1111,6 +1393,38 @@ class PydanticRuntimeAdapter:
                 "Search snippets are discovery only. Fetch the relevant authoritative source "
                 "with web_fetch and cite that evidence, or omit the unverified claim.",
                 citation_ids=sorted(discovery_ids)[:_SEMANTIC_RETRY_ITEMS],
+            )
+        if high_stakes:
+            non_authoritative = [
+                citation_id
+                for citation_id, citation in used_citations(rendered, mapping).items()
+                if citation.get("kind") == "WEB"
+                and (citation.get("provenance") or {}).get("source_tier")
+                != "authoritative"
+            ]
+            if non_authoritative:
+                reject(
+                    "high_stakes_source",
+                    "High-stakes guidance must cite current authoritative evidence. Omit "
+                    "editorial, news, community, and unknown sources.",
+                    citation_ids=sorted(non_authoritative)[:_SEMANTIC_RETRY_ITEMS],
+                )
+            if not isinstance(output, GroundedAnswer):
+                reject(
+                    "high_stakes_format",
+                    "Return high-stakes guidance as grounded_answer. Put each factual or "
+                    "procedural claim in its own block with the authoritative citation IDs "
+                    "that directly support it.",
+                )
+        if (
+            not ctx.deps.allow_unverified_search_excerpts
+            and (unverified_ids := used_unverified_citations(rendered, mapping))
+        ):
+            reject(
+                "unverified_source",
+                "This turn cannot use an unverified source as answer evidence. Retrieve and cite "
+                "an authoritative source, or omit the claim and state the gap.",
+                citation_ids=sorted(unverified_ids)[:_SEMANTIC_RETRY_ITEMS],
             )
         if isinstance(output, (str, GroundedAnswer)):
             exact_fact_mapping = {
@@ -1149,18 +1463,6 @@ class PydanticRuntimeAdapter:
                     {"kind": mismatch.kind, "text": mismatch.text}
                     for mismatch in exact_failures
                 ][:_SEMANTIC_RETRY_ITEMS]
-                prior_rejections = sum(
-                    item.get("stage") == "structured_grounding"
-                    for item in ctx.deps.validation_rejections
-                )
-                if prior_rejections:
-                    ctx.deps.validation_rejections.append({
-                        "attempt": len(ctx.deps.validation_rejections) + 1,
-                        "stage": "structured_grounding",
-                        "items": rejected,
-                        "retry_exhausted": True,
-                    })
-                    return localize(VERIFICATION_ABSTAIN_FALLBACK, ctx.deps.language)
                 reject(
                     "structured_grounding",
                     "An exact structured fact does not match its cited city record. "
@@ -1227,18 +1529,6 @@ class PydanticRuntimeAdapter:
                     for item, verdict in zip(inputs, semantic.verdicts, strict=True)
                     if not verdict.supported
                 ][:_SEMANTIC_RETRY_ITEMS]
-                semantic_rejections = sum(
-                    item.get("stage") == "semantic_grounding"
-                    for item in ctx.deps.validation_rejections
-                )
-                if semantic_rejections:
-                    ctx.deps.validation_rejections.append({
-                        "attempt": len(ctx.deps.validation_rejections) + 1,
-                        "stage": "semantic_grounding",
-                        "items": rejected,
-                        "retry_exhausted": True,
-                    })
-                    return localize(VERIFICATION_ABSTAIN_FALLBACK, ctx.deps.language)
                 labels = ", ".join(
                     f"{item['id']} ({item['label']})" for item in rejected
                 )
@@ -1304,6 +1594,39 @@ class PydanticRuntimeAdapter:
             "safety_cached_input_tokens": run.cached_input_tokens,
             "safety_cost_usd": run.cost_usd,
             "safety_time_ms": run.latency_ms,
+        })
+        result.usage["input_tokens"] += run.input_tokens
+        result.usage["output_tokens"] += run.output_tokens
+        result.usage["cached_input_tokens"] += run.cached_input_tokens
+        result.usage["requests"] += run.requests
+        result.usage["n_model_calls"] += run.requests
+        result.usage["model_time_ms"] = (
+            float(result.usage.get("model_time_ms", 0.0)) + run.latency_ms
+        )
+        answer_cost = result.usage.get("cost_usd")
+        result.usage["cost_usd"] = (
+            float(answer_cost) + run.cost_usd
+            if isinstance(answer_cost, (int, float))
+            and isinstance(run.cost_usd, (int, float))
+            else None
+        )
+        result.usage["cost_status"] = (
+            "priced" if result.usage["cost_usd"] is not None else "unpriced"
+        )
+
+    @staticmethod
+    def _merge_scope_usage(result: AgentResult, run: Any) -> None:
+        if run is None:
+            return
+        result.usage.update({
+            "scope_model": run.model,
+            "scope_input_tokens": run.input_tokens,
+            "scope_output_tokens": run.output_tokens,
+            "scope_cached_input_tokens": run.cached_input_tokens,
+            "scope_cost_usd": run.cost_usd,
+            "scope_time_ms": run.latency_ms,
+            "scope_modules": list(run.modules),
+            "scope_situations": list(run.situations),
         })
         result.usage["input_tokens"] += run.input_tokens
         result.usage["output_tokens"] += run.output_tokens
@@ -1452,8 +1775,11 @@ class PydanticRuntimeAdapter:
             "priced" if result.usage["cost_usd"] is not None else "unpriced"
         )
 
-    def conversation(self) -> "_PydanticConversation":
-        return _PydanticConversation(self)
+    def conversation(
+        self,
+        conversation_id: str | None = None,
+    ) -> "PydanticAgentSession":
+        return PydanticAgentSession(self, conversation_id=conversation_id)
 
     def _failed_result(
         self,
@@ -1498,16 +1824,25 @@ class PydanticRuntimeAdapter:
         }
         return result
 
-    def conversation_from_state(self, state: bytes) -> "_PydanticConversation":
-        return _PydanticConversation.from_state(self, state)
+    def conversation_from_state(
+        self,
+        state: bytes,
+        conversation_id: str | None = None,
+    ) -> "PydanticAgentSession":
+        return PydanticAgentSession.from_state(
+            self,
+            state,
+            conversation_id=conversation_id,
+        )
 
     def conversation_from_transcript(
         self,
         transcript: Sequence[dict],
-    ) -> "_PydanticConversation":
-        conversation = self.conversation()
-        conversation._history = _native_history(transcript)
-        conversation._user_turns = tuple(
+        conversation_id: str | None = None,
+    ) -> "PydanticAgentSession":
+        conversation = self.conversation(conversation_id=conversation_id)
+        conversation.state.messages = _native_history(transcript)
+        conversation.state.user_turns = tuple(
             str(turn.get("content") or "")
             for turn in transcript
             if turn.get("role") == "user"
@@ -1521,7 +1856,7 @@ class PydanticRuntimeAdapter:
             }
             for turn in transcript
         ]
-        conversation._delivered_notify_titles = _delivered_notify_titles(delivered_turns)
+        conversation.state.delivered_notify_titles = _delivered_notify_titles(delivered_turns)
         return conversation
 
     async def run(
@@ -1561,10 +1896,15 @@ class PydanticRuntimeAdapter:
         citations: CitationRegistry | None = None,
         memory_capability: _BoundedMemoryCapability | None = None,
         response_priority_citation_ids: set[str] | None = None,
+        conversation_id: str | None = None,
+        current_location: GeoPoint | None = None,
+        action_links: tuple[ActionLink, ...] = (),
+        typed_result_citation_ids: set[str] | None = None,
     ) -> tuple[
         AgentResult,
         list[ModelMessage],
         DeferredToolRequests | None,
+        GeoPoint | None,
     ]:
         citations = citations if citations is not None else CitationRegistry()
         prior_citation_ids = set(citations.mapping())
@@ -1692,16 +2032,34 @@ class PydanticRuntimeAdapter:
                 events.TextDelta(message_id=message_id, text=backstop),
             )
             _finish_events(event_sink, message_id, result)
-            return result, new_messages, None
+            return result, new_messages, None, current_location
+        scope_run = None
+        scope_error = None
+        if self._scope_screen is not None:
+            try:
+                scope_run = await self._scope_screen(user_turns)
+            except Exception as exc:
+                scope_error = type(exc).__name__
         deps = ToolContext(
             citations=citations,
             registry=self.registry,
             query=safe_user_message,
             user_history="\n".join(user_turns),
             user_turns=user_turns,
+            current_location=current_location,
             toolbox=self.tools,
+            embedder=self._embedder,
+            retrieval_cache_path=self._retrieval_cache_path,
             output_dir=output_dir,
             drafts=drafts,
+            event_turn=getattr(scope_run, "event_turn", None),
+            current_turn_modules=frozenset(getattr(scope_run, "modules", ())),
+            current_turn_high_stakes=any(
+                hint.high_stakes
+                for situation in getattr(scope_run, "situations", ())
+                if (entry := self.registry.situation_hints().get(situation)) is not None
+                for hint in (entry[1],)
+            ),
             delivered_notify_titles=delivered_notify_titles,
             resident_facts=resident_facts if resident_facts is not None else {},
             response_priority_citation_ids=(
@@ -1733,6 +2091,7 @@ class PydanticRuntimeAdapter:
                 async with asyncio.timeout(self._run_timeout_s):
                     native = await self._agent.run(
                         safe_user_message,
+                        conversation_id=conversation_id,
                         message_history=message_history or None,
                         instructions=_dynamic_instructions(instructions),
                         deps=deps,
@@ -1784,16 +2143,16 @@ class PydanticRuntimeAdapter:
                 default=len(message_history),
             )
             new_messages = captured[current_index:]
-            verification_exhausted = (
-                isinstance(exc, UnexpectedModelBehavior)
-                and _caused_by(exc, ModelRetry)
-                and bool(deps.validation_rejections)
-                and bool(citations.mapping())
-            )
-            if verification_exhausted:
-                new_messages.append(
-                    ModelResponse(parts=[TextPart(VERIFICATION_ABSTAIN_FALLBACK)])
+            validation_warning = (
+                _validation_warning_text(
+                    new_messages,
+                    deps.validation_rejections,
+                    citations,
+                    language,
                 )
+                if isinstance(exc, UnexpectedModelBehavior)
+                else None
+            )
             result = self._failed_result(
                 new_messages,
                 citations=citations,
@@ -1805,30 +2164,26 @@ class PydanticRuntimeAdapter:
                 status=(
                     "max_turns"
                     if isinstance(exc, UsageLimitExceeded)
-                    else "success" if verification_exhausted else "error"
+                    else "error"
                 ),
-                text=(
-                    VERIFICATION_ABSTAIN_FALLBACK
-                    if verification_exhausted
-                    else TEMPORARY_FAILURE_FALLBACK
-                ),
+                text=validation_warning or TEMPORARY_FAILURE_FALLBACK,
                 language=language,
                 citation_ids=set(citations.mapping()) - prior_citation_ids,
             )
             self._merge_safety_usage(result, safety_run)
+            self._merge_scope_usage(result, scope_run)
             self._merge_language_verifier_usage(result, deps.language_verifier_runs)
             if deps.language_verifier_runs:
                 result.diagnostics["language_verifier_runs"] = deps.language_verifier_runs
             if safety_error:
                 result.diagnostics["safety_error"] = safety_error
+            if scope_error:
+                result.diagnostics["scope_error"] = scope_error
             if (
                 safety_run is not None
                 and language is not None
             ):
                 result.diagnostics["safety_language"] = language
-            if verification_exhausted:
-                _finish_events(event_sink, message_id, result)
-                return result, new_messages, None
             if isinstance(exc, (UnexpectedModelBehavior, TimeoutError)):
                 # A TimeoutError here is EITHER the run wall or the per-request bound giving up
                 # after its retry. Reporting both as "run exceeded <wall>" sent an operator
@@ -1858,13 +2213,15 @@ class PydanticRuntimeAdapter:
                 ) from exc
             result.hit_max_iters = True
             _finish_events(event_sink, message_id, result)
-            return result, new_messages, None
+            return result, new_messages, None, deps.current_location
         result = self._result(
             native,
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
             language=language,
+            prior_action_links=action_links,
+            prior_typed_result_citation_ids=typed_result_citation_ids,
         )
         await self._apply_output_guard(result, deps, language)
         result.usage["model_request_ms"] = timing_capability.request_ms
@@ -1874,6 +2231,7 @@ class PydanticRuntimeAdapter:
         self._merge_semantic_usage(result, deps.semantic_verifier_runs)
         self._merge_language_verifier_usage(result, deps.language_verifier_runs)
         self._merge_safety_usage(result, safety_run)
+        self._merge_scope_usage(result, scope_run)
         result.diagnostics = {
             **(
                 {"fact_review_runs": deps.fact_review_runs}
@@ -1894,6 +2252,7 @@ class PydanticRuntimeAdapter:
                 else {}
             ),
             **({"safety_error": safety_error} if safety_error else {}),
+            **({"scope_error": scope_error} if scope_error else {}),
             **(
                 {"safety_risk": safety_run.risk}
                 if safety_run is not None
@@ -1905,7 +2264,7 @@ class PydanticRuntimeAdapter:
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
-        return result, native.new_messages(), pending
+        return result, native.new_messages(), pending, deps.current_location
 
     def _result(
         self,
@@ -1915,6 +2274,8 @@ class PydanticRuntimeAdapter:
         *,
         model_time_ms: float,
         language: str | None = None,
+        prior_action_links: tuple[ActionLink, ...] = (),
+        prior_typed_result_citation_ids: set[str] | None = None,
     ) -> AgentResult:
         return self._project_result(
             native.new_messages(),
@@ -1924,6 +2285,8 @@ class PydanticRuntimeAdapter:
             started,
             model_time_ms=model_time_ms,
             language=language,
+            prior_action_links=prior_action_links,
+            prior_typed_result_citation_ids=prior_typed_result_citation_ids,
         )
 
     def _project_result(
@@ -1943,6 +2306,8 @@ class PydanticRuntimeAdapter:
         model_time_ms: float,
         status: str | None = None,
         language: str | None = None,
+        prior_action_links: tuple[ActionLink, ...] = (),
+        prior_typed_result_citation_ids: set[str] | None = None,
     ) -> AgentResult:
         tool_calls = [
             part.tool_name
@@ -1986,6 +2351,19 @@ class PydanticRuntimeAdapter:
         pending = isinstance(output, DeferredToolRequests)
         iterations = usage.requests
         cost, cost_source = _complete_cost(self.model, new_messages, usage)
+        current_action_links = _typed_action_links(
+            new_messages,
+            set(citations.mapping()),
+        )
+        action_by_citation = {
+            action.citation_id: action
+            for action in prior_action_links
+            if action.citation_id in citations.mapping()
+        }
+        action_by_citation.update({
+            action.citation_id: action for action in current_action_links
+        })
+        action_links = tuple(action_by_citation.values())
         text = ""
         if not pending:
             rendered = (
@@ -1998,21 +2376,25 @@ class PydanticRuntimeAdapter:
                 else str(output)
             )
             if isinstance(output, (str, GroundedAnswer)):
-                if "find_nyc_events" in executed_tool_calls:
-                    rendered = _attach_event_action_urls(
+                typed_result_ids = _typed_result_citation_ids(
+                    new_messages,
+                    set(citations.mapping()),
+                    {
+                        name
+                        for name, tool in self.tools.items()
+                        if tool.return_type is not None
+                    },
+                )
+                typed_result_ids.update(prior_typed_result_citation_ids or ())
+                legacy_location_ids = set(citations.mapping()) - typed_result_ids - {
+                    action.citation_id for action in action_links
+                }
+                if legacy_location_ids:
+                    rendered = _attach_location_action_urls(
                         rendered,
                         citations.mapping(),
+                        available_citation_ids=legacy_location_ids,
                     )
-                rendered = _attach_location_action_urls(
-                    rendered,
-                    citations.mapping(),
-                    include_source_limits=False,
-                )
-                rendered = _attach_source_limits(
-                    rendered,
-                    citations.mapping(),
-                    language,
-                )
             text = attach_temporal_provenance(
                 rendered,
                 citations.mapping(),
@@ -2027,6 +2409,7 @@ class PydanticRuntimeAdapter:
             iterations=iterations,
             status=result_status,
             messages=_openai_messages(new_messages),
+            action_links=action_links,
             usage={
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
@@ -2051,18 +2434,17 @@ class PydanticRuntimeAdapter:
         )
 
 
-class _PydanticConversation:
-    def __init__(self, runtime: PydanticRuntimeAdapter) -> None:
+class PydanticAgentSession:
+    def __init__(
+        self,
+        runtime: PydanticRuntimeAdapter,
+        *,
+        conversation_id: str | None = None,
+    ) -> None:
         self.runtime = runtime
-        self._history: list[ModelMessage] = []
-        self._user_turns: tuple[str, ...] = ()
-        self._pending: DeferredToolRequests | None = None
-        self._resident_facts: dict[str, ResidentFact] = {}
-        self._response_priority_citation_ids: set[str] = set()
-        self._citations = CitationRegistry()
-        self._delivered_notify_titles: frozenset = frozenset()
-        self._safety_language: str | None = None
-        self.continuity: ContinuityRecord | None = None
+        self.state = ConversationState(
+            **({"conversation_id": conversation_id} if conversation_id else {})
+        )
         self._memory_usage: dict = {}
         self._memory_spend = SpendGuard(config.HEYNYC_SPEND_CAP)
 
@@ -2071,47 +2453,30 @@ class _PydanticConversation:
         cls,
         runtime: PydanticRuntimeAdapter,
         state: bytes,
-    ) -> "_PydanticConversation":
-        payload = json.loads(state)
+        *,
+        conversation_id: str | None = None,
+    ) -> "PydanticAgentSession":
+        payload = _migrate_conversation_state(
+            json.loads(state),
+            conversation_id=conversation_id,
+        )
         conversation = cls(runtime)
-        conversation._history = ModelMessagesTypeAdapter.validate_python(
-            payload["messages"]
-        )
-        conversation._user_turns = tuple(payload["user_turns"])
-        conversation._resident_facts = _RESIDENT_FACTS.validate_python(
-            payload.get("resident_facts", {})
-        )
-        conversation._response_priority_citation_ids = set(
-            payload.get("response_priority_citation_ids", ())
-        )
-        if continuity := payload.get("continuity"):
-            conversation.continuity = ContinuityRecord.model_validate(continuity)
-        if citations := payload.get("citations") or payload.get("pending_citations"):
-            conversation._citations = CitationRegistry.from_state(citations)
-        conversation._delivered_notify_titles = frozenset(
-            payload.get("delivered_notify_titles", ())
-        )
-        conversation._safety_language = _validated_safety_language(
-            payload.get("safety_language")
-        )
-        if payload["pending"] is not None:
-            conversation._pending = _DEFERRED_REQUESTS.validate_python(
-                payload["pending"]
-            )
+        conversation.state = ConversationState.model_validate(payload)
+        if conversation.state.pending is not None:
             conversation._validate_pending_history()
         return conversation
 
     def _validate_pending_history(self) -> None:
-        if self._pending is None:
+        if self.state.pending is None:
             return
         history_calls = {
             part.tool_call_id: (part.tool_name, part.args_as_dict())
-            for message in self._history
+            for message in self.state.messages
             if isinstance(message, ModelResponse)
             for part in message.parts
             if isinstance(part, ToolCallPart)
         }
-        for call in (*self._pending.approvals, *self._pending.calls):
+        for call in (*self.state.pending.approvals, *self.state.pending.calls):
             expected = (call.tool_name, call.args_as_dict())
             if history_calls.get(call.tool_call_id) != expected:
                 raise ValueError(
@@ -2120,60 +2485,47 @@ class _PydanticConversation:
 
     @property
     def pending_approvals(self) -> dict[str, dict]:
-        if self._pending is None:
+        if self.state.pending is None:
             return {}
         return {
             call.tool_call_id: {
                 "tool_name": call.tool_name,
                 "args": call.args_as_dict(),
             }
-            for call in self._pending.approvals
+            for call in self.state.pending.approvals
         }
 
     @property
     def pending_calls(self) -> dict[str, dict]:
-        if self._pending is None:
+        if self.state.pending is None:
             return {}
         return {
             call.tool_call_id: {
                 "tool_name": call.tool_name,
                 "args": call.args_as_dict(),
             }
-            for call in self._pending.calls
+            for call in self.state.pending.calls
         }
 
     def dump_state(self) -> bytes:
         """Serialize native state; the caller must use authenticated encrypted storage."""
-        return json.dumps(
-            {
-                "messages": ModelMessagesTypeAdapter.dump_python(
-                    self._history,
-                    mode="json",
-                ),
-                "user_turns": self._user_turns,
-                "resident_facts": _RESIDENT_FACTS.dump_python(
-                    self._resident_facts,
-                    mode="json",
-                ),
-                "response_priority_citation_ids": sorted(
-                    self._response_priority_citation_ids
-                ),
-                "continuity": (
-                    self.continuity.model_dump(mode="json")
-                    if self.continuity is not None
-                    else None
-                ),
-                "pending": (
-                    _DEFERRED_REQUESTS.dump_python(self._pending, mode="json")
-                    if self._pending is not None
-                    else None
-                ),
-                "citations": self._citations.dump_state(),
-                "delivered_notify_titles": sorted(self._delivered_notify_titles),
-                "safety_language": self._safety_language,
-            },
-            separators=(",", ":"),
-        ).encode()
+        return self.state.model_dump_json().encode()
+
+    def _remember_typed_result_citations(
+        self,
+        messages: Sequence[ModelMessage],
+    ) -> None:
+        self.state.typed_result_citation_ids.update(
+            _typed_result_citation_ids(
+                messages,
+                set(self.state.citations.mapping()),
+                {
+                    name
+                    for name, tool in self.runtime.tools.items()
+                    if tool.return_type is not None
+                },
+            )
+        )
 
     async def _prepare_model_request(
         self,
@@ -2284,20 +2636,20 @@ class _PydanticConversation:
                 if capability.visible_history is not None
                 else _resident_history(messages[:current_index])
             ),
-            self.continuity,
+            self.state.continuity,
             budget=self.runtime._context_budget,
             measure=measure_complete,
             compact=compact,
         )
         capability.visible_history = plan.history
-        self.continuity = plan.continuity
+        self.state.continuity = plan.continuity
         if plan.compacted or not self._memory_usage:
             self._memory_usage.update({
                 "memory_compactions": int(plan.compacted),
                 "memory_pre_tokens": plan.pre_compaction_tokens,
                 "memory_post_tokens": plan.post_compaction_tokens,
             })
-        if self.continuity is not None:
+        if self.state.continuity is not None:
             request = next(
                 (
                     message
@@ -2310,7 +2662,7 @@ class _PydanticConversation:
                 None,
             )
             if request is not None:
-                reminder = continuity_reminder(self.continuity)
+                reminder = continuity_reminder(self.state.continuity)
                 if reminder not in (request.instructions or ""):
                     request.instructions = "\n\n".join(
                         part for part in (request.instructions, reminder) if part
@@ -2343,11 +2695,11 @@ class _PydanticConversation:
         event_sink: Callable[[events.Event], None] | None = None,
         **_: Any,
     ) -> AgentResult:
-        if self._pending is not None:
+        if self.state.pending is not None:
             raise ValueError("Cannot start a new turn while approval is pending")
         if resident_facts:
-            self._resident_facts.update(resident_facts)
-        self._response_priority_citation_ids.clear()
+            self.state.resident_facts.update(resident_facts)
+        self.state.response_priority_citation_ids.clear()
         self._memory_usage.clear()
         memory_capability = (
             _BoundedMemoryCapability(self)
@@ -2363,32 +2715,39 @@ class _PydanticConversation:
         timing_capability = _ModelTimingCapability(self.runtime.model)
         try:
             try:
-                result, new_messages, self._pending = await self.runtime._run(
+                result, new_messages, self.state.pending, current_location = await self.runtime._run(
                     user_message,
-                    message_history=_conversation_history(self._history),
-                    prior_user_turns=self._user_turns,
-                    prior_language=self._safety_language,
+                    message_history=_conversation_history(self.state.messages),
+                    prior_user_turns=self.state.user_turns,
+                    prior_language=self.state.safety_language,
                     reminders=reminders,
                     output_dir=output_dir,
                     drafts=drafts,
-                    resident_facts=self._resident_facts,
-                    delivered_notify_titles=self._delivered_notify_titles,
-                    citations=self._citations,
+                    resident_facts=self.state.resident_facts,
+                    delivered_notify_titles=self.state.delivered_notify_titles,
+                    citations=self.state.citations,
                     memory_capability=memory_capability,
                     timing_capability=timing_capability,
                     event_sink=event_sink,
                     response_priority_citation_ids=(
-                        self._response_priority_citation_ids
+                        self.state.response_priority_citation_ids
                     ),
+                    conversation_id=self.state.conversation_id,
+                    current_location=self.state.current_location,
+                    action_links=self.state.action_links,
+                    typed_result_citation_ids=self.state.typed_result_citation_ids,
                 )
             except PydanticRunFailure as exc:
-                self._safety_language = _validated_safety_language(
+                self.state.safety_language = _validated_safety_language(
                     exc.partial_result.diagnostics.get("safety_language")
                 )
                 raise
-            self._safety_language = _validated_safety_language(
+            self.state.safety_language = _validated_safety_language(
                 result.diagnostics.get("safety_language")
             )
+            self.state.current_location = current_location
+            self.state.action_links = result.action_links
+            self._remember_typed_result_citations(new_messages)
             merge_memory_usage(
                 result.usage,
                 self._memory_usage,
@@ -2396,11 +2755,11 @@ class _PydanticConversation:
             )
         finally:
             self._memory_usage.clear()
-        self._history.extend(new_messages)
-        self._user_turns = (*self._user_turns, user_message)
-        self._delivered_notify_titles |= _notify_titles_from_result(result)
-        if self._pending is None:
-            self._response_priority_citation_ids.clear()
+        self.state.messages.extend(new_messages)
+        self.state.user_turns = (*self.state.user_turns, user_message)
+        self.state.delivered_notify_titles |= _notify_titles_from_result(result)
+        if self.state.pending is None:
+            self.state.response_priority_citation_ids.clear()
         return result
 
     async def resume_approvals(
@@ -2411,7 +2770,7 @@ class _PydanticConversation:
         drafts: Any = None,
         event_sink: Callable[[events.Event], None] | None = None,
     ) -> AgentResult:
-        if self._pending is None:
+        if self.state.pending is None:
             raise ValueError("No deferred approval is pending")
         self._validate_pending_history()
         expected = set(self.pending_approvals)
@@ -2419,22 +2778,25 @@ class _PydanticConversation:
             raise ValueError(
                 f"Approval IDs must match pending calls: {sorted(expected)}"
             )
-        query = self._user_turns[-1] if self._user_turns else ""
-        citations = self._citations
+        query = self.state.user_turns[-1] if self.state.user_turns else ""
+        citations = self.state.citations
         prior_citation_ids = set(citations.mapping())
         deps = ToolContext(
             citations=citations,
             registry=self.runtime.registry,
             query=query,
-            user_history="\n".join(self._user_turns),
-            user_turns=self._user_turns,
+            user_history="\n".join(self.state.user_turns),
+            user_turns=self.state.user_turns,
+            current_location=self.state.current_location,
             toolbox=self.runtime.tools,
+            embedder=self.runtime._embedder,
+            retrieval_cache_path=self.runtime._retrieval_cache_path,
             output_dir=output_dir,
             drafts=drafts,
-            delivered_notify_titles=self._delivered_notify_titles,
-            resident_facts=self._resident_facts,
-            response_priority_citation_ids=self._response_priority_citation_ids,
-            language=self._safety_language,
+            delivered_notify_titles=self.state.delivered_notify_titles,
+            resident_facts=self.state.resident_facts,
+            response_priority_citation_ids=self.state.response_priority_citation_ids,
+            language=self.state.safety_language,
         )
         started = time.perf_counter()
         message_id = f"pydantic-{time.monotonic_ns()}"
@@ -2449,7 +2811,8 @@ class _PydanticConversation:
             with capture_run_messages() as captured:
                 async with asyncio.timeout(self.runtime._run_timeout_s):
                     native = await self.runtime._agent.run(
-                        message_history=self._history,
+                        conversation_id=self.state.conversation_id,
+                        message_history=self.state.messages,
                         deferred_tool_results=DeferredToolResults(approvals=approvals),
                         deps=deps,
                         capabilities=[timing_capability],
@@ -2477,7 +2840,7 @@ class _PydanticConversation:
                         ),
                     )
         except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
-            new_messages = captured[len(self._history):]
+            new_messages = captured[len(self.state.messages):]
             result = self.runtime._failed_result(
                 new_messages,
                 citations=citations,
@@ -2491,11 +2854,11 @@ class _PydanticConversation:
                     if isinstance(exc, UsageLimitExceeded)
                     else "error"
                 ),
-                language=self._safety_language,
+                language=self.state.safety_language,
                 citation_ids=set(citations.mapping()) - prior_citation_ids,
             )
-            if self._safety_language is not None:
-                result.diagnostics["safety_language"] = self._safety_language
+            if self.state.safety_language is not None:
+                result.diagnostics["safety_language"] = self.state.safety_language
             if isinstance(exc, TimeoutError):
                 result.diagnostics["run_timeout_s"] = self.runtime._run_timeout_s
                 _finish_events(event_sink, message_id, result)
@@ -2504,9 +2867,10 @@ class _PydanticConversation:
                     result,
                     result.diagnostics,
                 ) from exc
-            self._history.extend(new_messages)
-            self._pending = None
-            self._response_priority_citation_ids.clear()
+            self.state.messages.extend(new_messages)
+            self._remember_typed_result_citations(new_messages)
+            self.state.pending = None
+            self.state.response_priority_citation_ids.clear()
             if isinstance(exc, UnexpectedModelBehavior):
                 _finish_events(event_sink, message_id, result)
                 raise PydanticRunFailure(
@@ -2522,9 +2886,11 @@ class _PydanticConversation:
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
-            language=self._safety_language,
+            language=self.state.safety_language,
+            prior_action_links=self.state.action_links,
+            prior_typed_result_citation_ids=self.state.typed_result_citation_ids,
         )
-        await self.runtime._apply_output_guard(result, deps, self._safety_language)
+        await self.runtime._apply_output_guard(result, deps, self.state.safety_language)
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
@@ -2539,17 +2905,21 @@ class _PydanticConversation:
             "semantic_verifier_runs": deps.semantic_verifier_runs,
             "validation_rejections": deps.validation_rejections,
             **(
-                {"safety_language": self._safety_language}
-                if self._safety_language is not None
+                {"safety_language": self.state.safety_language}
+                if self.state.safety_language is not None
                 else {}
             ),
         }
         _finish_events(event_sink, message_id, result)
-        self._history.extend(native.new_messages())
-        self._delivered_notify_titles |= _notify_titles_from_result(result)
-        self._pending = (
+        new_messages = native.new_messages()
+        self.state.messages.extend(new_messages)
+        self._remember_typed_result_citations(new_messages)
+        self.state.current_location = deps.current_location
+        self.state.action_links = result.action_links
+        self.state.delivered_notify_titles |= _notify_titles_from_result(result)
+        self.state.pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
-        if self._pending is None:
-            self._response_priority_citation_ids.clear()
+        if self.state.pending is None:
+            self.state.response_priority_citation_ids.clear()
         return result

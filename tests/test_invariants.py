@@ -7,7 +7,6 @@ from heynyc.eval.invariants import (
     check_metamorphic,
     check_metamorphic_programs,
     inv_abstain_or_redirect,
-    inv_currentness,
     inv_faithfulness,
     inv_forbid_compliance,
     inv_grounding,
@@ -518,54 +517,6 @@ def test_forbid_compliance_passes_clean_refusal_classified_answered():
         citations={}, outcome="answered",
     )
     assert inv_forbid_compliance(refused, case).passed
-
-
-def test_currentness_invariant_rejects_explicit_today_claim():
-    case = _case(invariants={"must_not_claim_current": True})
-    claims = [
-        "Yes, it is current today.",
-        "The dataset is current today.",
-        "The rule is current.",
-        "This update proves the limit is current.",
-        "The income limit is up to date.",
-        "The rule is valid today.",
-        "The latest update confirms the rule.",
-        "The dataset was updated recently and reflects the current rule.",
-        "The update date confirms the rule is currently in effect.",
-    ]
-    caveated = Trace(
-        case_id="c", query="is this current?", spans=[],
-        final_text=("The dataset is as of 2025-11-07, which does not prove the rule is current "
-                    "today. Confirm on the official program page."),
-        citations={}, outcome="answered",
-    )
-
-    for text in claims:
-        claimed = Trace(
-            case_id="c", query="is this current?", spans=[],
-            final_text=text, citations={}, outcome="answered",
-        )
-        assert not inv_currentness(claimed, case).passed
-    for text in (
-        "The policy does not prove current validity. Confirm on the official program page.",
-        "As of 2025-11-07, this does not prove current validity. See an official unrelated source.",
-    ):
-        incomplete = Trace(
-            case_id="c", query="is this current?", spans=[],
-            final_text=text, citations={}, outcome="answered",
-        )
-        assert not inv_currentness(incomplete, case).passed
-    for suffix in (
-        "The dataset reflects the current rule.",
-        "The information is valid.",
-        "The date confirms the rule is in effect.",
-    ):
-        contradictory = Trace(
-            case_id="c", query="is this current?", spans=[],
-            final_text=f"{caveated.final_text} {suffix}", citations={}, outcome="answered",
-        )
-        assert not inv_currentness(contradictory, case).passed
-    assert inv_currentness(caveated, case).passed
 
 
 def test_build_invariant_checks_only_runs_requested():

@@ -79,7 +79,14 @@ def _build_geocode_fn(provider: str) -> GeocodeFn:
                 user_agent=config.HEYNYC_USER_AGENT, adapter_factory=AioHTTPAdapter, timeout=10
             ) as locator:
                 return await locator.geocode(
-                    text, country_codes="us", viewbox=[sw, ne], bounded=True, exactly_one=True
+                    text,
+                    country_codes="us",
+                    viewbox=[sw, ne],
+                    bounded=True,
+                    exactly_one=True,
+                    addressdetails=True,
+                    extratags=True,
+                    namedetails=True,
                 )
         if provider == "mapbox":
             from geopy.geocoders import MapBox
@@ -163,5 +170,8 @@ async def forgiving_geocode(text: str, *, geocode_fn: Optional[GeocodeFn] = None
             label=label,
             confidence=_confidence(provider, raw),
             match_type=provider,
+            resident_query=text,
+            provider_id=str(raw.get("place_id") or raw.get("id") or ""),
+            provider_payload=raw,
         )
     return None

@@ -7,6 +7,7 @@ unverified leads rather than silently discarding them.
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import date
 from typing import Awaitable, Callable, Optional
 from urllib.parse import urlparse
@@ -67,23 +68,61 @@ async def _tavily(query: str, allowed_domains: list[str], **extra) -> list[dict]
             results = response.json().get("results", [])
     except (httpx.TimeoutException, httpx.TransportError):
         return []
-    return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")} for r in results]
+    normalized = []
+    for result in results:
+        row = {
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "snippet": result.get("content", ""),
+            "search_provider": "Tavily Search API",
+        }
+        score = result.get("score")
+        if (
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and math.isfinite(score)
+        ):
+            row["score"] = float(score)
+        published_date = result.get("published_date")
+        if isinstance(published_date, str) and published_date.strip():
+            row["published_date"] = published_date.strip()
+        normalized.append(row)
+    return normalized
 
 
 async def _duckduckgo(
     query: str,
     allowed_domains: list[str],
     count: int = 5,
+    topic: Optional[str] = None,
 ) -> list[dict]:
     """Local search fallback for a Tavily plan-limit response."""
     from ddgs import DDGS
 
+    if topic == "news":
+        try:
+            results = await asyncio.to_thread(DDGS().news, query, max_results=count)
+        except Exception:
+            pass
+        else:
+            return [
+                {
+                    "title": result.get("title", ""),
+                    "url": result.get("url", ""),
+                    "snippet": result.get("body", ""),
+                    "search_provider": "DuckDuckGo News",
+                    **(
+                        {"published_date": result["date"]}
+                        if result.get("date")
+                        else {}
+                    ),
+                    **({"publisher": result["source"]} if result.get("source") else {}),
+                }
+                for result in results
+                if result.get("url")
+            ][:count]
     try:
-        results = await asyncio.to_thread(
-            DDGS().text,
-            query,
-            max_results=count,
-        )
+        results = await asyncio.to_thread(DDGS().text, query, max_results=count)
     except Exception:
         return []
     return [
@@ -105,12 +144,15 @@ async def _search_with_fallback(
     published_before: Optional[str] = None,
     include_domains: Optional[list[str]] = None,
     count: int = 5,
+    topic: Optional[str] = None,
     **tavily_options,
 ) -> list[dict]:
     try:
         options = dict(tavily_options)
         if include_domains:
             options["include_domains"] = include_domains
+        if topic:
+            options["topic"] = topic
         return await _tavily(query, allowed_domains, max_results=count, **options)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 432:
@@ -121,11 +163,17 @@ async def _search_with_fallback(
         if include_domains:
             sites = " OR ".join(f"site:{domain}" for domain in include_domains)
             fallback_query = f"{query} ({sites})"
-        return await _duckduckgo(
+        results = await _duckduckgo(
             fallback_query,
             allowed_domains,
             count=count,
+            topic=topic,
         )
+        for result in results:
+            result.setdefault("search_provider", "DuckDuckGo")
+            if topic in {"news", "finance"} and result["search_provider"] == "DuckDuckGo":
+                result["degraded_from_topic"] = topic
+        return results
 
 
 async def tavily_search(
@@ -135,6 +183,7 @@ async def tavily_search(
     published_before: Optional[str] = None,
     count: int = 5,
     include_domains: Optional[list[str]] = None,
+    topic: Optional[str] = None,
 ) -> list[dict]:
     """Tavily Basic search with optional publication-date bounds."""
     options = {}
@@ -149,6 +198,7 @@ async def tavily_search(
         published_before=published_before,
         include_domains=include_domains,
         count=count,
+        topic=topic,
         **options,
     )
 
@@ -211,6 +261,9 @@ def _make_handler(
         count = max(1, min(count, 10))
         published_after = args.get("published_after")
         published_before = args.get("published_before")
+        topic = args.get("topic")
+        if topic not in {None, "general", "news", "finance"}:
+            return "topic must be general, news, or finance."
         try:
             after = date.fromisoformat(published_after) if published_after else None
             before = date.fromisoformat(published_before) if published_before else None
@@ -223,6 +276,8 @@ def _make_handler(
             search_options["published_after"] = after.isoformat()
         if before:
             search_options["published_before"] = before.isoformat()
+        if topic:
+            search_options["topic"] = topic
         results = await search(query, domains, **search_options)
         results = [r for r in results if r.get("url")]
         if prefer and not any(_prefers(r["url"], prefer) for r in results):
@@ -243,7 +298,27 @@ def _make_handler(
             return abstain_msg
         # Tag with trust tier, then rank: preferred domains first, then authoritative→…→community.
         tagged = [(r, _tier_of(r["url"], source_tiers, news_tier)) for r in results]
-        tagged.sort(key=lambda rt: (_prefers(rt[0]["url"], prefer), TIER_RANK.get(rt[1], 0)), reverse=True)
+        tagged.sort(
+            key=lambda rt: (
+                _prefers(rt[0]["url"], prefer),
+                TIER_RANK.get(rt[1], 0),
+                rt[0].get("score", -1.0),
+            ),
+            reverse=True,
+        )
+
+        providers = sorted({r["search_provider"] for r, _tier in tagged if r.get("search_provider")})
+        degraded_topics = sorted({
+            r["degraded_from_topic"] for r, _tier in tagged if r.get("degraded_from_topic")
+        })
+        search_context = []
+        if providers:
+            search_context.append(f"Search provider: {', '.join(providers)}")
+        if degraded_topics:
+            search_context.append(
+                f"Requested {', '.join(degraded_topics)} search was unavailable; this is a "
+                "general fallback without provider publication-date guarantees."
+            )
 
         blocks = []
         for r, tier in tagged:
@@ -262,8 +337,48 @@ def _make_handler(
                     "evidence_grade": "search_excerpt",
                     "source_tier": tier,
                 }
+            elif (
+                tier == "unverified"
+                and not warning
+                and ctx.allow_unverified_search_excerpts
+            ):
+                provenance = {
+                    "evidence_grade": "search_excerpt",
+                    "source_tier": "unverified",
+                }
             elif tier == "unverified":
                 provenance["source_tier"] = "unverified"
+            search_metadata = {
+                **(
+                    {"provider": r["search_provider"]}
+                    if r.get("search_provider")
+                    else {}
+                ),
+                **({"score": r["score"]} if "score" in r else {}),
+                **(
+                    {"published_date": r["published_date"]}
+                    if r.get("published_date")
+                    else {}
+                ),
+                **({"publisher": r["publisher"]} if r.get("publisher") else {}),
+                **(
+                    {"degraded_from_topic": r["degraded_from_topic"]}
+                    if r.get("degraded_from_topic")
+                    else {}
+                ),
+            }
+            if search_metadata:
+                provenance["search"] = search_metadata
+                metadata = []
+                if r.get("published_date"):
+                    metadata.append(f"Published: {r['published_date']}")
+                if r.get("publisher"):
+                    metadata.append(f"Publisher: {r['publisher']}")
+                if "score" in r:
+                    metadata.append(
+                        f"Provider relevance score: {r['score']} (not truth confidence)"
+                    )
+                snippet = "\n".join([*metadata, snippet])
             cite = ctx.citations.register(
                 r["url"],
                 snippet=snippet,
@@ -275,7 +390,7 @@ def _make_handler(
             blocks.append(
                 f"[{cite}] ({label}) {r.get('title','')} ({r['url']})\n{snippet}"
             )
-        return "\n\n".join(blocks)
+        return "\n\n".join([*search_context, *blocks])
 
     return _handler
 
@@ -337,6 +452,18 @@ def web_search_tools(
             "description": "Maximum number of results to return, from 1 to 10.",
         },
     }
+    topic_param = {
+        "topic": {
+            "type": "string",
+            "enum": ["general", "news", "finance"],
+            "description": (
+                "Optional Tavily search category. Use `news` for recent reporting, sports, "
+                "politics, or major current events and to receive provider publication dates. "
+                "Use `finance` for financial-market reporting. Omit for the broad `general` "
+                "default, including current official pages."
+            ),
+        },
+    }
     return [
         Tool(
             name="web_search",
@@ -345,8 +472,10 @@ def web_search_tools(
                 "an ambiguous reference. This tool is always available. Use a short noun-phrase "
                 "query, optionally with NYC or a date, rather than the resident's whole sentence. "
                 "Results rank known sources by trust but retain unlisted sources. Authoritative "
-                "excerpts and curated editorial/news excerpts support only the claims they state. Use "
-                "`web_fetch` when the result page contains the needed detail."
+                "excerpts and curated editorial/news excerpts support only the claims they state. "
+                "For an explicitly low-stakes capability, an unverified excerpt may support only "
+                "the exact claim it states and must keep its source warning. Use `web_fetch` when "
+                "the result page contains the needed detail."
             ),
             parameters={
                 "type": "object",
@@ -362,6 +491,7 @@ def web_search_tools(
                     },
                     **prefer_param,
                     **publication_params,
+                    **topic_param,
                     **count_param,
                 },
                 "required": ["query"],

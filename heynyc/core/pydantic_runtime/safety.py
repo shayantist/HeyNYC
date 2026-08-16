@@ -9,6 +9,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 
+from heynyc.core.agent import _SCOPE_SYSTEM_PROMPT, _ScopeDecision
+from heynyc.core.registry import Registry
+
 from .projection import _complete_cost
 
 
@@ -32,6 +35,78 @@ class CrisisScreenRun:
     requests: int
     cost_usd: float | None
     latency_ms: float
+
+
+@dataclass(frozen=True)
+class ScopeScreenRun:
+    event_turn: str | None
+    modules: tuple[str, ...]
+    situations: tuple[str, ...]
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    requests: int
+    cost_usd: float | None
+    latency_ms: float
+
+
+def build_scope_screen(
+    model: Any,
+    *,
+    model_name: str,
+    registry: Registry | None = None,
+) -> Callable[[tuple[str, ...]], Awaitable[ScopeScreenRun]]:
+    registry = registry or Registry([])
+    module_lines = "\n".join(
+        f"{module.name}: {' '.join(str(module.description or '').split())[:140]}"
+        for module in registry.modules
+        if module.parent is None
+    )
+    situation_lines = "\n".join(
+        f"{hint.name}: {' '.join(hint.definition.split())}"
+        for _module, hint in registry.situation_hints().values()
+    )
+    situations = (
+        "\n\nAlso return situations chosen only from this list:\n" + situation_lines
+        if situation_lines else ""
+    )
+    checklist = (
+        "\n\nAlso return modules chosen only from this list. Pick every module whose "
+        "sources could help:\n" + module_lines + situations
+        if module_lines else ""
+    )
+    agent = Agent(
+        model,
+        output_type=_ScopeDecision,
+        system_prompt=_SCOPE_SYSTEM_PROMPT + checklist,
+    )
+    known_modules = {
+        module.name for module in registry.modules if module.parent is None
+    }
+    known_situations = set(registry.situation_hints())
+
+    async def screen(user_turns: tuple[str, ...]) -> ScopeScreenRun:
+        started = time.perf_counter()
+        result = await agent.run(json.dumps({"resident_messages": user_turns}, ensure_ascii=False))
+        usage = result.usage
+        cost, _ = _complete_cost(model_name, result.new_messages(), usage)
+        return ScopeScreenRun(
+            event_turn=result.output.event_turn,
+            modules=tuple(name for name in result.output.modules if name in known_modules),
+            situations=tuple(
+                name for name in result.output.situations if name in known_situations
+            ),
+            model=model_name,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_input_tokens=usage.cache_read_tokens,
+            requests=usage.requests,
+            cost_usd=cost,
+            latency_ms=(time.perf_counter() - started) * 1000,
+        )
+
+    return screen
 
 
 def build_crisis_screen(

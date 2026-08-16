@@ -48,13 +48,13 @@ def test_event_shortlist_preserves_each_requested_date() -> None:
 
 
 async def test_event_sources_do_not_truncate_before_shortlisting(monkeypatch) -> None:
-    limits = []
+    queries = []
 
     async def no_ticketmaster(**kwargs):
-        return []
+        return event_tools.TicketmasterSearchResult(status="complete")
 
     async def capture_query(*args, **kwargs):
-        limits.append(kwargs.get("limit"))
+        queries.append((kwargs.get("limit"), kwargs.get("offset"), kwargs.get("order")))
         return []
 
     monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
@@ -70,4 +70,7 @@ async def test_event_sources_do_not_truncate_before_shortlisting(monkeypatch) ->
         {"window_start": "2099-08-15", "window_end": "2099-08-16"}, ctx,
     )
 
-    assert limits == [None, None]
+    assert queries == [
+        (1000, 0, "startdate, :id"),
+        (1000, 0, "start_date_time, :id"),
+    ]

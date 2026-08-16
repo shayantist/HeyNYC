@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 from heynyc.core.agent import AgentResult
@@ -98,6 +99,30 @@ def test_trace_write_roundtrip(tmp_path: Path):
     assert data["case_id"] == "c"
     assert data["outcome"] == "unclassified"
     assert isinstance(data["spans"], list)
+
+
+def test_trace_write_serializes_typed_tool_values(tmp_path: Path):
+    cr = _cr(
+        text="ok",
+        messages=[
+            {
+                "role": "tool",
+                "tool_call_id": "typed",
+                "content": {"valid_as_of": date(2026, 7, 4)},
+            }
+        ],
+        turn_results=[
+            AgentResult(
+                text="ok",
+                citations={},
+                messages=[{"valid_as_of": date(2026, 7, 4)}],
+            )
+        ],
+    )
+
+    data = json.loads(build_trace(cr).write(tmp_path).read_text())
+
+    assert data["turns"][0]["messages"][0]["valid_as_of"] == "2026-07-04"
 
 
 def test_trace_preserves_expected_response_language():

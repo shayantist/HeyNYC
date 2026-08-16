@@ -531,8 +531,14 @@ async def test_screen_access_nyc_eligibility_uses_goal_to_show_three_grounded_ma
     ranked = [rows[0], rows[2], rows[1]]
     seen = {}
 
-    def retrieve(catalog, query, limit, embedder):
-        seen.update(catalog=catalog, query=query, limit=limit, embedder=embedder)
+    def retrieve(catalog, query, limit, embedder, cache_path=None):
+        seen.update(
+            catalog=catalog,
+            query=query,
+            limit=limit,
+            embedder=embedder,
+            cache_path=cache_path,
+        )
         return ranked
 
     monkeypatch.setattr(btools, "_retrieve", retrieve)

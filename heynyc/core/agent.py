@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import AsyncIterator, Awaitable, Callable, Literal, NamedTuple, Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from . import config, events
 from .citations import CitationRegistry, used_citations, used_discovery_citations
@@ -2314,55 +2314,24 @@ def _block_has_map_for_coordinates(
     )
 
 
-_LOCATION_BLOCK_SPLIT_RE = re.compile(
-    r"(?m)\n\s*\n|(?=^\s*(?:[-*•]\s+|\d+[.)]\s+))"
-)
-
-
 def _attach_location_action_urls(
     text: str,
     citations: dict[str, dict],
     available_citation_ids: Optional[set[str]] = None,
-    *,
-    include_source_limits: bool = True,
 ) -> str:
     """Keep a usable map beside every cited NYC location when the model drops it."""
     answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
     available_ids = set(citations) if available_citation_ids is None else available_citation_ids
-    limitations: list[str] = []
     for cid in dict.fromkeys(_CITE_MARKER_RE.findall(answer_body)):
         citation = citations.get(cid, {})
         if cid not in available_ids or citation.get("kind") != "DATA":
             continue
-        limitation = str(
-            (citation.get("provenance") or {}).get("derivation", {}).get("limitations") or ""
-        ).strip()
-        if include_source_limits and limitation and limitation not in limitations:
-            limitations.append(limitation)
         marker = f"{{cite:{cid}}}"
-        blocks = _LOCATION_BLOCK_SPLIT_RE.split(answer_body)
-        if str(citation.get("title") or "").casefold() == "nyc emergency management cool options":
-            for block in blocks:
-                if marker not in block:
-                    continue
-                updated = re.sub(
-                    r"(?<!scheduled )\bopen (now|today)\b",
-                    r"scheduled open \1",
-                    block,
-                    flags=re.I,
-                )
-                text = text.replace(block, updated, 1)
-                answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
-                blocks = _LOCATION_BLOCK_SPLIT_RE.split(answer_body)
-                break
         coordinates = _citation_coordinates(citation)
         if coordinates is None:
             continue
         url = maps_link(*coordinates)
-        if any(
-            marker in block and _block_has_map_for_coordinates(block, coordinates)
-            for block in blocks
-        ):
+        if _block_has_map_for_coordinates(answer_body, coordinates):
             continue
         text = re.sub(
             rf"{re.escape(marker)}(?:[ \t]+{{cite:S\d+}})*(?:\n  Directions: https?://\S+)*",
@@ -2371,28 +2340,6 @@ def _attach_location_action_urls(
             count=1,
         )
         answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
-    low_body = answer_body.casefold()
-    plain_body = re.sub(r"[*_~`]", "", low_body)
-    missing_limits = [
-        limitation for limitation in limitations
-        if limitation not in answer_body
-        and not (
-            "not a live guarantee" in limitation.casefold()
-            and (
-                "not a live guarantee" in plain_body
-                or re.search(
-                    r"\b(?:doesn['’]t|does not|not)\s+guarantee\b.{0,100}\b(?:work|working|available)\b",
-                    plain_body,
-                )
-            )
-        )
-    ]
-    if missing_limits:
-        note = "\n".join(f"Source limit: {limitation}" for limitation in missing_limits)
-        parts = re.split(r"(?im)(^\s*(?:sources?|fuentes):)", text, maxsplit=1)
-        text = f"{parts[0].rstrip()}\n\n{note}"
-        if len(parts) > 1:
-            text += f"\n\n{parts[1]}{parts[2]}"
     return text
 
 
@@ -2429,34 +2376,11 @@ def _broad_event_context_feedback(
     }
     if unnamed_notify:
         missing.append("a broadly applicable current Notify NYC warning")
-    notify_ids = {
-        cid for cid, citation in citations.items()
-        if _is_notify_url(str(citation.get("url") or ""))
-    }
-    answer_blocks = re.split(
-        r"(?m)\n\s*\n|(?=^\s*[-*•]\s+)", answer_body,
-    )
-    missing_action_ids = {
-        cid for cid in cited_ids - notify_ids
-        if cid in citations and cid in available_ids
-        and not any(
-            f"{{cite:{cid}}}" in block
-            and _action_url(citations[cid]) in _urls_in(block)
-            for block in answer_blocks
-        )
-    }
-    if missing_action_ids:
-        missing.append("a direct URL beside each cited event option")
     if not missing:
         return None
     notify_refs = "; ".join(
         f"{cid}: {_notify_subject(citation)} - {citation.get('snippet', '')}"
         for cid, citation in sorted(unnamed_notify.items())
-    )
-    action_refs = "; ".join(
-        f"{cid}: {citations[cid].get('title', '')} - "
-        f"{_action_url(citations[cid])}"
-        for cid in sorted(missing_action_ids)
     )
     return (
         "<system-reminder>\n"
@@ -2466,9 +2390,8 @@ def _broad_event_context_feedback(
         "applies today but not to the requested weekend, label it as a separate today-only heads-up "
         "and do not present it as a weekend forecast.\n"
         f"Broad Notify NYC evidence: {notify_refs or 'none'}\n"
-        f"Direct event URLs to place beside their options: {action_refs or 'none'}\n"
-        "For each recommended event, include its direct URL and any known date, time, place, and "
-        "ticket or reservation step. Do not invent a missing detail.\n"
+        "For each recommended event, include any known date, time, place, and ticket or "
+        "reservation step. Do not invent a missing detail.\n"
         "</system-reminder>"
     )
 
@@ -2517,6 +2440,25 @@ class AgentResult:
     messages: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=dict)  # {input_tokens, output_tokens, latency_ms} per turn
     diagnostics: dict = field(default_factory=dict)
+    action_links: tuple[ActionLink, ...] = ()
+
+
+class ActionLink(BaseModel):
+    """A model-independent action URL associated with one cited tool record."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    citation_id: str
+    url: str
+    label: Literal["Directions"] = "Directions"
+
+    @field_validator("url")
+    @classmethod
+    def _https_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("Action link must be an absolute HTTPS URL")
+        return value
 
 
 class Agent:
@@ -3189,6 +3131,10 @@ class Agent:
         event_preparation_turn = event_turn == "preparation"
         event_discovery_turn = event_turn == "discovery"
         ctx.event_turn = event_turn
+        ctx.current_turn_modules = frozenset(scope_modules)
+        ctx.allow_unverified_search_excerpts = (
+            self.registry.allows_unverified_search_excerpts(set(scope_modules))
+        )
         # A checked high-stakes SITUATION contributes its manifest-declared retrieval config
         # to this same turn (RULED: checklist, never a router). One mandatory-first fetch at
         # most; tool focus applies only on a single-module turn (prioritize, never narrow).
@@ -3473,13 +3419,6 @@ class Agent:
                     )
                     messages.append({"role": "user", "content": script_feedback})
                     continue
-                if "find_nyc_events" in tools_made and (
-                    event_discovery_turn or event_preparation_turn
-                ):
-                    text = _attach_event_action_urls(
-                        text, citations.mapping(), available_citation_ids=tool_citation_ids,
-                    )
-                    assistant["content"] = text
                 text = _attach_location_action_urls(
                     text, citations.mapping(), available_citation_ids=tool_citation_ids,
                 )

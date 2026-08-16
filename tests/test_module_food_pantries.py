@@ -1,6 +1,6 @@
 """Offline tests for the food_pantries module.
 
-Grounded in the city's FoodHelp ArcGIS backend, but every HTTP call is mocked/injected —
+Grounded in the city's FoodHelp ArcGIS backend, but every HTTP call is mocked/injected:
 no live ArcGIS or geocoder call. Covers: ranking by distance, open-now computation from the
 structured fp_<day>_open*/close* hours, dietary/access flags, the directions link, a grounded
 DATA citation, and abstention when geocoding fails.
@@ -154,6 +154,151 @@ def _pantry_feature(lon, lat, **props) -> dict:
     return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]}, "properties": props}
 
 
+async def test_foodhelp_tool_returns_typed_source_records_with_explicit_unknowns():
+    features = [
+        _pantry_feature(
+            -73.9910,
+            40.7510,
+            program="Typed Pantry",
+            distadd="2 Near Ave",
+            distboro="Manhattan",
+            distzip="10001",
+            type_fp="FP",
+            program_type="FP",
+            GlobalID="typed-pantry",
+        ),
+    ]
+    client = _routed_client(features)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        current_location=GeoPoint(
+            40.7500,
+            -73.9900,
+            "Union Square, Manhattan",
+            confidence=0.99,
+            match_type="nominatim",
+            resident_query="Union Square",
+            provider_id="place-1",
+            provider_payload={"place_id": 1, "display_name": "raw provider value"},
+        ),
+    )
+
+    tool = get_tools()[0]
+    result = await tool.handler({"near": "Union Square", "k": 1}, ctx)
+    await client.aclose()
+
+    assert tool.return_type is fp.FoodHelpResult
+    assert "eligibility notes" not in tool.description.lower()
+    assert isinstance(result, fp.FoodHelpResult)
+    payload = result.model_dump(mode="json", exclude_none=False)
+    assert payload["outcome"] == "success"
+    assert "provider_payload" not in payload["origin"]
+    assert ctx.current_location is not None
+    assert ctx.current_location.provider_payload
+    assert payload["source"]["returned_count"] == 1
+    assert payload["source"]["complete"] is True
+    assert payload["source"]["requested_limit"] == 2000
+    assert payload["source"]["next_cursor"] is None
+    assert payload["source"]["error"] is None
+    assert payload["records"][0]["service"]["name"] == "Typed Pantry"
+    assert payload["records"][0]["phone"] is None
+    assert payload["records"][0]["organization"] is None
+    assert payload["records"][0]["service"]["language"] is None
+    assert payload["records"][0]["location"]["accessibility"] is None
+    assert payload["records"][0]["service"]["required_document"] is None
+    assert payload["records"][0]["citation_id"].startswith("S")
+    assert payload["records"][0]["action_url"].startswith(
+        "https://www.google.com/maps/dir/"
+    )
+
+
+async def test_foodhelp_tool_returns_typed_source_failure_without_english_fallback():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if GEOSEARCH_HOST in request.url.host:
+            return httpx.Response(200, json={"features": [
+                {
+                    "geometry": {"coordinates": [-73.9900, 40.7500]},
+                    "properties": {"label": "Origin, Manhattan"},
+                }
+            ]})
+        return httpx.Response(503)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    result = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert result.outcome == "source_unavailable"
+    assert result.source.status == "unavailable"
+    assert result.source.error == "transport_error"
+    assert result.source.complete is None
+    assert result.source.returned_count is None
+    assert result.records == []
+
+
+async def test_foodhelp_tool_types_a_malformed_provider_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if GEOSEARCH_HOST in request.url.host:
+            return httpx.Response(200, json={"features": [
+                {
+                    "geometry": {"coordinates": [-73.9900, 40.7500]},
+                    "properties": {"label": "Origin, Manhattan"},
+                }
+            ]})
+        return httpx.Response(200, json=[{}])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    result = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert result.outcome == "source_unavailable"
+    assert result.source.status == "unavailable"
+    assert result.source.error == "invalid_response"
+    assert result.source.complete is None
+
+
+async def test_foodhelp_tool_preserves_arcgis_truncation_metadata():
+    feature = _pantry_feature(
+        -73.9910,
+        40.7510,
+        program="Paged Pantry",
+        type_fp="FP",
+        program_type="FP",
+        GlobalID="paged-pantry",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = _geojson(feature)
+        payload["exceededTransferLimit"] = True
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        current_location=GeoPoint(
+            40.7500,
+            -73.9900,
+            "Union Square, Manhattan",
+            resident_query="Union Square",
+        ),
+    )
+
+    result = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert result.outcome == "success"
+    assert result.source.complete is False
+    assert result.source.next_cursor == "offset:1"
+    assert result.source.returned_count == 1
+
+
 def _routed_client(features) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         host = request.url.host
@@ -181,10 +326,9 @@ async def test_find_foodhelp_locations_rejects_model_invented_origin(monkeypatch
 
     out = await get_tools()[0].handler({"near": "Lower East Side"}, ctx)
 
-    assert "where" in out.lower()
-    assert "address or neighborhood" in out.lower()
-    assert "call 311" in out.lower()
-    assert "finder.nyc.gov/foodhelp" in out
+    assert out.outcome == "missing_origin"
+    assert out.origin is None
+    assert out.source.status == "not_called"
 
 
 async def test_urgent_food_requires_the_residents_service_window(monkeypatch):
@@ -204,7 +348,9 @@ async def test_urgent_food_requires_the_residents_service_window(monkeypatch):
         ctx,
     )
 
-    assert "requires service_window" in out
+    assert out.outcome == "missing_service_window"
+    assert out.urgent is True
+    assert out.source.status == "not_called"
 
 
 @pytest.mark.parametrize(
@@ -228,7 +374,7 @@ async def test_find_foodhelp_locations_rejects_partial_or_stale_origins(
 
     out = await get_tools()[0].handler({"near": near}, ctx)
 
-    assert "proposed search origin was not supplied" in out
+    assert out.outcome == "missing_origin"
 
 
 # F159: previously asserted the opposite, conflating two independent properties
@@ -266,7 +412,7 @@ async def test_find_foodhelp_locations_rejects_past_location_in_current_turn(mon
 
     out = await get_tools()[0].handler({"near": "Brooklyn"}, ctx)
 
-    assert "proposed search origin was not supplied" in out
+    assert out.outcome == "missing_origin"
 
 
 async def test_find_foodhelp_locations_rejects_negated_current_origin(monkeypatch):
@@ -281,7 +427,7 @@ async def test_find_foodhelp_locations_rejects_negated_current_origin(monkeypatc
 
     out = await get_tools()[0].handler({"near": "Brooklyn"}, ctx)
 
-    assert "proposed search origin was not supplied" in out
+    assert out.outcome == "missing_origin"
 
 
 @pytest.mark.parametrize("query", [
@@ -300,7 +446,7 @@ async def test_find_foodhelp_locations_rejects_extended_negation(monkeypatch, qu
 
     out = await get_tools()[0].handler({"near": "Brooklyn"}, ctx)
 
-    assert "proposed search origin was not supplied" in out
+    assert out.outcome == "missing_origin"
 
 
 async def test_find_foodhelp_locations_preserves_resident_address_abbreviation(monkeypatch):
@@ -413,14 +559,14 @@ async def test_find_foodhelp_locations_accepts_only_exact_authoritative_source_l
 
     assert seen == expected
     if expected:
-        assert f"{{cite:{source_id}}}" in out
-        assert "{{cite:" not in out
+        assert out.outcome == "location_not_found"
+        assert out.source_origin_citation_id == source_id
     elif evidence_grade == "authoritative":
-        assert "Stop calling tools for this location" in out
-        assert "exact NYC address or intersection" in out
+        assert out.outcome == "source_origin_needs_confirmation"
+        assert out.source_origin_citation_id == source_id
     else:
-        assert "call web_fetch" in out
-        assert "then retry with its new citation id" in out
+        assert out.outcome == "source_origin_needs_fetch"
+        assert out.source_origin_citation_id == source_id
 
 
 async def test_find_foodhelp_locations_does_not_treat_place_name_as_resident_supplied_address(
@@ -455,8 +601,8 @@ async def test_find_foodhelp_locations_does_not_treat_place_name_as_resident_sup
         ctx,
     )
 
-    assert "Stop calling tools for this location" in out
-    assert "exact NYC address or intersection" in out
+    assert out.outcome == "source_origin_needs_confirmation"
+    assert out.source_origin_citation_id == source_id
 
 
 @pytest.mark.parametrize(
@@ -504,10 +650,11 @@ async def test_find_foodhelp_locations_recovers_source_location_without_repeated
 
     assert seen == expected
     if expected:
-        assert f"{{cite:{source_id}}}" in out
+        assert out.outcome == "location_not_found"
+        assert out.source_origin_citation_id == source_id
     else:
-        assert "call web_fetch" in out
-        assert f"{{cite:{source_id}}}" in out
+        assert out.outcome == "source_origin_needs_fetch"
+        assert out.source_origin_citation_id == source_id
 
 
 @pytest.mark.parametrize(
@@ -597,9 +744,8 @@ async def test_find_foodhelp_locations_rejects_an_unrelated_address_from_the_sam
         ctx,
     )
 
-    assert "Stop calling tools for this location" in out
-    assert "exact NYC address or intersection" in out
-    assert "200 Example Street" not in out
+    assert out.outcome == "source_origin_needs_confirmation"
+    assert out.source_origin_citation_id == source_id
 
 
 async def test_find_foodhelp_locations_rejects_an_unrelated_address_in_the_same_sentence(
@@ -637,9 +783,8 @@ async def test_find_foodhelp_locations_rejects_an_unrelated_address_in_the_same_
         ctx,
     )
 
-    assert "Stop calling tools for this location" in out
-    assert "exact NYC address or intersection" in out
-    assert "200 Example Street" not in out
+    assert out.outcome == "source_origin_needs_confirmation"
+    assert out.source_origin_citation_id == source_id
 
 
 async def test_find_foodhelp_locations_ranks_grounds_and_links(monkeypatch):
@@ -662,25 +807,26 @@ async def test_find_foodhelp_locations_ranks_grounds_and_links(monkeypatch):
     out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
     await client.aclose()
 
-    site_lines = [l for l in out.splitlines() if l.startswith("- ")]
-    assert len(site_lines) == 2                        # bad-coords row dropped
-    assert "Close Halal Pantry" in site_lines[0]       # nearest first
-    assert "Far Pantry" in site_lines[1]
-    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
-    assert "Halal" in site_lines[0]                    # dietary/access flag surfaced
-    assert "open now" in site_lines[0].lower()         # open-now computed from structured hours
-    assert "Immediate food need" not in out             # ordinary lookup keeps the normal ordering
-    assert "Nearest City-listed food-help site candidates" in out
-    assert "212-555-0002" in out                       # phone surfaced
-    assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
-    assert "{cite:S1}" in out                          # grounded, cited
-    assert citations.mapping()["S1"]["kind"] == "DATA"
+    assert out.outcome == "success"
+    assert len(out.records) == 2                        # bad-coords row dropped
+    assert [record.service.name for record in out.records] == [
+        "Close Halal Pantry",
+        "Far Pantry",
+    ]
+    assert out.records[0].origin_precision == "approximate"
+    assert out.records[0].attributes == ["Halal"]
+    assert out.records[0].schedule.status == "scheduled_open"
+    assert out.records[0].phone is not None
+    assert out.records[0].phone.number == "212-555-0002"
+    assert out.records[0].action_url.endswith("destination=40.75100,-73.99100")
+    first_citation = out.records[0].citation_id
+    assert citations.mapping()[first_citation]["kind"] == "DATA"
     # citation is grounded in the ArcGIS source and does not fake an as-of date
-    assert "arcgis" in citations.mapping()["S1"]["url"].lower()
-    assert "globalid" in citations.mapping()["S1"]["url"].lower()  # row-addressed GlobalID permalink
-    assert citations.mapping()["S1"]["provenance"]["record_id"] == "aaaa-2"
-    assert citations.mapping()["S1"]["valid_as_of"] == ""
-    assert "record last updated date unavailable" in out
+    assert "arcgis" in citations.mapping()[first_citation]["url"].lower()
+    assert "globalid" in citations.mapping()[first_citation]["url"].lower()
+    assert citations.mapping()[first_citation]["provenance"]["record_id"] == "aaaa-2"
+    assert citations.mapping()[first_citation]["valid_as_of"] == ""
+    assert out.records[0].valid_as_of is None
 
 
 async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours(monkeypatch):
@@ -731,25 +877,30 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     )
     await client.aclose()
 
-    assert out.index("Immediate food need") < out.index("Nearby Pantry")
-    assert "SOURCE S1: Weekly-schedule availability evidence:" in out
-    assert "at 2026-07-17 12:00 America/New_York" in out
-    assert "Origin: Union Square, Manhattan (40.74331,-73.98897) {cite:S1}" in out
-    assert "does not confirm food availability" in out
-    assert "call the listed site before traveling" in out
-    assert "call 311" in out
-    assert "https://finder.nyc.gov/foodhelp" in out
-    assert "SOURCE S1: Weekly-schedule availability evidence" in out
-    assert "SOURCE S2: Official immediate route" in out
-    assert "Farther Open Pantry" not in out
-    assert "Today's listed weekly hours: 9:00 AM-5:00 PM" in out
-    assert "Freshness: live feed lists this site open" in out
-    assert "record last updated 2025-11-04" in out
-    assert "weekly hours may be outdated" in out
-    assert "dated call-only lead" in out
-    assert "State its displayed as-of value" in out
-    assert "Do not describe the schedule as current or as service available today" in out
-    assert "The live feed still lists the site open" in out
+    assert out.outcome == "success"
+    assert out.urgent is True
+    assert out.immediate_route is not None
+    assert out.immediate_route.phone == "311"
+    assert out.immediate_route.url == fp.FOOD_ROUTE_URL
+    assert out.availability_citation_id is not None
+    assert out.origin is not None
+    assert out.origin.label == "Union Square, Manhattan"
+    assert (out.origin.latitude, out.origin.longitude) == (40.743312, -73.988975)
+    resolved_ids = [
+        citation_id
+        for citation_id, citation in ctx.citations.mapping().items()
+        if citation["title"] == "Resolved NYC location"
+    ]
+    assert len(resolved_ids) == 1
+    assert out.origin_citation_id == resolved_ids[0]
+    assert ctx.citations.mapping()[resolved_ids[0]]["provenance"]["derivation"]["point"] == [
+        40.743312,
+        -73.988975,
+    ]
+    assert [record.service.name for record in out.records] == ["Nearby Pantry"]
+    assert out.records[0].schedule.listed_hours == ["9:00 AM-5:00 PM"]
+    assert out.records[0].schedule.availability_confirmed is False
+    assert out.records[0].valid_as_of == date(2025, 11, 4)
     assert (
         ctx.citations.mapping()["S1"]["provenance"]["derivation"]["temporal_basis"]
         == "weekly_schedule"
@@ -769,31 +920,38 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     )
     assert route["url"] == "https://access.nyc.gov/programs/emergency-food-assistance/"
     assert "call 311" in route["provenance"]["snapshot"]["verified_fact"]
-    assert f"{{cite:{route['id']}}}" in out
+    assert out.immediate_route.citation_id == route["id"]
 
 
-def test_pantry_block_labels_each_exact_fact_with_its_row_citation():
+def test_foodhelp_record_keeps_exact_facts_under_one_row_citation():
     pantry = _pantry(
         program="Exact Pantry",
         distadd="1 Main St",
         org_phone="212-555-0100",
         GlobalID="exact-row",
         EditDate="2026-08-10",
+        program_type="FP",
         fp_thu_open1="1:00 PM",
         fp_thu_close1="4:00 PM",
     )
 
-    block = fp._pantry_block(
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    record = fp._record_result(
+        ctx,
         pantry,
-        "S7",
-        "0.2 mi",
-        datetime(2026, 8, 13, 6, 30),
+        origin=GeoPoint(40.75, -73.99, "Origin", match_type="coordinates"),
+        origin_query="40.75,-73.99",
+        now=datetime(2026, 8, 13, 6, 30),
+        requested=None,
         service_window=(390, 1439),
     )
 
-    for line in block.splitlines():
-        if "hours:" in line or "Phone:" in line or "Directions:" in line or "Freshness:" in line:
-            assert "{cite:S7}" in line
+    assert record.phone is not None
+    assert record.phone.number == "212-555-0100"
+    assert record.schedule.listed_hours == ["1:00 PM-4:00 PM"]
+    assert record.action_url.endswith("destination=40.75000,-73.99000")
+    assert record.valid_as_of == date(2026, 8, 10)
+    assert ctx.citations.mapping()[record.citation_id]["provenance"]["record_id"] == "exact-row"
 
 
 async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
@@ -851,22 +1009,16 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     )
     await client.aclose()
 
-    assert "Evening Pantry" in out
-    assert "Second Evening Pantry" not in out
-    assert "Nearby Morning Pantry" not in out
-    assert "requested 17:00-23:59 service window" in out
-    assert "weekly schedule overlaps that window" in out
-    assert "actual weekly-hours overlap: 17:30-20:00" in out
-    assert "2 of 3 nearby candidates have overlapping weekly hours" in out
-    assert "one displayed lead, never as the only matching option" in out
-    assert "exact overlap interval, not only the site's closing time" in out
-    assert "does not confirm food availability" in out
-    assert "Official immediate route: call 311 or use https://finder.nyc.gov/foodhelp" in out
-    assert "one nearest dated call-only lead" in out
-    assert "dated call-only lead" in out
-    assert "State its displayed as-of value" in out
-    assert "Do not describe the schedule as current or as service available today" in out
-    assert "The live feed still lists the site open" in out
+    assert [record.service.name for record in out.records] == ["Evening Pantry"]
+    assert out.records[0].schedule.requested_window_start == "17:00"
+    assert out.records[0].schedule.requested_window_end == "23:59"
+    assert out.records[0].schedule.status == "scheduled_open"
+    assert out.records[0].schedule.overlap_intervals == ["17:30-20:00"]
+    assert out.nearby_checked_count == 3
+    assert out.citywide_scheduled_open_count == 2
+    assert out.records[0].schedule.availability_confirmed is False
+    assert out.immediate_route is not None
+    assert out.immediate_route.phone == "311"
     schema = get_tools()[0].parameters["properties"]
     assert schema["service_window"]["properties"]["start"]["pattern"] == r"^\d{2}:\d{2}$"
     assert schema["service_window"]["properties"]["end"]["pattern"] == r"^\d{2}:\d{2}$"
@@ -896,17 +1048,18 @@ async def test_find_foodhelp_locations_does_not_present_closed_candidates_as_ope
     )
     await client.aclose()
 
-    assert "no City-listed site in this feed has weekly hours establishing service" in out
-    assert "call 311" in out
-    assert "Do not present another time of day as an option for that window" in out
-    assert "Closed Pantry" not in out
+    assert out.outcome == "success"
+    assert out.records == []
+    assert out.immediate_route is not None
+    assert out.immediate_route.phone == "311"
+    assert out.citywide_scheduled_open_count == 0
     citations = ctx.citations.mapping()
-    assert "{cite:S1}" in out
-    assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_citywide"] == 0
-    assert citations["S1"]["provenance"]["snapshot"]["scheduled_open_nearby"] == 0
-    assert citations["S1"]["provenance"]["snapshot"]["origin_query"] == "Union Square"
-    assert citations["S1"]["provenance"]["snapshot"]["origin_label"] == "Union Square, Manhattan"
-    assert citations["S1"]["provenance"]["snapshot"]["origin_point"] == [
+    availability = citations[out.availability_citation_id]
+    assert availability["provenance"]["snapshot"]["scheduled_open_citywide"] == 0
+    assert availability["provenance"]["snapshot"]["scheduled_open_nearby"] == 0
+    assert availability["provenance"]["snapshot"]["origin_query"] == "Union Square"
+    assert availability["provenance"]["snapshot"]["origin_label"] == "Union Square, Manhattan"
+    assert availability["provenance"]["snapshot"]["origin_point"] == [
         40.743312,
         -73.988975,
     ]
@@ -932,9 +1085,10 @@ async def test_find_foodhelp_locations_distinguishes_unknown_hours_from_closed()
     )
     await client.aclose()
 
-    assert "no City-listed site in this feed has weekly hours establishing service" in out
-    assert "call 311" in out
-    assert "Unknown Hours Pantry" not in out
+    assert out.outcome == "success"
+    assert out.records == []
+    assert out.immediate_route is not None
+    assert out.citywide_unknown_hours_count == 1
 
 
 async def test_find_foodhelp_locations_returns_farther_open_lead_after_immediate_fallback(
@@ -975,15 +1129,12 @@ async def test_find_foodhelp_locations_returns_farther_open_lead_after_immediate
     )
     await client.aclose()
 
-    assert "Nearby Closed Pantry" not in out
-    assert "call 311" in out
-    assert "finder.nyc.gov/foodhelp" in out
-    assert "Farther Open Pantry" in out
-    assert "Second Farther Open Pantry" not in out
-    assert "call the listed site before traveling" in out
-    assert "{cite:S1}" in out
-    assert "{cite:S2}" in out
-    assert len(ctx.citations.mapping()) == 3
+    assert [record.service.name for record in out.records] == ["Farther Open Pantry"]
+    assert out.immediate_route is not None
+    assert out.records[0].schedule.status == "scheduled_open"
+    assert out.availability_citation_id is not None
+    assert out.records[0].citation_id in ctx.citations.mapping()
+    assert len(ctx.citations.mapping()) == 4
 
 
 async def test_find_foodhelp_locations_leads_with_open_site_for_nonurgent_request(
@@ -1009,7 +1160,10 @@ async def test_find_foodhelp_locations_leads_with_open_site_for_nonurgent_reques
     out = await get_tools()[0].handler({"near": "Union Square", "k": 2}, ctx)
     await client.aclose()
 
-    assert out.index("Farther Open Pantry") < out.index("Nearby Closed Pantry")
+    assert [record.service.name for record in out.records] == [
+        "Farther Open Pantry",
+        "Nearby Closed Pantry",
+    ]
 
 
 async def test_find_foodhelp_locations_uses_the_residents_requested_date(monkeypatch):
@@ -1051,11 +1205,10 @@ async def test_find_foodhelp_locations_uses_the_residents_requested_date(monkeyp
     )
     await client.aclose()
 
-    assert "Saturday Pantry" in out
-    assert "Friday Only Pantry" not in out
-    assert "Saturday, 2026-07-18" in out
-    assert "scheduled open now" not in out
-    assert "10:00 AM-2:00 PM" in out
+    assert [record.service.name for record in out.records] == ["Saturday Pantry"]
+    assert out.records[0].schedule.requested_date == date(2026, 7, 18)
+    assert out.records[0].schedule.status == "scheduled_open"
+    assert out.records[0].schedule.listed_hours == ["10:00 AM-2:00 PM"]
 
 
 async def test_f185_future_date_respects_monthly_occurrence_notes(monkeypatch):
@@ -1082,9 +1235,11 @@ async def test_f185_future_date_respects_monthly_occurrence_notes(monkeypatch):
     )
     await client.aclose()
 
-    assert "monthly schedule excludes Thursday, 2026-08-13" in out
-    assert "weekly schedule lists hours on Thursday, 2026-08-13" not in out
-    assert "Thursday's listed weekly hours" not in out
+    assert out.records[0].schedule.requested_date == date(2026, 8, 13)
+    assert out.records[0].schedule.status == "scheduled_closed"
+    assert out.records[0].schedule.listed_hours is None
+    assert out.records[0].schedule.source_notes == "1ST & 3RD THURSDAY"
+    assert out.records[0].service.eligibility_description is None
 
 
 def test_f185_calendar_guard_rejects_wrong_monthly_weekday_occurrence():
@@ -1126,8 +1281,8 @@ async def test_find_foodhelp_locations_filters_source_service_type():
     )
     await client.aclose()
 
-    assert "Food Pantry" in out
-    assert "Nearby Soup Kitchen" not in out
+    assert [record.service.name for record in out.records] == ["Food Pantry"]
+    assert out.records[0].service.service_type == "pantry"
     assert get_tools()[0].parameters["properties"]["service_type"]["enum"] == [
         "pantry",
         "soup_kitchen",
@@ -1165,7 +1320,22 @@ async def test_f199_follow_up_keeps_the_previously_cited_pantry():
         kind="DATA",
         provenance={"record_id": "prior-site", "snapshot": {}},
     )
-    client = _routed_client(features)
+    foodhelp_wheres = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if GEOSEARCH_HOST in request.url.host:
+            return httpx.Response(200, json={"features": [
+                {
+                    "geometry": {"coordinates": [-73.9900, 40.7500]},
+                    "properties": {"label": "Origin, Manhattan"},
+                }
+            ]})
+        if FOODHELP_HOST in request.url.host:
+            foodhelp_wheres.append(request.url.params.get("where"))
+            return httpx.Response(200, json=_geojson(features[1]))
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     query = "What hours does the place you just gave me have today?"
     ctx = ToolContext(
         citations=citations,
@@ -1186,14 +1356,19 @@ async def test_f199_follow_up_keeps_the_previously_cited_pantry():
     )
     await client.aclose()
 
-    assert "Previously Cited Pantry" in out
-    assert "Closer Different Pantry" not in out
+    assert [record.service.name for record in out.records] == ["Previously Cited Pantry"]
+    assert foodhelp_wheres == ["status='Open' AND GlobalID='prior-site'"]
+    assert out.source.returned_count == 1
+    assert out.citywide_scheduled_open_count is None
+    assert out.referenced_site_citation_id == prior_id
     availability = next(
         citation
         for citation in citations.mapping().values()
         if citation["title"] == "NYC FoodHelp availability lookup"
     )
     snapshot = availability["provenance"]["snapshot"]
+    assert "citywide_records_checked" not in snapshot
+    assert "response_priority_anchors" not in availability["provenance"]["derivation"]
     assert snapshot["referenced_site"]["GlobalID"] == "prior-site"
     assert snapshot["referenced_site_valid_as_of"] == "2026-08-10"
 
@@ -1224,7 +1399,8 @@ async def test_f199_rejects_a_non_foodhelp_site_reference(monkeypatch):
         ctx,
     )
 
-    assert "does not identify a prior NYC FoodHelp site" in out
+    assert out.outcome == "invalid_site_reference"
+    assert out.referenced_site_citation_id == unrelated_id
 
 
 async def test_find_foodhelp_locations_labels_soup_kitchen_results_as_soup_kitchens():
@@ -1247,8 +1423,8 @@ async def test_find_foodhelp_locations_labels_soup_kitchen_results_as_soup_kitch
     )
     await client.aclose()
 
-    assert "Nearest City-listed soup kitchen candidates" in out
-    assert "food pantry candidates" not in out
+    assert [record.service.name for record in out.records] == ["Nearby Soup Kitchen"]
+    assert out.records[0].service.service_type == "soup_kitchen"
 
 
 async def test_future_same_weekday_is_not_labeled_today(monkeypatch):
@@ -1277,8 +1453,8 @@ async def test_future_same_weekday_is_not_labeled_today(monkeypatch):
     )
     await client.aclose()
 
-    assert "Friday's listed weekly hours" in out
-    assert "Today's listed weekly hours" not in out
+    assert out.records[0].schedule.requested_date == date(2026, 7, 24)
+    assert out.records[0].schedule.listed_hours == ["9:00 AM-5:00 PM"]
 
 
 async def test_find_foodhelp_locations_excludes_unknown_source_types_from_typed_request():
@@ -1317,9 +1493,7 @@ async def test_find_foodhelp_locations_excludes_unknown_source_types_from_typed_
     )
     await client.aclose()
 
-    assert "Verified Food Pantry" in out
-    assert "Unknown Program" not in out
-    assert "Malformed Program" not in out
+    assert [record.service.name for record in out.records] == ["Verified Food Pantry"]
 
 
 async def test_find_foodhelp_locations_rejects_past_service_date_before_lookup(monkeypatch):
@@ -1336,7 +1510,8 @@ async def test_find_foodhelp_locations_rejects_past_service_date_before_lookup(m
         ctx,
     )
 
-    assert "cannot verify a past service date" in out
+    assert out.outcome == "past_date"
+    assert out.source.status == "not_called"
 
 
 async def test_find_foodhelp_locations_flags_conflicting_schedule_fields(monkeypatch):
@@ -1367,8 +1542,8 @@ async def test_find_foodhelp_locations_flags_conflicting_schedule_fields(monkeyp
     )
     await client.aclose()
 
-    assert "source fields conflict about the Saturday schedule" in out
-    assert "does not confirm service that day" in out
+    assert out.records[0].schedule.status == "conflicting"
+    assert out.records[0].schedule.availability_confirmed is False
 
 
 async def test_find_foodhelp_locations_cites_an_empty_official_feed():
@@ -1385,10 +1560,14 @@ async def test_find_foodhelp_locations_cites_an_empty_official_feed():
     )
     await client.aclose()
 
-    assert "No open food-help sites came back" in out
-    assert "{cite:S1}" in out
-    citation = ctx.citations.mapping()["S1"]
-    assert ctx.response_priority_citation_ids == {"S1", "S2"}
+    assert out.outcome == "no_results"
+    assert out.records == []
+    assert out.immediate_route is not None
+    citation = ctx.citations.mapping()[out.availability_citation_id]
+    assert ctx.response_priority_citation_ids == {
+        out.availability_citation_id,
+        out.immediate_route.citation_id,
+    }
     assert citation["valid_as_of"] == ""
     assert citation["provenance"]["snapshot"]["citywide_records_checked"] == 0
 
@@ -1403,10 +1582,9 @@ async def test_find_foodhelp_locations_abstains_when_geocode_fails(monkeypatch):
     out = await get_tools()[0].handler({"near": "Springfield, Illinois"}, ctx)
     await client.aclose()
 
-    assert "- " not in out                              # no fabricated pantry list
-    low = out.lower()
-    assert "couldn't" in low or "could not" in low
-    assert "nyc" in low
+    assert out.outcome == "location_not_found"
+    assert out.records == []
+    assert out.origin is None
 
 
 async def test_find_foodhelp_locations_clarifies_on_low_confidence(monkeypatch):
@@ -1418,8 +1596,9 @@ async def test_find_foodhelp_locations_clarifies_on_low_confidence(monkeypatch):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Broadway and 100th"}, ctx)
     await client.aclose()
-    assert "which borough" in out.lower()
-    assert "- " not in out
+    assert out.outcome == "location_ambiguous"
+    assert out.records == []
+    assert out.origin is not None and out.origin.low_confidence
 
 
 # --- the shipped module stays valid ---------------------------------------

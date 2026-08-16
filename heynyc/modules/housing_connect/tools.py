@@ -197,7 +197,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         set_asides = _mix_with_count(row, _SET_ASIDES)
         as_of = _iso_date(row.get(":updated_at"))
 
-        snapshot = {
+        normalized = {
             "lottery_id": lottery_id, "lottery_name": name, "borough": str(row.get("borough") or ""),
             "unit_count": units, "lottery_end_date": deadline,
             "unit_mix": mix, "income_bands_ami": ami, "set_asides": set_asides,
@@ -207,7 +207,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             snippet=f"{name} ({boro}): {units} units, apply by {deadline}",
             title="Advertised Lotteries on Housing Connect (vy5i-a666)",
             kind="DATA", valid_as_of=as_of,
-            provenance=data_provenance(snapshot, record_id=lottery_id, field_pointer="/"),
+            provenance=data_provenance(
+                row,
+                record_id=lottery_id,
+                field_pointer="/",
+                derivation=normalized,
+            ),
         )
 
         detail = f"- {name}, {boro}. {units} unit(s)"

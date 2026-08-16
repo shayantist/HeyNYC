@@ -23,13 +23,21 @@ def test_confidence_extraction_per_provider():
 
 async def test_forgiving_geocode_maps_location_to_geopoint():
     async def fake_fn(text):
-        return _FakeLocation(40.808, -73.964, "Broadway & W 116 St, Manhattan", {"relevance": 0.93})
+        return _FakeLocation(
+            40.808,
+            -73.964,
+            "Broadway & W 116 St, Manhattan",
+            {"place_id": 123, "relevance": 0.93},
+        )
 
     point = await forgiving_geocode("116 & broadway, manhattan", geocode_fn=fake_fn)
     assert round(point.lat, 3) == 40.808
     assert round(point.lon, 3) == -73.964
     assert "Broadway" in point.label
     assert point.confidence == 0.93
+    assert point.resident_query == "116 & broadway, manhattan"
+    assert point.provider_id == "123"
+    assert point.provider_payload == {"place_id": 123, "relevance": 0.93}
 
 
 async def test_forgiving_geocode_none_and_error_are_safe():
@@ -58,7 +66,11 @@ async def test_nominatim_reuses_an_in_process_result(monkeypatch):
     first = await forgiving_geocode("Flushing Library")
     second = await forgiving_geocode(" Flushing Library ")
 
-    assert first == second
+    assert first.lat == second.lat
+    assert first.lon == second.lon
+    assert first.label == second.label
+    assert first.resident_query == "Flushing Library"
+    assert second.resident_query == " Flushing Library "
     assert calls == 1
 
 

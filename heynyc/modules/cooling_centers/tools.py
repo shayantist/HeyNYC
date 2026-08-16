@@ -5,12 +5,13 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import content_hash, data_provenance
+from heynyc.core.grounding import resident_calendar_dates
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
     _requested_result_limit,
-    _resolution_note,
+    current_resolved_location,
     directions_link,
     format_distance,
     geocode,
@@ -161,17 +162,23 @@ def _citation(ctx: ToolContext, item: dict, origin: GeoPoint) -> str:
             derivation={
                 "origin": [origin.lat, origin.lon],
                 "origin_label": origin.label,
-                **(
-                    {"open_now": item["open_now"]}
-                    if "open_now" in item
-                    else {}
-                ),
+                **{
+                    key: item[key]
+                    for key in ("open_now", "target_at", "target_status")
+                    if key in item
+                },
             },
         ),
     )
 
 
-def _terminal_citation(ctx: ToolContext, items: list[dict], now: datetime, snippet: str) -> str:
+def _terminal_citation(
+    ctx: ToolContext,
+    items: list[dict],
+    now: datetime,
+    snippet: str,
+    derivation: dict | None = None,
+) -> str:
     rows = [
         {
             "record_id": str(item["record"].get("NYCEM_ID") or item["record"].get("OBJECTID", "")),
@@ -198,6 +205,17 @@ def _terminal_citation(ctx: ToolContext, items: list[dict], now: datetime, snipp
                     {"record_id": row["record_id"], "value": row["open_now"]}
                     for row in rows
                 ],
+                "next_open": [
+                    {
+                        "record_id": str(
+                            item["record"].get("NYCEM_ID")
+                            or item["record"].get("OBJECTID", "")
+                        ),
+                        "value": _next_open(item["record"], now),
+                    }
+                    for item in items
+                ],
+                **(derivation or {}),
             },
         ),
     )
@@ -314,30 +332,36 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         (),
     ) if current_turn else ""
     if site and prior_offered and not current_location:
-        origin = GeoPoint(
-            prior_offered[1][0],
-            prior_offered[1][1],
-            "previously resolved origin",
+        origin = ctx.current_location or GeoPoint(
+            prior_offered[1][0], prior_offered[1][1], "previously resolved origin"
         )
     elif current_turn:
-        near = resident_supplied_location(
-            near,
-            current_turn,
-            ctx.user_turns,
-            allow_prior=True,
+        stored_origin = current_resolved_location(near, ctx)
+        near = (
+            resident_supplied_location(
+                near,
+                current_turn,
+                ctx.user_turns,
+                allow_prior=True,
+            )
+            or (stored_origin.resident_query if stored_origin else "")
         )
         if not near:
             return (
                 "A location is required before ranking nearby Cool Options. "
                 "Ask for the resident's neighborhood, address, or landmark."
             )
-        origin = await geocode(near, client=ctx.http)
+        if stored_origin is None:
+            ctx.current_location = None
+        origin = stored_origin or await geocode(near, client=ctx.http)
     else:
         origin = await geocode(near, client=ctx.http)
     if origin is None:
         return f"Could not locate '{near}'. Ask for a specific NYC address or landmark."
     if origin.low_confidence:
         return f"'{near}' may match several places. Ask for a specific NYC address or landmark."
+    if origin.resident_query:
+        ctx.current_location = origin
 
     try:
         records = await query_feature_service(
@@ -451,22 +475,45 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     candidate_items = [item for item in offered_items if _site_key(item) not in excluded]
 
     now = _nyc_now()
-    requested_on = str(args.get("on") or "").strip()
+    requested_on = str(args.get("visit_date") or args.get("on") or "").strip()
+    requested_at = str(args.get("visit_time") or args.get("at_time") or "").strip()
+    if not requested_on:
+        resident_dates = resident_calendar_dates(ctx.query, now.date())
+        if len(resident_dates) == 1:
+            requested_on = resident_dates.pop().isoformat()
     try:
         target_date = date.fromisoformat(requested_on) if requested_on else now.date()
     except ValueError:
         return "The date must use YYYY-MM-DD. Ask the resident to clarify the date."
-    planning_ahead = target_date != now.date()
+    try:
+        target_time = datetime.strptime(requested_at, "%H:%M").time() if requested_at else None
+    except ValueError:
+        return "The visit time must use 24-hour HH:MM in New York time."
+    target_at = (
+        datetime.combine(target_date, target_time, _NYC_TZ)
+        if target_time is not None
+        else None
+    )
+    planning_ahead = bool(requested_on or requested_at)
+    open_now_only = args.get("open_now_only") is True
     target_day_name = _DAY_NAMES[target_date.weekday()]
     for item in candidate_items:
         item["open_now"] = _open_now(item["record"], now)
         item["target_hours"] = _scheduled_hours(item["record"], target_date.weekday())
         item["target_open"] = _scheduled_open(item["record"], target_date.weekday())
+        if target_at is not None:
+            item["target_at"] = target_at.isoformat()
+            target_status = _open_now(item["record"], target_at)
+            item["target_status"] = (
+                False
+                if target_status is None and item["target_open"] is False
+                else target_status
+            )
         item["distance_m"] = haversine_m(origin.lat, origin.lon, item["lat"], item["lon"])
     current_items = candidate_items
     current_open = [item for item in current_items if item["open_now"] is True]
     unavailable_note = ""
-    if not planning_ahead:
+    if not planning_ahead and open_now_only:
         if selected_item and selected_item["open_now"] is not True:
             selected_label = {
                 "cooling_center": "cooling center",
@@ -519,17 +566,23 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     if planning_ahead:
         unique.sort(
             key=lambda item: (
-                0 if item["target_open"] is True else 2 if item["target_open"] is False else 1,
+                0
+                if item.get("target_status", item["target_open"]) is True
+                else 2
+                if item.get("target_status", item["target_open"]) is False
+                else 1,
                 item["distance_m"],
             )
         )
-    else:
+    elif open_now_only:
         unique.sort(
             key=lambda item: (
                 0 if item["open_now"] is True else 2 if item["open_now"] is False else 1,
                 item["distance_m"],
             )
         )
+    else:
+        unique.sort(key=lambda item: item["distance_m"])
 
     # F068: when the nearest open site is farther than sites that are closed right
     # now, say so in data terms so the answer is framed honestly instead of reading
@@ -562,7 +615,6 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     date_scope = f" for {target_date_label}" if planning_ahead else ""
     lines = [
         f"NYC Cool Options{date_scope} near {origin.label}:",
-        _resolution_note(near, origin),
     ]
     if planning_ahead:
         lines.append(
@@ -579,7 +631,36 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         reopenings = [r for item in closer_closed if (r := _next_open(item["record"], now))]
         if reopenings:
             note += f"; the soonest reopens {min(reopenings)[2]}"
-        lines.append(note + ".")
+        aggregate_cite = _terminal_citation(
+            ctx,
+            closer_closed,
+            now,
+            note,
+            derivation={
+                "origin": [origin.lat, origin.lon],
+                "predicate": (
+                    "open_now is false and distance_m < nearest_open_distance_m"
+                ),
+                "nearest_open": {
+                    "record_id": str(
+                        nearest_open["record"].get("NYCEM_ID")
+                        or nearest_open["record"].get("OBJECTID", "")
+                    ),
+                    "distance_m": nearest_open["distance_m"],
+                },
+                "distances_m": [
+                    {
+                        "record_id": str(
+                            item["record"].get("NYCEM_ID")
+                            or item["record"].get("OBJECTID", "")
+                        ),
+                        "value": item["distance_m"],
+                    }
+                    for item in closer_closed
+                ],
+            },
+        )
+        lines.append(f"{note}. {{cite:{aggregate_cite}}}")
     for index, item in enumerate(selected, 1):
         cite = _citation(ctx, item, origin)
         distance = format_distance(
@@ -610,7 +691,21 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
             lines.append(f"   Audience: City row is not marked age-restricted {{cite:{cite}}}")
         if item["address"]:
             lines.append(f"   {item['address']}")
-        if planning_ahead and item["target_hours"]:
+        if target_at is not None:
+            visit_time = target_at.strftime("%I:%M %p").lstrip("0")
+            target_status = item["target_status"]
+            if target_status is True:
+                status = "scheduled open"
+            elif target_status is False:
+                status = "scheduled closed"
+            else:
+                status = "schedule unknown"
+            lines.append(f"   {status} at {visit_time} America/New_York")
+            if item["target_hours"]:
+                lines.append(
+                    f"   Scheduled {target_date_label}: {item['target_hours']}"
+                )
+        elif planning_ahead and item["target_hours"]:
             lines.append(
                 f"   Scheduled {target_date_label}: {item['target_hours']}"
             )
@@ -643,7 +738,7 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
 
     lines.append(
         "Weekly hours, holiday schedules, one-off closures, and access policies can change. "
-        "The City advises calling ahead before visiting."
+        "Call ahead before visiting."
     )
     return "\n".join(lines)
 
@@ -655,8 +750,10 @@ def get_tools() -> list[Tool]:
             description=(
                 "Find live NYC Cool Options. Use kind='cooling_center' for activated centers, "
                 "kind='indoor' for indoor A/C options, or kind='all' for any heat-relief option. "
-                "Pass `on` when the resident asks about a specific day or date; the result will "
+                "Pass `visit_date` when the resident asks about a specific day or date; the result will "
                 "rank and report that date's City-listed weekly schedule instead of today's status. "
+                "Pass `visit_time` when the resident names a visit time; the tool computes scheduled "
+                "status in America/New_York. "
                 "Use audience='not_age_restricted' when the resident needs options without a City "
                 "age restriction, including when asking for children."
             ),
@@ -705,12 +802,30 @@ def get_tools() -> list[Tool]:
                         "default": 3,
                         "description": "Maximum results; use the user's requested count",
                     },
-                    "on": {
+                    "visit_date": {
                         "type": "string",
                         "format": "date",
                         "description": (
                             "Optional visit date in YYYY-MM-DD. Pass this when the resident names "
-                            "a day or date; omit only for a current right-now lookup."
+                            "a day or date; omit when no specific day or date was requested."
+                        ),
+                    },
+                    "visit_time": {
+                        "type": "string",
+                        "format": "time",
+                        "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+                        "description": (
+                            "Optional visit time as 24-hour HH:MM in America/New_York. Pass when "
+                            "the resident names a time. Use with `visit_date` when they name a date."
+                        ),
+                    },
+                    "open_now_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Set true only when the resident explicitly asks for a place open "
+                            "right now. Leave false for nearest, distance, or general location "
+                            "questions; those results still report the current listed schedule."
                         ),
                     },
                 },

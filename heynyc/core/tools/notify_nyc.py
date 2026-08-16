@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree as ET
@@ -69,6 +69,18 @@ class Advisory:
     source_url: str
     guid: str
     language: str = ""  # CAP <language> code (e.g. "en-US", "es-US"); blank if the feed omits it
+    sender: str = ""
+    status: str = ""
+    message_type: str = ""
+    scope: str = ""
+    references: tuple[str, ...] = ()
+    certainty: str = ""
+    effective: str = ""
+    onset: str = ""
+    description: str = ""
+    instruction: str = ""
+    response_types: tuple[str, ...] = ()
+    provider_record: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -144,6 +156,14 @@ def _first_text(root: ET.Element, name: str) -> str:
     return ""
 
 
+def _all_text(root: ET.Element, name: str) -> tuple[str, ...]:
+    return tuple(
+        text
+        for elem in root.iter()
+        if _local(elem.tag) == name and (text := (elem.text or "").strip())
+    )
+
+
 def _direct_child_text(parent: ET.Element, name: str) -> str:
     """The stripped text of the first DIRECT child of `parent` with local tag `name`, else ''."""
     for child in parent:
@@ -161,11 +181,39 @@ def _parse_cap(xml_text: str, source_url: str) -> Optional[Advisory]:
     """
     try:
         root = _safe_fromstring(xml_text)
+        identifier = _first_text(root, "identifier")
+        sender = _first_text(root, "sender")
+        sent = _first_text(root, "sent")
+        status = _first_text(root, "status")
+        message_type = _first_text(root, "msgType")
+        scope = _first_text(root, "scope")
+        if (
+            not identifier
+            or not sender
+            or status not in {"Actual", "Exercise", "System", "Test", "Draft"}
+            or message_type not in {"Alert", "Update", "Cancel", "Ack", "Error"}
+            or scope not in {"Public", "Restricted", "Private"}
+        ):
+            return None
+        sent_at = datetime.fromisoformat(sent)
+        if sent_at.tzinfo is None:
+            return None
         info = next((e for e in root.iter() if _local(e.tag) == "info"), None)
-        if info is None:
+        if info is None and message_type not in {"Cancel", "Ack", "Error"}:
             return None
         expires = _first_text(root, "expires")
-        if not expires:
+        if message_type in {"Alert", "Update", ""} and not expires:
+            return None
+        references = []
+        for reference in _first_text(root, "references").split():
+            parts = reference.split(",", 2)
+            if len(parts) != 3 or not all(parts):
+                return None
+            referenced_at = datetime.fromisoformat(parts[2])
+            if referenced_at.tzinfo is None:
+                return None
+            references.append(reference)
+        if message_type in {"Update", "Cancel"} and not references:
             return None
         return Advisory(
             headline=_first_text(root, "headline"),
@@ -173,12 +221,24 @@ def _parse_cap(xml_text: str, source_url: str) -> Optional[Advisory]:
             category=_first_text(root, "category"),
             severity=_first_text(root, "severity"),
             urgency=_first_text(root, "urgency"),
-            sent=_first_text(root, "sent"),
+            sent=sent,
             expires=expires,
             area_desc=_first_text(root, "areaDesc"),
             source_url=source_url,
-            guid=_first_text(root, "identifier"),
+            guid=identifier,
             language=_first_text(root, "language"),
+            sender=sender,
+            status=status,
+            message_type=message_type,
+            scope=scope,
+            references=tuple(references),
+            certainty=_first_text(root, "certainty"),
+            effective=_first_text(root, "effective"),
+            onset=_first_text(root, "onset"),
+            description=_first_text(root, "description"),
+            instruction=_first_text(root, "instruction"),
+            response_types=_all_text(root, "responseType"),
+            provider_record={"cap_xml": xml_text},
         )
     except Exception:
         return None
@@ -322,6 +382,11 @@ def _sent_key(advisory: Advisory) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _reference_identity(reference: str) -> tuple[str, str]:
+    sender, identifier, _sent = reference.split(",", 2)
+    return sender, identifier
+
+
 async def active_advisories(
     client: Optional[httpx.AsyncClient], now: datetime, lang: Optional[str] = None
 ) -> AdvisoryFeed:
@@ -338,19 +403,35 @@ async def active_advisories(
     nothing. The caller must fail safe on the latter and never report "no advisories".
     """
     feed = await fetch_advisories(client, lang=lang)
-    active: list[Advisory] = []
-    for advisory in feed.advisories:
+    active_by_id: dict[tuple[str, str], Advisory] = {}
+    inventory_observed = False
+    for advisory in sorted(feed.advisories, key=_sent_key):
+        if advisory.status and advisory.status != "Actual":
+            continue
+        if advisory.scope and advisory.scope != "Public":
+            continue
+        if advisory.message_type in {"Alert", "Update", "Cancel"}:
+            inventory_observed = True
+        if advisory.message_type in {"Update", "Cancel"}:
+            for reference in advisory.references:
+                active_by_id.pop(_reference_identity(reference), None)
+        if advisory.message_type in {"Cancel", "Ack", "Error"}:
+            continue
         try:
             expires = datetime.fromisoformat(advisory.expires)
         except (ValueError, TypeError):
             continue
         if expires.tzinfo is None or expires <= now:
             continue
-        active.append(advisory)
+        active_by_id[(advisory.sender, advisory.guid)] = advisory
+    active = list(active_by_id.values())
     # Two-pass stable sort: sent-descending first, then severity rank ascending.
     active.sort(key=_sent_key, reverse=True)
     active.sort(key=lambda a: _SEVERITY_RANK.get(a.severity, _UNKNOWN_RANK))
-    return AdvisoryFeed(confirmed=feed.confirmed, advisories=active)
+    return AdvisoryFeed(
+        confirmed=feed.confirmed and inventory_observed,
+        advisories=active,
+    )
 
 
 # --- real-time fallback: the live Notify NYC "recent messages" endpoint ------
@@ -374,6 +455,7 @@ class RecentNote:
     issued_raw: str    # the feed's verbatim pubDate string
     source_url: str
     guid: str
+    provider_record: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -430,6 +512,7 @@ def _parse_recent_note(record: dict) -> Optional[RecentNote]:
         issued_raw=issued_raw,
         source_url=RECENT_MESSAGES_URL,
         guid=f"recent:{issued_raw}:{title}",
+        provider_record=dict(record),
     )
 
 

@@ -162,7 +162,9 @@ async def test_exact_full_generic_leading_facility_name_is_selectable(monkeypatc
         {"near": "Flushing, Queens", "kind": "cooling_center", "site": name}, ctx
     )
 
-    assert output.splitlines()[2].startswith(f"1. {name}")
+    assert next(line for line in output.splitlines() if line.startswith("1. ")).startswith(
+        f"1. {name}"
+    )
     assert ctx.resident_facts["/cooling/site"].value["key"] == "chosen"
 
 
@@ -185,7 +187,9 @@ async def test_resident_description_does_not_select_a_facility(monkeypatch):
 
     output = await lookup({"near": "Crown Heights", "kind": "all"}, ctx)
 
-    assert output.splitlines()[2].startswith("1. Brooklyn Central Library")
+    assert next(line for line in output.splitlines() if line.startswith("1. ")).startswith(
+        "1. Brooklyn Central Library"
+    )
     assert "/cooling/site" not in ctx.resident_facts
 
 
@@ -517,7 +521,7 @@ async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypat
     assert "Petco Turtle Bay" in output
     assert "activated cooling center" in output
     assert "scheduled open now" in output
-    assert "Resolved 'Rockefeller Center'" in output
+    assert output.startswith("NYC Cool Options near Rockefeller Center:")
     assert "Wednesday: 8a-10p" in output
     assert "Accessible: Yes" in output
     assert "Step-free entrance: not confirmed by the City accessibility field" in output
@@ -634,7 +638,12 @@ async def test_current_cooling_lookup_fails_closed_when_all_rows_are_closed(monk
     ctx = _context("Where can I cool down?")
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Flushing, Queens", "kind": "cooling_center"}, ctx
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "open_now_only": True,
+        },
+        ctx,
     )
 
     assert output == (
@@ -645,11 +654,34 @@ async def test_current_cooling_lookup_fails_closed_when_all_rows_are_closed(monk
 
 
 @pytest.mark.asyncio
+async def test_distance_lookup_returns_the_nearest_site_even_when_it_is_closed(monkeypatch):
+    row = {
+        **_site_row("closed", "Flushing Library"),
+        "cc_wed_open1": "09:00 AM",
+        "cc_wed_close1": "12:00 PM",
+    }
+    handler = _patch_lookup(monkeypatch, [row])
+
+    output = await handler(
+        {"near": "Flushing, Queens", "kind": "all", "limit": 1},
+        _context("How far is the closest cooling spot?"),
+    )
+
+    assert "Flushing Library" in output
+    assert "scheduled closed now" in output
+    assert "confirmed open now" not in output
+
+
+@pytest.mark.asyncio
 async def test_current_cooling_lookup_fails_closed_when_hours_are_unknown(monkeypatch):
     handler = _patch_lookup(monkeypatch, [_site_row("unknown", "Unknown Hours Center")])
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "open_now_only": True,
+        },
         _context("Where can I cool down?"),
     )
 
@@ -669,7 +701,7 @@ async def test_current_indoor_lookup_fails_closed_when_all_rows_are_closed(monke
     handler = _patch_lookup(monkeypatch, [row])
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "indoor"},
+        {"near": "Flushing, Queens", "kind": "indoor", "open_now_only": True},
         _context("Where can I cool down indoors now?"),
     )
 
@@ -691,7 +723,7 @@ async def test_current_indoor_lookup_keeps_a_confirmed_open_row(monkeypatch):
     handler = _patch_lookup(monkeypatch, [row])
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "indoor"},
+        {"near": "Flushing, Queens", "kind": "indoor", "open_now_only": True},
         _context("Where can I cool down indoors now?"),
     )
 
@@ -750,7 +782,7 @@ async def test_current_all_lookup_does_not_bypass_closed_row_guard(monkeypatch):
     handler = _patch_lookup(monkeypatch, rows)
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "all"},
+        {"near": "Flushing, Queens", "kind": "all", "open_now_only": True},
         _context("Where can I cool down now?"),
     )
 
@@ -802,7 +834,12 @@ async def test_current_cooling_lookup_keeps_a_confirmed_open_row(monkeypatch):
     ctx = _context("Where can I cool down?")
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Flushing, Queens", "kind": "cooling_center"}, ctx
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "open_now_only": True,
+        },
+        ctx,
     )
 
     assert "Open Cooling Center" in output
@@ -844,7 +881,11 @@ async def test_selected_site_not_confirmed_open_returns_current_alternative(
     }
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "open_now_only": True,
+        },
         _context("Is it open now?", facts),
     )
 
@@ -888,9 +929,10 @@ async def test_negated_open_alternative_does_not_claim_current_options_exist(mon
     output = await handler(
         {
             "near": "Flushing, Queens",
-            "kind": "cooling_center",
-            "exclude_sites": ["Other Open Center"],
-        },
+                "kind": "cooling_center",
+                "exclude_sites": ["Other Open Center"],
+                "open_now_only": True,
+            },
         _context("Is Selected Center open now? Not Other Open Center.", facts),
     )
 
@@ -920,7 +962,11 @@ async def test_selected_site_unknown_and_no_open_alternative_fails_closed(monkey
     }
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "cooling_center"},
+        {
+            "near": "Flushing, Queens",
+            "kind": "cooling_center",
+            "open_now_only": True,
+        },
         _context("Is it open now?", facts),
     )
 
@@ -948,6 +994,7 @@ async def test_selected_indoor_site_closed_returns_cited_complete_result(monkeyp
             "near": "Flushing, Queens",
             "site": "Selected Library",
             "kind": "indoor",
+            "open_now_only": True,
         },
         ctx,
     )
@@ -1069,7 +1116,13 @@ async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Columbia University", "kind": "cooling_center", "limit": 1}, ctx
+        {
+            "near": "Columbia University",
+            "kind": "cooling_center",
+            "limit": 1,
+            "open_now_only": True,
+        },
+        ctx,
     )
 
     assert "Petco 86th Lexington" in output
@@ -1279,7 +1332,7 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
             "near": "Flushing, Queens",
             "kind": "cooling_center",
             "limit": 2,
-            "on": "2026-07-25",
+            "visit_date": "2026-07-25",
         },
         ctx,
     )
@@ -1298,5 +1351,5 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
     assert "scheduled open now" not in output
 
     schema = cooling.get_tools()[0].parameters
-    assert schema["properties"]["on"]["format"] == "date"
-    assert "on" not in schema["required"]
+    assert schema["properties"]["visit_date"]["format"] == "date"
+    assert "visit_date" not in schema["required"]

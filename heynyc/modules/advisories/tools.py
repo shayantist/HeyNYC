@@ -76,11 +76,23 @@ def _advisory_snapshot(advisory: Advisory) -> dict:
     """The exact fields cited, hashed into the DATA citation for reproducibility/integrity."""
     return {
         "identifier": advisory.guid,
+        "sender": advisory.sender,
+        "status": advisory.status,
+        "msgType": advisory.message_type,
+        "scope": advisory.scope,
+        "references": list(advisory.references),
+        "language": advisory.language,
         "headline": advisory.headline,
         "event": advisory.event,
         "category": advisory.category,
         "severity": advisory.severity,
         "urgency": advisory.urgency,
+        "certainty": advisory.certainty,
+        "effective": advisory.effective,
+        "onset": advisory.onset,
+        "description": advisory.description,
+        "instruction": advisory.instruction,
+        "responseType": list(advisory.response_types),
         "sent": advisory.sent,
         "expires": advisory.expires,
         "areaDesc": advisory.area_desc,
@@ -90,13 +102,21 @@ def _advisory_snapshot(advisory: Advisory) -> dict:
 def _advisory_citation(ctx: ToolContext, advisory: Advisory) -> str:
     """Register a DATA citation grounded in the advisory's resolvable CAP XML (re-fetchable + hashed).
     `valid_as_of` is the advisory's own `sent` time, temporal provenance, never fetch time."""
+    normalized = _advisory_snapshot(advisory)
     provenance = data_provenance(
-        _advisory_snapshot(advisory), record_id=advisory.guid, field_pointer="/"
+        advisory.provider_record or normalized,
+        record_id=advisory.guid,
+        field_pointer="/",
+        derivation=normalized,
     )
     return ctx.citations.register(
         advisory.source_url,
-        snippet=(f"{advisory.headline or advisory.event}, in effect until {advisory.expires}. "
-                 f"Area: {advisory.area_desc or 'unknown'}"),
+        snippet=" ".join(filter(None, (
+            f"{advisory.headline or advisory.event}, in effect until {advisory.expires}.",
+            f"Area: {advisory.area_desc or 'unknown'}.",
+            advisory.description,
+            advisory.instruction,
+        ))),
         title=advisory.headline or advisory.event or "Notify NYC advisory",
         kind="DATA",
         valid_as_of=advisory.sent,
@@ -114,6 +134,18 @@ def _advisory_block(advisory: Advisory, cite: str) -> str:
     parts.append(f"  Area (per feed): {advisory.area_desc or 'NYC'}")
     if advisory.category:
         parts.append(f"  Category: {advisory.category}")
+    if advisory.certainty:
+        parts.append(f"  Certainty: {advisory.certainty}")
+    if advisory.effective:
+        parts.append(f"  Effective: {advisory.effective}")
+    if advisory.onset:
+        parts.append(f"  Onset: {advisory.onset}")
+    if advisory.response_types:
+        parts.append(f"  Response types: {', '.join(advisory.response_types)}")
+    if advisory.description:
+        parts.append(f"  {advisory.description}")
+    if advisory.instruction:
+        parts.append(f"  Instruction: {advisory.instruction}")
     parts.append(f"  As of: {advisory.sent or 'unknown'}")
     return "\n".join(parts)
 
@@ -124,8 +156,14 @@ def _register_recent_citation(
 ) -> str:
     """DATA citation for a live "recent messages" note, grounded in the resolvable Notify NYC endpoint.
     `valid_as_of` is the notification's own ISSUE time (temporal provenance), never fetch time."""
-    snapshot = {"title": note.title, "body": note.body, "pubDate": note.issued_raw}
-    provenance = data_provenance(snapshot, record_id=note.guid, field_pointer="/")
+    normalized = {"title": note.title, "body": note.body, "pubDate": note.issued_raw}
+    snapshot = note.provider_record or normalized
+    provenance = data_provenance(
+        snapshot,
+        record_id=note.guid,
+        field_pointer="/",
+        derivation=normalized,
+    )
     return citations.register(
         note.source_url,
         snippet=f"{note.title} (issued {note.issued_raw}). {note.body}".strip(),

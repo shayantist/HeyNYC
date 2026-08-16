@@ -7,7 +7,7 @@
   abstain: false
   capability: grounding
   invariants: {unique_choices: true}
-  tags: [F008, F244, general-chat, must-win]
+  tags: [F008, F244, F264, general-chat, must-win]
   utility_criterion: >-
     Offer up to five current useful choices with known date, time, place, cost or ticket context,
     and a direct event link. Exclude stale or duplicate listings, mention a material citywide

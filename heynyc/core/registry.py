@@ -168,6 +168,17 @@ class Registry:
                         tiers[key] = (tier, module.name)
         return tiers
 
+    def allows_unverified_search_excerpts(self, module_names: set[str]) -> bool:
+        """Only a fully known, all-low-stakes module set may use unknown search excerpts."""
+        modules = {
+            module.name: module
+            for module in self.modules
+            if not module.parent and module.name in module_names
+        }
+        return bool(modules) and modules.keys() == module_names and all(
+            not module.official_only for module in modules.values()
+        )
+
     def capability_blurbs(self, only: Optional[set[str]] = None) -> str:
         """Capability blurbs for the system prompt, one section per module.
 

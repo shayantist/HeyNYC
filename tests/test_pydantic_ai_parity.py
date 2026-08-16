@@ -17,6 +17,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from pydantic import BaseModel, ConfigDict
 from pydantic_ai import (
     Agent,
     CallDeferred,
@@ -46,6 +47,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RequestUsage
 
 from heynyc.channels.format import render
@@ -84,6 +86,7 @@ from heynyc.core.pydantic_runtime.runtime import (
     VERIFICATION_ABSTAIN_FALLBACK,
     _degraded_failure_text,
     _ModelTimingCapability,
+    _OutputCorrectionCapability,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
@@ -209,17 +212,20 @@ def test_benefits_situations_are_separate_on_demand_capabilities() -> None:
     )
     by_id = {capability.id: capability for capability in capabilities}
     benefits_instructions = "\n".join(by_id["benefits"].get_instructions())
-    instructions = "\n".join(
-        by_id["benefits-snap-work-rules"].get_instructions()
-    )
+    instructions = "\n".join(by_id["benefits-snap-work-rules"].get_instructions())
 
     assert "benefits-snap-work-rules" not in benefits_instructions
-    assert "SCREENING (when screen_access_nyc_eligibility is in your toolset)" not in benefits_instructions
-    assert "APPLYING (when prepare_snap_application is in your toolset)" not in benefits_instructions
+    assert (
+        "SCREENING (when screen_access_nyc_eligibility is in your toolset)"
+        not in benefits_instructions
+    )
+    assert (
+        "APPLYING (when prepare_snap_application is in your toolset)"
+        not in benefits_instructions
+    )
     assert "Only legal name and home address are required" not in benefits_instructions
     assert (
-        "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
-        in instructions
+        "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml" in instructions
     )
     assert "https://otda.ny.gov/oah/" in instructions
     assert (
@@ -231,24 +237,26 @@ def test_benefits_situations_are_separate_on_demand_capabilities() -> None:
 
 
 def test_module_capability_includes_its_manifest_situation_runbook() -> None:
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            description="Find benefits",
-            prompt="Use current official evidence.",
-            situations=[
-                SituationHint(
-                    name="snap_work_rules",
-                    definition="A resident says SNAP may stop because of a work requirement.",
-                    query="current NYC SNAP work requirement rules",
-                    urls=["https://access.nyc.gov/programs/snap/"],
-                    reminder="Answer the notice reason before discussing next steps.",
-                    high_stakes=True,
-                    focus_tools=["web_fetch"],
-                )
-            ],
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Find benefits",
+                prompt="Use current official evidence.",
+                situations=[
+                    SituationHint(
+                        name="snap_work_rules",
+                        definition="A resident says SNAP may stop because of a work requirement.",
+                        query="current NYC SNAP work requirement rules",
+                        urls=["https://access.nyc.gov/programs/snap/"],
+                        reminder="Answer the notice reason before discussing next steps.",
+                        high_stakes=True,
+                        focus_tools=["web_fetch"],
+                    )
+                ],
+            )
+        ]
+    )
 
     _, capabilities = build_module_capabilities(registry, {})
     by_id = {capability.id: capability for capability in capabilities}
@@ -257,7 +265,9 @@ def test_module_capability_includes_its_manifest_situation_runbook() -> None:
 
     assert "benefits-snap-work-rules" not in benefits_instructions
     assert "benefits-snap-work-rules" in instructions
-    assert "A resident says SNAP may stop because of a work requirement." in instructions
+    assert (
+        "A resident says SNAP may stop because of a work requirement." in instructions
+    )
     assert "current NYC SNAP work requirement rules" in instructions
     assert "https://access.nyc.gov/programs/snap/" in instructions
     assert "Answer the notice reason before discussing next steps." in instructions
@@ -265,17 +275,19 @@ def test_module_capability_includes_its_manifest_situation_runbook() -> None:
 
 
 def test_folded_situation_does_not_repeat_the_module_prefix() -> None:
-    registry = Registry([
-        ServiceModule(
-            name="immigration",
-            situations=[
-                SituationHint(
-                    name="immigration_enforcement_rights",
-                    definition="Know your rights during an enforcement encounter.",
-                )
-            ],
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="immigration",
+                situations=[
+                    SituationHint(
+                        name="immigration_enforcement_rights",
+                        definition="Know your rights during an enforcement encounter.",
+                    )
+                ],
+            )
+        ]
+    )
 
     _, capabilities = build_module_capabilities(registry, {})
     capability = next(item for item in capabilities if item.id != "immigration")
@@ -286,17 +298,19 @@ def test_folded_situation_does_not_repeat_the_module_prefix() -> None:
 
 
 def test_folded_situation_normalizes_an_underscored_module_prefix_once() -> None:
-    registry = Registry([
-        ServiceModule(
-            name="worker_rights",
-            situations=[
-                SituationHint(
-                    name="worker_rights_tip_theft",
-                    definition="Recover stolen tips.",
-                )
-            ],
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="worker_rights",
+                situations=[
+                    SituationHint(
+                        name="worker_rights_tip_theft",
+                        definition="Recover stolen tips.",
+                    )
+                ],
+            )
+        ]
+    )
 
     _, capabilities = build_module_capabilities(registry, {})
     capability = next(item for item in capabilities if item.id != "worker_rights")
@@ -310,13 +324,15 @@ def test_side_effecting_tool_gets_its_own_deferred_capability() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         return "done"
 
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            description="Find benefits",
-            prompt="Discover benefits without collecting application fields.",
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Find benefits",
+                prompt="Discover benefits without collecting application fields.",
+            )
+        ]
+    )
     discovery = Tool(
         name="benefits_search",
         description="Find benefits",
@@ -346,19 +362,12 @@ def test_side_effecting_tool_gets_its_own_deferred_capability() -> None:
             application.name: application,
         },
     )
-    by_id = {
-        capability.id: capability
-        for capability in capabilities
-    }
+    by_id = {capability.id: capability for capability in capabilities}
 
-    assert [
-        tool.name
-        for tool in by_id["benefits"].tools
-    ] == ["benefits_search"]
-    assert [
-        tool.name
-        for tool in by_id["benefits-prepare-application"].tools
-    ] == ["prepare_application"]
+    assert [tool.name for tool in by_id["benefits"].tools] == ["benefits_search"]
+    assert [tool.name for tool in by_id["benefits-prepare-application"].tools] == [
+        "prepare_application"
+    ]
     assert by_id["benefits-prepare-application"].defer_loading is True
 
 
@@ -673,7 +682,7 @@ def test_conversation_state_normalizes_persisted_safety_language(
 
     restored = runtime.conversation_from_state(json.dumps(payload).encode())
 
-    assert restored._safety_language is None
+    assert restored.state.safety_language is None
     assert json.loads(restored.dump_state())["safety_language"] is None
 
 
@@ -714,6 +723,7 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
         "_nyc_now",
         lambda: datetime(2026, 7, 15, 13, 0, tzinfo=ZoneInfo("America/New_York")),
     )
+
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.7580, -73.9780, "Flushing, Queens")
 
@@ -733,8 +743,12 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
                 args["site"] = "Raices Times Square"
             elif model_calls == 7:
                 args["site"] = "Closer Cooling Site"
-            return ModelResponse([ToolCallPart("find_cool_options", args, f"cool-{model_calls}")])
-        return ModelResponse([TextPart("Here are the verified cooling center details.")])
+            return ModelResponse(
+                [ToolCallPart("find_cool_options", args, f"cool-{model_calls}")]
+            )
+        return ModelResponse(
+            [TextPart("Here are the verified cooling center details.")]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -745,16 +759,16 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
     conversation = runtime.conversation()
 
     first = await conversation.send("What are my options near Flushing?")
-    assert "/cooling/site" not in conversation._resident_facts
-    assert conversation._resident_facts["/cooling/offered"].value == {
+    assert "/cooling/site" not in conversation.state.resident_facts
+    assert conversation.state.resident_facts["/cooling/offered"].value == {
         "keys": ["raices", "other"],
         "origin": [40.7580, -73.9780],
         "scope": {"kind": "cooling_center", "audience": "any"},
     }
-    followup = await conversation.send(
-        "好 就去那个最近的 Raices 那家 今天几点开门"
+    followup = await conversation.send("好 就去那个最近的 Raices 那家 今天几点开门")
+    first_text = "\n".join(
+        str(message.get("content") or "") for message in first.messages
     )
-    first_text = "\n".join(str(message.get("content") or "") for message in first.messages)
     followup_text = "\n".join(
         str(message.get("content") or "") for message in followup.messages
     )
@@ -763,7 +777,7 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
     assert "Closer Cooling Site" in first_text
     assert "Raices Times Square" in followup_text
     assert "Closer Cooling Site" not in followup_text
-    assert conversation._resident_facts["/cooling/site"].value == {
+    assert conversation.state.resident_facts["/cooling/site"].value == {
         "key": "raices",
         "origin": [40.7580, -73.9780],
     }
@@ -774,7 +788,7 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
     assert "Raices Times Square" in hours_text
     assert "Closer Cooling Site" not in hours_text
     conversation = runtime.conversation_from_state(conversation.dump_state())
-    assert conversation._resident_facts["/cooling/site"].value == {
+    assert conversation.state.resident_facts["/cooling/site"].value == {
         "key": "raices",
         "origin": [40.7580, -73.9780],
     }
@@ -785,7 +799,7 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
 
     assert "Closer Cooling Site" in changed_text
     assert "Raices Times Square" not in changed_text
-    assert conversation._resident_facts["/cooling/site"].value == {
+    assert conversation.state.resident_facts["/cooling/site"].value == {
         "key": "other",
         "origin": [40.7580, -73.9780],
     }
@@ -893,7 +907,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
                             "household": {"address": {"borough": "Queens"}},
                         },
                         "confirm-call",
-                    )
+                    ),
                 ]
             )
         assert model_calls == 4
@@ -935,7 +949,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
             "household": {"address": {"borough": "Queens"}},
         }
     ]
-    assert restored._resident_facts == {
+    assert restored.state.resident_facts == {
         "/profile/age": ResidentFact(
             value=35,
             source_turn_id="turn-2",
@@ -1124,9 +1138,7 @@ async def test_rejected_fact_confirmation_does_not_unlock_screening() -> None:
         Registry([]),
         model=FunctionModel(model),
         tools={"screen": source},
-        fact_review_model=TestModel(
-            custom_output_args={"profile": {"age": 35}}
-        ),
+        fact_review_model=TestModel(custom_output_args={"profile": {"age": 35}}),
         fact_review_model_name="review-model",
         structured_grounding=False,
     )
@@ -1137,7 +1149,7 @@ async def test_rejected_fact_confirmation_does_not_unlock_screening() -> None:
 
     assert result.text == "Please correct the profile."
     assert screened == []
-    assert conversation._resident_facts == {}
+    assert conversation.state.resident_facts == {}
 
 
 def test_resident_fact_ledger_distinguishes_false_from_missing_or_true() -> None:
@@ -1150,11 +1162,14 @@ def test_resident_fact_ledger_distinguishes_false_from_missing_or_true() -> None
         )
     }
 
-    assert _resident_fact_errors(
-        {"profile": {"worked": False}},
-        ctx,
-        ("/profile",),
-    ) == []
+    assert (
+        _resident_fact_errors(
+            {"profile": {"worked": False}},
+            ctx,
+            ("/profile",),
+        )
+        == []
+    )
     assert _resident_fact_errors(
         {"profile": {"worked": True}},
         ctx,
@@ -1240,13 +1255,15 @@ async def test_governed_workflow_shares_one_coherent_module_capability() -> None
     async def handler(args: dict, ctx: ToolContext) -> str:
         return "done"
 
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            description="Find benefits",
-            prompt="Offer screening only after the resident accepts.",
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Find benefits",
+                prompt="Offer screening only after the resident accepts.",
+            )
+        ]
+    )
     discovery = Tool(
         name="search_benefits",
         description="Find benefit programs",
@@ -1285,7 +1302,10 @@ async def test_governed_workflow_shares_one_coherent_module_capability() -> None
         if model_calls == 2:
             assert definitions["search_benefits"].defer_loading is False
             assert "screen_access_nyc_eligibility" not in definitions
-            assert definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading is False
+            assert (
+                definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading
+                is False
+            )
             return ModelResponse([TextPart("I can screen you if you want.")])
         raise AssertionError("Broad discovery must not load the governed workflow")
 
@@ -1322,13 +1342,15 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
         screened.append(args)
         return "done"
 
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            description="Find benefits",
-            prompt="Offer screening only after the resident accepts.",
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Find benefits",
+                prompt="Offer screening only after the resident accepts.",
+            )
+        ]
+    )
     screening = Tool(
         name="screen_access_nyc_eligibility",
         description=(
@@ -1361,27 +1383,37 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
         model_calls += 1
         definitions = {tool.name: tool for tool in info.function_tools}
         if model_calls == 1:
-            assert definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading is True
-            return ModelResponse([
-                ToolCallPart(
-                    "load_capability",
-                    {"id": "benefits"},
-                    "load-screening",
-                )
-            ])
+            assert (
+                definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading
+                is True
+            )
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        "load_capability",
+                        {"id": "benefits"},
+                        "load-screening",
+                    )
+                ]
+            )
         if model_calls == 2:
             assert "screen_access_nyc_eligibility" not in definitions
-            assert definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading is False
-            return ModelResponse([
-                ToolCallPart(
-                    "confirm_screen_access_nyc_eligibility_facts",
-                    {
-                        "household": {"householdSize": 1},
-                        "persons": [{"age": 35}],
-                    },
-                    "confirm-screening",
-                )
-            ])
+            assert (
+                definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading
+                is False
+            )
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        "confirm_screen_access_nyc_eligibility_facts",
+                        {
+                            "household": {"householdSize": 1},
+                            "persons": [{"age": 35}],
+                        },
+                        "confirm-screening",
+                    )
+                ]
+            )
         assert model_calls == 3
         assert "screen_access_nyc_eligibility" not in definitions
         return ModelResponse([TextPart("Let's check.")])
@@ -1429,8 +1461,7 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     assert "Do not load merely to offer it" in screening_description
     screening_instructions = "\n".join(screening_capability.get_instructions())
     assert (
-        "Do not ask follow-up questions only to replace them"
-        in screening_instructions
+        "Do not ask follow-up questions only to replace them" in screening_instructions
     )
     assert (
         "Do not ask for a separate prose confirmation before calling it"
@@ -1482,13 +1513,15 @@ async def test_governed_workflow_rejects_clarification_before_grounded_handoff()
     async def screening_handler(_args: dict, _ctx: ToolContext) -> str:
         return "unused"
 
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            description="Find benefits",
-            prompt="Offer screening only after the resident accepts.",
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Find benefits",
+                prompt="Offer screening only after the resident accepts.",
+            )
+        ]
+    )
     tools = {
         "search_benefits": Tool(
             name="search_benefits",
@@ -1519,37 +1552,43 @@ async def test_governed_workflow_rejects_clarification_before_grounded_handoff()
         nonlocal calls
         calls += 1
         if calls == 1:
-            return ModelResponse([
-                ToolCallPart(
-                    "load_capability",
-                    {"id": "benefits"},
-                    "load-screening",
-                )
-            ])
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        "load_capability",
+                        {"id": "benefits"},
+                        "load-screening",
+                    )
+                ]
+            )
         if calls == 2:
             clarification = next(
                 tool
                 for tool in info.output_tools
                 if tool.name == "clarification_request"
             )
-            return ModelResponse([
-                ToolCallPart(
-                    clarification.name,
-                    {"question": "What is your household size?"},
-                    "clarify-before-guidance",
-                )
-            ])
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        clarification.name,
+                        {"question": "What is your household size?"},
+                        "clarify-before-guidance",
+                    )
+                ]
+            )
         if calls == 3:
             assert _parts(messages, RetryPromptPart)
-            return ModelResponse([
-                ToolCallPart("search_benefits", {}, "official-guidance")
-            ])
-        return ModelResponse([
-            _cited_answer(
-                "To estimate eligibility, provide your household size. "
-                "What is your household size? {cite:S1}"
+            return ModelResponse(
+                [ToolCallPart("search_benefits", {}, "official-guidance")]
             )
-        ])
+        return ModelResponse(
+            [
+                _cited_answer(
+                    "To estimate eligibility, provide your household size. "
+                    "What is your household size? {cite:S1}"
+                )
+            ]
+        )
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -1576,13 +1615,15 @@ async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         return "done"
 
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            description="Find benefits",
-            prompt="Offer screening only after the resident accepts.",
-        )
-    ])
+    registry = Registry(
+        [
+            ServiceModule(
+                name="benefits",
+                description="Find benefits",
+                prompt="Offer screening only after the resident accepts.",
+            )
+        ]
+    )
     screening = Tool(
         name="screen_access_nyc_eligibility",
         description="Run a read-only eligibility estimate.",
@@ -1598,6 +1639,7 @@ async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
         module="benefits",
         resident_fact_scope=("/household", "/persons"),
     )
+
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         definitions = {tool.name: tool for tool in info.function_tools}
         request = next(
@@ -1605,17 +1647,22 @@ async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
             for message in reversed(messages)
             if isinstance(message, ModelRequest)
         )
-        seen.append((
-            request.instructions or "",
-            [
-                str(part.content)
-                for message in messages
-                if isinstance(message, ModelRequest)
-                for part in message.parts
-                if isinstance(part, UserPromptPart)
-            ],
-        ))
-        assert definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading is True
+        seen.append(
+            (
+                request.instructions or "",
+                [
+                    str(part.content)
+                    for message in messages
+                    if isinstance(message, ModelRequest)
+                    for part in message.parts
+                    if isinstance(part, UserPromptPart)
+                ],
+            )
+        )
+        assert (
+            definitions["confirm_screen_access_nyc_eligibility_facts"].defer_loading
+            is True
+        )
         return ModelResponse([TextPart("Tell me the household profile.")])
 
     runtime = PydanticRuntimeAdapter(
@@ -1693,14 +1740,11 @@ async def test_loaded_module_capability_survives_resident_turns(
         if model_calls == 3:
             assert definitions["screen_access_nyc_eligibility"].defer_loading is False
             assert any(
-                isinstance(part, ToolCallPart)
-                and part.tool_name == "load_capability"
+                isinstance(part, ToolCallPart) and part.tool_name == "load_capability"
                 for message in messages
                 for part in message.parts
             )
-            assert "Ready" in [
-                part.content for part in _parts(messages, TextPart)
-            ]
+            assert "Ready" in [part.content for part in _parts(messages, TextPart)]
             return ModelResponse(
                 [ToolCallPart("screen_access_nyc_eligibility", {}, "screen-call")]
             )
@@ -1726,16 +1770,14 @@ async def test_loaded_module_capability_survives_resident_turns(
         messages
         for messages in measured
         if any(
-            message["role"] == "user"
-            and message["content"] == "Yes, run the estimate."
+            message["role"] == "user" and message["content"] == "Yes, run the estimate."
             for message in messages
         )
     ]
     assert follow_up_measurements
     assert all(
         any(
-            message["role"] == "tool"
-            and message["tool_call_id"] == "load-first"
+            message["role"] == "tool" and message["tool_call_id"] == "load-first"
             for message in messages
         )
         for messages in follow_up_measurements
@@ -2050,8 +2092,7 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
         message
         for message in orphaned["messages"]
         if not any(
-            part.get("tool_call_id") == "approval-call"
-            for part in message["parts"]
+            part.get("tool_call_id") == "approval-call" for part in message["parts"]
         )
     ]
     with pytest.raises(ValueError, match="does not match message history"):
@@ -2073,9 +2114,9 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
     with pytest.raises(ValueError, match="Approval IDs must match"):
         await restored.resume_approvals({"different-call": approved})
     assert executed == []
-    restored._history = [
+    restored.state.messages = [
         message
-        for message in restored._history
+        for message in restored.state.messages
         if not _parts([message], ToolCallPart)
     ]
     with pytest.raises(ValueError, match="does not match message history"):
@@ -2136,8 +2177,7 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
                         "prepare_application",
                         {
                             "draft_id": (
-                                "**draft** _123_ ~final~ ```literal``` "
-                                "\N{EM DASH}"
+                                "**draft** _123_ ~final~ ```literal``` \N{EM DASH}"
                             )
                         },
                         "approval-call",
@@ -2168,8 +2208,7 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
         projected = "\n".join(render(pending, channel))
         assert "prepare_application" in projected
         assert (
-            '"draft_id": "**draft** _123_ ~final~ ```literal``` '
-            '\N{EM DASH}"'
+            '"draft_id": "**draft** _123_ ~final~ ```literal``` \N{EM DASH}"'
         ) in projected
         assert "Reply YES" in projected
     assert executed == []
@@ -2177,11 +2216,7 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
     assert restarted.conversation.pending_approvals == {
         "approval-call": {
             "tool_name": "prepare_application",
-            "args": {
-                "draft_id": (
-                    "**draft** _123_ ~final~ ```literal``` \N{EM DASH}"
-                )
-            },
+            "args": {"draft_id": ("**draft** _123_ ~final~ ```literal``` \N{EM DASH}")},
         }
     }
     with pytest.raises(ValueError, match="must match pending calls"):
@@ -2193,13 +2228,11 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
     result = await restarted.resume(approved)
 
     assert result.text == ("Prepared" if approved else "Cancelled")
-    expected = [
-        {
-            "draft_id": (
-                "**draft** _123_ ~final~ ```literal``` \N{EM DASH}"
-            )
-        }
-    ] if approved else []
+    expected = (
+        [{"draft_id": ("**draft** _123_ ~final~ ```literal``` \N{EM DASH}")}]
+        if approved
+        else []
+    )
     assert executed == expected
     with pytest.raises(ValueError, match="expired or already consumed"):
         await restarted.resume(True)
@@ -2513,7 +2546,9 @@ async def test_existing_grounding_guard_can_retry_as_output_validator() -> None:
     def enforce_grounding(run: RunContext[ToolContext], output: str) -> str:
         verdict = check_grounding(output, run.deps.citations.mapping(), run.deps.query)
         if verdict is not None and verdict.blocking:
-            raise ModelRetry("A deterministic grounding check rejected at least one claim.")
+            raise ModelRetry(
+                "A deterministic grounding check rejected at least one claim."
+            )
         return output
 
     result = await agent.run("Give me the official phone", deps=ctx)
@@ -2524,7 +2559,9 @@ async def test_existing_grounding_guard_can_retry_as_output_validator() -> None:
     assert "(212) 555-9999" not in str(retries[0].content)
 
 
-async def test_structured_grounding_retries_unknown_citations_and_normalizes_markers() -> None:
+async def test_structured_grounding_retries_unknown_citations_and_normalizes_markers() -> (
+    None
+):
     async def handler(args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -2551,12 +2588,14 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
         if calls == 3:
             feedback = str(_parts(messages, RetryPromptPart)[-1].content)
             assert "S999" not in feedback
-        return ModelResponse([
-            _cited_answer(
-                f"Call 311 for current case help. {{cite:{citation_id}}}",
-                f"answer-{calls}",
-            )
-        ])
+        return ModelResponse(
+            [
+                _cited_answer(
+                    f"Call 311 for current case help. {{cite:{citation_id}}}",
+                    f"answer-{calls}",
+                )
+            ]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -2608,23 +2647,27 @@ async def legacy_priority_tool_evidence_leads_a_mixed_intent_answer() -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            return ModelResponse([
-                ToolCallPart("urgent_help", {}, "urgent"),
-                ToolCallPart("estimate", {}, "estimate"),
-            ])
+            return ModelResponse(
+                [
+                    ToolCallPart("urgent_help", {}, "urgent"),
+                    ToolCallPart("estimate", {}, "estimate"),
+                ]
+            )
         if calls == 2:
             clarification = next(
                 tool
                 for tool in info.output_tools
                 if tool.name == "clarification_request"
             )
-            return ModelResponse([
-                ToolCallPart(
-                    clarification.name,
-                    {"question": "Which need should I answer first?"},
-                    "clarification-after-urgent",
-                )
-            ])
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        clarification.name,
+                        {"question": "Which need should I answer first?"},
+                        "clarification-after-urgent",
+                    )
+                ]
+            )
         grounded = next(
             tool for tool in info.output_tools if tool.name == "grounded_answer"
         )
@@ -2634,28 +2677,30 @@ async def legacy_priority_tool_evidence_leads_a_mixed_intent_answer() -> None:
             if calls == 3
             else "Use NYC FoodHelp now for immediate food help."
         )
-        return ModelResponse([
-            ToolCallPart(
-                grounded.name,
-                {
-                    "grounded_blocks": [
-                        {
-                            "text": first_text,
-                            "citation_ids": [first_citation],
-                        },
-                        {
-                            "text": (
-                                "Use NYC FoodHelp now for immediate food help."
-                                if calls == 3
-                                else "The benefits result is an estimate."
-                            ),
-                            "citation_ids": ["S1" if calls == 3 else "S2"],
-                        },
-                    ]
-                },
-                f"answer-{calls}",
-            )
-        ])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    grounded.name,
+                    {
+                        "grounded_blocks": [
+                            {
+                                "text": first_text,
+                                "citation_ids": [first_citation],
+                            },
+                            {
+                                "text": (
+                                    "Use NYC FoodHelp now for immediate food help."
+                                    if calls == 3
+                                    else "The benefits result is an estimate."
+                                ),
+                                "citation_ids": ["S1" if calls == 3 else "S2"],
+                            },
+                        ]
+                    },
+                    f"answer-{calls}",
+                )
+            ]
+        )
 
     tools = {
         "urgent_help": Tool(
@@ -2713,40 +2758,44 @@ async def legacy_priority_evidence_survives_approval_state_round_trip() -> None:
         nonlocal model_calls
         model_calls += 1
         if model_calls == 1:
-            return ModelResponse([
-                ToolCallPart("urgent_help", {}, "urgent"),
-                ToolCallPart("estimate", {}, "estimate-call"),
-            ])
+            return ModelResponse(
+                [
+                    ToolCallPart("urgent_help", {}, "urgent"),
+                    ToolCallPart("estimate", {}, "estimate-call"),
+                ]
+            )
         grounded = next(
             tool for tool in info.output_tools if tool.name == "grounded_answer"
         )
         priority_first = bool(_parts(messages, RetryPromptPart))
-        return ModelResponse([
-            ToolCallPart(
-                grounded.name,
-                {
-                    "grounded_blocks": [
-                        {
-                            "text": (
-                                "Use NYC FoodHelp now for immediate food help."
-                                if priority_first
-                                else "The benefits result is an estimate."
-                            ),
-                            "citation_ids": ["S1" if priority_first else "S2"],
-                        },
-                        {
-                            "text": (
-                                "The benefits result is an estimate."
-                                if priority_first
-                                else "Use NYC FoodHelp now for immediate food help."
-                            ),
-                            "citation_ids": ["S2" if priority_first else "S1"],
-                        },
-                    ]
-                },
-                f"answer-{model_calls}",
-            )
-        ])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    grounded.name,
+                    {
+                        "grounded_blocks": [
+                            {
+                                "text": (
+                                    "Use NYC FoodHelp now for immediate food help."
+                                    if priority_first
+                                    else "The benefits result is an estimate."
+                                ),
+                                "citation_ids": ["S1" if priority_first else "S2"],
+                            },
+                            {
+                                "text": (
+                                    "The benefits result is an estimate."
+                                    if priority_first
+                                    else "Use NYC FoodHelp now for immediate food help."
+                                ),
+                                "citation_ids": ["S2" if priority_first else "S1"],
+                            },
+                        ]
+                    },
+                    f"answer-{model_calls}",
+                )
+            ]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -2814,9 +2863,9 @@ async def test_structured_grounding_rejects_an_empty_answer() -> None:
     with pytest.raises(PydanticRunFailure) as caught:
         await runtime.run("Help")
 
-    assert calls == 2
+    assert calls == 3
     assert caught.value.partial_result.status == "error"
-    assert caught.value.partial_result.usage["requests"] == 2
+    assert caught.value.partial_result.usage["requests"] == 3
 
 
 async def test_native_clarification_accepts_a_question_only_response() -> None:
@@ -2825,16 +2874,19 @@ async def test_native_clarification_accepts_a_question_only_response() -> None:
         info: AgentInfo,
     ) -> ModelResponse:
         clarification = next(
-            tool for tool in info.output_tools
-            if tool.name == "clarification_request"
+            tool for tool in info.output_tools if tool.name == "clarification_request"
         )
-        return ModelResponse([
-            ToolCallPart(
-                clarification.name,
-                {"question": "¿En qué vecindario de NYC necesitas comida esta noche?"},
-                "clarify",
-            )
-        ])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    clarification.name,
+                    {
+                        "question": "¿En qué vecindario de NYC necesitas comida esta noche?"
+                    },
+                    "clarify",
+                )
+            ]
+        )
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -2869,9 +2921,7 @@ async def test_mechanical_validator_does_not_parse_phone_meaning() -> None:
         calls += 1
         if calls == 1:
             return ModelResponse([ToolCallPart("official_guidance", {}, "source-1")])
-        return ModelResponse([
-            _cited_answer("Call (212) 555-9999. {cite:S1}")
-        ])
+        return ModelResponse([_cited_answer("Call (212) 555-9999. {cite:S1}")])
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -2926,11 +2976,39 @@ async def legacy_explicit_semantic_verifier_owns_semantic_acceptance() -> None:
         if calls == 1:
             return ModelResponse([ToolCallPart("official_guidance", {}, "source-1")])
         if calls == 3:
-            return ModelResponse([
+            return ModelResponse(
+                [
+                    ToolCallPart(
+                        info.output_tools[0].name,
+                        {
+                            "grounded_blocks": [
+                                {
+                                    "text": "Call 311 for free help.",
+                                    "citation_ids": ["S1"],
+                                },
+                                {
+                                    "text": "The decision was issued July 28, 2099.",
+                                    "citation_ids": ["S3"],
+                                },
+                            ]
+                        },
+                        "final-3",
+                    )
+                ]
+            )
+        return ModelResponse(
+            [
                 ToolCallPart(
                     info.output_tools[0].name,
                     {
                         "grounded_blocks": [
+                            {
+                                "text": (
+                                    "The decision was issued July 28, 2099. "
+                                    "These sources do not determine your individual outcome."
+                                ),
+                                "citation_ids": ["S2"],
+                            },
                             {
                                 "text": "Call 311 for free help.",
                                 "citation_ids": ["S1"],
@@ -2941,34 +3019,10 @@ async def legacy_explicit_semantic_verifier_owns_semantic_acceptance() -> None:
                             },
                         ]
                     },
-                    "final-3",
+                    f"final-{calls}",
                 )
-            ])
-        return ModelResponse([
-            ToolCallPart(
-                info.output_tools[0].name,
-                {
-                    "grounded_blocks": [
-                        {
-                            "text": (
-                                "The decision was issued July 28, 2099. "
-                                "These sources do not determine your individual outcome."
-                            ),
-                            "citation_ids": ["S2"],
-                        },
-                        {
-                            "text": "Call 311 for free help.",
-                            "citation_ids": ["S1"],
-                        },
-                        {
-                            "text": "The decision was issued July 28, 2099.",
-                            "citation_ids": ["S3"],
-                        },
-                    ]
-                },
-                f"final-{calls}",
-            )
-        ])
+            ]
+        )
 
     class SupportingVerifier:
         def __init__(self) -> None:
@@ -2976,10 +3030,11 @@ async def legacy_explicit_semantic_verifier_owns_semantic_acceptance() -> None:
 
         async def arun_many(self, inputs):
             self.inputs.append(inputs)
-            return NLIBatchRun(verdicts=[
-                NLIVerdict(True, 1.0, "fake", "", "supported")
-                for _ in inputs
-            ])
+            return NLIBatchRun(
+                verdicts=[
+                    NLIVerdict(True, 1.0, "fake", "", "supported") for _ in inputs
+                ]
+            )
 
     verifier = SupportingVerifier()
     runtime = PydanticRuntimeAdapter(
@@ -3026,9 +3081,9 @@ async def test_mechanical_validator_does_not_semantically_reject_a_claim() -> No
         calls += 1
         if calls == 1:
             return ModelResponse([ToolCallPart("official_guidance", {}, "source-1")])
-        return ModelResponse([
-            _cited_answer("The decision was issued July 28, 2099. {cite:S1}")
-        ])
+        return ModelResponse(
+            [_cited_answer("The decision was issued July 28, 2099. {cite:S1}")]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3069,9 +3124,83 @@ async def test_discovery_evidence_cannot_support_resident_visible_text() -> None
             for part in message.parts
         ):
             return ModelResponse([ToolCallPart("search", {}, "search-1")])
-        return ModelResponse([
-            _cited_answer("Would you like me to check a different date? {cite:S1}")
-        ])
+        return ModelResponse(
+            [_cited_answer("Would you like me to check a different date? {cite:S1}")]
+        )
+
+    with pytest.raises(PydanticRunFailure) as caught:
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={
+                "search": Tool(
+                    name="search",
+                    description="Search for a source",
+                    parameters={"type": "object", "properties": {}},
+                    handler=handler,
+                )
+            },
+            structured_grounding=True,
+        ).run("What should I do?")
+
+    assert calls == 4
+    partial = caught.value.partial_result
+    assert partial.status == "error"
+    assert partial.diagnostics["validation_rejections"] == [
+        {"attempt": 1, "stage": "discovery_only", "citation_ids": ["S1"]},
+        {"attempt": 2, "stage": "discovery_only", "citation_ids": ["S1"]},
+        {"attempt": 3, "stage": "discovery_only", "citation_ids": ["S1"]},
+    ]
+
+
+async def test_output_correction_preserves_supported_sibling_without_more_tools() -> (
+    None
+):
+    async def handler(_args: dict, ctx: ToolContext) -> str:
+        supported = ctx.citations.register(
+            "https://official.example/schedule",
+            title="Official schedule",
+            kind="WEB",
+            snippet="The next game is Tuesday at 7 PM.",
+            provenance={
+                "evidence_grade": "authoritative_excerpt",
+                "source_tier": "authoritative",
+            },
+        )
+        discovery = ctx.citations.register(
+            "https://example.org/search-result",
+            title="Search result",
+            kind="WEB",
+            snippet="A search result names the captain.",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"Schedule {{cite:{supported}}}; captain lead {{cite:{discovery}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+        if calls == 2:
+            return ModelResponse(
+                [
+                    _cited_answer(
+                        "The next game is Tuesday at 7 PM. {cite:S1} "
+                        "The captain is Alex. {cite:S2}"
+                    )
+                ]
+            )
+        assert info.function_tools == []
+        return ModelResponse(
+            [
+                _cited_answer(
+                    "The next game is Tuesday at 7 PM. {cite:S1} "
+                    "I could not verify the current captain from answer-grade evidence."
+                )
+            ]
+        )
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3079,16 +3208,71 @@ async def test_discovery_evidence_cannot_support_resident_visible_text() -> None
         tools={
             "search": Tool(
                 name="search",
-                description="Search for a source",
+                description="Search for both requested facts",
                 parameters={"type": "object", "properties": {}},
                 handler=handler,
             )
         },
         structured_grounding=True,
-    ).run("What should I do?")
+    ).run("Who is the captain, and when is the next game?")
 
     assert calls == 3
-    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
+    assert result.status == "success"
+    assert result.text == (
+        "The next game is Tuesday at 7 PM. {cite:S1} "
+        "I could not verify the current captain from answer-grade evidence."
+    )
+
+
+async def test_output_correction_removes_tools_from_pydantic_tool_manager() -> None:
+    capability = _OutputCorrectionCapability()
+    tool_defs = [ToolDefinition(name="search")]
+
+    available = await capability.prepare_tools(
+        SimpleNamespace(messages=[]),
+        tool_defs,
+    )
+    blocked = await capability.prepare_tools(
+        SimpleNamespace(
+            messages=[
+                ModelRequest(
+                    parts=[
+                        RetryPromptPart(
+                            "Use only answer-grade citations.",
+                            tool_name="final_answer",
+                        )
+                    ]
+                )
+            ]
+        ),
+        tool_defs,
+    )
+    clarification_retry = await capability.prepare_tools(
+        SimpleNamespace(
+            messages=[
+                ModelRequest(
+                    parts=[
+                        RetryPromptPart(
+                            "Retrieve the required guidance first.",
+                            tool_name="clarification_request",
+                        )
+                    ]
+                )
+            ]
+        ),
+        tool_defs,
+    )
+    unnamed_retry = await capability.prepare_tools(
+        SimpleNamespace(
+            messages=[ModelRequest(parts=[RetryPromptPart("Retry another output.")])]
+        ),
+        tool_defs,
+    )
+
+    assert available == tool_defs
+    assert blocked == []
+    assert clarification_retry == tool_defs
+    assert unnamed_retry == tool_defs
 
 
 async def legacy_structured_grounding_does_not_fallback_before_retrieval() -> None:
@@ -3118,21 +3302,24 @@ async def legacy_structured_grounding_does_not_fallback_before_retrieval() -> No
         if calls == 2:
             return ModelResponse([ToolCallPart("search", {}, "search-1")])
         grounded = next(
-            tool for tool in info.output_tools
-            if tool.name == "grounded_answer"
+            tool for tool in info.output_tools if tool.name == "grounded_answer"
         )
-        return ModelResponse([
-            ToolCallPart(
-                grounded.name,
-                {
-                    "grounded_blocks": [{
-                        "text": "Would you like me to check a different source?",
-                        "citation_ids": ["S1"],
-                    }],
-                },
-                f"answer-{calls}",
-            )
-        ])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    grounded.name,
+                    {
+                        "grounded_blocks": [
+                            {
+                                "text": "Would you like me to check a different source?",
+                                "citation_ids": ["S1"],
+                            }
+                        ],
+                    },
+                    f"answer-{calls}",
+                )
+            ]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3180,7 +3367,7 @@ async def test_approval_resume_retains_usage_after_output_retry_failure() -> Non
     )
     conversation = runtime.conversation()
     pending = await conversation.send("Do it")
-    conversation._response_priority_citation_ids.add("resident-secret")
+    conversation.state.response_priority_citation_ids.add("resident-secret")
 
     assert pending.status == "approval_required"
     with pytest.raises(PydanticRunFailure) as caught:
@@ -3188,12 +3375,12 @@ async def test_approval_resume_retains_usage_after_output_retry_failure() -> Non
 
     partial = caught.value.partial_result
     assert partial.status == "error"
-    assert partial.usage["input_tokens"] == 20
-    assert partial.usage["output_tokens"] == 10
-    assert partial.usage["requests"] == 2
-    assert partial.usage["retry_kinds"] == ["unknown_citation"]
+    assert partial.usage["input_tokens"] == 30
+    assert partial.usage["output_tokens"] == 15
+    assert partial.usage["requests"] == 3
+    assert partial.usage["retry_kinds"] == ["unknown_citation", "unknown_citation"]
     assert "resident-secret" not in json.dumps(partial.usage)
-    assert conversation._response_priority_citation_ids == set()
+    assert conversation.state.response_priority_citation_ids == set()
 
 
 async def test_approval_resume_timeout_preserves_pending_state() -> None:
@@ -3228,7 +3415,7 @@ async def test_approval_resume_timeout_preserves_pending_state() -> None:
     )
     conversation = runtime.conversation()
     await conversation.send("Do it")
-    conversation._response_priority_citation_ids.add("S1")
+    conversation.state.response_priority_citation_ids.add("S1")
     before = conversation.dump_state()
 
     with pytest.raises(PydanticRunFailure):
@@ -3261,9 +3448,9 @@ async def test_approval_resume_honors_runtime_request_limit() -> None:
         calls += 1
         if calls == 1:
             return ModelResponse([ToolCallPart("act", {}, "act-call")])
-        return ModelResponse([
-            _cited_answer("Unsupported answer. {cite:S999}", f"answer-{calls}")
-        ])
+        return ModelResponse(
+            [_cited_answer("Unsupported answer. {cite:S999}", f"answer-{calls}")]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3317,12 +3504,14 @@ async def test_successful_approval_resume_keeps_retry_diagnostics() -> None:
         if calls == 1:
             return ModelResponse([ToolCallPart("act", {}, "act-call")])
         citation_id = "S999" if calls == 2 else "S1"
-        return ModelResponse([
-            _cited_answer(
-                f"The approved action finished. {{cite:{citation_id}}}",
-                f"answer-{calls}",
-            )
-        ])
+        return ModelResponse(
+            [
+                _cited_answer(
+                    f"The approved action finished. {{cite:{citation_id}}}",
+                    f"answer-{calls}",
+                )
+            ]
+        )
 
     conversation = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3369,10 +3558,12 @@ def test_structured_grounding_history_keeps_only_the_accepted_reply() -> None:
                 ToolCallPart(
                     "grounded_answer",
                     {
-                        "grounded_blocks": [{
-                            "text": "Which service do you need?",
-                            "citation_ids": ["S1"],
-                        }],
+                        "grounded_blocks": [
+                            {
+                                "text": "Which service do you need?",
+                                "citation_ids": ["S1"],
+                            }
+                        ],
                     },
                     "accepted",
                 )
@@ -3475,9 +3666,15 @@ async def test_runtime_followup_reinjects_system_prompt_without_text_backstop() 
         nonlocal calls
         calls += 1
         assert _parts(messages, SystemPromptPart)
-        return ModelResponse([TextPart(
-            "Call 911 right now" if calls == 1 else "I can explain NYC services."
-        )])
+        return ModelResponse(
+            [
+                TextPart(
+                    "Call 911 right now"
+                    if calls == 1
+                    else "I can explain NYC services."
+                )
+            ]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3654,11 +3851,11 @@ async def test_eval_retains_usage_after_output_retry_failure() -> None:
 
     result = await run_case(runtime, case)
 
-    assert result.error == "Exceeded maximum output retries (1)"
-    assert result.usage["input_tokens"] == 20
-    assert result.usage["output_tokens"] == 10
-    assert result.usage["requests"] == 2
-    assert result.usage["retry_kinds"] == ["unknown_citation"]
+    assert result.error == "Exceeded maximum output retries (2)"
+    assert result.usage["input_tokens"] == 30
+    assert result.usage["output_tokens"] == 15
+    assert result.usage["requests"] == 3
+    assert result.usage["retry_kinds"] == ["unknown_citation", "unknown_citation"]
     assert result.turn_results[0].status == "error"
     assert "resident-secret" not in json.dumps(result.usage)
     assert result.diagnostics == {
@@ -3666,6 +3863,7 @@ async def test_eval_retains_usage_after_output_retry_failure() -> None:
         "validation_rejections": [
             {"attempt": 1, "stage": "unknown_citation"},
             {"attempt": 2, "stage": "unknown_citation"},
+            {"attempt": 3, "stage": "unknown_citation"},
         ],
     }
     assert "resident-secret" not in json.dumps(result.diagnostics)
@@ -3812,13 +4010,15 @@ async def test_runtime_injects_current_awareness_each_turn() -> None:
             if isinstance(message, ModelRequest)
         )
         seen.append(request.instructions or "")
-        return ModelResponse([
-            ToolCallPart(
-                "final_answer",
-                {"answer": "Current citywide advisory. {cite:S1}"},
-                "final-awareness",
-            )
-        ])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    "final_answer",
+                    {"answer": "Current citywide advisory. {cite:S1}"},
+                    "final-awareness",
+                )
+            ]
+        )
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3843,8 +4043,7 @@ async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:
 
     async def awareness(_citations: CitationRegistry) -> str:
         return (
-            "- 07/26/2026 10:00: Heat Advisory in effect for NYC\n"
-            "  full alert payload"
+            "- 07/26/2026 10:00: Heat Advisory in effect for NYC\n  full alert payload"
         )
 
     async def advisory(args: dict, ctx: ToolContext) -> str:
@@ -3867,9 +4066,9 @@ async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:
         )
         seen_instructions.append(request.instructions or "")
         if calls in {1, 3}:
-            return ModelResponse([
-                ToolCallPart("check_notify_nyc", {}, f"notify-{calls}")
-            ])
+            return ModelResponse(
+                [ToolCallPart("check_notify_nyc", {}, f"notify-{calls}")]
+            )
         if calls == 2:
             return ModelResponse([TextPart("Heat advisory. {cite:S1}")])
         return ModelResponse([TextPart("Only the route delta")])
@@ -4098,7 +4297,7 @@ async def test_native_history_compacts_and_serializes_structured_continuity() ->
         compact_context=compact,
     )
     conversation = runtime.conversation()
-    conversation._resident_facts = {
+    conversation.state.resident_facts = {
         "/food_pantries/location": ResidentFact(
             value="Jackson Heights",
             source_turn_id="turn-1",
@@ -4110,15 +4309,18 @@ async def test_native_history_compacts_and_serializes_structured_continuity() ->
             status="confirmed",
         ),
     }
-    assert conversation._citations.register(
-        "https://www.nyc.gov/food",
-        title="NYC food help",
-    ) == "S1"
-    discarded = conversation._citations.register(
+    assert (
+        conversation.state.citations.register(
+            "https://www.nyc.gov/food",
+            title="NYC food help",
+        )
+        == "S1"
+    )
+    discarded = conversation.state.citations.register(
         "https://www.nyc.gov/discarded",
         title="Discarded source",
     )
-    conversation._citations.discard({discarded})
+    conversation.state.citations.discard({discarded})
 
     await conversation.send(
         "Find food and cooling help near home. Which locations are open tonight?"
@@ -4127,38 +4329,43 @@ async def test_native_history_compacts_and_serializes_structured_continuity() ->
     await conversation.send("Trigger compaction")
     restored = runtime.conversation_from_state(conversation.dump_state())
 
-    assert compacted == [[
-        {
-            "role": "user",
-            "content": (
-                "Find food and cooling help near home. "
-                "Which locations are open tonight?"
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": (
-                "Answer to Find food and cooling help near home. "
-                "Which locations are open tonight?"
-            ),
-        },
-    ]]
-    assert restored.continuity == ContinuityRecord(
+    assert compacted == [
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Find food and cooling help near home. "
+                    "Which locations are open tonight?"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Answer to Find food and cooling help near home. "
+                    "Which locations are open tonight?"
+                ),
+            },
+        ]
+    ]
+    assert restored.state.continuity == ContinuityRecord(
         goal="Find food and cooling help near home",
         unresolved_questions=["Which locations are open tonight?"],
     )
-    assert restored._resident_facts == conversation._resident_facts
-    assert restored._citations.mapping() == conversation._citations.mapping()
-    assert restored._citations.register(
-        "https://www.nyc.gov/cooling",
-        title="NYC cooling help",
-    ) == "S3"
-    request = next(
-        message
-        for message in reversed(seen[-1])
-        if isinstance(message, ModelRequest)
+    assert restored.state.resident_facts == conversation.state.resident_facts
+    assert restored.state.citations.mapping() == conversation.state.citations.mapping()
+    assert (
+        restored.state.citations.register(
+            "https://www.nyc.gov/cooling",
+            title="NYC cooling help",
+        )
+        == "S3"
     )
-    assert continuity_reminder(restored.continuity) in (request.instructions or "")
+    request = next(
+        message for message in reversed(seen[-1]) if isinstance(message, ModelRequest)
+    )
+    assert continuity_reminder(restored.state.continuity) in (
+        request.instructions or ""
+    )
     assert _parts(seen[-1], UserPromptPart)[-2].content == (
         "Keep the newest completed exchange"
     )
@@ -4205,7 +4412,7 @@ async def test_restored_continuity_compacts_again_and_is_injected_once() -> None
     await restored.send("Compact after restore")
     await restored.send("Later turn")
 
-    reminder = continuity_reminder(restored.continuity)
+    reminder = continuity_reminder(restored.state.continuity)
     for messages in seen[2:]:
         request = next(
             message
@@ -4274,10 +4481,12 @@ async def test_current_request_triggers_compaction_when_prior_history_alone_fits
     result = await conversation.send("Third")
 
     assert result.text == "Answer to Third"
-    assert compacted == [[
-        {"role": "user", "content": "First"},
-        {"role": "assistant", "content": "Answer to First"},
-    ]]
+    assert compacted == [
+        [
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Answer to First"},
+        ]
+    ]
 
 
 async def test_final_request_measurement_includes_system_prompt() -> None:
@@ -4304,7 +4513,9 @@ async def test_final_request_measurement_includes_system_prompt() -> None:
         await runtime.conversation().send("x")
 
 
-async def test_processed_history_preserves_system_prompt_and_full_run_messages() -> None:
+async def test_processed_history_preserves_system_prompt_and_full_run_messages() -> (
+    None
+):
     seen: list[list[ModelMessage]] = []
 
     def measure(history: list[dict], continuity: ContinuityRecord | None) -> int:
@@ -4337,15 +4548,15 @@ async def test_processed_history_preserves_system_prompt_and_full_run_messages()
 
     assert _parts(seen[-1], SystemPromptPart)[0].content == "Stable safety rules"
     assert len(_parts(seen[-1], UserPromptPart)) == 2
-    assert [message["content"] for message in result.messages if message["role"] == "user"] == [
-        "Third"
-    ]
+    assert [
+        message["content"] for message in result.messages if message["role"] == "user"
+    ] == ["Third"]
     assert any(
         message["content"] == "Answer to Third"
         for message in result.messages
         if message["role"] == "assistant"
     )
-    assert len(_parts(conversation._history, UserPromptPart)) == 3
+    assert len(_parts(conversation.state.messages, UserPromptPart)) == 3
 
 
 async def test_completed_tool_turns_collapse_but_pending_calls_remain_exact() -> None:
@@ -4395,27 +4606,25 @@ async def test_completed_tool_turns_collapse_but_pending_calls_remain_exact() ->
     assert pending.status == "approval_required"
     assert any(
         part.tool_call_id == "call-2"
-        for part in _parts(conversation._history, ToolCallPart)
+        for part in _parts(conversation.state.messages, ToolCallPart)
     )
     await conversation.resume_approvals({"call-2": True})
 
     assert executed == ["one", "two"]
-    assert [part.content for part in _parts(conversation._history, UserPromptPart)] == [
+    assert [
+        part.content for part in _parts(conversation.state.messages, UserPromptPart)
+    ] == [
         "First",
         "Pending",
     ]
-    assert [part.content for part in _parts(conversation._history, TextPart)] == [
+    assert [part.content for part in _parts(conversation.state.messages, TextPart)] == [
         "Finished First",
         "Finished Pending",
     ]
-    assert len(_parts(conversation._history, ToolCallPart)) == 2
-    assert len(_parts(conversation._history, ToolReturnPart)) == 2
-    assert "call-2" in [
-        part.tool_call_id for part in _parts(seen[-1], ToolCallPart)
-    ]
-    assert "call-2" in [
-        part.tool_call_id for part in _parts(seen[-1], ToolReturnPart)
-    ]
+    assert len(_parts(conversation.state.messages, ToolCallPart)) == 2
+    assert len(_parts(conversation.state.messages, ToolReturnPart)) == 2
+    assert "call-2" in [part.tool_call_id for part in _parts(seen[-1], ToolCallPart)]
+    assert "call-2" in [part.tool_call_id for part in _parts(seen[-1], ToolReturnPart)]
 
 
 async def test_runtime_projects_native_request_limit_as_max_turns() -> None:
@@ -4493,6 +4702,344 @@ async def test_runtime_result_uses_existing_sms_and_whatsapp_renderers() -> None
     ]
 
 
+async def test_runtime_preserves_typed_action_links_for_channel_rendering() -> None:
+    handler_calls = 0
+
+    class LocationRecord(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        citation_id: str
+        action_url: str
+
+    class LocationResult(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        records: list[LocationRecord]
+
+    async def handler(_args: dict, ctx: ToolContext) -> LocationResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        cite_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/resource/abcd-1234/row.json",
+            title="Example clinic",
+            kind="DATA",
+            provenance={
+                "snapshot": {"lat": 40.7, "lon": -73.9},
+                "derivation": {
+                    "limitations": (
+                        "These are regular hours. Confirm holiday or temporary schedule "
+                        "exceptions before traveling."
+                    ),
+                },
+            },
+        )
+        return LocationResult(
+            records=[
+                LocationRecord(
+                    citation_id=cite_id,
+                    action_url="https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9",
+                ),
+                LocationRecord(
+                    citation_id="S999",
+                    action_url="https://www.google.com/maps/dir/?api=1&destination=40.8,-73.8",
+                ),
+            ]
+        )
+
+    source = Tool(
+        name="find_locations",
+        description="Find locations",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        return_type=LocationResult,
+    )
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        if handler_calls == 0:
+            return ModelResponse([ToolCallPart("find_locations", {}, "find-1")])
+        return ModelResponse([TextPart("Example clinic {cite:S1}.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"find_locations": source},
+    )
+
+    conversation = runtime.conversation()
+    result = await conversation.send("Find a clinic")
+
+    assert result.text == "Example clinic {cite:S1}."
+    assert [action.model_dump() for action in result.action_links] == [
+        {
+            "citation_id": "S1",
+            "url": "https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9",
+            "label": "Directions",
+        }
+    ]
+    rendered = render(
+        result,
+        "sms_twilio",
+    )[0]
+    assert "Directions - https://www.google.com/maps/dir/" in rendered
+    assert "Source note - These are regular hours." in rendered
+
+    followup = await conversation.send("Send me that clinic again")
+
+    assert followup.text == "Example clinic {cite:S1}."
+    assert handler_calls == 1
+    assert [action.model_dump() for action in followup.action_links] == [
+        {
+            "citation_id": "S1",
+            "url": "https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9",
+            "label": "Directions",
+        }
+    ]
+    rendered_followup = render(followup, "sms_twilio")[0]
+    assert (
+        "Directions - https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9"
+        in (rendered_followup)
+    )
+    assert "maps/search" not in rendered_followup
+
+    restored = runtime.conversation_from_state(conversation.dump_state())
+    restored_followup = await restored.send("One more time")
+
+    assert handler_calls == 1
+    assert [action.url for action in restored_followup.action_links] == [
+        "https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9"
+    ]
+
+
+async def test_typed_location_result_requires_explicit_primary_record() -> None:
+    class LocationRecord(BaseModel):
+        citation_id: str
+
+    class LocationResult(BaseModel):
+        origin_citation_id: str
+        primary_citation_id: str
+        records: list[LocationRecord]
+
+    tool_calls = 0
+    answer_attempts = 0
+
+    async def handler(_args: dict, ctx: ToolContext) -> LocationResult:
+        nonlocal tool_calls
+        tool_calls += 1
+        origin = ctx.citations.register(
+            "https://nominatim.openstreetmap.org/ui/search.html?q=Flushing",
+            title="Resolved origin",
+            kind="DATA",
+            provenance={
+                "snapshot": {
+                    "display_name": "Flushing",
+                    "lat": 40.758,
+                    "lon": -73.83,
+                }
+            },
+        )
+        records = [
+            LocationRecord(
+                citation_id=ctx.citations.register(
+                    f"https://data.cityofnewyork.us/resource/example/{index}.json",
+                    title=f"Location {index}",
+                    kind="DATA",
+                    provenance={"snapshot": {"name": f"Location {index}"}},
+                )
+            )
+            for index in (1, 2)
+        ]
+        return LocationResult(
+            origin_citation_id=origin,
+            primary_citation_id=records[1].citation_id,
+            records=records,
+        )
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal answer_attempts
+        if tool_calls == 0:
+            return ModelResponse([ToolCallPart("find_locations", {}, "find-1")])
+        answer_attempts += 1
+        if answer_attempts == 1:
+            return ModelResponse([TextPart("Location 1 {cite:S2}.")])
+        return ModelResponse([TextPart("Location 2 {cite:S3}.")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_locations": Tool(
+                name="find_locations",
+                description="Find selected locations",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                return_type=LocationResult,
+            ),
+        },
+    )
+    conversation = runtime.conversation()
+    result = await conversation.send("Find locations near Flushing")
+
+    assert tool_calls == 1
+    assert answer_attempts == 2
+    assert result.text == "Location 2 {cite:S3}."
+    assert result.diagnostics["validation_rejections"] == [
+        {
+            "attempt": 1,
+            "stage": "response_coverage",
+            "citation_ids": ["S3"],
+        }
+    ]
+
+
+async def test_empty_typed_location_result_still_requires_its_resolved_origin() -> None:
+    class LocationResult(BaseModel):
+        origin_citation_id: str | None
+        records: list[dict]
+
+    tool_calls = 0
+    answer_attempts = 0
+
+    async def handler(_args: dict, ctx: ToolContext) -> LocationResult:
+        nonlocal tool_calls
+        tool_calls += 1
+        origin = ctx.citations.register(
+            "https://nominatim.openstreetmap.org/ui/search.html?q=Flushing",
+            title="Resolved origin",
+            kind="DATA",
+            provenance={
+                "snapshot": {
+                    "display_name": "Flushing",
+                    "lat": 40.758,
+                    "lon": -73.83,
+                }
+            },
+        )
+        return LocationResult(origin_citation_id=origin, records=[])
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal answer_attempts
+        if tool_calls == 0:
+            return ModelResponse([ToolCallPart("find_locations", {}, "find-1")])
+        answer_attempts += 1
+        if answer_attempts == 1:
+            return ModelResponse([TextPart("I did not find a matching location.")])
+        return ModelResponse(
+            [TextPart("Near Flushing {cite:S1}, I did not find a matching location.")]
+        )
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_locations": Tool(
+                name="find_locations",
+                description="Find selected locations",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                return_type=LocationResult,
+            ),
+        },
+    )
+    conversation = runtime.conversation()
+    result = await conversation.send("Find locations near Flushing")
+
+    assert tool_calls == 1
+    assert answer_attempts == 2
+    assert "Directions:" not in result.text
+    assert result.diagnostics["validation_rejections"] == [
+        {
+            "attempt": 1,
+            "stage": "response_coverage",
+            "citation_ids": ["S1"],
+        }
+    ]
+
+    followup = await conversation.send("Which place did you resolve?")
+    assert tool_calls == 1
+    assert "Directions:" not in followup.text
+
+    restored = runtime.conversation_from_state(conversation.dump_state())
+    restored_followup = await restored.send("Repeat that resolved place")
+    assert tool_calls == 1
+    assert "Directions:" not in restored_followup.text
+
+
+async def test_empty_typed_location_result_without_origin_adds_no_coverage_requirement() -> (
+    None
+):
+    class LocationResult(BaseModel):
+        origin_citation_id: str | None
+        records: list[dict]
+
+    tool_calls = 0
+    answer_attempts = 0
+
+    async def handler(_args: dict, _ctx: ToolContext) -> LocationResult:
+        nonlocal tool_calls
+        tool_calls += 1
+        return LocationResult(origin_citation_id=None, records=[])
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal answer_attempts
+        if tool_calls == 0:
+            return ModelResponse([ToolCallPart("find_locations", {}, "find-1")])
+        answer_attempts += 1
+        return ModelResponse([TextPart("I did not find a matching location.")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "find_locations": Tool(
+                name="find_locations",
+                description="Find selected locations",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                return_type=LocationResult,
+            ),
+        },
+    ).run("Find locations")
+
+    assert tool_calls == 1
+    assert answer_attempts == 1
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_untyped_dict_result_keeps_legacy_location_action_fallback() -> None:
+    tool_calls = 0
+
+    async def handler(_args: dict, ctx: ToolContext) -> dict:
+        nonlocal tool_calls
+        tool_calls += 1
+        citation_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/resource/example/1.json",
+            title="Legacy location",
+            kind="DATA",
+            provenance={"snapshot": {"lat": 40.758, "lon": -73.83}},
+        )
+        return {"citation_id": citation_id, "name": "Legacy location"}
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        if tool_calls == 0:
+            return ModelResponse([ToolCallPart("legacy_lookup", {}, "lookup-1")])
+        return ModelResponse([TextPart("Legacy location {cite:S1}.")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "legacy_lookup": Tool(
+                name="legacy_lookup",
+                description="Return one legacy location",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+            ),
+        },
+    ).run("Find the legacy location")
+
+    assert "Directions:" in result.text
+
+
 async def test_runtime_otel_excludes_resident_content() -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -4565,10 +5112,9 @@ async def test_runtime_does_not_apply_an_arbitrary_default_tool_call_limit() -> 
         nonlocal model_calls
         model_calls += 1
         if model_calls == 1:
-            return ModelResponse([
-                ToolCallPart("probe", {}, f"probe-{index}")
-                for index in range(11)
-            ])
+            return ModelResponse(
+                [ToolCallPart("probe", {}, f"probe-{index}") for index in range(11)]
+            )
         return ModelResponse([TextPart("Done")])
 
     runtime = build_runtime(
@@ -4591,7 +5137,9 @@ async def test_runtime_does_not_apply_an_arbitrary_default_tool_call_limit() -> 
     assert result.status == "success"
 
 
-async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_rounds() -> None:
+async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_rounds() -> (
+    None
+):
     calls = 0
 
     async def handler(args: dict, ctx: ToolContext) -> str:
@@ -4785,10 +5333,12 @@ async def test_default_memory_usage_is_merged_and_isolated_per_conversation(
         independent.send("Only"),
     )
 
-    assert compacted == [[
-        {"role": "user", "content": "First"},
-        {"role": "assistant", "content": "Done"},
-    ]]
+    assert compacted == [
+        [
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Done"},
+        ]
+    ]
     assert compacted_result.usage["memory_compactions"] == 1
     assert compacted_result.usage["memory_model"] == "openai/gpt-5.4-nano"
     assert compacted_result.usage["input_tokens"] == 17
@@ -4964,9 +5514,7 @@ async def test_a_stalled_model_request_is_not_replayed_with_full_context() -> No
     capability = _ModelTimingCapability(request_timeout_s=0.05)
 
     with pytest.raises(TimeoutError):
-        await capability.wrap_model_request(
-            None, request_context=None, handler=handler
-        )
+        await capability.wrap_model_request(None, request_context=None, handler=handler)
 
     assert attempts == 1
     assert capability.stalled_requests == 1
@@ -5063,9 +5611,10 @@ def test_failure_text_is_unchanged_when_nothing_authoritative_was_reached() -> N
         provenance={"evidence_grade": "discovery"},
     )
 
-    assert _degraded_failure_text(
-        TEMPORARY_FAILURE_FALLBACK, citations
-    ) == TEMPORARY_FAILURE_FALLBACK
+    assert (
+        _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+        == TEMPORARY_FAILURE_FALLBACK
+    )
 
 
 async def test_a_healthy_model_request_is_not_retried() -> None:
@@ -5080,9 +5629,10 @@ async def test_a_healthy_model_request_is_not_retried() -> None:
 
     capability = _ModelTimingCapability(request_timeout_s=5)
 
-    assert await capability.wrap_model_request(
-        None, request_context=None, handler=handler
-    ) is response
+    assert (
+        await capability.wrap_model_request(None, request_context=None, handler=handler)
+        is response
+    )
     assert attempts == 1
     assert capability.stalled_requests == 0
 
@@ -5181,23 +5731,18 @@ async def test_default_context_measurement_counts_structured_continuity_once(
     runtime = build_runtime(
         Registry([]),
         tools={},
-        model=FunctionModel(
-            lambda messages, info: ModelResponse([TextPart("Done")])
-        ),
+        model=FunctionModel(lambda messages, info: ModelResponse([TextPart("Done")])),
         answer_model_route="openai/gpt-test",
         structured_grounding=False,
     )
     conversation = runtime.conversation()
     await conversation.send("Keep helping with food")
-    conversation.continuity = ContinuityRecord(goal="Keep helping with food")
+    conversation.state.continuity = ContinuityRecord(goal="Keep helping with food")
 
     await conversation.send("What next?")
 
-    reminder = continuity_reminder(conversation.continuity)
-    contents = [
-        str(message.get("content") or "")
-        for message in measured[-1]
-    ]
+    reminder = continuity_reminder(conversation.state.continuity)
+    contents = [str(message.get("content") or "") for message in measured[-1]]
     assert sum(reminder in content for content in contents) == 1
 
 
@@ -5383,12 +5928,16 @@ async def legacy_structured_runtime_does_not_preview_unvalidated_model_text() ->
         yield {
             0: DeltaToolCall(
                 name="grounded_answer",
-                json_args=json.dumps({
-                    "grounded_blocks": [{
-                        "text": "Verified answer",
-                        "citation_ids": ["S1"],
-                    }]
-                }),
+                json_args=json.dumps(
+                    {
+                        "grounded_blocks": [
+                            {
+                                "text": "Verified answer",
+                                "citation_ids": ["S1"],
+                            }
+                        ]
+                    }
+                ),
                 tool_call_id="grounded-answer",
             )
         }
@@ -5443,7 +5992,9 @@ async def test_structured_runtime_event_sink_does_not_force_streaming() -> None:
         return ModelResponse([_cited_answer("Verified answer {cite:S1}")])
 
     async def stream(_messages: list[ModelMessage], _info: AgentInfo):
-        raise AssertionError("structured runtime must not stream only for observability")
+        raise AssertionError(
+            "structured runtime must not stream only for observability"
+        )
         yield
 
     async def source(_args: dict, ctx: ToolContext) -> str:
@@ -5492,12 +6043,16 @@ async def legacy_structured_approval_resume_does_not_preview_unvalidated_text() 
         yield {
             0: DeltaToolCall(
                 name="grounded_answer",
-                json_args=json.dumps({
-                    "grounded_blocks": [{
-                        "text": "Approved action finished",
-                        "citation_ids": ["S1"],
-                    }]
-                }),
+                json_args=json.dumps(
+                    {
+                        "grounded_blocks": [
+                            {
+                                "text": "Approved action finished",
+                                "citation_ids": ["S1"],
+                            }
+                        ]
+                    }
+                ),
                 tool_call_id="grounded-answer",
             )
         }
@@ -5660,7 +6215,9 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         request = next(
-            message for message in reversed(messages) if isinstance(message, ModelRequest)
+            message
+            for message in reversed(messages)
+            if isinstance(message, ModelRequest)
         )
         seen.append(request.instructions or "")
         return ModelResponse([TextPart("Done")])
@@ -5675,8 +6232,9 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
 
     await runtime.run("SNAP help")
 
-    assert "# Services you can help with (quick menu)" not in (
-        runtime._agent._system_prompts[0]
+    assert (
+        "# Services you can help with (quick menu)"
+        not in (runtime._agent._system_prompts[0])
     )
     assert "UNIQUE BENEFITS INSTRUCTIONS" not in seen[0]
     capability = next(

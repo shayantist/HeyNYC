@@ -10,6 +10,8 @@ when geocoding fails, the location is ambiguous, the API is down, or no programs
 from __future__ import annotations
 
 import httpx
+import pytest
+from pydantic import BaseModel
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
@@ -20,7 +22,7 @@ from heynyc.modules.childcare import tools as childcare
 from heynyc.modules.childcare.tools import (
     _address,
     _age_range,
-    _capacity_phrase,
+    _capacity,
     _facility_label,
     _parse_coords,
     _program_label,
@@ -84,12 +86,11 @@ def test_age_range_drops_no_data():
     assert _age_range(_record(age_range=None)) == ""
 
 
-def test_capacity_phrase_is_max_not_available():
-    phrase = _capacity_phrase(_record(capacity="70"))
-    assert "70" in phrase
-    assert "max" in phrase.lower()          # framed as maximum licensed capacity
-    assert _capacity_phrase(_record(capacity="")) == ""
-    assert _capacity_phrase(_record(capacity="NULL")) == ""
+def test_capacity_is_typed_and_missing_values_remain_unknown():
+    assert _capacity(_record(capacity="70")) == 70
+    assert _capacity(_record(capacity="")) is None
+    assert _capacity(_record(capacity="NULL")) is None
+    assert _capacity(_record(capacity="not a number")) is None
 
 
 def test_directions_link_is_google_maps_dir():
@@ -126,7 +127,9 @@ def _routed_client(records, status: int = 200) -> httpx.AsyncClient:
         if CHILDCARE_HOST in host:
             if status != 200:
                 return httpx.Response(status, json={"error": True})
-            return httpx.Response(200, json=records)
+            offset = int(request.url.params.get("$offset", "0"))
+            limit = int(request.url.params.get("$limit", str(len(records))))
+            return httpx.Response(200, json=records[offset:offset + limit])
         return httpx.Response(404)
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -146,16 +149,29 @@ async def test_find_child_care_connect_programs_ranks_grounds_and_links():
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn", "k": 5}, ctx)
     await client.aclose()
 
-    site_lines = [l for l in out.splitlines() if l.startswith("- ")]
-    assert len(site_lines) == 2                        # no-coords row dropped
-    assert "Close Care" in site_lines[0]               # nearest first
-    assert "Far Care" in site_lines[1]
-    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
-    assert "(718) 555-0002" in out                     # phone surfaced
-    assert "0 YEARS - 2 YEARS" in out                  # age range surfaced
-    assert "40" in out                                 # capacity surfaced
-    assert "www.google.com/maps/dir/?api=1&destination=40.69010,-73.96010" in out  # directions link
-    assert "{cite:S1}" in out                          # grounded, cited
+    assert isinstance(out, BaseModel)
+    assert out.outcome == "success"
+    assert len(out.programs) == 2
+    assert out.programs[0].organization.name == "Close Care"
+    assert out.programs[1].organization.name == "Far Care"
+    assert out.origin is not None and out.origin.precision == "approximate"
+    assert out.programs[0].service.age_range == "0 YEARS - 2 YEARS"
+    assert out.programs[0].service.licensed_capacity == 40
+    assert out.programs[0].service.current_openings is None
+    assert out.programs[0].service.language is None
+    assert out.programs[0].service.accessibility is None
+    assert out.programs[0].service.service_area is None
+    assert out.programs[0].service.eligibility is None
+    assert out.programs[0].service.required_document is None
+    assert out.programs[0].service_at_location.schedule is None
+    assert out.programs[0].phone is not None
+    assert out.programs[0].phone.number == "(718) 555-0002"
+    assert out.programs[0].action_url.endswith("40.69010,-73.96010")
+    assert out.programs[0].citation_id == "S1"
+    assert out.source.complete is True
+    assert out.source.query_filter == childcare.WHERE_HAS_COORDS
+    assert out.source.includes_rows_without_coordinates is False
+    assert out.source.excluded_row_count is None
     mapping = citations.mapping()
     assert mapping["S1"]["kind"] == "DATA"
     # citation is a row-addressed permalink into the NYC Open Data dataset
@@ -166,6 +182,90 @@ async def test_find_child_care_connect_programs_ranks_grounds_and_links():
     assert mapping["S1"]["valid_as_of"]
 
 
+async def test_childcare_query_pages_until_provider_is_exhausted(monkeypatch):
+    rows = [_record(**{":id": f"row-{index}"}) for index in range(3)]
+    offsets = []
+
+    async def paged_query(_dataset_id, **kwargs):
+        offsets.append(kwargs["offset"])
+        start = kwargs["offset"]
+        return rows[start:start + kwargs["limit"]]
+
+    monkeypatch.setattr(childcare, "query_dataset", paged_query)
+    page = await childcare._query_childcare(None, page_size=2)
+
+    assert page.rows == rows
+    assert page.pages_fetched == 2
+    assert page.complete is True
+    assert offsets == [0, 2, 3]
+
+
+async def test_childcare_query_preserves_partial_rows_when_later_page_fails(monkeypatch):
+    rows = [_record(**{":id": f"row-{index}"}) for index in range(2)]
+
+    async def failing_second_page(_dataset_id, **kwargs):
+        if kwargs["offset"] == 0:
+            return rows
+        raise httpx.ConnectError("provider unavailable")
+
+    monkeypatch.setattr(childcare, "query_dataset", failing_second_page)
+    page = await childcare._query_childcare(None, page_size=2)
+
+    assert page.rows == rows
+    assert page.pages_fetched == 1
+    assert page.complete is False
+    assert page.error == "transport_error"
+
+
+async def test_childcare_handler_does_not_rank_an_incomplete_citywide_page(monkeypatch):
+    async def partial_page(_client):
+        return childcare._ChildCareQueryPage(
+            rows=[_record()],
+            pages_fetched=1,
+            complete=False,
+            error="transport_error",
+        )
+
+    monkeypatch.setattr(childcare, "_query_childcare", partial_page)
+    client = _routed_client([])
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
+    await client.aclose()
+
+    assert out.outcome == "source_partial"
+    assert out.source.status == "partial"
+    assert out.source.returned_count == 1
+    assert out.source.complete is False
+    assert out.source.page_size == childcare.CHILDCARE_PAGE_SIZE
+    assert out.source.next_offset == 1
+    assert out.programs == []
+
+
+async def test_childcare_query_rejects_repeated_provider_page(monkeypatch):
+    rows = [_record(**{":id": f"row-{index}"}) for index in range(2)]
+
+    async def repeated_query(_dataset_id, **_kwargs):
+        return rows
+
+    monkeypatch.setattr(childcare, "query_dataset", repeated_query)
+    page = await childcare._query_childcare(None, page_size=2)
+
+    assert page.rows == rows
+    assert page.complete is False
+    assert page.error == "invalid_response"
+
+
+async def test_childcare_query_rejects_duplicate_ids_within_one_page(monkeypatch):
+    duplicate = _record(**{":id": "row-duplicate"})
+
+    async def duplicate_page(_dataset_id, **_kwargs):
+        return [duplicate, duplicate]
+
+    monkeypatch.setattr(childcare, "query_dataset", duplicate_page)
+    with pytest.raises(ValueError, match="stable unique row IDs"):
+        await childcare._query_childcare(None, page_size=2)
+
+
 async def test_find_child_care_connect_programs_capacity_is_not_open_seats():
     # Honesty: capacity is the MAX licensed number, never presented as open/available seats.
     records = [_record(latitude="40.6901", longitude="-73.9601")]
@@ -174,9 +274,9 @@ async def test_find_child_care_connect_programs_capacity_is_not_open_seats():
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
-    low = out.lower()
-    assert "call" in low                                # routes to calling to confirm openings/hours
-    assert "available" not in low or "open spot" in low  # never claims seats are available outright
+    assert out.programs[0].service.licensed_capacity == 70
+    assert out.programs[0].service.current_openings is None
+    assert out.scope.licensed_capacity_means_open_spots is False
 
 
 async def test_find_child_care_connect_programs_does_not_fake_missing_source_date():
@@ -188,7 +288,7 @@ async def test_find_child_care_connect_programs_does_not_fake_missing_source_dat
     await client.aclose()
 
     assert citations.mapping()["S1"]["valid_as_of"] == ""
-    assert "Source date unavailable" in out
+    assert out.programs[0].valid_as_of is None
 
 
 async def test_find_child_care_connect_programs_omits_no_data_age():
@@ -197,7 +297,53 @@ async def test_find_child_care_connect_programs_omits_no_data_age():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
-    assert "NO DATA" not in out                          # sentinel never leaks to the user
+    assert out.programs[0].service.age_range is None
+
+
+async def test_find_child_care_connect_programs_reuses_current_location(monkeypatch):
+    async def should_not_geocode(*_args, **_kwargs):
+        raise AssertionError("current location should be reused")
+
+    monkeypatch.setattr(childcare, "geocode", should_not_geocode)
+    client = _routed_client([_record(latitude="40.6901", longitude="-73.9601")])
+    current = GeoPoint(
+        40.69,
+        -73.96,
+        "Clinton Hill, Brooklyn",
+        resident_query="Clinton Hill Brooklyn",
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        current_location=current,
+    )
+    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
+    await client.aclose()
+
+    assert out.outcome == "success"
+    assert out.origin is not None and out.origin.resident_query == "Clinton Hill Brooklyn"
+
+
+async def test_find_child_care_connect_programs_types_malformed_provider_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if GEOSEARCH_HOST in request.url.host:
+            return httpx.Response(200, json={"features": [
+                {
+                    "geometry": {"coordinates": [-73.9600, 40.6900]},
+                    "properties": {"label": "Origin, Brooklyn"},
+                }
+            ]})
+        return httpx.Response(200, json={"error": "not a row list"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
+    await client.aclose()
+
+    assert out.outcome == "source_unavailable"
+    assert out.source.error == "invalid_response"
+    assert out.source.fetched_at is not None
 
 
 async def test_find_child_care_connect_programs_gives_official_fallback_when_phone_is_missing():
@@ -207,9 +353,10 @@ async def test_find_child_care_connect_programs_gives_official_fallback_when_pho
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
-    assert "nyc.gov/site/doh/services/child-care.page" in out
-    assert "{cite:" in out.split("Contact:", 1)[1].splitlines()[0]
-    assert any("child-care.page" in citation["url"] for citation in citations.mapping().values())
+    assert out.programs[0].phone is None
+    assert out.directory_route is not None
+    route = citations.mapping()[out.directory_route.citation_id]
+    assert "child-care.page" in route["url"]
 
 
 async def test_find_child_care_connect_programs_abstains_when_geocode_fails(monkeypatch):
@@ -222,10 +369,9 @@ async def test_find_child_care_connect_programs_abstains_when_geocode_fails(monk
     out = await get_tools()[0].handler({"near": "Springfield, Illinois"}, ctx)
     await client.aclose()
 
-    assert not any(l.startswith("- ") for l in out.splitlines())   # no fabricated program list
-    low = out.lower()
-    assert "couldn't" in low or "could not" in low
-    assert "nyc" in low
+    assert out.outcome == "location_not_found"
+    assert out.programs == []
+    assert out.directory_route is not None
 
 
 async def test_find_child_care_connect_programs_clarifies_on_low_confidence(monkeypatch):
@@ -237,8 +383,9 @@ async def test_find_child_care_connect_programs_clarifies_on_low_confidence(monk
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Broadway and 100th"}, ctx)
     await client.aclose()
-    assert "which borough" in out.lower()
-    assert not any(l.startswith("- ") for l in out.splitlines())
+    assert out.outcome == "location_ambiguous"
+    assert out.origin is not None and out.origin.low_confidence
+    assert out.programs == []
 
 
 async def test_find_child_care_connect_programs_abstains_when_api_down():
@@ -246,8 +393,10 @@ async def test_find_child_care_connect_programs_abstains_when_api_down():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
-    assert not any(l.startswith("- ") for l in out.splitlines())   # don't invent when the source is down
-    assert "child care" in out.lower() or "childcare" in out.lower()
+    assert out.outcome == "source_unavailable"
+    assert out.source.error == "transport_error"
+    assert out.source.fetched_at is not None
+    assert out.programs == []
 
 
 async def test_find_child_care_connect_programs_abstains_when_no_programs():
@@ -255,7 +404,9 @@ async def test_find_child_care_connect_programs_abstains_when_no_programs():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn"}, ctx)
     await client.aclose()
-    assert not any(l.startswith("- ") for l in out.splitlines())
+    assert out.outcome == "no_results"
+    assert out.source.complete is True
+    assert out.programs == []
 
 
 async def test_find_child_care_connect_programs_asks_when_location_missing():
@@ -263,8 +414,9 @@ async def test_find_child_care_connect_programs_asks_when_location_missing():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": ""}, ctx)
     await client.aclose()
-    assert not any(l.startswith("- ") for l in out.splitlines())
-    assert "where" in out.lower()
+    assert out.outcome == "missing_origin"
+    assert out.source.status == "not_called"
+    assert out.programs == []
 
 
 # --- the shipped module stays valid ---------------------------------------

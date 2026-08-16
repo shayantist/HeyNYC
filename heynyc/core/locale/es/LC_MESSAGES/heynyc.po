@@ -6,6 +6,12 @@ msgstr ""
 msgid "These are regular hours. Confirm holiday or temporary schedule exceptions before traveling."
 msgstr "Estas son las horas habituales. Confirme las excepciones por días festivos o cambios temporales en el horario antes de viajar."
 
+msgid "Sources"
+msgstr "Fuentes"
+
+msgid "Source note"
+msgstr "Nota de la fuente"
+
 msgid "I couldn't verify that against the reliable sources I found, so I don't want to guess. Try asking with a little more detail and I'll check again."
 msgstr "No pude verificarlo con las fuentes confiables que encontré, así que no quiero adivinar. Intenta preguntar con un poco más de detalle y lo comprobaré de nuevo."
 
@@ -17,3 +23,6 @@ msgstr "No se confirmó que haya Cool Options interiores abiertos ahora. No pued
 
 msgid "No current Cool Options are confirmed open now. I cannot safely recommend a destination. Call 311 for help finding a currently open place to cool down. If anyone has trouble breathing, call 911."
 msgstr "No se confirmó que haya Cool Options abiertos ahora. No puedo recomendar un lugar con seguridad. Llama al 311 para que te ayuden a encontrar un lugar abierto donde refrescarte. Si alguien tiene dificultad para respirar, llama al 911."
+
+msgid "Verification note for {source}: this source is a search-result excerpt. I could not confirm it from the full page."
+msgstr "Nota de verificación para {source}: esta fuente es un fragmento de un resultado de búsqueda. No pude confirmarla en la página completa."

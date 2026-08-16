@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Hashable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -237,6 +237,28 @@ def resident_supplied_location(
     return ""
 
 
+def current_resolved_location(proposed: str, ctx: ToolContext) -> Optional["GeoPoint"]:
+    """Return the stored resolver result when the current turn did not replace it."""
+    current = ctx.current_location
+    if current is None:
+        return None
+    identities = {
+        " ".join(value.casefold().split())
+        for value in (current.label, current.resident_query)
+        if value
+    }
+    supplied = resident_supplied_location(proposed, ctx.query, ())
+    if supplied and " ".join(supplied.casefold().split()) not in identities:
+        return None
+    if not resident_supplied_location(current.resident_query, ctx.query, ()) and (
+        _looks_like_numbered_address(ctx.query)
+        or _looks_like_intersection(ctx.query)
+        or _detect_borough(ctx.query) is not None
+    ):
+        return None
+    return current
+
+
 EARTH_RADIUS_M = 6_371_000.0
 METERS_PER_MILE = 1609.344
 
@@ -366,6 +388,9 @@ class GeoPoint:
     # tax-lot key, needed for building-level datasets (HPD complaints/violations).
     # Only a specific street address carries one; ZIP/forgiving/POI matches leave it "".
     bbl: str = ""
+    resident_query: str = ""
+    provider_id: str = ""
+    provider_payload: dict = field(default_factory=dict)
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -682,6 +707,9 @@ async def _geosearch_geocode(
             and not re.search(rf"\b{re.escape(hn)}\b", text)
         ),
         bbl=bbl,
+        resident_query=text,
+        provider_id=str(feature.get("id") or props.get("id") or props.get("gid") or ""),
+        provider_payload=feature,
     )
 
 
@@ -738,7 +766,7 @@ async def geocode(
             return None
         return GeoPoint(
             lat=lat, lon=lon, label=f"{lat:.5f},{lon:.5f}", confidence=1.0,
-            match_type="coordinates",
+            match_type="coordinates", resident_query=text,
         )
     borough_contains = borough_contains or _point_in_named_borough
     own = client is None
@@ -754,7 +782,7 @@ async def geocode(
             if centroid is not None and _in_nyc(*centroid):
                 lat, lon = centroid
                 point = GeoPoint(lat=lat, lon=lon, label=f"ZIP {m.group()} area",
-                                 confidence=1.0, match_type="zcta")
+                                 confidence=1.0, match_type="zcta", resident_query=text)
                 borough = _detect_borough(text)
                 if borough is not None and not await borough_contains(point, borough, client):
                     return None
@@ -764,6 +792,7 @@ async def geocode(
         # offline, before any provider can fuzzy-match an arbitrary POI.
         neighborhood = _neighborhood_point(text)
         if neighborhood is not None:
+            neighborhood.resident_query = text
             return neighborhood
         # Borough-aware bias: a borough named in the query gives that borough's hard boundary.rect;
         # otherwise rect is None and _geosearch_geocode applies the citywide NYC floor. This is what
@@ -798,6 +827,8 @@ async def geocode(
         if point is not None and _looks_like_intersection(text):
             if not _intersection_identity_matches(text, point.label):
                 point.low_confidence = True
+        if point is not None and not point.resident_query:
+            point.resident_query = text
         if point is None and m and _looks_like_intersection(text.split(",", 1)[0]):
             centroid = _zip_centroid(m.group())
             if centroid is not None and _in_nyc(*centroid):
@@ -808,6 +839,7 @@ async def geocode(
                     label=f"ZIP {m.group()} area",
                     confidence=1.0,
                     match_type="zcta",
+                    resident_query=text,
                 )
                 if borough is not None and not await borough_contains(point, borough, client):
                     return None
@@ -865,48 +897,45 @@ async def travel_distance(
 
 # --- Tool handlers ---------------------------------------------------------
 
-def _resolution_note(query: str, point: GeoPoint) -> str:
-    """A transparency line so a wrong geocode is visible and correctable, not silent."""
-    if point.match_type == "zcta":
-        z = re.search(r"\d{5}", point.label)
-        zip5 = z.group() if z else point.label
-        return (f"(Resolved '{query}' to the center of ZIP {zip5}; "
-                f"for a precise spot, give a street address.)")
-    source = (
-        "NYC GeoSearch"
-        if point.match_type == "geosearch"
-        else "official NYC neighborhood data"
-        if point.match_type == "nta"
-        else "map search"
-    )
-    note = f"(Resolved '{query}' to '{point.label}' via {source}."
-    if origin_precision(query, point) != "precise":
-        return note + " Distances are a rough estimate from the resolved place point, not a street address.)"
-    note += " If that's not the intended spot, ask for a street address.)"
-    return note
-
-
 def _clarify_message(query: str) -> str:
-    """Returned when a location is too ambiguous to answer for, make the agent ask."""
+    """Factual ambiguity metadata for a model-visible tool result."""
     return (
-        f"I couldn't reliably pin '{query}' to one place, it may match several spots in NYC "
-        f"(e.g. a street that runs through multiple boroughs). Ask the user which borough it's "
-        f"in, or for a specific street address, before giving any location-based answer. "
-        f"Do NOT guess a borough."
+        f"Location resolution for '{query}' is ambiguous across multiple NYC places. "
+        "Missing disambiguator: which borough or a specific street address."
     )
 
 
-async def _geocode_handler(args: dict, ctx: ToolContext) -> str:
+def resolved_location_citation(ctx: ToolContext, point: GeoPoint) -> str:
+    """Register the resolver result separately from destination records."""
+    snapshot = point.provider_payload or {
+        "lat": point.lat,
+        "lon": point.lon,
+        "label": point.label,
+        "match_type": point.match_type,
+    }
+    return ctx.citations.register(
+        maps_link(point.lat, point.lon),
+        snippet=f"{point.resident_query or point.label} resolved to {point.label}",
+        title="Resolved NYC location",
+        kind="DATA",
+        provenance=data_provenance(
+            snapshot,
+            record_id=point.provider_id or f"{point.lat:.5f},{point.lon:.5f}",
+            field_pointer="/",
+            derivation={
+                "point": [point.lat, point.lon],
+                "origin_query": point.resident_query,
+                "origin_label": point.label,
+            },
+        ),
+    )
+
+
+async def _geocode_handler(args: dict, ctx: ToolContext) -> GeoPoint | None:
     point = await geocode(args["text"], client=ctx.http)
-    if point is None:
-        return f"Could not find '{args['text']}' in NYC. Ask for a more specific address."
-    if point.low_confidence:
-        return _clarify_message(args["text"])
-    return (
-        f"{point.label} → lat={point.lat:.5f}, lon={point.lon:.5f} "
-        f"(confidence={point.confidence}). map: {maps_link(point.lat, point.lon)} "
-        f"{_resolution_note(args['text'], point)}"
-    )
+    if args.get("as_current_location"):
+        ctx.current_location = point if point is not None and not point.low_confidence else None
+    return point
 
 
 def _place_citation(
@@ -986,7 +1015,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         limit=k,
     )
 
-    lines = [f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})", _resolution_note(args["near"], origin)]
+    lines = [f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})"]
     origin_cite = ""
     for place, distance_m in ranked:
         dist_mi = miles(distance_m)
@@ -1010,7 +1039,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
             f"directions: {maps_link(place.lat, place.lon)}{website}{hours}"
         )
     if origin_cite:
-        lines[1] += f" {{cite:{origin_cite}}}"
+        lines[0] += f" {{cite:{origin_cite}}}"
     if binding.limitations:
         lines.append(f"Source limit: {binding.limitations}")
     return "\n".join(lines)
@@ -1068,14 +1097,25 @@ def geo_tools() -> list[Tool]:
     return [
         Tool(
             name="geocode",
-            description="Resolve an NYC address or place name to coordinates. Use before any location reasoning.",
+            description=(
+                "Resolve an NYC address or place name to a typed location. Set "
+                "`as_current_location` only when the resident identifies it as where they are."
+            ),
             parameters={
                 "type": "object",
-                "properties": {"text": {"type": "string", "description": "An NYC address or place name."}},
+                "properties": {
+                    "text": {"type": "string", "description": "An NYC address or place name."},
+                    "as_current_location": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Store this as the resident's current location.",
+                    },
+                },
                 "required": ["text"],
             },
             open_world=True,  # external geocoders (GeoSearch/Mapbox)
             handler=_geocode_handler,
+            return_type=GeoPoint | None,
         ),
         Tool(
             name="nearest",

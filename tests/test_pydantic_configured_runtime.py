@@ -1,5 +1,6 @@
 import pytest
-from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic import BaseModel
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -11,6 +12,7 @@ from heynyc.core.pydantic_runtime import (
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
+from heynyc.core.tools.base import Tool, ToolContext
 
 
 def test_configured_runtime_uses_structured_grounding_without_uncalibrated_semantic_filter(
@@ -18,6 +20,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
 ):
     captured = {}
     safety_screen = object()
+    scope_screen = object()
     output_guard = object()
 
     def build_runtime(_registry, **kwargs):
@@ -36,6 +39,12 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
             else AssertionError(model_name)
         ),
     )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_scope_screen",
+        lambda _model, *, model_name, registry: (
+            scope_screen if model_name == "TestModel" else AssertionError(model_name)
+        ),
+    )
     model = TestModel()
     build_configured_runtime(
         Registry([]),
@@ -49,6 +58,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
     assert captured["model"] is model
     assert captured["fact_review_model"] is model
     assert captured["crisis_screen"] is safety_screen
+    assert captured["scope_screen"] is scope_screen
     assert captured["output_guard"] is output_guard
 
 
@@ -63,10 +73,68 @@ def test_configured_runtime_keeps_uncalibrated_output_moderation_off(monkeypatch
         "heynyc.core.pydantic_runtime.build_crisis_screen",
         lambda _model, *, model_name: object(),
     )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_scope_screen",
+        lambda _model, *, model_name, registry: object(),
+    )
 
     build_configured_runtime(Registry([]), model=TestModel())
 
     assert captured["output_guard"] is None
+
+
+async def test_configured_runtime_preserves_typed_provider_failure_result() -> None:
+    class ProviderResult(BaseModel):
+        records: list[dict]
+        next_cursor: str | None
+        error: str | None
+
+    async def handler(_args: dict, _ctx: ToolContext) -> dict:
+        return {
+            "records": [],
+            "next_cursor": None,
+            "error": "provider unavailable",
+        }
+
+    seen: list[object] = []
+
+    async def model(messages, _info) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            return ModelResponse([ToolCallPart("provider_lookup", {}, "provider-1")])
+        seen.append(returns[-1].content)
+        return ModelResponse([TextPart("Done")])
+
+    runtime = build_runtime(
+        Registry([]),
+        model=FunctionModel(model),
+        tools={
+            "provider_lookup": Tool(
+                name="provider_lookup",
+                description="Return one provider result",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+                return_type=ProviderResult,
+            )
+        },
+        structured_grounding=False,
+    )
+
+    result = await runtime.run("Find it")
+
+    assert result.status == "success"
+    assert len(seen) == 1
+    assert isinstance(seen[0], ProviderResult)
+    assert seen[0].model_dump() == {
+        "records": [],
+        "next_cursor": None,
+        "error": "provider unavailable",
+    }
 
 
 def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatch):
@@ -78,6 +146,10 @@ def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatc
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.build_crisis_screen",
         lambda _model, *, model_name: object(),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_scope_screen",
+        lambda _model, *, model_name, registry: object(),
     )
 
     build_configured_runtime(Registry([]), model=TestModel())
@@ -98,6 +170,10 @@ def test_configured_runtime_keeps_semantic_checker_out_of_public_path(
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.build_crisis_screen",
         lambda _model, *, model_name: object(),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_scope_screen",
+        lambda _model, *, model_name, registry: object(),
     )
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.build_runtime",
@@ -234,6 +310,7 @@ async def test_configured_luna_prepared_request_hides_undiscovered_tools(
     assert "general web facts" in search_tools.description
     assert {tool.name for tool in prepared.output_tools} == {
         "final_answer",
+        "grounded_answer",
         "clarification_request",
         "nonfactual_outcome",
     }

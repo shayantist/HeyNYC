@@ -18,6 +18,9 @@ allowlist:
   - data.cityofnewyork.us
   - 511ny.org
   - nyc.gov
+source_tiers:
+  authoritative:
+    - 511ny.org
 seeds:
   - https://www.nyc.gov/html/dot/html/motorist/weektraf.shtml
 tools: tools.py

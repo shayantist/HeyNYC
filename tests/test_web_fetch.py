@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
 
 import httpx
@@ -31,10 +32,11 @@ class _Response:
         content_type: str = "text/html",
         status_code: int = 200,
         location: str | None = None,
+        headers: dict[str, str] | None = None,
     ):
         self.text = text
         self.content = content if content is not None else text.encode()
-        self.headers = {"content-type": content_type}
+        self.headers = {"content-type": content_type, **(headers or {})}
         if location is not None:
             self.headers["location"] = location
         self.status_code = status_code
@@ -54,6 +56,28 @@ class _Client:
         self.requests.append((url, kwargs))
         page = self.pages[url]
         return page if isinstance(page, _Response) else _Response(page)
+
+
+def _rendered_result(url: str, title: str, text: str):
+    return web_fetch_module._FetchedPage(
+        final_url=url,
+        title=title,
+        text=text,
+        acquisition=web_fetch_module.WebFetchAcquisition(
+            requested_url=url,
+            final_url=url,
+            citation_url=url,
+            route="browser",
+            fetched_at=datetime.now().astimezone(),
+        ),
+    )
+
+
+def _assert_fetch_provenance(citation: dict, evidence_grade: str, source_tier: str) -> None:
+    provenance = citation["provenance"]
+    assert provenance["evidence_grade"] == evidence_grade
+    assert provenance["source_tier"] == source_tier
+    assert provenance["acquisition"]["final_url"] == citation["url"]
 
 
 class _BrowserRoute:
@@ -284,10 +308,7 @@ async def test_web_fetch_accepts_an_unlisted_public_url_as_unverified():
     assert client.urls == [url]
     assert "Current event details" in out
     assert "unverified source, check before relying on it" in out
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "fetched",
-        "source_tier": "unverified",
-    }
+    _assert_fetch_provenance(ctx.citations.mapping()["S1"], "fetched", "unverified")
 
 
 async def test_web_fetch_labels_the_source_before_its_evidence():
@@ -440,6 +461,45 @@ async def test_production_fetch_attributes_a_safe_redirect_to_its_final_url(monk
     assert ctx.citations.mapping()["S1"]["url"] == final
 
 
+async def test_web_fetch_preserves_http_acquisition_metadata():
+    url = "https://example.com/current"
+    response = _Response(
+        "Current public guidance for residents. " * 8,
+        headers={
+            "etag": 'W/"version-7"',
+            "last-modified": "Fri, 14 Aug 2026 16:00:00 GMT",
+            "cache-control": "max-age=300",
+            "date": "Sat, 15 Aug 2026 10:00:00 GMT",
+        },
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=_Client({url: response}),
+    )
+
+    await web_fetch_tools()[0].handler(
+        {"url": url, "query": "current public guidance residents"}, ctx,
+    )
+
+    acquisition = ctx.citations.mapping()["S1"]["provenance"]["acquisition"]
+    assert acquisition == {
+        "requested_url": url,
+        "final_url": url,
+        "citation_url": url,
+        "route": "http",
+        "fetched_at": acquisition["fetched_at"],
+        "status_code": 200,
+        "content_type": "text/html",
+        "body_bytes": len(response.content),
+        "etag": 'W/"version-7"',
+        "last_modified": "Fri, 14 Aug 2026 16:00:00 GMT",
+        "cache_control": "max-age=300",
+        "response_date": "Sat, 15 Aug 2026 10:00:00 GMT",
+    }
+    assert datetime.fromisoformat(acquisition["fetched_at"]).tzinfo is not None
+
+
 async def test_production_fetch_restores_the_logical_host_after_ssrf_resolution(
     monkeypatch,
 ):
@@ -473,10 +533,9 @@ async def test_production_fetch_restores_the_logical_host_after_ssrf_resolution(
 
     assert requested in out
     assert ctx.citations.mapping()["S1"]["url"] == requested
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "authoritative",
-        "source_tier": "authoritative",
-    }
+    _assert_fetch_provenance(
+        ctx.citations.mapping()["S1"], "authoritative", "authoritative",
+    )
 
 
 async def test_web_fetch_uses_browser_after_a_production_403(monkeypatch):
@@ -494,7 +553,7 @@ async def test_web_fetch_uses_browser_after_a_production_403(monkeypatch):
 
     async def rendered(requested_url):
         browser_calls.append(requested_url)
-        return (
+        return _rendered_result(
             requested_url,
             "Knicks schedule",
             "The Knicks next game date and time is Tuesday October 20 at 7:00 PM EDT. "
@@ -529,7 +588,7 @@ async def test_web_fetch_uses_browser_after_a_production_javascript_shell(
 
     async def rendered(requested_url):
         browser_calls.append(requested_url)
-        return (
+        return _rendered_result(
             requested_url,
             "Knicks schedule",
             "The Knicks next game date and time is Tuesday October 20 at 7:00 PM EDT. "
@@ -572,7 +631,7 @@ async def test_web_fetch_keeps_usable_static_text_without_inferring_a_visual_gap
 
     async def rendered(requested_url):
         browser_calls.append(requested_url)
-        return requested_url, "Rendered", "Rendered content"
+        return _rendered_result(requested_url, "Rendered", "Rendered content")
 
     monkeypatch.setattr(web_fetch_module, "safe_download", static_download)
     monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
@@ -600,7 +659,7 @@ async def test_web_fetch_renders_when_static_text_misses_the_query_target(monkey
 
     async def rendered(requested_url):
         browser_calls.append(requested_url)
-        return requested_url, "Corona Library", "Wheelchair accessible"
+        return _rendered_result(requested_url, "Corona Library", "Wheelchair accessible")
 
     monkeypatch.setattr(web_fetch_module, "safe_download", static_download)
     monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
@@ -625,7 +684,11 @@ async def test_web_fetch_can_explicitly_render_a_page_with_usable_static_text(
 
     async def rendered(requested_url):
         browser_calls.append(requested_url)
-        return requested_url, "Schedule", "Tuesday at 7 PM against Philadelphia"
+        return _rendered_result(
+            requested_url,
+            "Schedule",
+            "Tuesday at 7 PM against Philadelphia",
+        )
 
     monkeypatch.setattr(web_fetch_module, "safe_download", static_download)
     monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
@@ -726,7 +789,7 @@ async def test_web_fetch_uses_browser_after_an_access_wall(monkeypatch):
     async def fake_browser_fetch(requested_url):
         browser_calls.append(requested_url)
         assert requested_url == url
-        return (
+        return _rendered_result(
             url,
             "Knicks Name Jalen Brunson Team Captain",
             "The New York Knicks named Jalen Brunson the 36th captain in franchise history.",
@@ -747,10 +810,9 @@ async def test_web_fetch_uses_browser_after_an_access_wall(monkeypatch):
 
     assert browser_calls == [url]
     assert "Jalen Brunson" in out
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "authoritative",
-        "source_tier": "authoritative",
-    }
+    _assert_fetch_provenance(
+        ctx.citations.mapping()["S1"], "authoritative", "authoritative",
+    )
 
 
 def test_browser_fallback_uses_an_installed_brave_executable(monkeypatch, tmp_path):
@@ -776,6 +838,18 @@ def test_browser_fallback_uses_new_york_time():
 
 
 async def test_browser_waits_for_route_cleanup_before_close(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        async def all_headers(self):
+            return {
+                "content-type": "text/html; charset=utf-8",
+                "etag": '"browser-v1"',
+            }
+
+        async def body(self):
+            return b"rendered response body"
+
     class FakePage:
         url = "https://example.com/current"
         unrouted = False
@@ -786,7 +860,7 @@ async def test_browser_waits_for_route_cleanup_before_close(monkeypatch):
 
         async def goto(self, _url, **_kwargs):
             self.goto_kwargs = _kwargs
-            return None
+            return FakeResponse()
 
         async def wait_for_function(self, _expression, **_kwargs):
             return None
@@ -836,9 +910,13 @@ async def test_browser_waits_for_route_cleanup_before_close(monkeypatch):
         lambda: FakeManager(),
     )
 
-    await web_fetch_module._fetch_rendered_page("https://example.com/current")
+    result = await web_fetch_module._fetch_rendered_page("https://example.com/current")
 
     assert page.goto_kwargs["wait_until"] == "load"
+    assert result.acquisition.status_code == 200
+    assert result.acquisition.content_type == "text/html; charset=utf-8"
+    assert result.acquisition.etag == '"browser-v1"'
+    assert result.acquisition.body_bytes == len(b"rendered response body")
 
 
 def test_rendered_page_prefers_visible_text_over_hidden_responsive_markup():
@@ -913,10 +991,9 @@ async def test_web_fetch_marks_archived_content_in_the_evidence():
 
     assert "SOURCE STATUS: ARCHIVED" in out
     assert "SOURCE STATUS: ARCHIVED" in ctx.citations.mapping()["S1"]["snippet"]
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "discovery",
-        "source_tier": "authoritative",
-    }
+    _assert_fetch_provenance(
+        ctx.citations.mapping()["S1"], "discovery", "authoritative",
+    )
 
 
 async def test_web_fetch_marks_archive_urls_without_banner_wording():
@@ -970,10 +1047,7 @@ async def test_web_fetch_does_not_require_a_url_declared_by_a_module():
 
     assert "Public page with cash guidance" in out
     assert client.urls == [url]
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "fetched",
-        "source_tier": "unverified",
-    }
+    _assert_fetch_provenance(ctx.citations.mapping()["S1"], "fetched", "unverified")
 
 
 async def test_web_fetch_calls_are_atomic_when_one_url_fails():
@@ -1014,10 +1088,7 @@ async def test_web_fetch_keeps_editorial_source_tier_on_fetched_evidence():
     )
 
     assert "Editorial event details" in out
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "fetched",
-        "source_tier": "editorial",
-    }
+    _assert_fetch_provenance(ctx.citations.mapping()["S1"], "fetched", "editorial")
 
 
 async def test_web_fetch_trust_metadata_overrides_a_gov_suffix():
@@ -1149,10 +1220,9 @@ async def test_discovered_result_can_be_fetched_into_answer_grade_evidence():
         "source_tier": "authoritative",
     }
     assert ctx.citations.mapping()["S2"]["url"] == url
-    assert ctx.citations.mapping()["S2"]["provenance"] == {
-        "evidence_grade": "authoritative",
-        "source_tier": "authoritative",
-    }
+    _assert_fetch_provenance(
+        ctx.citations.mapping()["S2"], "authoritative", "authoritative",
+    )
     assert "Current SNAP recertification" in ctx.citations.mapping()["S2"]["snippet"]
 
 
@@ -1225,6 +1295,26 @@ async def test_failed_source_fetch_preserves_canonical_city_discovery_history():
         "valid_as_of": "",
         "provenance": {"evidence_grade": "discovery"},
     }
+
+
+async def test_web_fetch_preserves_network_and_canonical_citation_urls():
+    network_url = "https://www1.nyc.gov/site/hra/help/snap.page"
+    citation_url = "https://www.nyc.gov/site/hra/help/snap.page"
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=_Client({network_url: "Current SNAP application guidance."}),
+    )
+
+    await web_fetch_tools()[0].handler(
+        {"url": network_url, "query": "SNAP application guidance"}, ctx,
+    )
+
+    citation = ctx.citations.mapping()["S1"]
+    acquisition = citation["provenance"]["acquisition"]
+    assert citation["url"] == citation_url
+    assert acquisition["final_url"] == network_url
+    assert acquisition["citation_url"] == citation_url
 
 
 async def test_web_fetch_does_not_follow_a_redirect_off_curated_domains():

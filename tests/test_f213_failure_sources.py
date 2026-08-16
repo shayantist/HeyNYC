@@ -65,7 +65,7 @@ async def test_f213_approval_resume_failure_excludes_preexisting_sources(
     pending = await conversation.send("Do it")
     old_url = "https://www.nyc.gov/site/immigrants/index.page"
     current_url = "https://www.nyc.gov/site/doh/health/health-topics.page"
-    conversation._citations.register(
+    conversation.state.citations.register(
         old_url,
         title="Immigration help",
         kind="WEB",

@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic_core import to_jsonable_python
+
 from heynyc.core.pii_redaction import redact_sensitive_identifiers
 
 from .runner import CaseResult
@@ -125,7 +127,7 @@ class Trace:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{self.case_id}.json"
-        path.write_text(json.dumps(self.to_dict(), indent=2))
+        path.write_text(json.dumps(to_jsonable_python(self.to_dict()), indent=2))
         return path
 
 

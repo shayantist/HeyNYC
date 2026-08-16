@@ -10,6 +10,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from heynyc.core.localization import localize
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.projection import _resident_history
 from heynyc.core.pydantic_runtime.runtime import PydanticRunFailure
@@ -465,3 +466,251 @@ async def test_exact_fact_guard_keeps_cited_document_evidence() -> None:
     assert calls == 2
     assert result.status == "success"
     assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallback() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/example",
+            title="Official service row",
+            kind="DATA",
+            snippet="Call 212-555-0100.",
+            provenance={"snapshot": {"phone": "212-555-0100"}},
+        )
+        return f"Call 212-555-0100. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(
+        messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([
+            _cited_answer(
+                "Call 212-555-9999. {cite:S1}",
+                f"answer-{calls}",
+            )
+        ])
+
+    with pytest.raises(PydanticRunFailure) as raised:
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={
+                "retrieve": Tool(
+                    name="retrieve",
+                    description="Retrieve official evidence",
+                    parameters={"type": "object", "properties": {}},
+                    handler=retrieve,
+                )
+            },
+            structured_grounding=True,
+        ).run("What number should I call?")
+
+    assert calls == 4
+    assert raised.value.partial_result.status == "error"
+    assert raised.value.partial_result.diagnostics["validation_rejections"][-1][
+        "stage"
+    ] == "structured_grounding"
+
+
+async def test_discovery_only_correction_can_fetch_the_known_source_once() -> None:
+    async def search(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/official-guidance",
+            title="Search result",
+            kind="WEB",
+            snippet="The office is open on Mondays.",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"Search result. {{cite:{citation_id}}}"
+
+    async def web_fetch(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/official-guidance",
+            title="Official guidance",
+            kind="WEB",
+            snippet="The office is open on Mondays.",
+            provenance={"evidence_grade": "authoritative"},
+        )
+        return f"The office is open on Mondays. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+        if calls == 2:
+            return ModelResponse([
+                _cited_answer("The office is open on Mondays. {cite:S1}", "answer-1")
+            ])
+        if calls == 3:
+            assert {tool.name for tool in info.function_tools} == {"web_fetch"}
+            return ModelResponse([ToolCallPart("web_fetch", {}, "fetch-1")])
+        return ModelResponse([
+            _cited_answer("The office is open on Mondays. {cite:S2}", "answer-2")
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "search": Tool(
+                name="search",
+                description="Find a source",
+                parameters={"type": "object", "properties": {}},
+                handler=search,
+            ),
+            "web_fetch": Tool(
+                name="web_fetch",
+                description="Fetch a known source",
+                parameters={"type": "object", "properties": {}},
+                handler=web_fetch,
+            ),
+        },
+        structured_grounding=True,
+    ).run("When is the office open?")
+
+    assert calls == 4
+    assert result.status == "success"
+    assert result.text == "The office is open on Mondays. {cite:S2}"
+    assert result.diagnostics["validation_rejections"] == [
+        {
+            "attempt": 1,
+            "stage": "discovery_only",
+            "citation_ids": ["S1"],
+        }
+    ]
+
+
+async def test_exhausted_discovery_validation_preserves_answer_with_specific_notice() -> None:
+    async def search(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/official-guidance",
+            title="NYC office guidance",
+            kind="WEB",
+            snippet="The office is open on Mondays.",
+            provenance={"evidence_grade": "discovery"},
+        )
+        return f"Search result. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(
+        _messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+        return ModelResponse([
+            _cited_answer("The office is open on Mondays. {cite:S1}", f"answer-{calls}")
+        ])
+
+    with pytest.raises(PydanticRunFailure) as raised:
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={
+                "search": Tool(
+                    name="search",
+                    description="Find a source",
+                    parameters={"type": "object", "properties": {}},
+                    handler=search,
+                )
+            },
+            structured_grounding=True,
+        ).run("When is the office open?")
+
+    assert calls == 4
+    assert raised.value.partial_result.status == "error"
+    assert raised.value.partial_result.text == (
+        "The office is open on Mondays. {cite:S1}\n\n"
+        "Verification note for NYC office guidance (S1): this source is a search-result "
+        "excerpt. I could not confirm it from the full page."
+    )
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        (
+            "es",
+            "Nota de verificación para {source}: esta fuente es un fragmento de un resultado "
+            "de búsqueda. No pude confirmarla en la página completa.",
+        ),
+        (
+            "bn",
+            "{source}-এর জন্য যাচাইকরণ নোট: এই উৎসটি একটি অনুসন্ধান ফলাফলের অংশ। "
+            "আমি সম্পূর্ণ পৃষ্ঠা থেকে এটি নিশ্চিত করতে পারিনি।",
+        ),
+        (
+            "zh",
+            "{source} 的核实说明：此来源只是搜索结果摘要，我无法从完整页面确认该信息。",
+        ),
+    ],
+)
+def test_discovery_validation_notice_is_localized(
+    language: str,
+    expected: str,
+) -> None:
+    assert localize(
+        "Verification note for {source}: this source is a search-result excerpt. "
+        "I could not confirm it from the full page.",
+        language,
+    ) == expected
+
+
+async def test_rejected_final_answer_cannot_switch_to_a_clarification() -> None:
+    calls = 0
+
+    async def model(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([
+                _cited_answer("This uses an unknown source. {cite:S999}", "answer-1")
+            ])
+        assert {tool.name for tool in info.output_tools} == {"final_answer"}
+        if calls == 2:
+            return ModelResponse([
+                ToolCallPart(
+                    "clarification_request",
+                    {"question": "Can you clarify?"},
+                    "clarification-1",
+                )
+            ])
+        return ModelResponse([
+            _cited_answer("I could not establish that from the available evidence.", "answer-2")
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+    ).run("Can you verify this?")
+
+    assert calls == 3
+    assert result.status == "success"
+    assert result.text == "I could not establish that from the available evidence."
+    assert result.diagnostics["validation_rejections"] == [
+        {"attempt": 1, "stage": "unknown_citation"}
+    ]

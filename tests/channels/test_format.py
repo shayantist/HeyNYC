@@ -2,12 +2,14 @@ import signal
 from dataclasses import dataclass, field
 
 from heynyc.channels.format import WA_LIMIT, _split, render
+from heynyc.core.agent import ActionLink
 
 
 @dataclass
 class FakeResult:
     text: str
     citations: dict = field(default_factory=dict)
+    action_links: tuple[ActionLink, ...] = ()
 
 
 def test_strips_markers_and_appends_sources():
@@ -56,6 +58,56 @@ def test_preserves_code_and_urls_while_converting_other_markup():
         "- item\n"
         "~closed~\n"
         "https://example.com/__keep__"
+    ]
+
+
+def test_commonmark_parser_handles_balanced_parentheses_and_reference_links():
+    text = (
+        "[Map](https://example.com/a_(b)) and [Details][details]\n\n"
+        "[details]: https://example.com/path_(one)"
+    )
+
+    assert render(FakeResult(text), "sms_twilio") == [
+        "Map: https://example.com/a_(b) and "
+        "Details: https://example.com/path_(one)"
+    ]
+
+
+def test_commonmark_parser_respects_escaped_delimiters_and_code_precedence():
+    text = r"\*literal\* and `**not bold**` and **bold**"
+
+    assert render(FakeResult(text), "sms_twilio") == [
+        "*literal* and `**not bold**` and bold"
+    ]
+
+
+def test_commonmark_parser_preserves_nested_lists():
+    text = "- Parent\n  - First child\n  - Second child"
+
+    assert render(FakeResult(text), "sms_twilio") == [
+        "- Parent\n  - First child\n  - Second child"
+    ]
+
+
+def test_commonmark_parser_preserves_each_blockquote_paragraph():
+    text = "> First paragraph\n>\n> Second paragraph"
+
+    assert render(FakeResult(text), "sms_twilio") == [
+        "> First paragraph\n> Second paragraph"
+    ]
+
+
+def test_commonmark_parser_preserves_lists_inside_blockquotes():
+    text = "> - First\n> - Second"
+
+    assert render(FakeResult(text), "sms_twilio") == [
+        "> - First\n> - Second"
+    ]
+
+
+def test_commonmark_parser_preserves_horizontal_rules():
+    assert render(FakeResult("Before\n\n---\n\nAfter"), "sms_twilio") == [
+        "Before\n---\nAfter"
     ]
 
 
@@ -125,6 +177,47 @@ def test_sources_footer_omits_links_already_shown_in_the_answer():
     assert "Air quality - https://nyc.gov/air" in rendered
 
 
+def test_inline_source_url_does_not_drop_its_structured_source_note():
+    limitation = (
+        "These are regular hours. Confirm holiday or temporary schedule exceptions before "
+        "traveling."
+    )
+    result = FakeResult(
+        "See https://nyc.gov/help {cite:S1}.",
+        {
+            "S1": {
+                "id": "S1",
+                "url": "https://nyc.gov/help",
+                "title": "Help",
+                "kind": "DATA",
+                "provenance": {"derivation": {"limitations": limitation}},
+            },
+        },
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count("https://nyc.gov/help") == 1
+    assert limitation in rendered
+
+
+def test_sources_footer_deduplicates_shared_action_urls():
+    action_url = "https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9"
+    result = FakeResult(
+        "One {cite:S1}. Two {cite:S2}.",
+        {
+            "S1": {"id": "S1", "url": "https://nyc.gov/one", "title": "One"},
+            "S2": {"id": "S2", "url": "https://nyc.gov/two", "title": "Two"},
+        },
+        (
+            ActionLink(citation_id="S1", url=action_url),
+            ActionLink(citation_id="S2", url=action_url),
+        ),
+    )
+
+    assert render(result, "sms_twilio")[0].count(action_url) == 1
+
+
 def test_sources_footer_preserves_socrata_row_links():
     r = FakeResult(
         "One {cite:S1}. Two {cite:S2}.",
@@ -147,7 +240,7 @@ def test_sources_footer_preserves_socrata_row_links():
     assert "row-1.json" in footer and "row-2.json" in footer
 
 
-def test_sources_footer_compacts_arcgis_row_queries_to_one_layer_link():
+def test_sources_footer_preserves_arcgis_row_queries():
     layer = "https://services6.arcgis.com/example/FeatureServer/0"
     r = FakeResult(
         "One {cite:S1}. Two {cite:S2}.",
@@ -158,9 +251,9 @@ def test_sources_footer_compacts_arcgis_row_queries_to_one_layer_link():
     )
 
     footer = render(r)[0]
-    assert footer.count("NYC Finder") == 1
-    assert f"NYC Finder - {layer}" in footer
-    assert "/query?where=" not in footer
+    assert footer.count("NYC Finder") == 2
+    assert f"{layer}/query?where=id%3D1" in footer
+    assert f"{layer}/query?where=id%3D2" in footer
 
 
 def test_splits_long_text_on_paragraph_boundaries_footer_last():
@@ -230,7 +323,7 @@ def test_whatsapp_channel_keeps_native_bold_markup():
     assert render(FakeResult("**Housing**")) == ["*Housing*"]
 
 
-def test_body_replaces_cited_socrata_row_json_with_official_dataset_page():
+def test_body_preserves_exact_cited_socrata_row_url():
     permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc123.json"
     r = FakeResult(
         f"- Street Fair, Saturday {{cite:S1}}\n  Details: {permalink}",
@@ -240,14 +333,13 @@ def test_body_replaces_cited_socrata_row_json_with_official_dataset_page():
     for channel in ("sms_twilio", "whatsapp_meta"):
         joined = "\n".join(render(r, channel))
         answer = joined.split("Sources:")[0]
-        assert "https://data.cityofnewyork.us/d/tvpp-9vvx" in answer  # official page in the body
-        assert permalink not in answer                               # raw JSON permalink gone
-        assert "abc123.json" in joined                               # footer keeps the row permalink
+        assert permalink in answer
+        assert "/d/tvpp-9vvx" not in answer
     # the stored citation record is never rewritten
     assert r.citations["S1"]["url"] == permalink
 
 
-def test_body_debraces_stray_brace_wrapped_link():
+def test_body_does_not_repair_malformed_brace_wrapped_link():
     permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json"
     r = FakeResult(
         f"See [Details]({{{permalink}}}) {{cite:S1}}",  # [Details]({<permalink>}) observed live
@@ -255,11 +347,10 @@ def test_body_debraces_stray_brace_wrapped_link():
     )
 
     answer = render(r, "sms_twilio")[0].split("Sources:")[0]
-    assert "{" not in answer and "}" not in answer
-    assert "Details: https://data.cityofnewyork.us/d/tvpp-9vvx" in answer
+    assert "Details: %7Bhttps://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json%7D" in answer
 
 
-def test_body_repairs_citation_marker_used_as_a_markdown_link_target():
+def test_body_does_not_invent_links_from_malformed_markdown():
     event_url = "https://www.nycgovparks.org/events/2026/07/26/open-run"
     map_url = "https://www.google.com/maps/search/?api=1&query=40.7,-73.8"
     source_url = "https://services.example.gov/FeatureServer/0/query?where=OBJECTID%3D1"
@@ -278,14 +369,15 @@ def test_body_repairs_citation_marker_used_as_a_markdown_link_target():
     for channel in ("sms_twilio", "whatsapp_twilio"):
         answer = "\n".join(render(r, channel)).split("Sources:")[0]
         assert f"Details: {event_url}" in answer
-        assert f"Map: {map_url}" in answer
+        assert f"Directions: {map_url}" in answer
         assert f"Details: {source_url}" in answer
         assert "{cite:" not in answer
-        assert "](" not in answer
+        assert "[Details](" in answer
+        assert "[Map](" in answer
 
     console = "\n".join(render(r, "console"))
-    assert f"[Details]({event_url})" in console
-    assert f"[Map]({map_url})" in console
+    assert "[Details](" in console
+    assert "[Map](" in console
     assert source_url in console
 
 

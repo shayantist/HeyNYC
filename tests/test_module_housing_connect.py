@@ -123,7 +123,9 @@ async def test_finder_lists_open_lotteries_grounded_and_cited(monkeypatch):
     # provenance grounded in the actual rows; as-of is the row's refresh date, not fetch time
     s1 = mapping["S1"]
     assert s1["provenance"]["record_id"] == "7541"
-    assert s1["provenance"]["snapshot"]["unit_count"] == 3
+    assert s1["provenance"]["snapshot"] == _ROW_SMALL
+    assert s1["provenance"]["derivation"]["unit_count"] == 3
+    assert s1["provenance"]["derivation"]["unit_mix"] == ["2 studio", "1 1BR"]
     assert s1["valid_as_of"] == "2026-07-06"
 
     # the query is filtered server-side to Active + future deadline

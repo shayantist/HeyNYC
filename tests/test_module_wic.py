@@ -110,7 +110,9 @@ def _routed_client(records, wic_status: int = 200) -> httpx.AsyncClient:
         if WIC_HOST in host:
             if wic_status != 200:
                 return httpx.Response(wic_status, json={"error": True})
-            return httpx.Response(200, json=records)
+            offset = int(request.url.params.get("$offset", "0"))
+            limit = int(request.url.params.get("$limit", str(wic.WIC_LIMIT)))
+            return httpx.Response(200, json=records[offset:offset + limit])
         return httpx.Response(404)
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -132,36 +134,193 @@ async def test_nearest_wic_site_ranks_grounds_and_links():
     out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
     await client.aclose()
 
-    site_lines = [l for l in out.splitlines() if l.startswith("- ")]
-    assert len(site_lines) == 2                        # no-coords row dropped
-    assert "Close WIC Center" in site_lines[0]         # nearest first
-    assert "Far WIC Center" in site_lines[1]
-    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
-    assert "(718) 555-0002" in out                     # phone surfaced
-    assert "http://example.org/wic" in out             # website surfaced when present
-    assert "www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100" in out  # directions link
-    assert "{cite:S1}" in out                          # grounded, cited
-    mapping = citations.mapping()
-    assert mapping["S1"]["kind"] == "DATA"
-    # citation is a row-addressed permalink into the NY State Socrata dataset
-    assert "health.data.ny.gov" in mapping["S1"]["url"]
-    assert "g4i5-r6zx" in mapping["S1"]["url"]
-    assert "row-close" in mapping["S1"]["url"]
-    assert mapping["S1"]["provenance"]["record_id"] == "row-close"
-    assert mapping["S1"]["valid_as_of"]
-    assert "https://www.health.ny.gov/prevention/nutrition/wic/how_to_apply.htm" in out
-    assert any(
-        citation["url"] == "https://www.health.ny.gov/prevention/nutrition/wic/how_to_apply.htm"
-        for citation in mapping.values()
+    assert [record.organization.name for record in out.records] == [
+        "Close WIC Center",
+        "Far WIC Center",
+    ]
+    assert out.records[0].origin_precision == "approximate"
+    assert out.records[0].phone is not None
+    assert out.records[0].phone.number == "(718) 555-0002"
+    assert out.records[0].website == "http://example.org/wic"
+    assert out.records[0].action_url == (
+        "https://www.google.com/maps/dir/?api=1&destination=40.75100,-73.99100"
     )
+    assert out.records[0].citation_id == "S2"
+    mapping = citations.mapping()
+    assert mapping["S2"]["kind"] == "DATA"
+    # citation is a row-addressed permalink into the NY State Socrata dataset
+    assert "health.data.ny.gov" in mapping["S2"]["url"]
+    assert "g4i5-r6zx" in mapping["S2"]["url"]
+    assert "row-close" in mapping["S2"]["url"]
+    assert mapping["S2"]["provenance"]["record_id"] == "row-close"
+    assert mapping["S2"]["valid_as_of"]
+    assert out.application_route is not None
+    assert out.application_route.url == wic.WIC_APPLY_URL
+    assert mapping[out.application_route.citation_id]["url"] == wic.WIC_APPLY_URL
+
+
+async def test_wic_tool_returns_typed_source_records_with_explicit_unknowns():
+    client = _routed_client([_record()])
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        current_location=GeoPoint(
+            40.7500,
+            -73.9900,
+            "Union Square, Manhattan",
+            resident_query="Union Square",
+            provider_id="place-1",
+            provider_payload={"place_id": 1, "display_name": "private provider value"},
+        ),
+    )
+
+    tool = get_tools()[0]
+    result = await tool.handler({"near": "Union Square", "k": 1}, ctx)
+    await client.aclose()
+
+    assert tool.return_type is wic.WicResult
+    assert isinstance(result, wic.WicResult)
+    payload = result.model_dump(mode="json", exclude_none=False)
+    assert payload["outcome"] == "success"
+    assert payload["source"]["returned_count"] == 1
+    assert payload["source"]["complete"] is True
+    assert payload["source"]["pages_fetched"] == 1
+    assert payload["source"]["page_size"] == 500
+    assert "provider_payload" not in payload["origin"]
+    assert payload["records"][0]["organization"]["name"] == "Test WIC Center"
+    assert payload["records"][0]["hours"] is None
+    assert payload["records"][0]["appointment_required"] is None
+    assert payload["records"][0]["service"]["eligibility_description"] is None
+    assert payload["records"][0]["citation_id"].startswith("S")
+    assert payload["records"][0]["action_url"].startswith("https://www.google.com/maps/dir/")
+
+
+async def test_wic_tool_reuses_current_location_without_geocoding(monkeypatch):
+    async def should_not_geocode(*args, **kwargs):
+        raise AssertionError("stored origin reached geocoder")
+
+    monkeypatch.setattr(wic, "geocode", should_not_geocode)
+    client = _routed_client([_record()])
+    current = GeoPoint(
+        40.7500,
+        -73.9900,
+        "Union Square, Manhattan",
+        resident_query="Union Square",
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=client,
+        current_location=current,
+    )
+
+    result = await get_tools()[0].handler({"near": "Union Square", "k": 1}, ctx)
+    await client.aclose()
+
+    assert result.outcome == "success"
+    assert ctx.current_location is current
+    assert result.origin is not None
+    assert result.origin.resident_query == "Union Square"
+
+
+async def test_wic_tool_types_a_malformed_provider_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if GEOSEARCH_HOST in request.url.host:
+            return httpx.Response(200, json={"features": [
+                {
+                    "geometry": {"coordinates": [-73.9900, 40.7500]},
+                    "properties": {"label": "Origin, Manhattan"},
+                }
+            ]})
+        return httpx.Response(200, json={"error": "not a row list"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    result = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert result.outcome == "source_unavailable"
+    assert result.source.status == "unavailable"
+    assert result.source.fetched_at is not None
+    assert result.source.error == "invalid_response"
+    assert result.records == []
 
 
 async def test_wic_query_creates_client_when_runtime_does_not_inject_one(monkeypatch):
     client = _routed_client([])
     monkeypatch.setattr(wic.httpx, "AsyncClient", lambda **_kwargs: client)
 
-    assert await wic._query_wic(None, where=wic.WHERE_NYC) == []
+    result = await wic._query_wic(None, where=wic.WHERE_NYC)
+
+    assert result.rows == []
+    assert result.complete is True
     assert client.is_closed
+
+
+async def test_wic_query_reads_all_stably_ordered_pages():
+    records = [
+        _record(agency_name=f"WIC {row_id}", **{":id": row_id})
+        for row_id in ("row-1", "row-2", "row-3")
+    ]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        offset = int(request.url.params.get("$offset", "0"))
+        limit = int(request.url.params["$limit"])
+        return httpx.Response(200, json=records[offset:offset + limit])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await wic._query_wic(client, where=wic.WHERE_NYC, limit=2)
+    await client.aclose()
+
+    assert [row[":id"] for row in result.rows] == ["row-1", "row-2", "row-3"]
+    assert result.complete is True
+    assert result.pages_fetched == 2
+    assert [request.url.params.get("$offset", "0") for request in requests] == ["0", "2", "3"]
+    assert all(request.url.params["$order"] == ":id" for request in requests)
+
+
+async def test_wic_query_preserves_partial_page_failure_metadata():
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("$offset", "0"))
+        if offset:
+            return httpx.Response(503, json={"error": True})
+        return httpx.Response(200, json=[_record(**{":id": "row-1"})])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await wic._query_wic(client, where=wic.WHERE_NYC, limit=1)
+    await client.aclose()
+
+    assert [row[":id"] for row in result.rows] == ["row-1"]
+    assert result.complete is False
+    assert result.pages_fetched == 1
+    assert result.error == "transport_error"
+
+
+async def test_wic_tool_does_not_rank_an_incomplete_citywide_result(monkeypatch):
+    async def partial(*_args, **_kwargs):
+        return wic._WicQueryPage(
+            rows=[_record(**{":id": "row-1"})],
+            pages_fetched=1,
+            complete=False,
+            error="transport_error",
+        )
+
+    monkeypatch.setattr(wic, "_query_wic", partial)
+    client = _routed_client([])
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    result = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert result.outcome == "source_partial"
+    assert result.source.status == "partial"
+    assert result.source.complete is False
+    assert result.source.next_offset == 1
+    assert result.records == []
 
 
 async def test_nearest_wic_site_flags_temporary_site():
@@ -174,7 +333,7 @@ async def test_nearest_wic_site_flags_temporary_site():
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
-    assert "temporary" in out.lower()                  # honesty: a rotating/temporary site is flagged
+    assert out.records[0].service_at_location.site_type == "Temporary"
 
 
 async def test_nearest_wic_site_never_invents_hours():
@@ -184,7 +343,9 @@ async def test_nearest_wic_site_never_invents_hours():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
-    assert "call" in out.lower()                        # routes to calling for hours/appointment
+    assert out.records[0].hours is None
+    assert out.records[0].appointment_required is None
+    assert out.records[0].phone is not None
 
 
 async def test_nearest_wic_site_gives_official_fallback_when_contact_is_missing():
@@ -198,9 +359,11 @@ async def test_nearest_wic_site_gives_official_fallback_when_contact_is_missing(
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
-    assert "health.ny.gov/prevention/nutrition/wic/how_to_apply.htm" in out
-    assert "{cite:" in out.split("Contact:", 1)[1].splitlines()[0]
-    assert any("how_to_apply" in citation["url"] for citation in citations.mapping().values())
+    assert out.records[0].phone is None
+    assert out.records[0].website is None
+    assert out.application_route is not None
+    assert "how_to_apply" in out.application_route.url
+    assert out.application_route.citation_id in citations.mapping()
 
 
 async def test_nearest_wic_site_does_not_fake_missing_source_date():
@@ -212,8 +375,9 @@ async def test_nearest_wic_site_does_not_fake_missing_source_date():
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
 
-    assert citations.mapping()["S1"]["valid_as_of"] == ""
-    assert "Source date unavailable" in out
+    record_citation = citations.mapping()[out.records[0].citation_id]
+    assert record_citation["valid_as_of"] == ""
+    assert out.records[0].valid_as_of is None
 
 
 async def test_nearest_wic_site_abstains_when_geocode_fails(monkeypatch):
@@ -226,10 +390,9 @@ async def test_nearest_wic_site_abstains_when_geocode_fails(monkeypatch):
     out = await get_tools()[0].handler({"near": "Springfield, Illinois"}, ctx)
     await client.aclose()
 
-    assert not any(l.startswith("- ") for l in out.splitlines())                              # no fabricated site list
-    low = out.lower()
-    assert "couldn't" in low or "could not" in low
-    assert "nyc" in low
+    assert out.outcome == "location_not_found"
+    assert out.records == []
+    assert out.source.status == "not_called"
 
 
 async def test_nearest_wic_site_clarifies_on_low_confidence(monkeypatch):
@@ -241,8 +404,9 @@ async def test_nearest_wic_site_clarifies_on_low_confidence(monkeypatch):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Broadway and 100th"}, ctx)
     await client.aclose()
-    assert "which borough" in out.lower()
-    assert not any(l.startswith("- ") for l in out.splitlines())
+    assert out.outcome == "location_ambiguous"
+    assert out.origin is not None and out.origin.low_confidence
+    assert out.records == []
 
 
 async def test_nearest_wic_site_abstains_when_api_down():
@@ -250,8 +414,13 @@ async def test_nearest_wic_site_abstains_when_api_down():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
-    assert not any(l.startswith("- ") for l in out.splitlines())                              # don't invent a site when the source is down
-    assert "wic" in out.lower()
+    assert out.outcome == "source_unavailable"
+    assert out.source.status == "unavailable"
+    assert out.source.fetched_at is not None
+    assert out.source.error == "transport_error"
+    assert out.records == []
+    assert out.application_route is not None
+    assert out.application_route.citation_id in ctx.citations.mapping()
 
 
 async def test_nearest_wic_site_abstains_when_no_sites():
@@ -259,7 +428,11 @@ async def test_nearest_wic_site_abstains_when_no_sites():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
     await client.aclose()
-    assert not any(l.startswith("- ") for l in out.splitlines())
+    assert out.outcome == "no_results"
+    assert out.source.status == "ok"
+    assert out.source.returned_count == 0
+    assert out.records == []
+    assert out.application_route is not None
 
 
 async def test_nearest_wic_site_asks_when_location_missing():
@@ -267,8 +440,9 @@ async def test_nearest_wic_site_asks_when_location_missing():
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": ""}, ctx)
     await client.aclose()
-    assert not any(l.startswith("- ") for l in out.splitlines())
-    assert "where" in out.lower()
+    assert out.outcome == "missing_origin"
+    assert out.source.status == "not_called"
+    assert out.records == []
 
 
 # --- the shipped module stays valid ---------------------------------------

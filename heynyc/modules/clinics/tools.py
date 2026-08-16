@@ -25,21 +25,25 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core.citations import data_provenance
-from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
+from heynyc.core.tools.arcgis import feature_query_url, query_feature_service_page
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
-    _clarify_message,
-    _resolution_note,
-    format_distance,
+    GeoPoint,
+    current_resolved_location,
     geocode,
     maps_link,
     miles,
+    origin_precision,
     rank_nearby,
+    resolved_location_citation,
 )
 
 # --- FQHC spine (live HRSA ArcGIS MapServer layer; behaves like a FeatureServer for /query) ---
@@ -56,7 +60,6 @@ FQHC_WHERE = ("HCC_STATUS_DESC='Active' AND SITE_STATE_ABBR='NY' "
 
 SEED_PATH = Path(__file__).resolve().parent / "data" / "nyc_care_sites.tsv"
 NYC_CARE_SOURCE = "https://www.nychealthandhospitals.org/locations/"
-OFFICIAL = "call 311, or 646-NYC-CARE (646-692-2273) for NYC Care enrollment"
 # HRSA county names -> common NYC borough names (Kings=Brooklyn, New York=Manhattan, Richmond=SI).
 _COUNTY_TO_BOROUGH = {
     "Bronx": "Bronx", "Kings": "Brooklyn", "New York": "Manhattan",
@@ -72,6 +75,168 @@ CLASS_NYC_CARE = "NYC_CARE"
 VERIFIED_ON = "2026-07-04"
 
 
+class HrsaClinicSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["not_called", "ok", "partial", "unavailable"]
+    url: str = HRSA_URL
+    query_filter: str = FQHC_WHERE
+    fetched_at: datetime | None = None
+    returned_count: int | None = None
+    usable_count: int | None = None
+    complete: bool | None = None
+    pages_fetched: int = 0
+    next_offset: int | None = None
+    pagination_token: str | None = None
+    error: Literal["transport_error", "invalid_response"] | None = None
+
+
+class NycCareClinicSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["not_called", "ok", "partial", "empty", "unavailable"]
+    url: str = NYC_CARE_SOURCE
+    returned_count: int
+    usable_count: int
+    complete: bool
+    valid_as_of: date = date.fromisoformat(VERIFIED_ON)
+    error: Literal["file_unavailable", "invalid_rows"] | None = None
+
+
+class ClinicSources(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hrsa: HrsaClinicSource
+    nyc_care: NycCareClinicSource
+
+
+class ClinicOrigin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resident_query: str
+    label: str
+    latitude: float
+    longitude: float
+    match_type: str | None = None
+    provider_id: str | None = None
+    confidence: float | None = None
+    low_confidence: bool
+    precision: Literal["precise", "approximate"]
+
+
+class ClinicOrganization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class ClinicService(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    program_class: Literal["FQHC", "NYC_CARE"]
+    program_label: str
+    hours: None = None
+    language: None = None
+    accessibility: None = None
+    service_area: None = None
+    eligibility: None = None
+    required_document: None = None
+    cost: None = None
+
+
+class ClinicLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str | None = None
+    borough: str | None = None
+    latitude: float
+    longitude: float
+
+
+class ClinicPhone(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    number: str
+    type: Literal["voice"] = "voice"
+
+
+class ClinicServiceAtLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schedule: None = None
+    services: None = None
+
+
+class ClinicRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_record_id: str
+    organization: ClinicOrganization
+    service: ClinicService
+    location: ClinicLocation
+    service_at_location: ClinicServiceAtLocation
+    phone: ClinicPhone | None = None
+    website: str | None = None
+    distance_miles: float
+    valid_as_of: date | None = None
+    citation_id: str
+    action_url: str
+
+
+class ClinicProgramGuarantee(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    program_class: Literal["FQHC", "NYC_CARE"]
+    label: str
+    verified_fact: str
+    valid_as_of: date
+    citation_id: str
+
+
+class ClinicRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    url: str
+    phone: str | None = None
+    citation_id: str
+
+
+ClinicOutcome = Literal[
+    "success",
+    "degraded",
+    "missing_origin",
+    "location_not_found",
+    "location_ambiguous",
+    "source_unavailable",
+]
+
+
+class ClinicResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: ClinicOutcome
+    origin: ClinicOrigin | None = None
+    origin_citation_id: str | None = None
+    primary_citation_id: str | None = None
+    sources: ClinicSources
+    clinics: list[ClinicRecord] = Field(default_factory=list)
+    program_guarantees: list[ClinicProgramGuarantee] = Field(default_factory=list)
+    fallback_routes: list[ClinicRoute] = Field(default_factory=list)
+    requested_count: int | None = None
+
+
+class _HrsaQueryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[dict]
+    pages_fetched: int
+    complete: bool
+    next_offset: int | None = None
+    pagination_token: str | None = None
+    error: Literal["transport_error", "invalid_response"] | None = None
+
+
 @dataclass(frozen=True)
 class ProgramGuarantee:
     """A CLASS's grounded eligibility framing + the citations that back it.
@@ -80,7 +245,6 @@ class ProgramGuarantee:
     guarantee). data_title -> the title for each facility's DATA citation (the facility source).
     """
     label: str
-    lead: str          # a warm one-line reassurance shown once per class present in the results
     doc_url: str       # official program page (verified live)
     doc_title: str
     snippet: str       # short cite label, subset of `body`
@@ -91,7 +255,6 @@ class ProgramGuarantee:
 CLASS_GUARANTEE: dict[str, ProgramGuarantee] = {
     CLASS_FQHC: ProgramGuarantee(
         label="Community Health Center (FQHC)",
-        lead="These are federally funded health centers that see everyone, insured or not.",
         doc_url="https://www.hrsa.gov/get-health-care",
         doc_title="Get Health Care, HRSA Health Center Program",
         snippet=("HRSA-funded health centers see all patients regardless of ability to pay and "
@@ -105,7 +268,6 @@ CLASS_GUARANTEE: dict[str, ProgramGuarantee] = {
     ),
     CLASS_NYC_CARE: ProgramGuarantee(
         label="NYC Health + Hospitals (NYC Care)",
-        lead="These city hospitals and clinics serve everyone and don't ask about immigration status.",
         doc_url="https://access.nyc.gov/programs/nyc-care/",
         doc_title="NYC Care, ACCESS NYC",
         snippet=("NYC Care gives low- or no-cost care at NYC Health + Hospitals, sliding-scale fees "
@@ -140,8 +302,16 @@ class Clinic:
     url: str
     klass: str
     record_id: str
-    valid_as_of: str
+    valid_as_of: str | None
     raw: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _NycCareCatalog:
+    clinics: list[Clinic]
+    returned_count: int
+    complete: bool
+    error: Literal["file_unavailable", "invalid_rows"] | None = None
 
 
 # --- FQHC (live ArcGIS record) ---------------------------------------------
@@ -173,27 +343,31 @@ def _fqhc_from_record(record: dict) -> Clinic | None:
         url=_clean(record.get("SITE_URL")),
         klass=CLASS_FQHC,
         record_id=_clean(record.get("OBJECTID")),
-        valid_as_of=VERIFIED_ON,
+        valid_as_of=None,
         raw=record,
     )
 
 
 # --- NYC_CARE (bundled, build-time-geocoded seed) --------------------------
 
-def _load_nyc_care_seed(path: Path = SEED_PATH) -> list[Clinic]:
+def _load_nyc_care_seed(path: Path = SEED_PATH) -> _NycCareCatalog:
     """Load the bundled NYC Care / H+H seed (build-time geocoded). Rows without coords are dropped.
 
-    A missing/unreadable seed degrades to [] (the tool still serves live FQHCs), never crashes.
+    A missing or partially invalid seed retains its distinct source outcome.
     """
     clinics: list[Clinic] = []
+    returned_count = 0
+    invalid_rows = False
     try:
         with path.open(encoding="utf-8") as fh:
             rows = csv.DictReader((line for line in fh if not line.startswith("#")), delimiter="\t")
             for row in rows:
+                returned_count += 1
                 try:
                     lat = float(row["lat"])
                     lon = float(row["lon"])
                 except (KeyError, TypeError, ValueError):
+                    invalid_rows = True
                     continue
                 street = _clean(row.get("street"))
                 zip5 = _clean(row.get("zip"))[:5]
@@ -213,14 +387,25 @@ def _load_nyc_care_seed(path: Path = SEED_PATH) -> list[Clinic]:
                     raw=dict(row),
                 ))
     except OSError:
-        return []
-    return clinics
+        return _NycCareCatalog(
+            clinics=[],
+            returned_count=0,
+            complete=False,
+            error="file_unavailable",
+        )
+    return _NycCareCatalog(
+        clinics=clinics,
+        returned_count=returned_count,
+        complete=not invalid_rows,
+        error="invalid_rows" if invalid_rows else None,
+    )
 
 
 # --- citations -------------------------------------------------------------
 
 def _facility_citation(ctx: ToolContext, clinic: Clinic, *,
-                       origin_lat: float, origin_lon: float, dist_mi: float) -> str:
+                       origin_lat: float, origin_lon: float, dist_mi: float,
+                       valid_as_of: date | None = None) -> str:
     """A DATA citation for the facility source (re-fetchable + provenance + distance derivation).
 
     FQHC -> the single-feature HRSA ArcGIS permalink (row-addressed by OBJECTID). NYC_CARE -> the
@@ -244,7 +429,7 @@ def _facility_citation(ctx: ToolContext, clinic: Clinic, *,
         snippet=f"{clinic.name}, {clinic.address or clinic.borough or 'NYC'}",
         title=guarantee.data_title,
         kind="DATA",
-        valid_as_of=clinic.valid_as_of,
+        valid_as_of=valid_as_of or clinic.valid_as_of,
         provenance=provenance,
     )
 
@@ -266,50 +451,240 @@ def _program_citation(ctx: ToolContext, klass: str) -> str:
 
 # --- the tool --------------------------------------------------------------
 
-def _clinic_block(clinic: Clinic, cite: str, distance: str) -> str:
-    guarantee = CLASS_GUARANTEE[clinic.klass]
-    where = clinic.address or clinic.borough or "NYC"
-    parts = [f"- {clinic.name} [{guarantee.label}] ({where}), "
-             f"{distance} {{cite:{cite}}}"]
-    if clinic.phone:
-        parts.append(f"  Phone: {clinic.phone}")
-    if clinic.url:
-        parts.append(f"  Website: {clinic.url}")
-    parts.append(f"  Directions: {maps_link(clinic.lat, clinic.lon)}")
-    parts.append(f"  As of: {clinic.valid_as_of}")
-    return "\n".join(parts)
+async def _query_hrsa(client: httpx.AsyncClient) -> _HrsaQueryResult:
+    records: list[dict] = []
+    seen_ids: set[str] = set()
+    pages_fetched = 0
+    offset = 0
+    token = None
+    while True:
+        try:
+            page = await query_feature_service_page(
+                HRSA_URL,
+                where=FQHC_WHERE,
+                result_offset=offset,
+                pagination_token=token,
+                client=client,
+            )
+        except httpx.HTTPError:
+            if not records:
+                raise
+            return _HrsaQueryResult(
+                records=records,
+                pages_fetched=pages_fetched,
+                complete=False,
+                next_offset=None if token else offset,
+                pagination_token=token,
+                error="transport_error",
+            )
+        except (ValueError, TypeError, AttributeError):
+            if not records:
+                raise
+            return _HrsaQueryResult(
+                records=records,
+                pages_fetched=pages_fetched,
+                complete=False,
+                next_offset=None if token else offset,
+                pagination_token=token,
+                error="invalid_response",
+            )
+        page_ids = [str(record.get("OBJECTID") or "") for record in page.records]
+        if (
+            any(not record_id for record_id in page_ids)
+            or len(set(page_ids)) != len(page_ids)
+            or seen_ids.intersection(page_ids)
+        ):
+            if records:
+                return _HrsaQueryResult(
+                    records=records,
+                    pages_fetched=pages_fetched,
+                    complete=False,
+                    next_offset=offset,
+                    pagination_token=page.pagination_token or token,
+                    error="invalid_response",
+                )
+            raise ValueError("HRSA page lacks stable unique OBJECTIDs")
+        seen_ids.update(page_ids)
+        records.extend(page.records)
+        pages_fetched += 1
+        if page.complete:
+            return _HrsaQueryResult(
+                records=records,
+                pages_fetched=pages_fetched,
+                complete=True,
+                pagination_token=page.pagination_token or token,
+            )
+        if page.pagination_token is not None:
+            if page.pagination_token == token:
+                return _HrsaQueryResult(
+                    records=records,
+                    pages_fetched=pages_fetched,
+                    complete=False,
+                    pagination_token=token,
+                    error="invalid_response",
+                )
+            token = page.pagination_token
+            continue
+        if page.next_offset is None:
+            return _HrsaQueryResult(
+                records=records,
+                pages_fetched=pages_fetched,
+                complete=False,
+                pagination_token=token,
+                error="invalid_response",
+            )
+        offset = page.next_offset
+
+def _origin_result(point: GeoPoint, query: str) -> ClinicOrigin:
+    return ClinicOrigin(
+        resident_query=point.resident_query or query,
+        label=point.label,
+        latitude=point.lat,
+        longitude=point.lon,
+        match_type=point.match_type or None,
+        provider_id=point.provider_id or None,
+        confidence=point.confidence,
+        low_confidence=point.low_confidence,
+        precision=origin_precision(query, point),
+    )
 
 
-async def _handler(args: dict, ctx: ToolContext) -> str:
+def _nyc_care_source(catalog: _NycCareCatalog) -> NycCareClinicSource:
+    status: Literal["ok", "partial", "empty", "unavailable"]
+    if catalog.error == "file_unavailable":
+        status = "unavailable"
+    elif not catalog.complete:
+        status = "partial"
+    elif not catalog.clinics:
+        status = "empty"
+    else:
+        status = "ok"
+    return NycCareClinicSource(
+        status=status,
+        returned_count=catalog.returned_count,
+        usable_count=len(catalog.clinics),
+        complete=catalog.complete,
+        error=catalog.error,
+    )
+
+
+def _fallback_routes(ctx: ToolContext) -> list[ClinicRoute]:
+    nyc_care_citation = _program_citation(ctx, CLASS_NYC_CARE)
+    hrsa_url = "https://findahealthcenter.hrsa.gov/"
+    hrsa_citation = ctx.citations.register(
+        hrsa_url,
+        snippet="Find a Health Center",
+        title="Find a Health Center, HRSA",
+        kind="DOC",
+    )
+    return [
+        ClinicRoute(
+            name="NYC Care",
+            url=CLASS_GUARANTEE[CLASS_NYC_CARE].doc_url,
+            phone="646-692-2273",
+            citation_id=nyc_care_citation,
+        ),
+        ClinicRoute(
+            name="HRSA Find a Health Center",
+            url=hrsa_url,
+            citation_id=hrsa_citation,
+        ),
+    ]
+
+
+def _not_called_sources() -> ClinicSources:
+    return ClinicSources(
+        hrsa=HrsaClinicSource(status="not_called"),
+        nyc_care=NycCareClinicSource(
+            status="not_called",
+            returned_count=0,
+            usable_count=0,
+            complete=False,
+        ),
+    )
+
+
+def _source_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
     near = (args.get("near") or "").strip()
     if not near:
-        return ("Ask the user where they are (an NYC address, neighborhood, or ZIP) before searching "
-                ", never guess a clinic location.")
+        return ClinicResult(outcome="missing_origin", sources=_not_called_sources())
 
-    origin = await geocode(near, client=ctx.http)
+    origin = current_resolved_location(near, ctx)
     if origin is None:
-        return (f"I couldn't locate '{near}' in NYC, so I can't find a nearby clinic. Ask the user "
-                f"for a specific NYC address, neighborhood, or ZIP, don't guess a clinic. If they "
-                f"need care now, they can {OFFICIAL}.")
+        origin = await geocode(near, client=ctx.http)
+    if origin is None:
+        return ClinicResult(
+            outcome="location_not_found",
+            sources=_not_called_sources(),
+            fallback_routes=_fallback_routes(ctx),
+        )
     if origin.low_confidence:
-        return _clarify_message(near)
+        return ClinicResult(
+            outcome="location_ambiguous",
+            origin=_origin_result(origin, near),
+            sources=_not_called_sources(),
+            fallback_routes=_fallback_routes(ctx),
+        )
+    if origin.resident_query:
+        ctx.current_location = origin
 
-    # FQHC spine is live; on any HRSA error we DEGRADE to the bundled NYC Care seed rather than
-    # abstain (the safety-net answer still stands). Only a truly empty merge abstains.
-    fqhcs: list[Clinic] = []
-    degraded = False
+    fetched_at = datetime.now().astimezone()
+    hrsa_result: _HrsaQueryResult | None = None
     try:
-        records = await query_feature_service(HRSA_URL, where=FQHC_WHERE, client=ctx.http)
-        fqhcs = [c for c in (_fqhc_from_record(r) for r in records) if c is not None]
+        hrsa_result = await _query_hrsa(ctx.http)
     except httpx.HTTPError:
-        degraded = True
+        hrsa_source = HrsaClinicSource(
+            status="unavailable",
+            fetched_at=fetched_at,
+            complete=False,
+            error="transport_error",
+        )
+        fqhcs = []
+    except (ValueError, TypeError, AttributeError):
+        hrsa_source = HrsaClinicSource(
+            status="unavailable",
+            fetched_at=fetched_at,
+            complete=False,
+            error="invalid_response",
+        )
+        fqhcs = []
+    else:
+        parsed = [clinic for clinic in (_fqhc_from_record(row) for row in hrsa_result.records)
+                  if clinic is not None]
+        hrsa_source = HrsaClinicSource(
+            status="ok" if hrsa_result.complete else "partial",
+            fetched_at=fetched_at,
+            returned_count=len(hrsa_result.records),
+            usable_count=len(parsed),
+            complete=hrsa_result.complete,
+            pages_fetched=hrsa_result.pages_fetched,
+            next_offset=hrsa_result.next_offset,
+            pagination_token=hrsa_result.pagination_token,
+            error=hrsa_result.error,
+        )
+        fqhcs = parsed if hrsa_result.complete else []
 
-    clinics = fqhcs + _load_nyc_care_seed()
+    catalog = _load_nyc_care_seed()
+    nyc_care_source = _nyc_care_source(catalog)
+    clinics = fqhcs + (catalog.clinics if catalog.complete else [])
+    sources = ClinicSources(hrsa=hrsa_source, nyc_care=nyc_care_source)
     if not clinics:
-        return (f"I couldn't pull any NYC safety-net clinics right now, don't invent one. Point the "
-                f"user to {OFFICIAL}, or findahealthcenter.hrsa.gov.")
+        return ClinicResult(
+            outcome="source_unavailable",
+            origin=_origin_result(origin, near),
+            origin_citation_id=resolved_location_citation(ctx, origin),
+            sources=sources,
+            fallback_routes=_fallback_routes(ctx),
+        )
 
-    k = int(args.get("k") or 5)
+    k = max(1, min(int(args.get("k") or 5), 10))
     ranked = rank_nearby(
         origin,
         clinics,
@@ -321,36 +696,70 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         limit=k,
     )
 
-    lines = [
-        f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})",
-        _resolution_note(near, origin),
-    ]
-    if degraded:
-        lines.append("(HRSA's live health-center data was unreachable, showing NYC Health + "
-                     "Hospitals / NYC Care sites only. Suggest the user also try findahealthcenter.hrsa.gov.)")
-    lines.append("Nearby clinics that will see you regardless of insurance, report only these, cite "
-                 "each. Lead with the reassurance that these places serve everyone:")
+    typed_clinics: list[ClinicRecord] = []
     classes_present: list[str] = []
     for clinic, distance_m in ranked:
         dist_mi = miles(distance_m)
-        cite = _facility_citation(ctx, clinic, origin_lat=origin.lat, origin_lon=origin.lon,
-                                  dist_mi=dist_mi)
-        lines.append(_clinic_block(clinic, cite, format_distance(near, origin, dist_mi)))
+        valid_as_of = _source_date(clinic.valid_as_of) if clinic.valid_as_of else None
+        cite = _facility_citation(
+            ctx,
+            clinic,
+            origin_lat=origin.lat,
+            origin_lon=origin.lon,
+            dist_mi=dist_mi,
+            valid_as_of=valid_as_of,
+        )
+        guarantee = CLASS_GUARANTEE[clinic.klass]
+        typed_clinics.append(ClinicRecord(
+            provider_record_id=clinic.record_id,
+            organization=ClinicOrganization(name=clinic.name),
+            service=ClinicService(
+                program_class=clinic.klass,
+                program_label=guarantee.label,
+            ),
+            location=ClinicLocation(
+                address=clinic.address or None,
+                borough=clinic.borough or None,
+                latitude=clinic.lat,
+                longitude=clinic.lon,
+            ),
+            service_at_location=ClinicServiceAtLocation(),
+            phone=ClinicPhone(number=clinic.phone) if clinic.phone else None,
+            website=clinic.url or None,
+            distance_miles=dist_mi,
+            valid_as_of=valid_as_of,
+            citation_id=cite,
+            action_url=maps_link(clinic.lat, clinic.lon),
+        ))
         if clinic.klass not in classes_present:
             classes_present.append(clinic.klass)
 
-    # The eligibility / immigration-safety framing, ONE grounded, cited block per class present.
-    # This is the ONLY source of any cost/eligibility/immigration claim (never a per-row field).
+    guarantees = []
     for klass in classes_present:
         guarantee = CLASS_GUARANTEE[klass]
-        prog_cite = _program_citation(ctx, klass)
-        lines.append(f"What {guarantee.label} means for you: {guarantee.body} {{cite:{prog_cite}}}")
+        guarantees.append(ClinicProgramGuarantee(
+            program_class=klass,
+            label=guarantee.label,
+            verified_fact=guarantee.body,
+            valid_as_of=date.fromisoformat(VERIFIED_ON),
+            citation_id=_program_citation(ctx, klass),
+        ))
 
-    lines.append("Call ahead to confirm hours and the services you need, this is not medical advice, "
-                 "and for a medical emergency call 911. Report only the sites and the grounded "
-                 "eligibility text above; never state a cost, eligibility, or immigration fact that "
-                 "isn't in this result.")
-    return "\n".join(lines)
+    return ClinicResult(
+        outcome=(
+            "success"
+            if hrsa_source.status == "ok" and nyc_care_source.status == "ok"
+            else "degraded"
+        ),
+        origin=_origin_result(origin, near),
+        origin_citation_id=resolved_location_citation(ctx, origin),
+        primary_citation_id=typed_clinics[0].citation_id,
+        sources=sources,
+        clinics=typed_clinics,
+        program_guarantees=guarantees,
+        fallback_routes=_fallback_routes(ctx) if hrsa_source.status != "ok" else [],
+        requested_count=k,
+    )
 
 
 # --- get_health_coverage_guidance: official coverage facts, each cited to its source page ---
@@ -563,6 +972,7 @@ def get_tools() -> list[Tool]:
                 "required": ["near"],
             },
             handler=_handler,
+            return_type=ClinicResult,
             open_world=True,  # hits the live HRSA ArcGIS service + geocoder (NYC Care seed is bundled)
         ),
         Tool(

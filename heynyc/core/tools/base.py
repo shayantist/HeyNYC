@@ -21,10 +21,13 @@ https://www.anthropic.com/engineering/writing-tools-for-agents
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Optional
 
 from ..citations import CitationRegistry
 from ..registry import Registry
+
+if TYPE_CHECKING:
+    from .geo import GeoPoint
 
 
 @dataclass(frozen=True)
@@ -43,12 +46,17 @@ class ToolContext:
     query: str = ""  # current resident turn; lets tools resolve relative constraints deterministically
     user_history: str = ""  # resident-authored turns only; validates model-supplied tool arguments
     user_turns: tuple[str, ...] = ()  # structured resident turns; avoids stale-location substring matches
+    current_location: Optional["GeoPoint"] = None
     toolbox: Optional[dict[str, Any]] = None  # existing sibling tools for bounded module coordinators
     http: Optional[Any] = None  # httpx.AsyncClient; None → tools create their own
     embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse the production default
+    retrieval_cache_path: Optional[Any] = None  # persistent Lance cache for live structured catalogs
     output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
     event_turn: Optional[str] = None  # semantic scope-preflight tri-state: none|discovery|preparation (None → tool falls back to its regexes)
+    current_turn_modules: frozenset[str] = frozenset()
+    current_turn_high_stakes: bool = False
+    allow_unverified_search_excerpts: bool = False
     delivered_notify_titles: frozenset = frozenset()  # F080: normalized Notify titles already cited earlier in THIS conversation; a repeat advisories call answers with a marker, not a re-brief
     resident_facts: dict[str, ResidentFact] = field(default_factory=dict)
     fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
@@ -57,6 +65,7 @@ class ToolContext:
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
     tool_result_urls: set[str] = field(default_factory=set)
     response_priority_citation_ids: set[str] = field(default_factory=set)
+    required_response_citation_ids: set[str] = field(default_factory=set)
     rendered_fetch_urls: set[str] = field(default_factory=set)
     language: str | None = None
     verify_output_language: bool = False
@@ -65,7 +74,7 @@ class ToolContext:
     cooling_terminal_synthesis: bool = False
 
 
-ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]
+ToolHandler = Callable[[dict, ToolContext], Awaitable[Any]]
 
 
 @dataclass
@@ -85,6 +94,7 @@ class Tool:
     title: str = ""              # human-readable label
     module: str = ""             # owning service module; "" = core, always exposed (diet block 4)
     resident_fact_scope: tuple[str, ...] = ()  # JSON-pointer roots that must match trusted resident facts
+    return_type: Any = None       # declared Pydantic-serializable result; None keeps legacy strings
 
     def __post_init__(self) -> None:
         if (not self.read_only or self.destructive) and not self.requires_approval:

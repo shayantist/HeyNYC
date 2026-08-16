@@ -65,7 +65,9 @@ prompt: |
   pass `web_query` as one short noun phrase preserving the place, date, audience, cost, and indoor
   or outdoor setting, and pass `setting=indoor` or `setting=outdoor` when explicitly requested.
   The coordinator runs that current-web lane with the structured catalogs, so
-  do not repeat it manually. When the user asks for free events, do not call an
+  do not repeat it manually.
+  For a generic event-choice request, present no more than five choices and end by asking whether
+  the resident wants narrower criteria or more choices. When the user asks for free events, do not call an
   event free unless the retrieved source explicitly establishes its cost; the NYC Parks feed
   itself has no price field. Say when cost could not be confirmed. If a result satisfies only some requested constraints,
   do not present it as a matching option. State that the exact combination was not verified and give

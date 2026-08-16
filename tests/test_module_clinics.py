@@ -1,7 +1,7 @@
 """Offline tests for the clinics module (FQHC + NYC Care).
 
 Grounded in HRSA's ArcGIS FQHC layer + a bundled NYC Care/H+H seed, but every HTTP call is
-mocked/injected — no live HRSA or geocoder call. Covers: FQHC record mapping + county->borough,
+mocked/injected, no live HRSA or geocoder call. Covers: FQHC record mapping + county->borough,
 NYC Care seed loading, merge + rank by distance across both classes, per-class DATA (facility) and
 DOC (program) citations, the ANTI-HALLUCINATION guarantee that eligibility text is grounded to the
 program page (never a per-row field / the model), abstention on geocode failure, and low-confidence
@@ -10,10 +10,12 @@ clarification. Mirrors tests/test_module_food_pantries.py.
 from __future__ import annotations
 
 import httpx
+from pydantic import BaseModel
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
+from heynyc.core.tools.arcgis import ArcGISQueryPage
 from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.clinics import tools as clinics
@@ -55,7 +57,10 @@ def test_fqhc_from_record_drops_bad_coords_and_na_url():
 
 def test_nyc_care_seed_loads_and_is_grounded_in_nyc():
     """The shipped seed loads, is non-trivial, and every row has NYC-ish coordinates + a class tag."""
-    seed = _load_nyc_care_seed()
+    catalog = _load_nyc_care_seed()
+    seed = catalog.clinics
+    assert catalog.complete is True
+    assert catalog.returned_count == len(seed)
     assert len(seed) >= 35                               # 11 hospitals + ~29 Gotham centers
     assert all(c.klass == CLASS_NYC_CARE for c in seed)
     assert any("Gotham Health" in c.name for c in seed)
@@ -65,7 +70,10 @@ def test_nyc_care_seed_loads_and_is_grounded_in_nyc():
 
 
 def test_missing_seed_degrades_to_empty(tmp_path):
-    assert _load_nyc_care_seed(tmp_path / "nope.tsv") == []
+    catalog = _load_nyc_care_seed(tmp_path / "nope.tsv")
+    assert catalog.clinics == []
+    assert catalog.complete is False
+    assert catalog.error == "file_unavailable"
 
 
 # --- the tool handler (mocked ArcGIS + injected seed) ----------------------
@@ -94,7 +102,15 @@ def _routed_client(features) -> httpx.AsyncClient:
 
 def _seed_clinic(monkeypatch, *clinics_):
     """Replace the bundled seed loader with a fixed in-memory NYC Care list."""
-    monkeypatch.setattr(clinics, "_load_nyc_care_seed", lambda *a, **k: list(clinics_))
+    monkeypatch.setattr(
+        clinics,
+        "_load_nyc_care_seed",
+        lambda *a, **k: clinics._NycCareCatalog(
+            clinics=list(clinics_),
+            returned_count=len(clinics_),
+            complete=True,
+        ),
+    )
 
 
 def _nyc_care(name, lat, lon, phone="") -> clinics.Clinic:
@@ -121,15 +137,27 @@ async def test_find_clinic_merges_ranks_and_attaches_per_class_citations(monkeyp
     out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
     await client.aclose()
 
-    site_lines = [l for l in out.splitlines() if l.startswith("- ")]
-    assert len(site_lines) == 3                          # bad-coords FQHC dropped; 2 FQHC + 1 NYC Care
-    assert "H+H Test Hospital" in site_lines[0]          # nearest first (merged across classes)
-    assert "Close FQHC" in site_lines[1]
-    assert "Far FQHC" in site_lines[2]
-    assert "rough estimate from the resolved place point, not a street address" in site_lines[0]
-    # both class tags surfaced
-    assert "NYC Health + Hospitals (NYC Care)" in out
-    assert "Community Health Center (FQHC)" in out
+    assert isinstance(out, BaseModel)
+    assert out.outcome == "success"
+    assert [record.organization.name for record in out.clinics] == [
+        "H+H Test Hospital",
+        "Close FQHC",
+        "Far FQHC",
+    ]
+    assert out.origin.precision == "approximate"
+    assert out.sources.hrsa.status == "ok"
+    assert out.sources.hrsa.returned_count == 3
+    assert out.sources.hrsa.usable_count == 2
+    assert out.sources.hrsa.complete is True
+    assert out.sources.hrsa.fetched_at is not None
+    assert out.sources.nyc_care.status == "ok"
+    assert all(
+        record.valid_as_of is None
+        for record in out.clinics
+        if record.service.program_class == CLASS_FQHC
+    )
+    assert all(record.service.hours is None for record in out.clinics)
+    assert {fact.program_class for fact in out.program_guarantees} == {CLASS_FQHC, CLASS_NYC_CARE}
 
     mapping = citations.mapping()
     # Facility DATA citations: FQHC -> HRSA row permalink (OBJECTID), NYC Care -> H+H locations page.
@@ -146,7 +174,7 @@ async def test_find_clinic_merges_ranks_and_attaches_per_class_citations(monkeyp
 
 async def test_eligibility_text_is_grounded_not_from_a_row_field(monkeypatch):
     """ANTI-HALLUCINATION: the eligibility/immigration framing is the CLASS guarantee body, cited to
-    the program DOC — never a per-row field, even if the record carries a bogus cost/eligibility one."""
+    the program DOC, never a per-row field, even if the record carries a bogus cost/eligibility one."""
     _seed_clinic(monkeypatch)  # no NYC Care sites → only the FQHC class block
     # Poison the record with fake per-row cost/eligibility fields; they must NOT appear in output.
     features = [_fqhc_feature(-73.9910, 40.7510, SITE_NM="Poison FQHC", SITE_ADDRESS="2 Near Ave",
@@ -159,9 +187,9 @@ async def test_eligibility_text_is_grounded_not_from_a_row_field(monkeypatch):
     out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
     await client.aclose()
 
-    assert "$500" not in out and "citizens only" not in out and "not free" not in out
-    # the grounded FQHC guarantee IS present and cited
-    assert "sliding fee scale" in out
+    serialized = out.model_dump_json()
+    assert "$500" not in serialized and "citizens only" not in serialized and "not free" not in serialized
+    assert any("sliding fee scale" in fact.verified_fact for fact in out.program_guarantees)
     assert CLASS_GUARANTEE[CLASS_FQHC].doc_url in citations.mapping()["S2"]["url"] \
         or any("hrsa.gov/get-health-care" in c["url"] for c in citations.mapping().values())
 
@@ -175,10 +203,12 @@ async def test_find_clinic_abstains_when_geocode_fails(monkeypatch):
     out = await get_tools()[0].handler({"near": "Springfield, Illinois"}, ctx)
     await client.aclose()
 
-    assert "- " not in out                               # no fabricated clinic list
-    low = out.lower()
-    assert "couldn't" in low or "could not" in low
-    assert "nyc" in low
+    assert out.outcome == "location_not_found"
+    assert out.clinics == []
+    assert {route.name for route in out.fallback_routes} == {
+        "NYC Care",
+        "HRSA Find a Health Center",
+    }
 
 
 async def test_find_clinic_clarifies_on_low_confidence(monkeypatch):
@@ -189,8 +219,9 @@ async def test_find_clinic_clarifies_on_low_confidence(monkeypatch):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Broadway and 100th"}, ctx)
     await client.aclose()
-    assert "which borough" in out.lower()
-    assert "- " not in out
+    assert out.outcome == "location_ambiguous"
+    assert out.clinics == []
+    assert out.origin.low_confidence is True
 
 
 async def test_find_clinic_degrades_to_seed_when_hrsa_down(monkeypatch):
@@ -208,8 +239,87 @@ async def test_find_clinic_degrades_to_seed_when_hrsa_down(monkeypatch):
     out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
     await client.aclose()
 
-    assert "H+H Fallback" in out
-    assert "unreachable" in out.lower()                  # honest degraded note
+    assert out.outcome == "degraded"
+    assert [record.organization.name for record in out.clinics] == ["H+H Fallback"]
+    assert out.sources.hrsa.status == "unavailable"
+    assert out.sources.nyc_care.status == "ok"
+
+
+async def test_hrsa_query_paginates_without_losing_provider_metadata(monkeypatch):
+    calls = []
+
+    async def query(*args, result_offset=0, pagination_token=None, **kwargs):
+        calls.append((result_offset, pagination_token))
+        if pagination_token is None:
+            return ArcGISQueryPage(
+                records=[{"OBJECTID": 1}],
+                exceeded_transfer_limit=True,
+                next_offset=None,
+                pagination_token="page-1",
+            )
+        assert pagination_token == "page-1"
+        return ArcGISQueryPage(
+            records=[{"OBJECTID": 2}],
+            exceeded_transfer_limit=False,
+            next_offset=None,
+            pagination_token="page-2",
+        )
+
+    monkeypatch.setattr(clinics, "query_feature_service_page", query)
+    page = await clinics._query_hrsa(httpx.AsyncClient())
+
+    assert calls == [(0, None), (0, "page-1")]
+    assert [record["OBJECTID"] for record in page.records] == [1, 2]
+    assert page.complete is True
+    assert page.pages_fetched == 2
+    assert page.pagination_token == "page-2"
+
+
+async def test_hrsa_query_preserves_partial_page_on_later_failure(monkeypatch):
+    async def query(*args, pagination_token=None, **kwargs):
+        if pagination_token is None:
+            return ArcGISQueryPage(
+                records=[{"OBJECTID": 1}],
+                exceeded_transfer_limit=True,
+                next_offset=2000,
+                pagination_token="page-1",
+            )
+        raise httpx.ReadTimeout("later page failed")
+
+    monkeypatch.setattr(clinics, "query_feature_service_page", query)
+    page = await clinics._query_hrsa(httpx.AsyncClient())
+
+    assert page.records == [{"OBJECTID": 1}]
+    assert page.complete is False
+    assert page.pages_fetched == 1
+    assert page.next_offset is None
+    assert page.pagination_token == "page-1"
+    assert page.error == "transport_error"
+
+
+async def test_find_clinic_does_not_rank_incomplete_hrsa_rows(monkeypatch):
+    _seed_clinic(monkeypatch, _nyc_care("Complete H+H", 40.7502, -73.9902))
+
+    async def partial(*args, **kwargs):
+        return clinics._HrsaQueryResult(
+            records=[{"OBJECTID": 1, "SITE_NM": "Partial FQHC", "lat": 40.75, "lon": -73.99}],
+            pages_fetched=1,
+            complete=False,
+            next_offset=2000,
+            error="transport_error",
+        )
+
+    monkeypatch.setattr(clinics, "_query_hrsa", partial)
+    client = _routed_client([])
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    await client.aclose()
+
+    assert out.outcome == "degraded"
+    assert [record.organization.name for record in out.clinics] == ["Complete H+H"]
+    assert out.sources.hrsa.status == "partial"
+    assert out.sources.hrsa.returned_count == 1
+    assert out.sources.hrsa.complete is False
 
 
 # --- get_health_coverage_guidance: official coverage facts, each cited (no network) -----

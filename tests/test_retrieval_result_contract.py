@@ -12,7 +12,12 @@ async def test_web_fetch_labels_full_page_evidence(monkeypatch):
 
     async def fetched(_url, _client, _query, *, render=False):
         assert render is False
-        return url, "Enrollment", "Call the enrollment office for an appointment."
+        return web_fetch_module._FetchedPage(
+            final_url=url,
+            title="Enrollment",
+            text="Call the enrollment office for an appointment.",
+            acquisition=web_fetch_module._acquisition(url, url, "http"),
+        )
 
     monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fetched)
     monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 20)

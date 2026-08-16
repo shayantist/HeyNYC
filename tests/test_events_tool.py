@@ -5,6 +5,7 @@ import pytest
 
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
+from heynyc.core.ticketmaster import TicketmasterSearchResult
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.modules.events import tools as events
 from heynyc.modules.events.tools import (
@@ -19,18 +20,48 @@ from heynyc.modules.events.tools import (
 )
 
 
+def _tm_result(rows: list[dict] | None = None) -> TicketmasterSearchResult:
+    return TicketmasterSearchResult(status="complete", events=rows or [])
+
+
 def test_from_ticketmaster_maps_fields():
     raw = {
+        "id": "ticketmaster-event-abc",
         "name": "FIFA Final Watch Party",
         "url": "https://www.ticketmaster.com/event/abc",
-        "dates": {"start": {"localDate": "2026-07-19", "localTime": "15:00:00"}},
-        "_embedded": {"venues": [{"name": "Central Park", "city": {"name": "New York"}}]},
+        "dates": {
+            "start": {"localDate": "2026-07-19", "localTime": "15:00:00"},
+            "status": {"code": "onsale"},
+            "timezone": "America/New_York",
+        },
+        "sales": {
+            "public": {
+                "startDateTime": "2026-04-01T14:00:00Z",
+                "endDateTime": "2026-07-19T18:00:00Z",
+                "startTBD": False,
+            },
+        },
+        "accessibility": {"info": "Accessible seating is available."},
+        "source": {"name": "universe", "id": "universe"},
+        "_embedded": {"venues": [{
+            "name": "Central Park",
+            "city": {"name": "New York"},
+            "accessibleSeatingDetail": "Call the box office.",
+        }]},
     }
     ev = _from_ticketmaster(raw)
     assert ev == Event(
         name="FIFA Final Watch Party", start_date="2026-07-19", start_time="15:00:00",
         venue="Central Park", borough="New York",
-        url="https://www.ticketmaster.com/event/abc", source="Ticketmaster", tier="authoritative",
+        url="https://www.ticketmaster.com/event/abc", source="Ticketmaster Discovery",
+        tier="authoritative", publishing_source="universe",
+        provider_status="onsale", timezone="America/New_York",
+        public_sale_start="2026-04-01T14:00:00Z",
+        public_sale_end="2026-07-19T18:00:00Z", public_sale_start_tbd=False,
+        accessibility_info="Accessible seating is available.",
+        venue_accessibility="Call the box office.",
+        provider_id="ticketmaster-event-abc",
+        provider_record=raw,
     )
 
 
@@ -275,7 +306,7 @@ async def test_broad_event_intent_is_not_sent_as_a_catalog_keyword(monkeypatch):
 
     async def fake_ticketmaster(**kwargs):
         keywords_seen.append(("ticketmaster", kwargs.get("keyword")))
-        return []
+        return _tm_result()
 
     async def fake_query(dataset_id, **kwargs):
         keywords_seen.append((dataset_id, kwargs.get("q")))
@@ -316,11 +347,132 @@ async def test_broad_event_intent_is_not_sent_as_a_catalog_keyword(monkeypatch):
     assert "BROADENED" not in output
 
 
+async def test_multi_concept_keyword_does_not_pre_filter_socrata_rows(monkeypatch):
+    queries = {}
+
+    async def no_ticketmaster(**kwargs):
+        return _tm_result()
+
+    async def city_rows(dataset_id, **kwargs):
+        queries[dataset_id] = kwargs.get("q")
+        if dataset_id == events.PERMITTED_DATASET_ID:
+            return [{
+                "event_name": "Brooklyn Farmers Market",
+                "start_date_time": "2099-08-15T09:00:00.000",
+                "end_date_time": "2099-08-15T14:00:00.000",
+                "event_agency": "Street Activity Permit Office",
+                "event_type": "Farmers Market",
+                "event_borough": "Brooklyn",
+                "event_location": "Prospect Park",
+            }]
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="street fairs or markets this weekend",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "street fairs markets",
+            "window_start": "2099-08-15",
+            "window_end": "2099-08-16",
+        },
+        ctx,
+    )
+
+    assert queries == {
+        events.PARKS_DATASET_ID: None,
+        events.PERMITTED_DATASET_ID: None,
+    }
+    assert "Brooklyn Farmers Market" in output
+
+
+async def test_event_lookup_keeps_a_match_from_the_second_socrata_page(monkeypatch):
+    async def no_ticketmaster(**kwargs):
+        return _tm_result()
+
+    async def paged_rows(dataset_id, limit, offset=0, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        if offset == 0:
+            return [
+                {
+                    ":id": f"row-{index}",
+                    "title": f"Other event {index}",
+                    "startdate": "2099-08-15T00:00:00.000",
+                }
+                for index in range(limit)
+            ]
+        return [{
+            ":id": "row-second-page",
+            "title": "Unicorn concert",
+            "startdate": "2099-08-15T00:00:00.000",
+            "parknames": "Central Park",
+            "link": {"url": "https://www.nycgovparks.org/events/unicorn-concert"},
+        }]
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", paged_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="unicorn concert",
+    )
+
+    output = await get_tools()[0].handler({
+        "keyword": "unicorn",
+        "window_start": "2099-08-15",
+        "window_end": "2099-08-15",
+    }, ctx)
+
+    assert "Unicorn concert" in output
+
+
+async def test_event_lookup_keeps_and_discloses_a_partial_socrata_page(monkeypatch):
+    async def no_ticketmaster(**kwargs):
+        return _tm_result()
+
+    async def partial_rows(dataset_id, limit, offset=0, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        if offset:
+            raise httpx.ReadTimeout("later page failed")
+        return [{
+            ":id": f"row-{index}",
+            "title": "Unicorn concert" if index == 0 else f"Other event {index}",
+            "startdate": "2099-08-15T00:00:00.000",
+            "parknames": "Central Park",
+            "link": {"url": "https://www.nycgovparks.org/events/unicorn-concert"},
+        } for index in range(limit)]
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", partial_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="unicorn concert",
+    )
+
+    output = await get_tools()[0].handler({
+        "keyword": "unicorn",
+        "window_start": "2099-08-15",
+        "window_end": "2099-08-15",
+    }, ctx)
+
+    assert "Unicorn concert" in output
+    assert "NYC Parks returned partial results" in output
+    assert "{cite:" in output
+
+
 async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypatch):
     calls = []
 
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def no_city_rows(*args, **kwargs):
         return []
@@ -355,7 +507,7 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
     calls = []
 
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def no_city_rows(*args, **kwargs):
         return []
@@ -400,7 +552,7 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
 
 async def test_broad_event_lookup_discloses_an_unavailable_web_lane(monkeypatch):
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def city_rows(dataset_id, **kwargs):
         if dataset_id == events.PARKS_DATASET_ID:
@@ -446,7 +598,7 @@ async def test_specific_event_lookup_leaves_web_search_for_model_followup(monkey
     calls = []
 
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def no_city_rows(*args, **kwargs):
         return []
@@ -512,7 +664,7 @@ async def test_event_citation_contains_end_time_and_derived_timing_status(monkey
             return cls(2026, 8, 12, 12, 0, tzinfo=tz)
 
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def city_rows(dataset_id, **kwargs):
         if dataset_id != events.PERMITTED_DATASET_ID:
@@ -610,11 +762,94 @@ async def test_find_nyc_events_merges_grounds_and_filters_future():
     assert citations.mapping()                 # at least one DATA citation registered
 
 
+async def test_ticketmaster_status_sales_accessibility_and_partial_page_reach_evidence(
+    monkeypatch,
+):
+    async def ticketmaster_page(**kwargs):
+        return TicketmasterSearchResult(
+            status="partial",
+            events=[{
+                "id": "ticketmaster-accessible",
+                "name": "Accessible Concert",
+                "url": "https://www.ticketmaster.com/event/accessible",
+                "dates": {
+                    "start": {"localDate": "2099-08-01", "localTime": "20:00:00"},
+                    "status": {"code": "onsale"},
+                    "timezone": "America/New_York",
+                },
+                "sales": {"public": {
+                    "startDateTime": "2099-01-01T15:00:00Z",
+                    "endDateTime": "2099-08-02T00:00:00Z",
+                    "startTBD": False,
+                }},
+                "accessibility": {"info": "Accessible seating is available."},
+                "source": {"name": "universe", "id": "universe"},
+                "_embedded": {"venues": [{
+                    "name": "NYC Arena",
+                    "city": {"name": "New York"},
+                    "accessibleSeatingDetail": "Call the box office.",
+                }]},
+            }],
+            page_number=0,
+            page_size=20,
+            total_elements=35,
+            total_pages=2,
+            next_page=1,
+            retrieved_at="2026-08-15T12:00:00+00:00",
+        )
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", ticketmaster_page)
+    monkeypatch.setattr(events, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="concerts on August 1",
+    )
+
+    output = await get_tools()[0].handler(
+        {"window_start": "2099-08-01", "window_end": "2099-08-01"}, ctx,
+    )
+    citations = ctx.citations.mapping().values()
+    coverage = next(c for c in citations if c["title"] == "Ticketmaster search coverage")
+    citation = next(c for c in citations if c["title"] == "Accessible Concert")
+
+    assert "Ticketmaster returned one page (1 of 35 listings)" in output
+    assert "Ticketmaster returned one page (1 of 35 listings) {cite:" in output
+    assert coverage["kind"] == "DATA"
+    assert coverage["url"] == events.DISCOVERY_URL
+    assert coverage["provenance"]["snapshot"] == {
+        "status": "partial",
+        "page_number": 0,
+        "page_size": 20,
+        "returned": 1,
+        "total_elements": 35,
+        "total_pages": 2,
+        "next_page": 1,
+        "retrieved_at": "2026-08-15T12:00:00+00:00",
+    }
+    assert "status onsale" in output
+    assert "Accessible seating is available" in output
+    assert "Ticketmaster status: onsale" in citation["snippet"]
+    assert "Public sale start: 2099-01-01T15:00:00Z" in citation["snippet"]
+    assert "Public sale end: 2099-08-02T00:00:00Z" in citation["snippet"]
+    assert "Venue accessibility: Call the box office" in citation["snippet"]
+    assert citation["provenance"]["provider"] == "Ticketmaster Discovery API"
+    assert citation["provenance"]["publishing_source"] == "universe"
+    assert citation["provenance"]["destination_host"] == "ticketmaster.com"
+    assert citation["provenance"]["record_id"] == "ticketmaster-accessible"
+    assert citation["provenance"]["snapshot"]["id"] == "ticketmaster-accessible"
+    assert citation["provenance"]["acquisition"]["retrieved_at"] == (
+        "2026-08-15T12:00:00+00:00"
+    )
+    assert citation["valid_as_of"] == ""
+
+
 async def test_find_nyc_events_grounds_the_official_indexes_when_no_event_matches(
     monkeypatch,
 ):
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def no_city_rows(*args, **kwargs):
         return []
@@ -671,11 +906,11 @@ async def test_find_nyc_events_retries_only_failed_catalog_sources(monkeypatch):
         attempts += 1
         if attempts == 1:
             raise httpx.ReadTimeout("transient")
-        return [{
+        return _tm_result([{
             "name": "Mets vs. Braves",
             "url": "https://www.ticketmaster.com/event/game",
             "dates": {"start": {"localDate": "2099-07-19", "localTime": "19:10:00"}},
-        }]
+        }])
 
     async def other_sources(*args, **kwargs):
         return []
@@ -770,7 +1005,7 @@ async def test_find_nyc_events_routes_to_indexes_when_only_permits_already_ended
             return cls(2026, 7, 18, 23, 0, tzinfo=tz)
 
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def city_rows(dataset_id, **kwargs):
         if dataset_id != events.PERMITTED_DATASET_ID:
@@ -803,7 +1038,7 @@ async def test_find_nyc_events_never_falls_back_across_requested_borough(
     monkeypatch,
 ):
     async def fake_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def fake_query(dataset_id, **kwargs):
         if dataset_id != events.PERMITTED_DATASET_ID:
@@ -841,7 +1076,7 @@ async def test_find_nyc_events_keeps_a_matching_requested_borough(monkeypatch):
     web_calls = 0
 
     async def fake_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def fake_query(dataset_id, **kwargs):
         if dataset_id != events.PERMITTED_DATASET_ID:
@@ -871,7 +1106,6 @@ async def test_find_nyc_events_keeps_a_matching_requested_borough(monkeypatch):
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "kids",
             "borough": "Queens",
             "window_start": "2099-07-25",
             "window_end": "2099-07-25",
@@ -886,7 +1120,7 @@ async def test_find_nyc_events_keeps_a_matching_requested_borough(monkeypatch):
 
 async def test_find_nyc_events_keeps_free_parks_rows_in_the_requested_borough(monkeypatch):
     async def fake_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def fake_query(dataset_id, **kwargs):
         if dataset_id != events.PARKS_DATASET_ID:
@@ -947,7 +1181,7 @@ async def test_find_nyc_events_does_not_mix_unfiltered_context_into_audience_res
     monkeypatch,
 ):
     async def fake_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def fake_query(dataset_id, **kwargs):
         if dataset_id != events.PARKS_DATASET_ID:
@@ -999,7 +1233,7 @@ async def test_find_nyc_events_suppresses_unverified_editorial_boroughs(monkeypa
     editorial_calls = 0
 
     async def fake_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def fake_query(*args, **kwargs):
         return []
@@ -1041,7 +1275,7 @@ async def test_permitted_lane_filters_sport_noise_by_agency_field_not_event_name
         return []
 
     async def fake_tm(**kwargs):
-        return []
+        return _tm_result()
 
     monkeypatch.setattr(events, "ticketmaster_events", fake_tm)
     monkeypatch.setattr(events, "query_dataset", fake_query)
@@ -1062,6 +1296,12 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
     weekend's one or two dates, so a plain date sort (stable, last-appended lane loses) truncates
     the permitted lane to zero before the cap. The merged shortlist must seat at least one
     permitted street-event row alongside the Ticketmaster and Parks rows."""
+    class FixedDateTime(events.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 13, 12, 0, tzinfo=tz)
+
+    monkeypatch.setattr(events, "datetime", FixedDateTime)
     today = events.datetime.now(events.NYC_TZ).strftime("%Y-%m-%d")
     window_start, _window_end = events._requested_window("what's happening this weekend", today)
 
@@ -1115,7 +1355,7 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
 
 async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
     async def no_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def unrelated_when_unkeyworded(dataset_id, **kwargs):
         if dataset_id == events.PARKS_DATASET_ID:
@@ -1179,7 +1419,7 @@ def test_find_nyc_events_contract_explains_broad_and_specific_search_ownership()
 
 async def test_find_nyc_events_without_toolbox_degrades_to_structured_catalogs(monkeypatch):
     async def fake_ticketmaster(**kwargs):
-        return []
+        return _tm_result()
 
     async def fake_dataset(dataset_id, **kwargs):
         return []
@@ -1206,7 +1446,7 @@ async def test_window_args_from_the_model_override_the_phrase_window(monkeypatch
 
     async def fake_ticketmaster(**kwargs):
         captured["start_datetime"] = kwargs.get("start_datetime")
-        return []
+        return _tm_result()
 
     async def fake_parks(dataset_id, **kwargs):
         captured.setdefault("wheres", []).append(kwargs.get("where"))
@@ -1227,7 +1467,48 @@ def test_find_nyc_events_schema_enforces_documented_dates_and_limit():
     properties = get_tools()[0].parameters["properties"]
     assert properties["window_start"]["format"] == "date"
     assert properties["window_end"]["format"] == "date"
-    assert "limit" not in properties
+    assert properties["limit"]["default"] == 5
+    assert properties["limit"]["maximum"] == 20
     assert "short noun phrase" in properties["web_query"]["description"].lower()
     assert "every requested constraint" in properties["web_query"]["description"]
     assert properties["setting"]["enum"] == ["indoor", "outdoor"]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("what's happening this weekend?", 5),
+        ("show me 10 events this weekend", 10),
+    ],
+)
+async def test_find_nyc_events_enforces_default_unless_resident_asks_for_count(
+    monkeypatch, query, expected,
+):
+    async def no_ticketmaster(**kwargs):
+        return _tm_result()
+
+    async def city_rows(dataset_id, **kwargs):
+        if dataset_id != events.PERMITTED_DATASET_ID:
+            return []
+        return [
+            {
+                ":id": f"row-{index}",
+                "event_name": f"Resident choice {index}",
+                "start_date_time": "2099-08-15T10:00:00.000",
+                "event_borough": "Queens",
+                "event_location": f"Location {index}",
+            }
+            for index in range(12)
+        ]
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", city_rows)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), query=query)
+
+    output = await get_tools()[0].handler(
+        {"window_start": "2099-08-15", "window_end": "2099-08-15", "limit": 10},
+        ctx,
+    )
+
+    assert output.count("- Resident choice") == expected
+    assert ("Offer to narrow or list more" in output) is (expected == 5)

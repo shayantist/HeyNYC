@@ -95,6 +95,7 @@ def test_configured_runtime_forwards_eval_streaming(monkeypatch):
     monkeypatch.setattr(pydantic_runtime, "configured_model", lambda *args, **kwargs: object())
     monkeypatch.setattr(pydantic_runtime, "build_toolbox", lambda *args, **kwargs: {})
     monkeypatch.setattr(pydantic_runtime, "build_crisis_screen", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pydantic_runtime, "build_scope_screen", lambda *args, **kwargs: None)
 
     def fake_build_runtime(registry, **kwargs):
         captured.update(kwargs)

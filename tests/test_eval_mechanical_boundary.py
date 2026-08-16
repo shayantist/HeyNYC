@@ -1,10 +1,13 @@
 import asyncio
 import inspect
+from pathlib import Path
 
 import pytest
+import yaml
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
+from heynyc.eval import invariants as invariant_module
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.checks import run_checks
 from heynyc.eval.invariants import build_invariant_checks
@@ -25,7 +28,6 @@ def test_release_gate_does_not_grade_resident_prose_with_string_matching():
             "must_not_fabricate": True,
             "must_abstain_or_redirect": True,
             "forbid_compliance": True,
-            "must_not_claim_current": True,
             "must_offer_immediate_action": True,
         },
     )
@@ -57,6 +59,14 @@ def test_release_gate_does_not_grade_resident_prose_with_string_matching():
     )
     assert "contains" not in check_names
     assert "readability" not in check_names
+
+
+def test_current_fact_semantics_are_not_string_graded():
+    assert not hasattr(invariant_module, "inv_currentness")
+    modules = Path(__file__).resolve().parents[1] / "heynyc/modules"
+    for path in modules.glob("*/eval.yaml"):
+        for case in yaml.safe_load(path.read_text()) or []:
+            assert "must_not_claim_current" not in (case.get("invariants") or {})
 
 
 @pytest.mark.asyncio

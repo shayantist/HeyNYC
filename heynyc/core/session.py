@@ -15,6 +15,7 @@ accepting traffic. Retention is the `purge_expired_sessions` TTL backstop.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,27 @@ from .memory import (
     continuity_reminder,
     merge_memory_usage,
 )
+
+
+def _new_conversation(agent: Any, session_id: str) -> Any:
+    conversation = agent.conversation
+    if "conversation_id" in inspect.signature(conversation).parameters:
+        return conversation(conversation_id=session_id)
+    return conversation()
+
+
+def _restore_conversation(agent: Any, state: bytes, session_id: str) -> Any:
+    restore = agent.conversation_from_state
+    if "conversation_id" in inspect.signature(restore).parameters:
+        return restore(state, conversation_id=session_id)
+    return restore(state)
+
+
+def _restore_transcript(agent: Any, transcript: list[dict], session_id: str) -> Any:
+    restore = agent.conversation_from_transcript
+    if "conversation_id" in inspect.signature(restore).parameters:
+        return restore(transcript, conversation_id=session_id)
+    return restore(transcript)
 
 
 def _encode_line(message: dict) -> str:
@@ -106,7 +128,7 @@ class Session:
     continuity: ContinuityRecord | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        self.convo = self.agent.conversation()
+        self.convo = _new_conversation(self.agent, self.id)
         self.transcript = getattr(self.convo, "turns", [])
 
     @classmethod
@@ -121,14 +143,16 @@ class Session:
                 if line:
                     message = _decode_line(line)
                     if message.get("_type") == "reset":
-                        session.convo = agent.conversation()
+                        session.convo = _new_conversation(agent, session.id)
                         session.transcript = getattr(session.convo, "turns", [])
                         session.continuity = None
                         native_state_loaded = False
                     elif message.get("_type") == "runtime_turn":
                         if hasattr(agent, "conversation_from_state"):
-                            session.convo = agent.conversation_from_state(
-                                base64.b64decode(message["state"])
+                            session.convo = _restore_conversation(
+                                agent,
+                                base64.b64decode(message["state"]),
+                                session.id,
                             )
                             native_state_loaded = True
                         session.transcript.extend((message["user"], message["assistant"]))
@@ -147,9 +171,12 @@ class Session:
             )
             and hasattr(agent, "conversation_from_transcript")
         ):
-            session.convo = agent.conversation_from_transcript(session.transcript)
-            if session.continuity is not None and hasattr(session.convo, "continuity"):
-                session.convo.continuity = session.continuity
+            session.convo = _restore_transcript(agent, session.transcript, session.id)
+            if session.continuity is not None:
+                if hasattr(session.convo, "state"):
+                    session.convo.state.continuity = session.continuity
+                elif hasattr(session.convo, "continuity"):
+                    session.convo.continuity = session.continuity
         return session
 
     def _append(self, *messages: dict) -> None:
@@ -217,14 +244,6 @@ class Session:
             "timestamp": turn_timestamp(),
         }
         if pending.runtime_state is not None:
-            if pending.result.status == "approval_required":
-                self.transcript.extend((user, assistant))
-                self._append({
-                    "_type": "approval_turn",
-                    "user": user,
-                    "assistant": assistant,
-                })
-                return
             self.convo = self.agent.conversation_from_state(pending.runtime_state)
             self.transcript.extend((user, assistant))
             self._append({
@@ -251,7 +270,7 @@ class Session:
     def reset(self) -> None:
         """Start a new model-visible conversation while retaining the encrypted audit file."""
         self._append({"_type": "reset"})
-        self.convo = self.agent.conversation()
+        self.convo = _new_conversation(self.agent, self.id)
         self.transcript = getattr(self.convo, "turns", [])
         self.continuity = None
 

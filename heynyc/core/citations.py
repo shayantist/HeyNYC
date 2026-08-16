@@ -56,6 +56,17 @@ def used_discovery_citations(text: str, citations: dict) -> list[str]:
     ]
 
 
+def used_unverified_citations(text: str, citations: dict) -> list[str]:
+    """Unverified sources may support low-stakes excerpts, never restrictive turns."""
+    used = set(_USED_RE.findall(text or ""))
+    return [
+        cid
+        for cid, citation in citations.items()
+        if cid in used
+        and (citation.get("provenance") or {}).get("source_tier") == "unverified"
+    ]
+
+
 def content_hash(snapshot: dict) -> str:
     """Stable SHA-256 over a row payload (key-order-independent)."""
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

@@ -5,6 +5,7 @@ Every HTTP call is mocked via httpx.MockTransport, routed by url path (`/rss/rss
 field parsing, active-window filtering + severity sort, malformed-CAP tolerance, and the module
 tool's grounding+citation / clean abstention. The shipped module load mirrors test_module_food_pantries.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,10 +33,26 @@ from heynyc.modules.advisories.tools import get_tools
 FEED_BASE = "https://feeds.everbridge.net/feeds/453003085617722"
 
 
-def _cap(identifier: str, *, severity: str, event: str, headline: str, expires: str,
-         sent: str = "2026-07-02T12:00:00-04:00",
-         area: str = "Bronx,Kings,New York,Queens,Staten Island",
-         category: str = "Met", language: str = "en-US") -> str:
+def _cap(
+    identifier: str,
+    *,
+    severity: str,
+    event: str,
+    headline: str,
+    expires: str,
+    sent: str = "2026-07-02T12:00:00-04:00",
+    area: str = "Bronx,Kings,New York,Queens,Staten Island",
+    category: str = "Met",
+    language: str = "en-US",
+    message_type: str = "Alert",
+    references: str = "",
+    certainty: str = "Likely",
+    effective: str = "",
+    onset: str = "",
+    description: str = "",
+    instruction: str = "",
+    response_types: tuple[str, ...] = (),
+) -> str:
     # sent + expires are placed under <info> to match the verified live structure; the parser is
     # namespace- and layout-agnostic either way.
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -43,18 +60,24 @@ def _cap(identifier: str, *, severity: str, event: str, headline: str, expires: 
   <identifier>{identifier}</identifier>
   <sender>notifynyc@cityhall.nyc.gov</sender>
   <status>Actual</status>
-  <msgType>Alert</msgType>
+  <msgType>{message_type}</msgType>
   <scope>Public</scope>
+  {f"<references>{references}</references>" if references else ""}
   <info>
     <language>{language}</language>
     <category>{category}</category>
     <event>{event}</event>
     <urgency>Expected</urgency>
     <severity>{severity}</severity>
-    <certainty>Likely</certainty>
+    <certainty>{certainty}</certainty>
+    {f"<effective>{effective}</effective>" if effective else ""}
+    {f"<onset>{onset}</onset>" if onset else ""}
+    {''.join(f'<responseType>{value}</responseType>' for value in response_types)}
     <sent>{sent}</sent>
     <expires>{expires}</expires>
     <headline>{headline}</headline>
+    {f"<description>{description}</description>" if description else ""}
+    {f"<instruction>{instruction}</instruction>" if instruction else ""}
     <area>
       <areaDesc>{area}</areaDesc>
     </area>
@@ -62,58 +85,122 @@ def _cap(identifier: str, *, severity: str, event: str, headline: str, expires: 
 </alert>"""
 
 
+def _cap_cancel(identifier: str, *, references: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>{identifier}</identifier>
+  <sender>notifynyc@cityhall.nyc.gov</sender>
+  <sent>2026-07-02T13:00:00-04:00</sent>
+  <status>Actual</status>
+  <msgType>Cancel</msgType>
+  <scope>Public</scope>
+  <references>{references}</references>
+</alert>"""
+
+
+def _cap_ack(identifier: str, *, references: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>{identifier}</identifier>
+  <sender>notifynyc@cityhall.nyc.gov</sender>
+  <sent>2026-07-02T13:00:00-04:00</sent>
+  <status>Actual</status>
+  <msgType>Ack</msgType>
+  <scope>Public</scope>
+  <references>{references}</references>
+</alert>"""
+
+
 # One active (far-future expiry), one already expired.
-CAP_ACTIVE = _cap("NYC-ACTIVE-1", severity="Severe", event="Extreme Heat",
-                  headline="Heat Advisory in effect for NYC", expires="2099-07-02T19:45:28-04:00")
-CAP_EXPIRED = _cap("NYC-EXPIRED-1", severity="Minor", event="Old Event",
-                   headline="Expired advisory", expires="2020-01-01T00:00:00-05:00")
+CAP_ACTIVE = _cap(
+    "NYC-ACTIVE-1",
+    severity="Severe",
+    event="Extreme Heat",
+    headline="Heat Advisory in effect for NYC",
+    expires="2099-07-02T19:45:28-04:00",
+)
+CAP_EXPIRED = _cap(
+    "NYC-EXPIRED-1",
+    severity="Minor",
+    event="Old Event",
+    headline="Expired advisory",
+    expires="2020-01-01T00:00:00-05:00",
+)
 
 
-def _item(title: str, author: str, guid: str, cap_name: str, *, use_link: bool = False) -> str:
+def _item(
+    title: str, author: str, guid: str, cap_name: str, *, use_link: bool = False
+) -> str:
     cap_url = f"{FEED_BASE}/cap/{cap_name}"
-    locator = (f"    <link>{cap_url}</link>\n" if use_link
-               else f'    <enclosure url="{cap_url}" type="application/xml"/>\n')
-    return (f"  <item>\n"
-            f"    <title>{title}</title>\n"
-            f"    <author>{author}</author>\n"
-            f"    <guid>{guid}</guid>\n"
-            f"{locator}"
-            f"  </item>\n")
+    locator = (
+        f"    <link>{cap_url}</link>\n"
+        if use_link
+        else f'    <enclosure url="{cap_url}" type="application/xml"/>\n'
+    )
+    return (
+        f"  <item>\n"
+        f"    <title>{title}</title>\n"
+        f"    <author>{author}</author>\n"
+        f"    <guid>{guid}</guid>\n"
+        f"{locator}"
+        f"  </item>\n"
+    )
 
 
 def _rss(*items: str) -> str:
     body = "".join(items)
-    return (f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            f"<rss version=\"2.0\"><channel>\n<title>Notify NYC</title>\n{body}</channel></rss>")
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<rss version="2.0"><channel>\n<title>Notify NYC</title>\n{body}</channel></rss>'
+    )
 
 
 # Two English items (active + expired) + one non-English item that must be filtered out.
 RSS_MAIN = _rss(
     _item("Heat Advisory (English)", "NYCEM [English]", "guid-active-en", "active.xml"),
-    _item("Old Advisory (English)", "NYCEM [English]", "guid-expired-en", "expired.xml", use_link=True),
-    _item("Aviso de calor (Spanish)", "NYCEM [Spanish]", "guid-active-es", "spanish.xml"),
+    _item(
+        "Old Advisory (English)",
+        "NYCEM [English]",
+        "guid-expired-en",
+        "expired.xml",
+        use_link=True,
+    ),
+    _item(
+        "Aviso de calor (Spanish)", "NYCEM [Spanish]", "guid-active-es", "spanish.xml"
+    ),
 )
 
-CAPS_MAIN = {"active.xml": CAP_ACTIVE, "expired.xml": CAP_EXPIRED, "spanish.xml": CAP_ACTIVE}
+CAPS_MAIN = {
+    "active.xml": CAP_ACTIVE,
+    "expired.xml": CAP_EXPIRED,
+    "spanish.xml": CAP_ACTIVE,
+}
 
 
-def _client(rss: str, caps: dict[str, str], seen: list[str] | None = None) -> httpx.AsyncClient:
+def _client(
+    rss: str, caps: dict[str, str], seen: list[str] | None = None
+) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if seen is not None:
             seen.append(path)
         if path.endswith("/rss/rss.xml"):
-            return httpx.Response(200, text=rss, headers={"content-type": "application/rss+xml"})
+            return httpx.Response(
+                200, text=rss, headers={"content-type": "application/rss+xml"}
+            )
         if "/cap/" in path:
             name = path.rsplit("/", 1)[-1]
             if name in caps:
-                return httpx.Response(200, text=caps[name],
-                                      headers={"content-type": "application/xml"})
+                return httpx.Response(
+                    200, text=caps[name], headers={"content-type": "application/xml"}
+                )
         return httpx.Response(404)
+
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 # --- client: fetch + parse -------------------------------------------------
+
 
 async def test_fetch_advisories_keeps_english_and_parses():
     seen: list[str] = []
@@ -142,16 +229,29 @@ async def test_fetch_advisories_keeps_english_and_parses():
 
 # The same alert (identifier NYC-ACTIVE-1) in English and Spanish — the CAP identifier is
 # language-stable, which is what lets the Spanish variant overlay the English one per alert.
-CAP_ACTIVE_ES = _cap("NYC-ACTIVE-1", severity="Severe", event="Calor Extremo",
-                     headline="Aviso de calor en vigor para NYC",
-                     expires="2099-07-02T19:45:28-04:00", language="es-US")
+CAP_ACTIVE_ES = _cap(
+    "NYC-ACTIVE-1",
+    severity="Severe",
+    event="Calor Extremo",
+    headline="Aviso de calor en vigor para NYC",
+    expires="2099-07-02T19:45:28-04:00",
+    language="es-US",
+)
 
 RSS_MULTILANG = _rss(
     _item("Heat Advisory (English)", "NYCEM [English]", "guid-active-en", "active.xml"),
-    _item("Old Advisory (English)", "NYCEM [English]", "guid-expired-en", "expired.xml"),
-    _item("Aviso de calor (Spanish)", "NYCEM [Spanish]", "guid-active-es", "active-es.xml"),
+    _item(
+        "Old Advisory (English)", "NYCEM [English]", "guid-expired-en", "expired.xml"
+    ),
+    _item(
+        "Aviso de calor (Spanish)", "NYCEM [Spanish]", "guid-active-es", "active-es.xml"
+    ),
 )
-CAPS_MULTILANG = {"active.xml": CAP_ACTIVE, "expired.xml": CAP_EXPIRED, "active-es.xml": CAP_ACTIVE_ES}
+CAPS_MULTILANG = {
+    "active.xml": CAP_ACTIVE,
+    "expired.xml": CAP_EXPIRED,
+    "active-es.xml": CAP_ACTIVE_ES,
+}
 
 
 async def test_fetch_advisories_surfaces_requested_language_variant():
@@ -163,7 +263,9 @@ async def test_fetch_advisories_surfaces_requested_language_variant():
     await client.aclose()
 
     by_id = {a.guid: a for a in advisories}
-    assert by_id["NYC-ACTIVE-1"].headline == "Aviso de calor en vigor para NYC"  # Spanish won
+    assert (
+        by_id["NYC-ACTIVE-1"].headline == "Aviso de calor en vigor para NYC"
+    )  # Spanish won
     assert by_id["NYC-ACTIVE-1"].language == "es-US"
     # The expired alert has no Spanish variant → English fallback is still fetched + present.
     assert by_id["NYC-EXPIRED-1"].headline == "Expired advisory"
@@ -175,7 +277,9 @@ async def test_fetch_advisories_language_alias_resolves():
     client = _client(RSS_MULTILANG, CAPS_MULTILANG)
     advisories = (await fetch_advisories(client, lang="es")).advisories
     await client.aclose()
-    assert {a.guid: a for a in advisories}["NYC-ACTIVE-1"].headline == "Aviso de calor en vigor para NYC"
+    assert {a.guid: a for a in advisories}[
+        "NYC-ACTIVE-1"
+    ].headline == "Aviso de calor en vigor para NYC"
 
 
 async def test_fetch_advisories_english_default_ignores_other_languages():
@@ -185,8 +289,12 @@ async def test_fetch_advisories_english_default_ignores_other_languages():
     advisories = (await fetch_advisories(client)).advisories  # default English
     await client.aclose()
     assert {a.guid for a in advisories} == {"NYC-ACTIVE-1", "NYC-EXPIRED-1"}
-    assert {a.guid: a for a in advisories}["NYC-ACTIVE-1"].headline == "Heat Advisory in effect for NYC"
-    assert not any("active-es" in p for p in seen)  # Spanish CAP never requested by default
+    assert {a.guid: a for a in advisories}[
+        "NYC-ACTIVE-1"
+    ].headline == "Heat Advisory in effect for NYC"
+    assert not any(
+        "active-es" in p for p in seen
+    )  # Spanish CAP never requested by default
 
 
 async def test_check_notify_nyc_tool_passes_language_through():
@@ -198,7 +306,9 @@ async def test_check_notify_nyc_tool_passes_language_through():
     out = await get_tools()[0].handler({"lang": "Spanish"}, ctx)
     await client.aclose()
     assert "Aviso de calor en vigor para NYC" in out
-    assert "Heat Advisory in effect for NYC" not in out  # English active was replaced by Spanish
+    assert (
+        "Heat Advisory in effect for NYC" not in out
+    )  # English active was replaced by Spanish
 
 
 async def test_active_advisories_excludes_expired():
@@ -217,10 +327,20 @@ async def test_active_advisories_sorted_by_severity():
         _item("Extreme (English)", "NYCEM [English]", "g-ext", "extreme.xml"),
     )
     caps = {
-        "severe.xml": _cap("NYC-SEV", severity="Severe", event="Heat",
-                           headline="Severe alert", expires="2099-01-01T00:00:00-05:00"),
-        "extreme.xml": _cap("NYC-EXT", severity="Extreme", event="Flash Flood",
-                            headline="Extreme alert", expires="2099-01-01T00:00:00-05:00"),
+        "severe.xml": _cap(
+            "NYC-SEV",
+            severity="Severe",
+            event="Heat",
+            headline="Severe alert",
+            expires="2099-01-01T00:00:00-05:00",
+        ),
+        "extreme.xml": _cap(
+            "NYC-EXT",
+            severity="Extreme",
+            event="Flash Flood",
+            headline="Extreme alert",
+            expires="2099-01-01T00:00:00-05:00",
+        ),
     }
     now = datetime(2026, 7, 2, 18, 0, tzinfo=timezone.utc)
     client = _client(rss, caps)
@@ -228,6 +348,106 @@ async def test_active_advisories_sorted_by_severity():
     await client.aclose()
 
     assert [a.severity for a in active] == ["Extreme", "Severe"]  # most severe first
+
+
+async def test_active_advisories_applies_cap_update_references() -> None:
+    reference = "notifynyc@cityhall.nyc.gov,NYC-ORIGINAL,2026-07-02T12:00:00-04:00"
+    rss = _rss(
+        _item("Original", "NYCEM [English]", "g-original", "original.xml"),
+        _item("Update", "NYCEM [English]", "g-update", "update.xml"),
+    )
+    caps = {
+        "original.xml": _cap(
+            "NYC-ORIGINAL",
+            severity="Severe",
+            event="Road Closure",
+            headline="Road closed",
+            expires="2099-01-01T00:00:00-05:00",
+        ),
+        "update.xml": _cap(
+            "NYC-UPDATE",
+            severity="Minor",
+            event="Road Reopened",
+            headline="Road reopened",
+            expires="2099-01-01T01:00:00-05:00",
+            sent="2026-07-02T13:00:00-04:00",
+            message_type="Update",
+            references=reference,
+        ),
+    }
+
+    client = _client(rss, caps)
+    active = (
+        await active_advisories(
+            client, now=datetime(2026, 7, 2, 18, 0, tzinfo=timezone.utc)
+        )
+    ).advisories
+    await client.aclose()
+
+    assert [a.guid for a in active] == ["NYC-UPDATE"]
+    assert active[0].message_type == "Update"
+    assert active[0].references == (reference,)
+
+
+async def test_active_advisories_applies_cap_cancel_without_info() -> None:
+    reference = "notifynyc@cityhall.nyc.gov,NYC-ORIGINAL,2026-07-02T12:00:00-04:00"
+    rss = _rss(
+        _item("Original", "NYCEM [English]", "g-original", "original.xml"),
+        _item("Cancel", "NYCEM [English]", "g-cancel", "cancel.xml"),
+    )
+    caps = {
+        "original.xml": _cap(
+            "NYC-ORIGINAL",
+            severity="Severe",
+            event="Road Closure",
+            headline="Road closed",
+            expires="2099-01-01T00:00:00-05:00",
+        ),
+        "cancel.xml": _cap_cancel("NYC-CANCEL", references=reference),
+    }
+
+    client = _client(rss, caps)
+    feed = await active_advisories(
+        client, now=datetime(2026, 7, 2, 18, 0, tzinfo=timezone.utc)
+    )
+    await client.aclose()
+
+    assert feed.confirmed is True
+    assert feed.advisories == []
+
+
+async def test_active_advisories_does_not_treat_ack_as_all_clear() -> None:
+    reference = "notifynyc@cityhall.nyc.gov,NYC-ORIGINAL,2026-07-02T12:00:00-04:00"
+    rss = _rss(_item("Ack", "NYCEM [English]", "g-ack", "ack.xml"))
+    client = _client(rss, {"ack.xml": _cap_ack("NYC-ACK", references=reference)})
+
+    feed = await active_advisories(
+        client, now=datetime(2026, 7, 2, 18, 0, tzinfo=timezone.utc)
+    )
+    await client.aclose()
+
+    assert feed.confirmed is False
+    assert feed.advisories == []
+
+
+async def test_fetch_advisories_rejects_missing_required_cap_identity_fields() -> None:
+    malformed = """<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+      <info>
+        <event>Invented alert</event>
+        <severity>Extreme</severity>
+        <sent>2026-07-02T12:00:00-04:00</sent>
+        <expires>2099-01-01T00:00:00-05:00</expires>
+        <headline>Missing required CAP identity</headline>
+      </info>
+    </alert>"""
+    rss = _rss(_item("Malformed", "NYCEM [English]", "g-bad", "bad.xml"))
+    client = _client(rss, {"bad.xml": malformed})
+
+    feed = await fetch_advisories(client)
+    await client.aclose()
+
+    assert feed.confirmed is False
+    assert feed.advisories == []
 
 
 async def test_malformed_cap_is_skipped_not_fatal():
@@ -240,18 +460,25 @@ async def test_malformed_cap_is_skipped_not_fatal():
     advisories = (await fetch_advisories(client)).advisories
     await client.aclose()
 
-    assert [a.guid for a in advisories] == ["NYC-ACTIVE-1"]  # malformed one silently dropped
+    assert [a.guid for a in advisories] == [
+        "NYC-ACTIVE-1"
+    ]  # malformed one silently dropped
 
 
 async def test_fetch_advisories_returns_empty_on_rss_failure():
-    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(500))
+    )
     feed = await fetch_advisories(client)
     assert feed.advisories == []
-    assert feed.confirmed is False  # a failed fetch is DEGRADED, not a confirmed all-clear
+    assert (
+        feed.confirmed is False
+    )  # a failed fetch is DEGRADED, not a confirmed all-clear
     await client.aclose()
 
 
 # --- the module tool -------------------------------------------------------
+
 
 async def test_check_notify_nyc_grounds_and_cites_active():
     citations = CitationRegistry()
@@ -263,15 +490,57 @@ async def test_check_notify_nyc_grounds_and_cites_active():
     assert "Heat Advisory in effect for NYC" in out
     assert "Severe" in out
     assert "in effect until 2099-07-02T19:45:28-04:00" in out  # expiry stated as-of
-    assert "{cite:S1}" in out                                  # grounded, cited
-    assert "Expired advisory" not in out                       # expired never surfaced
+    assert "{cite:S1}" in out  # grounded, cited
+    assert "Expired advisory" not in out  # expired never surfaced
 
     mapping = citations.mapping()
     assert mapping["S1"]["kind"] == "DATA"
-    assert "everbridge.net" in mapping["S1"]["url"]             # resolvable CAP XML url
+    assert "everbridge.net" in mapping["S1"]["url"]  # resolvable CAP XML url
     assert mapping["S1"]["url"].endswith("/cap/active.xml")
-    assert mapping["S1"]["valid_as_of"] == "2026-07-02T12:00:00-04:00"  # = sent, never fetch time
+    assert (
+        mapping["S1"]["valid_as_of"] == "2026-07-02T12:00:00-04:00"
+    )  # = sent, never fetch time
     assert mapping["S1"]["provenance"]["record_id"] == "NYC-ACTIVE-1"
+    assert "<language>en-US</language>" in mapping["S1"]["provenance"]["snapshot"]["cap_xml"]
+    assert mapping["S1"]["provenance"]["derivation"]["language"] == "en-US"
+
+
+async def test_check_notify_nyc_preserves_cap_detail_in_evidence() -> None:
+    cap = _cap(
+        "NYC-ROAD-DETAIL",
+        severity="Minor",
+        event="Road Reopened",
+        headline="Road reopened",
+        expires="2099-07-02T19:45:28-04:00",
+        effective="2026-07-02T12:05:00-04:00",
+        onset="2026-07-02T12:10:00-04:00",
+        description="The road reopened after an earlier collision.",
+        instruction="Expect residual delays.",
+        response_types=("Prepare", "Monitor"),
+    )
+    rss = _rss(_item("Road reopened", "NYCEM [English]", "g-road", "road.xml"))
+    citations = CitationRegistry()
+    client = _client(rss, {"road.xml": cap})
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "The road reopened after an earlier collision." in out
+    assert "Expect residual delays." in out
+    assert "Certainty: Likely" in out
+    assert "Effective: 2026-07-02T12:05:00-04:00" in out
+    assert "Onset: 2026-07-02T12:10:00-04:00" in out
+    assert "Response types: Prepare, Monitor" in out
+    provenance = citations.mapping()["S1"]["provenance"]
+    assert provenance["snapshot"] == {"cap_xml": cap}
+    normalized = provenance["derivation"]
+    assert normalized["certainty"] == "Likely"
+    assert normalized["effective"] == "2026-07-02T12:05:00-04:00"
+    assert normalized["onset"] == "2026-07-02T12:10:00-04:00"
+    assert normalized["description"] == "The road reopened after an earlier collision."
+    assert normalized["instruction"] == "Expect residual delays."
+    assert normalized["responseType"] == ["Prepare", "Monitor"]
 
 
 async def test_check_notify_nyc_abstains_when_none_active():
@@ -284,11 +553,11 @@ async def test_check_notify_nyc_abstains_when_none_active():
     await client.aclose()
 
     low = out.lower()
-    assert "no active" in low                     # says there are none
-    assert "- " not in out                        # no fabricated advisory list
-    assert len(citations) == 0                     # nothing fabricated/cited
+    assert "no active" in low  # says there are none
+    assert "- " not in out  # no fabricated advisory list
+    assert len(citations) == 0  # nothing fabricated/cited
     # No fabricated counts of "other" advisories beyond the feed.
-    assert "notifynyc" in low or "311" in low     # routed to the official source
+    assert "notifynyc" in low or "311" in low  # routed to the official source
 
 
 # --- SAFETY-CRITICAL fail-safe: a degraded feed must NEVER read as "all clear" ---
@@ -296,6 +565,7 @@ async def test_check_notify_nyc_abstains_when_none_active():
 # mid-emergency, and the tool confidently reported "no active Notify NYC advisories". A feed that is
 # unreachable, errored, empty, or unreadable is NOT a confirmed all-clear. It must say we COULD NOT
 # confirm the advisories and route to the official live source + 311 (+ 911 for a life-threat).
+
 
 async def test_check_notify_nyc_failsafe_on_empty_feed():
     # RSS reached (HTTP 200) but carries ZERO <item>s, the exact live failure. Must not claim clear.
@@ -321,7 +591,9 @@ async def test_check_notify_nyc_failsafe_on_empty_feed():
 async def test_check_notify_nyc_failsafe_on_fetch_error():
     # RSS fetch fails outright (HTTP 500 / non-200). Same fail-safe: never a confident "no advisories".
     citations = CitationRegistry()
-    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(500))
+    )
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({}, ctx)
     await client.aclose()
@@ -341,8 +613,10 @@ async def test_active_advisories_flags_confirmed_vs_degraded():
     now = datetime(2026, 7, 2, 18, 0, tzinfo=timezone.utc)
 
     # Working feed, only an expired advisory → confirmed True, nothing active.
-    reached = _client(_rss(_item("Old (English)", "NYCEM [English]", "g-old", "expired.xml")),
-                      {"expired.xml": CAP_EXPIRED})
+    reached = _client(
+        _rss(_item("Old (English)", "NYCEM [English]", "g-old", "expired.xml")),
+        {"expired.xml": CAP_EXPIRED},
+    )
     feed = await active_advisories(reached, now=now)
     await reached.aclose()
     assert feed.confirmed is True
@@ -361,47 +635,72 @@ async def test_active_advisories_flags_confirmed_vs_degraded():
 # the city's OWN Notify NYC portal renders. While the CAP/Everbridge feed sat empty mid-emergency,
 # THIS endpoint carried the day's real alerts (Flood Advisory, Safe Overnight Locations: Flooding).
 # Schema is thin: pubDate (MM/DD/YYYY HH:MM:SS, America/New_York), title, description (HTML-ish).
-RECENT_MESSAGES_JSON = json.dumps([
-    {"pubDate": "07/06/2026 00:33:21",
-     "title": "Notify NYC - Mass Transit Restoration",
-     "description": ("Notification issued 07-06-2026 at 12:33 AM.\n\nStaten Island Railway service "
-                     "has resumed in both directions. Expect residual delays.\n\nTo view this "
-                     "message in ASL, Español : "
-                     "<a target='_new' href='http://on.nyc.gov/2qxH91g'>http://on.nyc.gov/2qxH91g</a>.")},
-    {"pubDate": "07/05/2026 23:31:01",
-     "title": "Notify NYC - Flood Advisory - 7/5 - 7/6 (NYC)",
-     "description": ("Notification issued 07-05-2026 at 11:31 PM.\n\nA Flood Advisory is in effect "
-                     "for NYC until 6:00 AM Monday. Avoid flooded roadways and never drive through "
-                     "standing water.\n\nTo view this message in ASL : "
-                     "<a target='_new' href='http://on.nyc.gov/flood'>http://on.nyc.gov/flood</a>.")},
-    {"pubDate": "07/05/2026 22:13:35",
-     "title": "Notify NYC - Safe Overnight Locations: Flooding (NYC)",
-     "description": "Notification issued 07-05-2026 at 10:13 PM.\n\nSafe overnight locations are open due to flooding."},
-])
+RECENT_MESSAGES_JSON = json.dumps(
+    [
+        {
+            "pubDate": "07/06/2026 00:33:21",
+            "title": "Notify NYC - Mass Transit Restoration",
+            "description": (
+                "Notification issued 07-06-2026 at 12:33 AM.\n\nStaten Island Railway service "
+                "has resumed in both directions. Expect residual delays.\n\nTo view this "
+                "message in ASL, Español : "
+                "<a target='_new' href='http://on.nyc.gov/2qxH91g'>http://on.nyc.gov/2qxH91g</a>."
+            ),
+        },
+        {
+            "pubDate": "07/05/2026 23:31:01",
+            "title": "Notify NYC - Flood Advisory - 7/5 - 7/6 (NYC)",
+            "description": (
+                "Notification issued 07-05-2026 at 11:31 PM.\n\nA Flood Advisory is in effect "
+                "for NYC until 6:00 AM Monday. Avoid flooded roadways and never drive through "
+                "standing water.\n\nTo view this message in ASL : "
+                "<a target='_new' href='http://on.nyc.gov/flood'>http://on.nyc.gov/flood</a>."
+            ),
+        },
+        {
+            "pubDate": "07/05/2026 22:13:35",
+            "title": "Notify NYC - Safe Overnight Locations: Flooding (NYC)",
+            "description": "Notification issued 07-05-2026 at 10:13 PM.\n\nSafe overnight locations are open due to flooding.",
+        },
+    ]
+)
 
 
 def _recent_client(json_text: str) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.lower().endswith("/home/recentmessages"):
-            return httpx.Response(200, text=json_text, headers={"content-type": "application/json"})
+            return httpx.Response(
+                200, text=json_text, headers={"content-type": "application/json"}
+            )
         return httpx.Response(404)
+
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def _combo_client(rss: str, recent_json: str, caps: dict[str, str] | None = None) -> httpx.AsyncClient:
+def _combo_client(
+    rss: str, recent_json: str, caps: dict[str, str] | None = None
+) -> httpx.AsyncClient:
     """One client serving the CAP RSS, its CAP XMLs, AND the live RecentMessages endpoint."""
     caps = caps or {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/rss/rss.xml"):
-            return httpx.Response(200, text=rss, headers={"content-type": "application/rss+xml"})
+            return httpx.Response(
+                200, text=rss, headers={"content-type": "application/rss+xml"}
+            )
         if "/cap/" in path:
             name = path.rsplit("/", 1)[-1]
             if name in caps:
-                return httpx.Response(200, text=caps[name], headers={"content-type": "application/xml"})
+                return httpx.Response(
+                    200, text=caps[name], headers={"content-type": "application/xml"}
+                )
         if path.lower().endswith("/home/recentmessages"):
-            return httpx.Response(200, text=recent_json, headers={"content-type": "application/json"})
+            return httpx.Response(
+                200, text=recent_json, headers={"content-type": "application/json"}
+            )
         return httpx.Response(404)
+
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
@@ -416,17 +715,24 @@ async def test_fetch_recent_advisories_parses_live_format():
     assert feed.notes[0].title == "Notify NYC - Mass Transit Restoration"
 
     flood = next(n for n in feed.notes if "Flood Advisory" in n.title)
-    assert flood.issued == "2026-07-05T23:31:01-04:00"   # pubDate parsed as ET → ISO 8601 w/ offset
-    assert flood.issued_raw == "07/05/2026 23:31:01"     # raw kept for honest display
+    assert (
+        flood.issued == "2026-07-05T23:31:01-04:00"
+    )  # pubDate parsed as ET → ISO 8601 w/ offset
+    assert flood.issued_raw == "07/05/2026 23:31:01"  # raw kept for honest display
     assert "Flood Advisory is in effect" in flood.body
-    assert "<a" not in flood.body and "href" not in flood.body  # HTML tags stripped from body
-    assert "on.nyc.gov/flood" in flood.body               # the translation URL text is preserved
+    assert (
+        "<a" not in flood.body and "href" not in flood.body
+    )  # HTML tags stripped from body
+    assert "on.nyc.gov/flood" in flood.body  # the translation URL text is preserved
     assert flood.source_url == RECENT_MESSAGES_URL
-    assert flood.guid                                     # a stable dedupe key exists
+    assert flood.guid  # a stable dedupe key exists
+    assert flood.provider_record == json.loads(RECENT_MESSAGES_JSON)[1]
 
 
 async def test_fetch_recent_advisories_failsafe_on_error():
-    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(503))
+    )
     feed = await fetch_recent_advisories(client)
     await client.aclose()
     assert feed.confirmed is False
@@ -510,14 +816,19 @@ def test_recent_awareness_carries_notice_text_without_scope_parsing():
     five flood notices spelled areas as "BK/SI/MN/QN", "BK, QN", "parts of NYC", and "The Bronx",
     and any pattern keyed to that spelling breaks the day the feed changes it. The index carries
     each notice's full text and the MODEL judges scope and severity from meaning."""
-    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
-        notify_nyc.RecentNote(
-            title="Notify NYC - Flash Flood Warning",
-            body="Flash Flood Warning for BK, QN til 3:30 PM. Move to higher ground.",
-            issued="2026-07-16T13:25:40-04:00", issued_raw="07/16/2026 13:25:40",
-            source_url=RECENT_MESSAGES_URL, guid="ffw",
-        ),
-    ])
+    feed = notify_nyc.RecentFeed(
+        confirmed=True,
+        notes=[
+            notify_nyc.RecentNote(
+                title="Notify NYC - Flash Flood Warning",
+                body="Flash Flood Warning for BK, QN til 3:30 PM. Move to higher ground.",
+                issued="2026-07-16T13:25:40-04:00",
+                issued_raw="07/16/2026 13:25:40",
+                source_url=RECENT_MESSAGES_URL,
+                guid="ffw",
+            ),
+        ],
+    )
 
     text = advisory_tools._recent_awareness(feed, date(2026, 7, 16))
 
@@ -526,16 +837,19 @@ def test_recent_awareness_carries_notice_text_without_scope_parsing():
 
 
 def test_recent_awareness_registers_exact_cached_messages_as_data_evidence():
-    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
-        notify_nyc.RecentNote(
-            title="Notify NYC - Flash Flood Warning",
-            body="Move to higher ground in parts of Queens.",
-            issued="2026-07-16T13:25:40-04:00",
-            issued_raw="07/16/2026 13:25:40",
-            source_url=RECENT_MESSAGES_URL,
-            guid="ffw-cached",
-        ),
-    ])
+    feed = notify_nyc.RecentFeed(
+        confirmed=True,
+        notes=[
+            notify_nyc.RecentNote(
+                title="Notify NYC - Flash Flood Warning",
+                body="Move to higher ground in parts of Queens.",
+                issued="2026-07-16T13:25:40-04:00",
+                issued_raw="07/16/2026 13:25:40",
+                source_url=RECENT_MESSAGES_URL,
+                guid="ffw-cached",
+            ),
+        ],
+    )
     citations = CitationRegistry()
 
     text = advisory_tools._recent_awareness(
@@ -560,52 +874,74 @@ def test_recent_awareness_carries_full_text_and_fail_open_safety_policy():
     no resident location is known, and only narrow low-stakes notices keep the overlap rule."""
     render = getattr(advisory_tools, "_recent_awareness", None)
     assert callable(render)
-    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
-        notify_nyc.RecentNote(
-            title="Notify NYC - Air Quality Health Advisory (NYC)",
-            body="Air quality is unhealthy for everyone in all or part of NYC.",
-            issued="2026-07-16T08:59:23-04:00", issued_raw="07/16/2026 08:59:23",
-            source_url=RECENT_MESSAGES_URL, guid="aqi",
-        ),
-        notify_nyc.RecentNote(
-            title="Notify NYC - FDNY Activity (BK)", body="full local body",
-            issued="2026-07-16T13:25:40-04:00", issued_raw="07/16/2026 13:25:40",
-            source_url=RECENT_MESSAGES_URL, guid="fdny",
-        ),
-        notify_nyc.RecentNote(
-            title="Notify NYC - Old notice", body="old body",
-            issued="2026-07-15T13:25:40-04:00", issued_raw="07/15/2026 13:25:40",
-            source_url=RECENT_MESSAGES_URL, guid="old",
-        ),
-    ])
+    feed = notify_nyc.RecentFeed(
+        confirmed=True,
+        notes=[
+            notify_nyc.RecentNote(
+                title="Notify NYC - Air Quality Health Advisory (NYC)",
+                body="Air quality is unhealthy for everyone in all or part of NYC.",
+                issued="2026-07-16T08:59:23-04:00",
+                issued_raw="07/16/2026 08:59:23",
+                source_url=RECENT_MESSAGES_URL,
+                guid="aqi",
+            ),
+            notify_nyc.RecentNote(
+                title="Notify NYC - FDNY Activity (BK)",
+                body="full local body",
+                issued="2026-07-16T13:25:40-04:00",
+                issued_raw="07/16/2026 13:25:40",
+                source_url=RECENT_MESSAGES_URL,
+                guid="fdny",
+            ),
+            notify_nyc.RecentNote(
+                title="Notify NYC - Old notice",
+                body="old body",
+                issued="2026-07-15T13:25:40-04:00",
+                issued_raw="07/15/2026 13:25:40",
+                source_url=RECENT_MESSAGES_URL,
+                guid="old",
+            ),
+        ],
+    )
 
     text = render(feed, date(2026, 7, 16))
 
     assert "Air Quality Health Advisory" in text
     assert "FDNY Activity" in text
     assert "Old notice" in text
-    assert "unhealthy for everyone in all or part of NYC" in text  # full text, model judges meaning
-    assert "call `check_notify_nyc`" in text                         # cite discipline survives
-    assert "immediate personal safety" in text                     # safety notices fail open
+    assert (
+        "unhealthy for everyone in all or part of NYC" in text
+    )  # full text, model judges meaning
+    assert "call `check_notify_nyc`" in text  # cite discipline survives
+    assert "immediate personal safety" in text  # safety notices fail open
     assert "hasn't shared a location" in text
-    assert "known location" in text                                # narrow class keeps overlap rule
-    assert "already ended" in text                                 # expiry checked against now
+    assert "known location" in text  # narrow class keeps overlap rule
+    assert "already ended" in text  # expiry checked against now
 
 
 def test_recent_awareness_keeps_seven_days_without_truncating_bodies():
     long_body = "A" * 450
-    feed = notify_nyc.RecentFeed(confirmed=True, notes=[
-        notify_nyc.RecentNote(
-            title="Two day old notice", body=long_body,
-            issued="2026-07-14T08:00:00-04:00", issued_raw="07/14/2026 08:00:00",
-            source_url=RECENT_MESSAGES_URL, guid="recent-2d",
-        ),
-        notify_nyc.RecentNote(
-            title="Eight day old notice", body="expired",
-            issued="2026-07-08T08:00:00-04:00", issued_raw="07/08/2026 08:00:00",
-            source_url=RECENT_MESSAGES_URL, guid="recent-8d",
-        ),
-    ])
+    feed = notify_nyc.RecentFeed(
+        confirmed=True,
+        notes=[
+            notify_nyc.RecentNote(
+                title="Two day old notice",
+                body=long_body,
+                issued="2026-07-14T08:00:00-04:00",
+                issued_raw="07/14/2026 08:00:00",
+                source_url=RECENT_MESSAGES_URL,
+                guid="recent-2d",
+            ),
+            notify_nyc.RecentNote(
+                title="Eight day old notice",
+                body="expired",
+                issued="2026-07-08T08:00:00-04:00",
+                issued_raw="07/08/2026 08:00:00",
+                source_url=RECENT_MESSAGES_URL,
+                guid="recent-8d",
+            ),
+        ],
+    )
 
     text = advisory_tools._recent_awareness(feed, date(2026, 7, 16))
 
@@ -614,15 +950,22 @@ def test_recent_awareness_keeps_seven_days_without_truncating_bodies():
     assert "Eight day old notice" not in text
 
 
-async def test_current_awareness_retains_recent_cache_when_refresh_degrades(monkeypatch):
-    good = notify_nyc.RecentFeed(confirmed=True, notes=[
-        notify_nyc.RecentNote(
-            title="Cached notice", body="Exact cached message body",
-            issued=datetime.now(advisory_tools.NYC_TZ).isoformat(),
-            issued_raw="08/12/2026 01:00:00",
-            source_url=RECENT_MESSAGES_URL, guid="cached-notice",
-        )
-    ])
+async def test_current_awareness_retains_recent_cache_when_refresh_degrades(
+    monkeypatch,
+):
+    good = notify_nyc.RecentFeed(
+        confirmed=True,
+        notes=[
+            notify_nyc.RecentNote(
+                title="Cached notice",
+                body="Exact cached message body",
+                issued=datetime.now(advisory_tools.NYC_TZ).isoformat(),
+                issued_raw="08/12/2026 01:00:00",
+                source_url=RECENT_MESSAGES_URL,
+                guid="cached-notice",
+            )
+        ],
+    )
     degraded = notify_nyc.RecentFeed(confirmed=False, notes=[])
     feeds = iter((good, degraded))
 
@@ -634,7 +977,8 @@ async def test_current_awareness_retains_recent_cache_when_refresh_degrades(monk
     first = await advisory_tools.current_awareness()
     cached_at, notes = advisory_tools._awareness_cache
     monkeypatch.setattr(
-        advisory_tools, "_awareness_cache",
+        advisory_tools,
+        "_awareness_cache",
         (cached_at - advisory_tools._AWARENESS_TTL_S - 1, notes),
     )
 
@@ -649,20 +993,30 @@ async def test_check_notify_nyc_falls_back_to_recent_when_cap_empty():
     # THE production scenario: the CAP/Everbridge feed is EMPTY, but Notify NYC IS carrying today's
     # flood alerts. The tool must surface them (grounded + cited), never fail safe or go silent.
     citations = CitationRegistry()
-    client = _combo_client(rss=_rss(), recent_json=RECENT_MESSAGES_JSON)  # empty CAP + live recent
+    client = _combo_client(
+        rss=_rss(), recent_json=RECENT_MESSAGES_JSON
+    )  # empty CAP + live recent
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({}, ctx)
     await client.aclose()
 
     low = out.lower()
-    assert "flood advisory" in low                        # today's real alert surfaced
-    assert "could not confirm" not in low                 # we DID confirm via the live source
-    assert "no active notify nyc advisories" not in low   # not a false all-clear
+    assert "flood advisory" in low  # today's real alert surfaced
+    assert "could not confirm" not in low  # we DID confirm via the live source
+    assert "no active notify nyc advisories" not in low  # not a false all-clear
     assert "https://www.nyc.gov/notifynyc" in out
-    assert len(citations) >= 1                             # grounded + cited
-    assert any("recentmessages" in c["url"].lower() for c in citations.mapping().values())
-    flood = next(c for c in citations.mapping().values() if "Flood Advisory" in c["title"])
+    assert len(citations) >= 1  # grounded + cited
+    assert any(
+        "recentmessages" in c["url"].lower() for c in citations.mapping().values()
+    )
+    flood = next(
+        c for c in citations.mapping().values() if "Flood Advisory" in c["title"]
+    )
     assert "Avoid flooded roadways" in flood["snippet"]
+    assert flood["provenance"]["snapshot"] == json.loads(RECENT_MESSAGES_JSON)[1]
+    assert flood["provenance"]["derivation"]["body"].startswith(
+        "Notification issued 07-05-2026"
+    )
 
 
 async def test_recent_fallback_dedups_titles_already_delivered_this_conversation():
@@ -689,34 +1043,46 @@ async def test_check_notify_nyc_prefers_cap_when_it_has_active():
     # When the CAP feed is working AND has an active advisory, it stays the source (structured,
     # with severity + expiry); the RecentMessages fallback is not needed.
     citations = CitationRegistry()
-    client = _combo_client(rss=RSS_MAIN, recent_json=RECENT_MESSAGES_JSON, caps=CAPS_MAIN)
+    client = _combo_client(
+        rss=RSS_MAIN, recent_json=RECENT_MESSAGES_JSON, caps=CAPS_MAIN
+    )
     # RSS_MAIN's active CAP expires 2099, so it's active for any real "now".
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     out = await get_tools()[0].handler({}, ctx)
     await client.aclose()
-    assert "Heat Advisory in effect for NYC" in out       # the structured CAP advisory
+    assert "Heat Advisory in effect for NYC" in out  # the structured CAP advisory
     assert "in effect until 2099-07-02T19:45:28-04:00" in out
 
 
 async def test_check_notify_nyc_combines_cap_and_recent_without_exact_duplicates():
     fireworks_title = "Notify NYC - Fireworks - 7/17 - Coney Island Beach (BK)"
-    rss = _rss(_item(fireworks_title, "NYCEM [English]", "g-fireworks", "fireworks.xml"))
-    cap = _cap(
-        "NYC-FIREWORKS", severity="Moderate", event="Civil Emergency Message",
-        headline=fireworks_title, expires="2099-07-17T22:00:00-04:00",
+    rss = _rss(
+        _item(fireworks_title, "NYCEM [English]", "g-fireworks", "fireworks.xml")
     )
-    recent_json = json.dumps([
-        {
-            "pubDate": "07/16/2026 15:05:41", "title": fireworks_title,
-            "description": "Fireworks near Coney Island Beach.",
-        },
-        {
-            "pubDate": "07/16/2026 08:59:23",
-            "title": "Notify NYC - Air Quality Health Advisory (AQI 151-200) - 7/16",
-            "description": "Air quality is unhealthy for everyone in all or part of NYC.",
-        },
-    ])
-    client = _combo_client(rss=rss, recent_json=recent_json, caps={"fireworks.xml": cap})
+    cap = _cap(
+        "NYC-FIREWORKS",
+        severity="Moderate",
+        event="Civil Emergency Message",
+        headline=fireworks_title,
+        expires="2099-07-17T22:00:00-04:00",
+    )
+    recent_json = json.dumps(
+        [
+            {
+                "pubDate": "07/16/2026 15:05:41",
+                "title": fireworks_title,
+                "description": "Fireworks near Coney Island Beach.",
+            },
+            {
+                "pubDate": "07/16/2026 08:59:23",
+                "title": "Notify NYC - Air Quality Health Advisory (AQI 151-200) - 7/16",
+                "description": "Air quality is unhealthy for everyone in all or part of NYC.",
+            },
+        ]
+    )
+    client = _combo_client(
+        rss=rss, recent_json=recent_json, caps={"fireworks.xml": cap}
+    )
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
     out = await get_tools()[0].handler({}, ctx)
@@ -730,22 +1096,26 @@ async def test_check_notify_nyc_reports_borough_notices_alongside_citywide():
     """F061 (RULED 2026-07-18): the tool never area-filters by parsing notice prose — today's
     borough-list flood warnings would have been filtered OUT of a "citywide" view. Every active
     notice returns, cited, and the model judges relevance from the full text."""
-    recent_json = json.dumps([
-        {
-            "pubDate": "07/16/2026 08:59:23",
-            "title": "Notify NYC - Air Quality Health Advisory (AQI 151-200) - 7/16",
-            "description": "Air quality is unhealthy for everyone in all or part of NYC.",
-        },
-        {
-            "pubDate": "07/16/2026 08:27:06",
-            "title": "Notify NYC - Three Alarm Fire - Briggs Avenue (BX)",
-            "description": "Emergency personnel are on scene in the Bronx.",
-        },
-    ])
+    recent_json = json.dumps(
+        [
+            {
+                "pubDate": "07/16/2026 08:59:23",
+                "title": "Notify NYC - Air Quality Health Advisory (AQI 151-200) - 7/16",
+                "description": "Air quality is unhealthy for everyone in all or part of NYC.",
+            },
+            {
+                "pubDate": "07/16/2026 08:27:06",
+                "title": "Notify NYC - Three Alarm Fire - Briggs Avenue (BX)",
+                "description": "Emergency personnel are on scene in the Bronx.",
+            },
+        ]
+    )
     client = _combo_client(rss=_rss(), recent_json=recent_json)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
-    out = await get_tools()[0].handler({"citywide_only": True}, ctx)  # stale arg is ignored
+    out = await get_tools()[0].handler(
+        {"citywide_only": True}, ctx
+    )  # stale arg is ignored
     await client.aclose()
 
     assert "Air Quality Health Advisory" in out
@@ -772,6 +1142,7 @@ async def test_advisory_results_keep_non_overlapping_notices_out_of_plan_answers
 
 # --- the shipped module stays valid (mirrors test_module_food_pantries) ----
 
+
 def test_advisories_module_loads_with_tool_and_eval():
     registry = Registry.discover(config.MODULES_DIR)
     module = next((m for m in registry.modules if m.name == "advisories"), None)
@@ -781,6 +1152,7 @@ def test_advisories_module_loads_with_tool_and_eval():
     assert "check_notify_nyc" in tool_names
 
     from heynyc.eval.cases import load_cases
+
     cases = [c for c in load_cases(registry) if c.module == "advisories"]
     assert cases, "advisories should ship eval cases"
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
@@ -789,8 +1161,13 @@ def test_advisories_module_loads_with_tool_and_eval():
 
 # --- F080 residual: repeat advisory calls in one conversation return a marker, not a re-brief ---
 
-CAP_FLOOD = _cap("NYC-FLOOD-1", severity="Moderate", event="Flood Watch",
-                 headline="Flood Watch for Queens", expires="2099-08-01T10:00:00-04:00")
+CAP_FLOOD = _cap(
+    "NYC-FLOOD-1",
+    severity="Moderate",
+    event="Flood Watch",
+    headline="Flood Watch for Queens",
+    expires="2099-08-01T10:00:00-04:00",
+)
 
 
 async def test_check_notify_nyc_dedups_titles_already_delivered_this_conversation():
@@ -799,15 +1176,19 @@ async def test_check_notify_nyc_dedups_titles_already_delivered_this_conversatio
     compact already-shared marker instead of the payload, so there is nothing to re-brief."""
     citations = CitationRegistry()
     client = _client(RSS_MAIN, CAPS_MAIN)
-    ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
-                      delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}))
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        http=client,
+        delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}),
+    )
     out = await get_tools()[0].handler({}, ctx)
     await client.aclose()
 
     assert "unchanged" in out.lower()
     assert "do not re-brief" in out.lower()
-    assert "full_text" in out                                # the explicit escape hatch is named
-    assert "in effect until" not in out                      # full payload withheld
+    assert "full_text" in out  # the explicit escape hatch is named
+    assert "in effect until" not in out  # full payload withheld
     # F083: the marker carries a PER-ITEM citation so a legitimate refer-back binds to the
     # right source; a citation-free marker pushed the model to pin remembered facts on
     # whatever fresh cite was at hand (observed live: waterbody claims cited to Belt Parkway).
@@ -818,8 +1199,12 @@ async def test_check_notify_nyc_dedups_titles_already_delivered_this_conversatio
 async def test_check_notify_nyc_full_text_repeats_on_explicit_request():
     citations = CitationRegistry()
     client = _client(RSS_MAIN, CAPS_MAIN)
-    ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
-                      delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}))
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        http=client,
+        delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}),
+    )
     out = await get_tools()[0].handler({"full_text": True}, ctx)
     await client.aclose()
 
@@ -837,17 +1222,21 @@ async def test_check_notify_nyc_delivers_only_the_new_advisory():
     caps = {"active.xml": CAP_ACTIVE, "flood.xml": CAP_FLOOD}
     citations = CitationRegistry()
     client = _client(rss, caps)
-    ctx = ToolContext(citations=citations, registry=Registry([]), http=client,
-                      delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}))
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        http=client,
+        delivered_notify_titles=frozenset({"heat advisory in effect for nyc"}),
+    )
     out = await get_tools()[0].handler({}, ctx)
     await client.aclose()
 
     assert "Flood Watch for Queens" in out
-    assert "{cite:S1}" in out                                # the new one is cited in full
-    assert "2099-08-01T10:00:00-04:00" in out                # with its own payload
-    assert "2099-07-02T19:45:28-04:00" not in out            # the old one's payload withheld
+    assert "{cite:S1}" in out  # the new one is cited in full
+    assert "2099-08-01T10:00:00-04:00" in out  # with its own payload
+    assert "2099-07-02T19:45:28-04:00" not in out  # the old one's payload withheld
     assert "already shared" in out.lower()
-    assert "Heat Advisory in effect for NYC" in out          # named, not re-briefed
+    assert "Heat Advisory in effect for NYC" in out  # named, not re-briefed
     # F083: the still-active mention carries its own citation for correct refer-backs.
     assert "{cite:S2}" in out
     titles = {c["title"] for c in citations.mapping().values()}
