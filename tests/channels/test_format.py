@@ -12,18 +12,18 @@ class FakeResult:
     action_links: tuple[ActionLink, ...] = ()
 
 
-def test_strips_markers_and_appends_sources():
+def test_sms_places_every_cited_source_inline_with_its_claim():
     r = FakeResult(
         "Cooling centers are open {cite:S1}. Bring ID {cite:S2}.",
         {"S1": {"url": "https://nyc.gov/cool", "title": "Cooling"},
          "S2": {"url": "https://nyc.gov/id", "title": ""}},
     )
-    out = render(r)
+    out = render(r, "sms_twilio")
     assert len(out) == 1
     body = out[0]
-    assert "Cooling centers are open. Bring ID." in body
-    assert "Sources:" in body
-    assert "https://nyc.gov/cool" in body and "https://nyc.gov/id" in body
+    assert "Cooling centers are open (Source: https://nyc.gov/cool)." in body
+    assert "Bring ID (Source: https://nyc.gov/id)." in body
+    assert "Sources:" not in body
 
 
 def test_no_citations_no_footer():
@@ -114,9 +114,9 @@ def test_commonmark_parser_preserves_horizontal_rules():
 def test_console_channel_keeps_raw_markdown_for_rich_to_render():
     """The console (REPL) channel is the SAME content as texters, only the typography differs:
     rich renders markdown, so render() must keep the raw markdown instead of collapsing it to the
-    WhatsApp dialect (its default) or stripping it (SMS). Owner rule 2026-07-21: inline
-    {cite:Sn} markers STAY on the console (a rich surface can render them; texters lose them
-    only because their channels cannot), and the sources footer lists one source per line."""
+    WhatsApp dialect (its default) or stripping it (SMS). Inline {cite:Sn} markers become
+    numbered links on the console and exact source links on SMS and WhatsApp. The console footer
+    lists one source per line."""
     text = "**Cooling centers** are open {cite:S1}.\n## Where"
     out = render(FakeResult(text, {"S1": {"url": "https://nyc.gov/cool", "title": "Cooling"}}),
                  "console")
@@ -141,7 +141,7 @@ def test_bold_heading_has_one_whatsapp_bold_delimiter():
     assert render(FakeResult("## **Housing**")) == ["*Housing*"]
 
 
-def test_sources_footer_uses_canonical_page_for_web_citation():
+def test_whatsapp_inline_source_uses_canonical_page_for_web_citation():
     r = FakeResult(
         "Help is available {cite:S1}.",
         {
@@ -154,12 +154,12 @@ def test_sources_footer_uses_canonical_page_for_web_citation():
         },
     )
 
-    footer = render(r)[0]
-    assert "https://nyc.gov/help" in footer
-    assert "#:~:text=" not in footer
+    rendered = render(r)[0]
+    assert "Source: https://nyc.gov/help" in rendered
+    assert "#:~:text=" not in rendered
 
 
-def test_sources_footer_omits_links_already_shown_in_the_answer():
+def test_sms_deduplicates_an_existing_source_and_inlines_the_missing_one():
     r = FakeResult(
         (
             "Event details: https://nyc.gov/event {cite:S1}. "
@@ -171,10 +171,11 @@ def test_sources_footer_omits_links_already_shown_in_the_answer():
         },
     )
 
-    rendered = render(r)[0]
+    rendered = render(r, "sms_twilio")[0]
 
     assert rendered.count("https://nyc.gov/event") == 1
-    assert "Air quality - https://nyc.gov/air" in rendered
+    assert "Air quality warning (Source: https://nyc.gov/air)" in rendered
+    assert "Sources:" not in rendered
 
 
 def test_inline_source_url_does_not_drop_its_structured_source_note():
@@ -201,7 +202,7 @@ def test_inline_source_url_does_not_drop_its_structured_source_note():
     assert limitation in rendered
 
 
-def test_sources_footer_deduplicates_shared_action_urls():
+def test_inline_links_deduplicate_shared_action_urls():
     action_url = "https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9"
     result = FakeResult(
         "One {cite:S1}. Two {cite:S2}.",
@@ -218,7 +219,7 @@ def test_sources_footer_deduplicates_shared_action_urls():
     assert render(result, "sms_twilio")[0].count(action_url) == 1
 
 
-def test_sources_footer_preserves_socrata_row_links():
+def test_sms_inline_sources_preserve_socrata_row_links():
     r = FakeResult(
         "One {cite:S1}. Two {cite:S2}.",
         {
@@ -235,12 +236,12 @@ def test_sources_footer_preserves_socrata_row_links():
         },
     )
 
-    footer = render(r)[0]
-    assert footer.count("NYC Open Data - Public Restrooms") == 2
-    assert "row-1.json" in footer and "row-2.json" in footer
+    rendered = render(r, "sms_twilio")[0]
+    assert "row-1.json" in rendered and "row-2.json" in rendered
+    assert "Sources:" not in rendered
 
 
-def test_sources_footer_preserves_arcgis_row_queries():
+def test_sms_inline_sources_preserve_arcgis_row_queries():
     layer = "https://services6.arcgis.com/example/FeatureServer/0"
     r = FakeResult(
         "One {cite:S1}. Two {cite:S2}.",
@@ -250,19 +251,19 @@ def test_sources_footer_preserves_arcgis_row_queries():
         },
     )
 
-    footer = render(r)[0]
-    assert footer.count("NYC Finder") == 2
-    assert f"{layer}/query?where=id%3D1" in footer
-    assert f"{layer}/query?where=id%3D2" in footer
+    rendered = render(r, "sms_twilio")[0]
+    assert f"{layer}/query?where=id%3D1" in rendered
+    assert f"{layer}/query?where=id%3D2" in rendered
+    assert "Sources:" not in rendered
 
 
-def test_splits_long_text_on_paragraph_boundaries_footer_last():
+def test_splits_long_text_with_inline_source_on_paragraph_boundaries():
     para = "x" * 3000
     r = FakeResult(f"{para}\n\n{para} {{cite:S1}}", {"S1": {"url": "https://nyc.gov", "title": "T"}})
-    out = render(r)
+    out = render(r, "sms_twilio")
     assert len(out) >= 2
     assert all(len(c) <= WA_LIMIT for c in out)
-    assert "Sources:" in out[-1] and "Sources:" not in out[0]
+    assert "Source: https://nyc.gov" in out[-1]
 
 
 def test_large_sources_footer_finishes_and_respects_the_limit():
@@ -323,6 +324,79 @@ def test_whatsapp_channel_keeps_native_bold_markup():
     assert render(FakeResult("**Housing**")) == ["*Housing*"]
 
 
+def test_whatsapp_places_every_cited_source_inline_with_its_claim():
+    result = FakeResult(
+        "- Art in the Park {cite:S1}\n- The Dancing Men {cite:S2}",
+        {
+            "S1": {"id": "S1", "url": "https://nyc.gov/art", "title": "Art"},
+            "S2": {"id": "S2", "url": "https://nyc.gov/dancing", "title": "Dancing"},
+        },
+        (ActionLink(citation_id="S2", url="https://maps.google.com/dancing"),),
+    )
+
+    rendered = render(result, "whatsapp_meta")[0]
+
+    assert "- Art in the Park (Source: https://nyc.gov/art)" in rendered
+    assert (
+        "- The Dancing Men (Source: https://nyc.gov/dancing; "
+        "Directions: https://maps.google.com/dancing)"
+    ) in rendered
+    assert "Sources:" not in rendered
+
+
+def test_whatsapp_does_not_confuse_a_longer_lookalike_url_for_the_cited_source():
+    result = FakeResult(
+        "- Event https://nyc.gov/event-extra {cite:S1}",
+        {"S1": {"id": "S1", "url": "https://nyc.gov/event", "title": "Event"}},
+    )
+
+    rendered = render(result, "whatsapp_meta")[0]
+
+    assert "https://nyc.gov/event-extra" in rendered
+    assert "Source: https://nyc.gov/event" in rendered
+
+
+def test_text_channels_replace_a_citation_used_as_a_markdown_link_target():
+    result = FakeResult(
+        "Event: [Details]({cite:S1})",
+        {"S1": {"id": "S1", "url": "https://nyc.gov/event", "title": "Event"}},
+    )
+
+    for channel in ("sms_twilio", "whatsapp_meta"):
+        rendered = render(result, channel)[0]
+        assert "Details: https://nyc.gov/event" in rendered
+        assert "Sources:" not in rendered
+
+
+def test_text_channels_recognize_an_existing_url_with_balanced_parentheses():
+    url = "https://example.gov/a_(b)"
+    result = FakeResult(
+        f"Event details: {url} {{cite:S1}}",
+        {"S1": {"id": "S1", "url": url, "title": "Event"}},
+    )
+
+    for channel in ("sms_twilio", "whatsapp_meta"):
+        rendered = render(result, channel)[0]
+        assert rendered.count(url) == 1
+        assert "Sources:" not in rendered
+
+
+def test_text_channels_do_not_turn_code_literal_markers_into_citations():
+    result = FakeResult(
+        "Use `{cite:S1}` literally.\n\n```\n{cite:S2}\n```",
+        {
+            "S1": {"id": "S1", "url": "https://nyc.gov/one", "title": "One"},
+            "S2": {"id": "S2", "url": "https://nyc.gov/two", "title": "Two"},
+        },
+    )
+
+    for channel in ("sms_twilio", "whatsapp_meta"):
+        rendered = render(result, channel)[0]
+        assert "{cite:" not in rendered
+        assert "https://nyc.gov" not in rendered
+        assert "Sources:" not in rendered
+
+
 def test_body_preserves_exact_cited_socrata_row_url():
     permalink = "https://data.cityofnewyork.us/resource/tvpp-9vvx/abc123.json"
     r = FakeResult(
@@ -333,7 +407,7 @@ def test_body_preserves_exact_cited_socrata_row_url():
     for channel in ("sms_twilio", "whatsapp_meta"):
         joined = "\n".join(render(r, channel))
         answer = joined.split("Sources:")[0]
-        assert permalink in answer
+        assert answer.count(permalink) == 1
         assert "/d/tvpp-9vvx" not in answer
     # the stored citation record is never rewritten
     assert r.citations["S1"]["url"] == permalink

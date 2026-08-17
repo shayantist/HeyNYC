@@ -4695,10 +4695,10 @@ async def test_runtime_result_uses_existing_sms_and_whatsapp_renderers() -> None
     result = await runtime.run("Help me")
 
     assert render(result, "sms_twilio") == [
-        "Help is available.\n\nSources:\n• NYC Help - https://nyc.gov/help"
+        "Help is available (Source: https://nyc.gov/help)."
     ]
     assert render(result, "whatsapp_twilio") == [
-        "*Help* is available.\n\nSources:\n• NYC Help - https://nyc.gov/help"
+        "*Help* is available (Source: https://nyc.gov/help)."
     ]
     assert render(result, "console") == [
         "**Help** is available [\\[S1\\]](<https://nyc.gov/help>).\n\n"
@@ -4784,7 +4784,7 @@ async def test_runtime_preserves_typed_action_links_for_channel_rendering() -> N
         result,
         "sms_twilio",
     )[0]
-    assert "Directions - https://www.google.com/maps/dir/" in rendered
+    assert "Directions: https://www.google.com/maps/dir/" in rendered
     assert "Source note - These are regular hours." in rendered
 
     followup = await conversation.send("Send me that clinic again")
@@ -4800,7 +4800,7 @@ async def test_runtime_preserves_typed_action_links_for_channel_rendering() -> N
     ]
     rendered_followup = render(followup, "sms_twilio")[0]
     assert (
-        "Directions - https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9"
+        "Directions: https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9"
         in (rendered_followup)
     )
     assert "maps/search" not in rendered_followup

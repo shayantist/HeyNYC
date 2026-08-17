@@ -1,8 +1,7 @@
-"""Render an AgentResult into channel-appropriate message chunks: clean body (no inline
-{cite:Sn} markers) + a compact Sources footer, split to a 4096-char limit. SMS gets plain
-text, WhatsApp its native dialect; both share one link policy. Presentation only, downstream
-of the grounding guard: it never adds, drops, or alters a factual claim, and never mutates the
-raw generation or the citation record that the session and telemetry persist."""
+"""Render an AgentResult into channel-appropriate message chunks. SMS and WhatsApp put each
+cited source beside its claim and split to a 4096-character limit. Presentation stays downstream of
+the grounding guard and never mutates the raw generation or citation record persisted by
+sessions and telemetry."""
 from __future__ import annotations
 
 import re
@@ -14,16 +13,14 @@ from heynyc.core.citations import used_citations
 from heynyc.core.localization import localize, localized_source_limit
 
 WA_LIMIT = 4096
-_CITE = re.compile(r"\s*\{cite:S\d+\}")
+_INLINE_CITE = re.compile(r"\s*\{cite:(S\d+)\}")
+_MARKDOWN_CITE_LINK = re.compile(r"\[([^\]\n]+)\]\(\s*\{cite:(S\d+)\}\s*\)")
+_CODE = re.compile(r"(`+|~{3,})(.*?)\1", re.DOTALL)
 _ATTACH = re.compile(r"\s*\[attached:[^\]]*\]")   # delivered out-of-band; never shown in text
 _MARKDOWN = MarkdownIt(
     "commonmark",
     {"linkify": True},
 ).enable(("strikethrough", "linkify"))
-
-
-def _strip_markers(text: str) -> str:
-    return _ATTACH.sub("", _CITE.sub("", text or "")).replace("\N{EM DASH}", "-").strip()
 
 
 def _inline_text(tokens: list[Token], *, whatsapp: bool) -> str:
@@ -129,6 +126,70 @@ def _render_markdown(text: str, *, whatsapp: bool) -> str:
 
 def _canonical_url(url: str) -> str:
     return url.rstrip(".,;:!?").split("#:~:text=", 1)[0].rstrip("/")
+
+
+def _urls_in(text: str) -> set[str]:
+    return {
+        _canonical_url(token.attrGet("href") or "")
+        for token in (_MARKDOWN.parseInline(text)[0].children or ())
+        if token.type == "link_open" and token.attrGet("href")
+    }
+
+
+def _without_code_citations(text: str) -> str:
+    return _CODE.sub(lambda match: _INLINE_CITE.sub("", match.group()), text)
+
+
+def _inline_citation_links(text: str, citations: dict, action_links: tuple) -> str:
+    actions: dict[str, list] = {}
+    rendered_actions: set[str] = set()
+    for action in action_links:
+        actions.setdefault(action.citation_id, []).append(action)
+
+    def replace_markdown_link(match: re.Match) -> str:
+        label, citation_id = match.groups()
+        citation = citations.get(citation_id) or {}
+        source_url = str(citation.get("url") or "").split("#:~:text=", 1)[0]
+        if not source_url:
+            return match.group(0)
+        rendered = f"[{label}](<{source_url}>)"
+        for action in actions.get(citation_id, ()):
+            action_url = _canonical_url(action.url)
+            if action_url not in rendered_actions:
+                rendered += f" ([{action.label}](<{action.url}>))"
+                rendered_actions.add(action_url)
+        return rendered
+
+    def replace(match: re.Match) -> str:
+        subject = match.string
+        citation_id = match.group(1)
+        citation = citations.get(citation_id) or {}
+        line_start = subject.rfind("\n", 0, match.start()) + 1
+        line_end = subject.find("\n", match.end())
+        scope_end = len(subject) if line_end < 0 else line_end
+        while scope_end < len(subject):
+            continuation_start = scope_end + 1
+            continuation_end = subject.find("\n", continuation_start)
+            continuation_end = len(subject) if continuation_end < 0 else continuation_end
+            if not subject[continuation_start:continuation_end].startswith((" ", "\t")):
+                break
+            scope_end = continuation_end
+        item = subject[line_start:scope_end]
+        item_urls = _urls_in(item)
+        links: list[str] = []
+        source_url = str(citation.get("url") or "").split("#:~:text=", 1)[0]
+        if source_url and _canonical_url(source_url) not in item_urls:
+            links.append(f"[Source](<{source_url}>)")
+        for action in actions.get(citation_id, ()):
+            action_url = _canonical_url(action.url)
+            if action_url not in item_urls and action_url not in rendered_actions:
+                links.append(f"[{action.label}](<{action.url}>)")
+                rendered_actions.add(action_url)
+        return f" ({'; '.join(links)})" if links else ""
+
+    linked = _MARKDOWN_CITE_LINK.sub(replace_markdown_link, _without_code_citations(text))
+    linked = _INLINE_CITE.sub(replace, linked)
+    return _ATTACH.sub("", linked).replace("\N{EM DASH}", "-").strip()
 
 
 def _sources_footer(
@@ -239,8 +300,9 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     Presentation only: the grounding guard has already run on `result.text` (the raw generation
     with its `{cite:Sn}` markers), and that raw text plus the full citation mapping are what the
     session and telemetry persist. This layer never adds, drops, or alters a factual claim, it only
-    formats: SMS gets plain text, WhatsApp gets its native dialect, and both share one link policy.
+    formats SMS as plain text and WhatsApp in its native dialect, both with cited links inline.
     """
+    action_links = tuple(getattr(result, "action_links", ()))
     if getattr(result, "status", None) == "approval_required":
         body = result.text
     elif channel == "console":
@@ -249,22 +311,21 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
         body = _link_markers(result.text, result.citations)
     else:
-        text = _strip_markers(result.text)
+        text = _inline_citation_links(result.text, result.citations, action_links)
         body = _render_markdown(text, whatsapp=not channel.startswith("sms"))
-    action_links = tuple(getattr(result, "action_links", ()))
     candidate_urls = [
         str(citation.get("url") or "")
         for citation in result.citations.values()
     ] + [action.url for action in action_links]
+    body_urls = _urls_in(body)
     inline_urls = {
-        _canonical_url(url)
-        for url in candidate_urls
-        if url and _canonical_url(url) in body
+        _canonical_url(url) for url in candidate_urls
+        if url and _canonical_url(url) in body_urls
     }
-    # Sources footer is unchanged per channel: it keeps every cited source (row-addressed permalinks
-    # included) so the audit record on screen matches the stored one. SMS length is bounded downstream
-    # by the Twilio adapter's own per-message segment budget.
-    cited = used_citations(result.text, result.citations)
+    # SMS and WhatsApp already have exact cited links inline, so their footer is reserved for source
+    # limitations and other notes.
+    cited_text = result.text if channel == "console" else _without_code_citations(result.text)
+    cited = used_citations(cited_text, result.citations)
     if channel == "console":
         actions_by_citation = {}
         seen_action_urls: set[str] = set()

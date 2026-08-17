@@ -10,7 +10,7 @@ One **channel-agnostic core** with thin per-provider **adapters**:
 base.py          InboundMessage + Replier port, Meta dispatch seam, KeyedLocks
 identity.py      user_key(channel, sender, salt), the PII boundary
 store.py         encrypted SQLite inbox + dedup + per-user rate-limit
-format.py        render(result, channel) -> channel-appropriate chunks (SMS plain / WhatsApp native, strip {cite:Sn}, Sources footer, 4096 split)
+format.py        render(result, channel) -> text-channel inline cited links, 4096 split
 orchestrator.py  handle(msg, replier, deps), dedup → rate → lock → run agent → reply → record
 analytics.py     pseudonymous interaction log + user-flag feedback log
 meta.py          Meta WhatsApp Cloud API adapter (pywa)
@@ -28,8 +28,8 @@ Senders are reduced to a salted-HMAC `user_key` at the door. Raw phone numbers a
 
 - WhatsApp uses a smaller text-formatting dialect than Markdown. `format.py` converts common
   headings, bold, links, lists, and strikethrough at the channel boundary while preserving code and URLs, following [Twilio's WhatsApp formatting reference](https://help.twilio.com/articles/360037743094).
-- Civic citations never use a third-party shortener. `format.py` groups exact row citations under
-  their canonical official dataset or ArcGIS layer for display while retaining row-addressed evidence internally.
+- Civic citations never use a third-party shortener. `format.py` places each exact cited link
+  beside its supported claim on SMS and WhatsApp while retaining row-addressed evidence internally.
 - Twilio WhatsApp sends a native typing indicator before model work using Twilio's
   [public-beta indicator API](https://www.twilio.com/docs/whatsapp/api/typing-indicators-resource). It fails open so a beta outage cannot block the final reply.
 - A user message opens/resets a **24-hour service window** where free-form replies are free and
