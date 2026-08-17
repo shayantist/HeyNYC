@@ -188,7 +188,7 @@ def test_failure_register_is_grouped_by_taxonomy_with_total_and_families():
     # no row is dropped in grouping and none is duplicated
     ids = re.findall(r"^\| (F\d+) \|", reg, re.M)
     assert len(ids) == len(set(ids))
-    assert "**Total: 268 failures" in reg
+    assert "**Total: 270 failures" in reg
     assert "## (uncategorized)" not in reg
     assert "Failure IDs are append-only" in reg
     assert "`FIXED LOCALLY` means" in reg

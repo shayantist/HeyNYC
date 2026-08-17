@@ -60,7 +60,7 @@ The [sources behind those questions](heynyc/modules/README.md) do not use one sh
 
 ## What makes it different
 
-- **Cite or abstain:** Supported factual claims need a citation or an abstention. Mechanical checks validate citation IDs and exact structured values before an answer ships, while live evaluations review broader claim support. See [SAFETY.md](SAFETY.md).
+- **Verify or label:** Verified factual claims carry citations. When a complete answer cannot be verified, HeyNYC preserves useful retrieved material, marks the limitation, and provides the source links for you to check. Mechanical checks validate citation IDs and exact structured values, while live evaluations review broader claim support. See [SAFETY.md](SAFETY.md).
 - **Does, not just tells:** It uses the city's benefits screener and can prepare the real application for review, without deciding eligibility itself.
 - **Reachable today:** SMS, WhatsApp, and a CLI, without a resident account. Self-hosted instances need provider configuration for the messaging channels.
 - **Open and self-hostable:** The package can be run by an operator who controls its infrastructure and model configuration.
@@ -186,7 +186,7 @@ Offline tests prove contracts; live evals prove behavior.
 
 ### If you're texting it
 
-**How do I know it isn't making things up?** HeyNYC is instructed to cite supported factual claims or abstain. Before delivery, mechanical checks reject unknown or discovery-only citations and exact structured values that disagree with their cited records. Trace-backed live evaluations review the broader claim-to-source relationship that code cannot establish from arbitrary prose alone. It also never decides your eligibility and never submits anything on your behalf; the full design is in [SAFETY.md](SAFETY.md).
+**How do I know it isn't making things up?** HeyNYC distinguishes verified claims from material it could not confirm. Before delivery, mechanical checks catch unknown citations and exact structured values that disagree with their cited records. If correction retries run out, the resident sees the supported parts, the unresolved limitation, and the relevant source links instead of a generic failure message. Trace-backed live evaluations review the broader claim-to-source relationship that code cannot establish from arbitrary prose alone. It also never decides your eligibility and never submits anything on your behalf; the full design is in [SAFETY.md](SAFETY.md).
 
 **Do people read my messages?** No one reads your conversations in the normal course of things; a human sees an exchange only if you send it to us with REPORT and confirm, or if a safety or abuse review requires it. The plain-language version is [PRIVACY.md](PRIVACY.md); the formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md) controls.
 
@@ -204,7 +204,7 @@ Offline tests prove contracts; live evals prove behavior.
 
 ### If you're evaluating it (the City, journalists, civic technologists)
 
-**How is this not another MyCity chatbot?** MyCity answered confidently without grounding and [told business owners they could break the law](https://themarkup.org/artificial-intelligence/2024/03/29/nycs-ai-chatbot-tells-businesses-to-break-the-law). HeyNYC pairs cite-or-abstain instructions with mechanical citation checks, live trace review, and permanent regressions for MyCity's documented failures ([the traps and the real law behind each](docs/testing/benchmarks.md)). We also publish our own failures as a numbered [register](docs/testing/failure-db.md); [SAFETY.md](SAFETY.md) explains the remaining boundary.
+**How is this not another MyCity chatbot?** MyCity answered confidently without grounding and [told business owners they could break the law](https://themarkup.org/artificial-intelligence/2024/03/29/nycs-ai-chatbot-tells-businesses-to-break-the-law). HeyNYC pairs source labeling with mechanical citation checks, live trace review, and permanent regressions for MyCity's documented failures ([the traps and the real law behind each](docs/testing/benchmarks.md)). We also publish our own failures as a numbered [register](docs/testing/failure-db.md); [SAFETY.md](SAFETY.md) explains the remaining boundary.
 
 **What grounds the answers?** NYC Open Data, the city's Benefits Screening API, official finders, and live web retrieval with explicit source-trust grades. High-stakes claims require authoritative evidence from a sufficient direct excerpt or fetched page. An explicitly low-stakes capability may cite the exact claim stated by an unverified search excerpt, with the source still identified as unverified. The capability table above names the dataset behind each module; the source-trust design is in [SAFETY.md](SAFETY.md).
 

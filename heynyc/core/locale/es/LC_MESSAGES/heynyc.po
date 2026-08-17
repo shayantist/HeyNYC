@@ -9,8 +9,38 @@ msgstr "Estas son las horas habituales. Confirme las excepciones por días festi
 msgid "Sources"
 msgstr "Fuentes"
 
+msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
+msgstr "No pude verificar todos los detalles que aparecen a continuación. Revisa las fuentes enlazadas antes de confiar en ellos:"
+
+msgid "I couldn't complete every requested part below. Here is the partial result I have:"
+msgstr "No pude completar cada parte solicitada. Este es el resultado parcial que tengo:"
+
+msgid "I couldn't complete this request, and no source or partial result was available from this attempt. Please try again."
+msgstr "No pude completar esta solicitud y este intento no devolvió ninguna fuente ni resultado parcial. Inténtalo de nuevo."
+
+msgid "I couldn't complete the answer, but I did retrieve the sources below."
+msgstr "No pude completar la respuesta, pero sí pude recuperar las fuentes que aparecen a continuación."
+
+msgid "I couldn't complete the safety review of the generated wording, so I am not showing that wording. The sources retrieved are below."
+msgstr "No pude completar la revisión de seguridad del texto generado, así que no mostraré ese texto. Las fuentes recuperadas aparecen a continuación."
+
+msgid "I couldn't safely deliver the generated wording. The sources retrieved are below."
+msgstr "No pude entregar el texto generado de forma segura. Las fuentes recuperadas aparecen a continuación."
+
 msgid "Source note"
 msgstr "Nota de la fuente"
+
+msgid "Structured data record"
+msgstr "Registro de datos estructurados"
+
+msgid "Verified source"
+msgstr "Fuente verificada"
+
+msgid "Unverified search result"
+msgstr "Resultado de búsqueda no verificado"
+
+msgid "Unverified source"
+msgstr "Fuente no verificada"
 
 msgid "I couldn't verify that against the reliable sources I found, so I don't want to guess. Try asking with a little more detail and I'll check again."
 msgstr "No pude verificarlo con las fuentes confiables que encontré, así que no quiero adivinar. Intenta preguntar con un poco más de detalle y lo comprobaré de nuevo."

@@ -13,7 +13,10 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from heynyc.core.localization import localize
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.projection import _resident_history
-from heynyc.core.pydantic_runtime.runtime import PydanticRunFailure
+from heynyc.core.pydantic_runtime.runtime import (
+    TEMPORARY_FAILURE_FALLBACK,
+    PydanticRunFailure,
+)
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 
@@ -285,6 +288,10 @@ async def test_citation_free_clarification_cannot_include_factual_prose(
 
     assert raised.value.partial_result.status == "error"
     assert follow_up not in raised.value.partial_result.text
+    assert raised.value.partial_result.text == TEMPORARY_FAILURE_FALLBACK
+    assert raised.value.partial_result.diagnostics["failure_type"] == (
+        "UnexpectedModelBehavior"
+    )
 
 
 async def test_accepted_structured_output_discards_sibling_plain_text() -> None:
@@ -517,9 +524,75 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
 
     assert calls == 4
     assert raised.value.partial_result.status == "error"
+    assert "212-555-9999" not in raised.value.partial_result.text
+    assert "Call 212-555-0100." in raised.value.partial_result.text
+    assert "Structured data record" in raised.value.partial_result.text
+    assert "City data record" not in raised.value.partial_result.text
+    assert "couldn't verify every detail" in raised.value.partial_result.text
+    assert "https://data.cityofnewyork.us/example" in raised.value.partial_result.text
+    assert "311" not in raised.value.partial_result.text
+    assert raised.value.partial_result.diagnostics["failure_type"] == (
+        "UnexpectedModelBehavior"
+    )
     assert raised.value.partial_result.diagnostics["validation_rejections"][-1][
         "stage"
     ] == "structured_grounding"
+
+
+async def test_exhausted_grounding_keeps_supported_sibling_and_source_fact() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        service_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/service",
+            title="Official service row",
+            kind="DATA",
+            snippet="Official Service Center.",
+            provenance={"snapshot": {"name": "Official Service Center"}},
+        )
+        phone_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/phone",
+            title="Official phone row",
+            kind="DATA",
+            snippet="Call 212-555-0100.",
+            provenance={"snapshot": {"phone": "212-555-0100"}},
+        )
+        return f"Service {{cite:{service_id}}}; phone {{cite:{phone_id}}}"
+
+    async def model(
+        messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([
+            _cited_answer(
+                "Official Service Center. {cite:S1}\n\n"
+                "Call 212-555-9999. {cite:S2}"
+            )
+        ])
+
+    with pytest.raises(PydanticRunFailure) as raised:
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={
+                "retrieve": Tool(
+                    name="retrieve",
+                    description="Retrieve official evidence",
+                    parameters={"type": "object", "properties": {}},
+                    handler=retrieve,
+                )
+            },
+            structured_grounding=True,
+        ).run("What service and phone should I use?")
+
+    text = raised.value.partial_result.text
+    assert "Official Service Center. {cite:S1}" in text
+    assert "212-555-9999" not in text
+    assert "Call 212-555-0100." in text
 
 
 async def test_discovery_only_correction_can_fetch_the_known_source_once() -> None:
@@ -641,7 +714,10 @@ async def test_exhausted_discovery_validation_preserves_answer_with_specific_not
     assert raised.value.partial_result.text == (
         "The office is open on Mondays. {cite:S1}\n\n"
         "Verification note for NYC office guidance (S1): this source is a search-result "
-        "excerpt. I could not confirm it from the full page."
+        "excerpt. I could not confirm it from the full page.\n\n"
+        "Sources:\n"
+        "- Unverified search result: The office is open on Mondays. "
+        "(NYC office guidance): https://www.nyc.gov/official-guidance"
     )
 
 
@@ -673,6 +749,16 @@ def test_discovery_validation_notice_is_localized(
         "I could not confirm it from the full page.",
         language,
     ) == expected
+
+
+def test_unverified_draft_notice_is_localized() -> None:
+    assert localize(
+        "I couldn't verify every detail below. Check the linked sources before relying on it:",
+        "es",
+    ) == (
+        "No pude verificar todos los detalles que aparecen a continuación. "
+        "Revisa las fuentes enlazadas antes de confiar en ellos:"
+    )
 
 
 async def test_rejected_final_answer_cannot_switch_to_a_clarification() -> None:

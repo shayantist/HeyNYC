@@ -26,7 +26,6 @@ from heynyc.core.pydantic_runtime import (
     _semantic_citation_evidence,
 )
 from heynyc.core.pydantic_runtime.runtime import (
-    VERIFICATION_ABSTAIN_FALLBACK,
     PydanticRunFailure,
     _authoritative_output_tools,
     _final_answer,
@@ -171,17 +170,32 @@ async def test_structured_data_mismatch_fails_closed_before_semantic_verificatio
         {
             "attempt": 1,
             "stage": "structured_grounding",
-            "items": [{"kind": "money", "text": "$500"}],
+            "items": [{
+                "kind": "money",
+                "text": "$500",
+                "claim": "The benefit is $500.",
+                "citation_ids": ["S1"],
+            }],
         },
         {
             "attempt": 2,
             "stage": "structured_grounding",
-            "items": [{"kind": "money", "text": "$500"}],
+            "items": [{
+                "kind": "money",
+                "text": "$500",
+                "claim": "The benefit is $500.",
+                "citation_ids": ["S1"],
+            }],
         },
         {
             "attempt": 3,
             "stage": "structured_grounding",
-            "items": [{"kind": "money", "text": "$500"}],
+            "items": [{
+                "kind": "money",
+                "text": "$500",
+                "claim": "The benefit is $500.",
+                "citation_ids": ["S1"],
+            }],
         },
     ]
 
@@ -1351,7 +1365,8 @@ async def legacy_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
     )
 
     assert result.error is None
-    assert result.text == VERIFICATION_ABSTAIN_FALLBACK
+    assert "Benefits may change." in result.text
+    assert "couldn't verify every detail" in result.text
     assert result.usage.get("retry_kinds", []) == []
     assert model_calls == 3
     assert result.diagnostics["validation_rejections"] == [
@@ -1704,7 +1719,7 @@ async def legacy_semantic_validator_checks_prose_backed_by_structured_data() -> 
     assert result.usage["semantic_verifier_requests"] == 1
 
 
-async def legacy_pydantic_semantic_validator_fails_safely_when_provider_is_down() -> None:
+async def test_pydantic_semantic_validator_preserves_sources_when_provider_is_down() -> None:
     model_calls = 0
 
     async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -1716,10 +1731,17 @@ async def legacy_pydantic_semantic_validator_fails_safely_when_provider_is_down(
             ])
         return ModelResponse([
             ToolCallPart(
-                info.output_tools[0].name,
+                next(
+                    tool.name
+                    for tool in info.output_tools
+                    if tool.name == "grounded_answer"
+                ),
                 {
                     "grounded_blocks": [
-                            {"text": "Benefits are available.", "citation_ids": ["S1"]},
+                        {
+                            "text": "The retrieved record suggests benefits are available.",
+                            "citation_ids": ["S1"],
+                        },
                     ],
                 },
                 "final-1",
@@ -1752,13 +1774,70 @@ async def legacy_pydantic_semantic_validator_fails_safely_when_provider_is_down(
 
     result = await runtime.run("Will my benefits end?")
 
-    assert result.text.startswith(
-        "I hit a temporary problem before I could verify an answer. "
-        "Please try again in a moment."
-    )
-    # F151: failing closed must still leave the resident a route
-    assert "311" in result.text
+    assert result.status == "error"
+    assert "couldn't verify every detail below" in result.text
+    assert "The retrieved record suggests benefits are available." in result.text
+    assert "Benefits are available." in result.text
+    assert "https://www.nyc.gov/example" in result.text
     assert result.usage["semantic_verifier_error"] == "RuntimeError"
+
+
+async def test_semantic_verifier_outage_does_not_bypass_output_moderation() -> None:
+    model_calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([
+            ToolCallPart(
+                next(
+                    tool.name
+                    for tool in info.output_tools
+                    if tool.name == "grounded_answer"
+                ),
+                {
+                    "grounded_blocks": [
+                        {"text": "blocked draft", "citation_ids": ["S1"]},
+                    ],
+                },
+                "final-1",
+            )
+        ])
+
+    async def blocked(_text: str) -> frozenset[str]:
+        return frozenset({"violence"})
+
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official guidance",
+            kind="WEB",
+            snippet="Source material remains available.",
+        )
+        return f"Source material remains available. {{cite:{citation_id}}}"
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Retrieve official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+        semantic_verifier=_FailingVerifier(),
+        output_guard=blocked,
+    ).run("Help")
+
+    assert result.status == "error"
+    assert "blocked draft" not in result.text
+    assert "Source material remains available." in result.text
+    assert "https://www.nyc.gov/example" in result.text
 
 
 async def legacy_semantic_diagnostics_sanitize_untrusted_error_and_labels() -> None:

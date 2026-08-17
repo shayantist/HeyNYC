@@ -6,11 +6,38 @@ msgstr ""
 msgid "Sources"
 msgstr "来源"
 
+msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
+msgstr "我无法核实以下所有细节。请先查看所附来源，再决定是否采用这些信息："
+
+msgid "I couldn't complete every requested part below. Here is the partial result I have:"
+msgstr "我无法完成以下每个请求部分。这是我目前得到的部分结果："
+
 msgid "Source note"
 msgstr "来源说明"
 
-msgid "I hit a temporary problem before I could verify an answer. Please try again in a moment. If you need help now, call 311 and ask for the service you need."
-msgstr "我在核实答案之前遇到了暂时性问题。请稍后再试。如果您现在需要帮助，请拨打 311，并说明您需要的服务。"
+msgid "Structured data record"
+msgstr "结构化数据记录"
+
+msgid "Verified source"
+msgstr "已核实来源"
+
+msgid "Unverified search result"
+msgstr "未经核实的搜索结果"
+
+msgid "Unverified source"
+msgstr "未经核实的来源"
+
+msgid "I couldn't complete this request, and no source or partial result was available from this attempt. Please try again."
+msgstr "我无法完成这次请求，而且本次尝试没有返回来源或部分结果。请重试。"
+
+msgid "I couldn't complete the answer, but I did retrieve the sources below."
+msgstr "我无法完成回答，但已检索到以下来源。"
+
+msgid "I couldn't complete the safety review of the generated wording, so I am not showing that wording. The sources retrieved are below."
+msgstr "我无法完成对生成内容的安全审核，因此不会显示该内容。以下是已检索到的来源。"
+
+msgid "I couldn't safely deliver the generated wording. The sources retrieved are below."
+msgstr "我无法安全地提供生成内容。以下是已检索到的来源。"
 
 msgid "I couldn't verify that against the reliable sources I found, so I don't want to guess. Try asking with a little more detail and I'll check again."
 msgstr "我无法根据找到的可靠来源核实这一点，所以不想猜测。请尝试提供更多细节，我会再帮您查询。"

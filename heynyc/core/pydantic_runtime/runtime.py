@@ -176,7 +176,8 @@ _OUTPUT_CORRECTION_REMINDER = (
 )
 _DISCOVERY_CORRECTION_REMINDER = (
     "The rejected answer relied on a search snippet. Fetch that known source once with "
-    "web_fetch, or omit the unsupported claim, then return the complete resident answer."
+    "web_fetch, or clearly label the unresolved claim as unverified and retain its source, "
+    "then return the complete resident answer."
 )
 _COOLING_SYNTHESIS_REMINDER = (
     "The current cooling lookup is definitive for the selected unavailable site. Finish the "
@@ -238,21 +239,33 @@ def _final_answer(
 
 
 TEMPORARY_FAILURE_FALLBACK = (
-    "I hit a temporary problem before I could verify an answer. "
-    "Please try again in a moment. If you need help now, call 311 and ask for the service you "
-    "need."
+    "I couldn't complete this request, and no source or partial result was available from this "
+    "attempt. Please try again."
 )
-# F166: F151 added the 911 pointer to every failure, so a Medicaid renewal error told a
-# 71-year-old to call 911. The pointer belongs to "this turn could not be SCREENED", not to
-# "something broke": where the screen ran and cleared, the risk is known and 911 is just alarming
+SOURCE_RECOVERY_NOTICE = (
+    "I couldn't complete the answer, but I did retrieve the sources below."
+)
 UNSCREENED_FAILURE_FALLBACK = (
-    TEMPORARY_FAILURE_FALLBACK + " If anyone is in danger, call 911."
+    TEMPORARY_FAILURE_FALLBACK
+    + " I also couldn't complete the safety check. If anyone is in danger, call 911."
 )
 VERIFICATION_ABSTAIN_FALLBACK = (
     "I couldn't verify that against the reliable sources I found, so I don't "
     "want to guess. Try asking with a little more detail and I'll check again."
 )
-OFFICIAL_PAGES_REACHED_HEADING = "Official pages I did reach before the problem:"
+UNVERIFIED_DRAFT_NOTICE = (
+    "I couldn't verify every detail below. Check the linked sources before relying on it:"
+)
+INCOMPLETE_DRAFT_NOTICE = (
+    "I couldn't complete every requested part below. Here is the partial result I have:"
+)
+OUTPUT_REVIEW_UNAVAILABLE_NOTICE = (
+    "I couldn't complete the safety review of the generated wording, so I am not showing that "
+    "wording. The sources retrieved are below."
+)
+OUTPUT_BLOCKED_NOTICE = (
+    "I couldn't safely deliver the generated wording. The sources retrieved are below."
+)
 
 
 def _degraded_failure_text(
@@ -261,28 +274,46 @@ def _degraded_failure_text(
     language: str | None = None,
     citation_ids: set[str] | None = None,
 ) -> str:
-    """Hand back the official pages already retrieved instead of stranding the resident.
+    """Hand back the sources already retrieved instead of stranding the resident.
 
     F151: a family at PATH intake with a stroller received a bare "temporary problem" apology
     after twelve successful retrieval steps, and the runtime discarded every source it was
-    holding. Only AUTHORITATIVE citations are surfaced: a discovery-grade hit is a search
-    waypoint, not somewhere to send someone in a crisis. No claim is attached to these links,
-    so nothing here asserts a fact the guard did not check.
+    holding. Source strength remains visible in the citation metadata and channel formatter.
     """
-    official = [
+    reached = [
         citation
         for citation_id, citation in citations.mapping().items()
         if (citation_ids is None or citation_id in citation_ids)
-        if (citation.get("provenance") or {}).get("evidence_grade") == "authoritative"
-        and citation.get("url")
+        if citation.get("url")
     ]
-    if not official:
+    if not reached:
         return text
-    seen: dict[str, str] = {}
-    for citation in official:
-        seen.setdefault(citation["url"], citation.get("title") or citation["url"])
-    lines = [text, "", localize(OFFICIAL_PAGES_REACHED_HEADING, language)]
-    lines += [f"- {title}: {url}" for url, title in list(seen.items())[:3]]
+    seen: dict[str, tuple[str, str]] = {}
+    for citation in reached:
+        provenance = citation.get("provenance") or {}
+        grade = provenance.get("evidence_grade")
+        label = localize((
+            "Structured data record"
+            if citation.get("kind") == "DATA"
+            else "Verified source"
+            if grade == "authoritative"
+            else "Unverified search result"
+            if grade in {"authoritative_excerpt", "discovery", "search_excerpt"}
+            else "Unverified source"
+        ), language)
+        detail = " ".join(str(citation.get("snippet") or "").split())[:240]
+        seen.setdefault(
+            citation["url"],
+            (
+                citation.get("title") or citation["url"],
+                f"{label}: {detail}" if detail else label,
+            ),
+        )
+    lines = [text, "", f"{localize('Sources', language)}:"]
+    lines += [
+        f"- {label} ({title}): {url}"
+        for url, (title, label) in seen.items()
+    ]
     return "\n".join(lines)
 
 
@@ -292,25 +323,94 @@ def _validation_warning_text(
     citations: CitationRegistry,
     language: str | None,
 ) -> str | None:
-    if not rejections or any(
-        rejection.get("stage") != "discovery_only" for rejection in rejections
-    ):
+    if not rejections:
         return None
-    answer = next(
-        (
-            value
-            for message in reversed(messages)
-            if isinstance(message, ModelResponse)
-            for part in reversed(message.parts)
-            if isinstance(part, ToolCallPart)
-            and part.tool_name == _FINAL_OUTPUT_TOOL
-            and isinstance((value := part.args_as_dict().get("answer")), str)
-            and value.strip()
-        ),
-        None,
-    )
+    answer = None
+    grounded_answer = None
+    for message in reversed(messages):
+        if not isinstance(message, ModelResponse):
+            continue
+        for part in reversed(message.parts):
+            if not isinstance(part, ToolCallPart):
+                continue
+            if part.tool_name == _FINAL_OUTPUT_TOOL:
+                value = part.args_as_dict().get("answer")
+                if isinstance(value, str) and value.strip():
+                    answer = value.strip()
+                    break
+            if part.tool_name == _GROUNDED_OUTPUT_TOOL:
+                try:
+                    grounded_answer = GroundedAnswer.model_validate(part.args_as_dict())
+                    answer = _render_grounded_answer(grounded_answer)
+                except ValidationError:
+                    continue
+                break
+        if answer is not None:
+            break
     if answer is None:
         return None
+    if any(rejection.get("stage") != "discovery_only" for rejection in rejections):
+        latest = rejections[-1]
+        rejected_blocks = {
+            int(item["id"].removeprefix("block-"))
+            for item in latest.get("items", ())
+            if latest.get("stage") == "semantic_grounding"
+            if isinstance(item.get("id"), str)
+            and item["id"].removeprefix("block-").isdigit()
+        }
+        if grounded_answer is not None and rejected_blocks:
+            grounded_answer = grounded_answer.model_copy(update={
+                "grounded_blocks": [
+                    block
+                    for index, block in enumerate(grounded_answer.grounded_blocks)
+                    if index not in rejected_blocks
+                ]
+            })
+            answer = (
+                _render_grounded_answer(grounded_answer)
+                if grounded_answer.grounded_blocks
+                else ""
+            )
+        if latest.get("stage") == "structured_grounding":
+            for item in latest.get("items", ()):
+                claim = item.get("claim")
+                if isinstance(claim, str) and claim:
+                    markers = " ".join(
+                        f"{{cite:{citation_id}}}"
+                        for citation_id in item.get("citation_ids", ())
+                    )
+                    block = f"{claim} {markers}".strip()
+                    if block in answer:
+                        answer = answer.replace(block, " ", 1)
+                    else:
+                        answer = answer.replace(claim, " ", 1)
+                        for citation_id in item.get("citation_ids", ()):
+                            answer = answer.replace(f"{{cite:{citation_id}}}", "", 1)
+        if latest.get("stage") == "unknown_citation":
+            for citation_id in _unknown_citation_ids(answer, citations.mapping()):
+                answer = answer.replace(f"{{cite:{citation_id}}}", "")
+        if latest.get("stage") == "internal_markup":
+            answer = ""
+        if latest.get("stage") == "unregistered_url":
+            for url in latest.get("urls", ()):
+                answer = answer.replace(str(url), "")
+        answer = re.sub(r"[ \t]+", " ", answer)
+        answer = re.sub(r" *\n *", "\n", answer).strip()
+        notice = localize(
+            (
+                INCOMPLETE_DRAFT_NOTICE
+                if latest.get("stage") in {
+                    "clarification_bypass",
+                    "high_stakes_format",
+                    "response_coverage",
+                    "response_language",
+                    "shortlist_next_step",
+                }
+                else UNVERIFIED_DRAFT_NOTICE
+            ),
+            language,
+        )
+        return f"{notice}\n\n{answer}" if answer else notice
     mapping = citations.mapping()
     latest = rejections[-1]
     sources = [
@@ -327,7 +427,24 @@ def _validation_warning_text(
         "I could not confirm it from the full page.",
         language,
     )
-    return f"{answer.strip()}\n\n{notice.format(source=source)}"
+    return f"{answer}\n\n{notice.format(source=source)}"
+
+
+def _validation_citation_ids(
+    rejections: Sequence[dict[str, Any]],
+    citations: CitationRegistry,
+) -> set[str]:
+    if not rejections:
+        return set()
+    latest = rejections[-1]
+    candidates = list(latest.get("citation_ids", ())) + [
+        citation_id
+        for item in latest.get("items", ())
+        for citation_id in item.get("citation_ids", ())
+    ]
+    return set(candidates).intersection(citations.mapping())
+
+
 class NonfactualOutcome(BaseModel):
     kind: Literal["unknowable"] = Field(
         description="Use unknowable only when no retrieval could establish an answer"
@@ -1413,7 +1530,8 @@ class PydanticRuntimeAdapter:
             reject(
                 "discovery_only",
                 "Search snippets are discovery only. Fetch the relevant authoritative source "
-                "with web_fetch and cite that evidence, or omit the unverified claim.",
+                "with web_fetch and cite that evidence, or clearly label the claim unverified "
+                "and retain its source.",
                 citation_ids=sorted(discovery_ids)[:_SEMANTIC_RETRY_ITEMS],
             )
         if high_stakes:
@@ -1445,7 +1563,7 @@ class PydanticRuntimeAdapter:
             reject(
                 "unverified_source",
                 "This turn cannot use an unverified source as answer evidence. Retrieve and cite "
-                "an authoritative source, or omit the claim and state the gap.",
+                "an authoritative source, or label the claim unverified and retain the source.",
                 citation_ids=sorted(unverified_ids)[:_SEMANTIC_RETRY_ITEMS],
             )
         if isinstance(output, (str, GroundedAnswer)):
@@ -1482,7 +1600,12 @@ class PydanticRuntimeAdapter:
             )
             if exact_failures:
                 rejected = [
-                    {"kind": mismatch.kind, "text": mismatch.text}
+                    {
+                        "kind": mismatch.kind,
+                        "text": mismatch.text,
+                        "claim": mismatch.claim,
+                        "citation_ids": mismatch.cited,
+                    }
                     for mismatch in exact_failures
                 ][:_SEMANTIC_RETRY_ITEMS]
                 reject(
@@ -1536,7 +1659,12 @@ class PydanticRuntimeAdapter:
                 ][:_SEMANTIC_RETRY_ITEMS],
             })
             if semantic_error is not None:
-                return TEMPORARY_FAILURE_FALLBACK
+                ctx.deps.validation_rejections.append({
+                    "attempt": len(ctx.deps.validation_rejections) + 1,
+                    "stage": "semantic_verifier_unavailable",
+                    "error": semantic_error,
+                })
+                return output
             if any(not verdict.supported for verdict in semantic.verdicts):
                 rejected = [
                     {
@@ -1584,7 +1712,11 @@ class PydanticRuntimeAdapter:
         deps: ToolContext,
         language: str | None,
     ) -> None:
-        if self._output_guard is None or not result.text or result.status != "success":
+        if self._output_guard is None or not result.text or result.status not in {
+            "success",
+            "error",
+            "max_turns",
+        }:
             return
         try:
             blocked = await self._output_guard(result.text)
@@ -1594,6 +1726,7 @@ class PydanticRuntimeAdapter:
                 "stage": "output_moderation_unavailable",
                 "error": type(exc).__name__,
             })
+            notice = OUTPUT_REVIEW_UNAVAILABLE_NOTICE
         else:
             if not blocked:
                 return
@@ -1602,7 +1735,34 @@ class PydanticRuntimeAdapter:
                 "stage": "output_moderation",
                 "categories": sorted(blocked),
             })
-        result.text = localize(TEMPORARY_FAILURE_FALLBACK, language)
+            notice = OUTPUT_BLOCKED_NOTICE
+        citation_ids = set(used_citations(result.text, deps.citations.mapping()))
+        result.text = _degraded_failure_text(
+            localize(notice, language),
+            deps.citations,
+            language,
+            citation_ids or set(deps.citations.mapping()),
+        )
+        result.status = "error"
+
+    @staticmethod
+    def _apply_validation_failure_result(
+        result: AgentResult,
+        deps: ToolContext,
+        language: str | None,
+    ) -> None:
+        if not deps.validation_rejections or (
+            deps.validation_rejections[-1].get("stage")
+            != "semantic_verifier_unavailable"
+        ):
+            return
+        citation_ids = set(used_citations(result.text, deps.citations.mapping()))
+        result.text = _degraded_failure_text(
+            f"{localize(UNVERIFIED_DRAFT_NOTICE, language)}\n\n{result.text}",
+            deps.citations,
+            language,
+            citation_ids or set(deps.citations.mapping()),
+        )
         result.status = "error"
 
     @staticmethod
@@ -1815,6 +1975,7 @@ class PydanticRuntimeAdapter:
         validation_rejections: list[dict[str, Any]],
         status: str,
         text: str = TEMPORARY_FAILURE_FALLBACK,
+        failure_type: str | None = None,
         language: str | None = None,
         citation_ids: set[str] | None = None,
     ) -> AgentResult:
@@ -1843,6 +2004,7 @@ class PydanticRuntimeAdapter:
             **({"fact_review_runs": fact_review_runs} if fact_review_runs else {}),
             "semantic_verifier_runs": semantic_verifier_runs,
             "validation_rejections": validation_rejections,
+            **({"failure_type": failure_type} if failure_type else {}),
         }
         return result
 
@@ -2175,6 +2337,14 @@ class PydanticRuntimeAdapter:
                 if isinstance(exc, UnexpectedModelBehavior)
                 else None
             )
+            citation_ids = set(citations.mapping()) - prior_citation_ids
+            if validation_warning:
+                citation_ids = _validation_citation_ids(
+                    deps.validation_rejections,
+                    citations,
+                ) | set(
+                    used_citations(validation_warning, citations.mapping())
+                ) or citation_ids
             result = self._failed_result(
                 new_messages,
                 citations=citations,
@@ -2188,9 +2358,17 @@ class PydanticRuntimeAdapter:
                     if isinstance(exc, UsageLimitExceeded)
                     else "error"
                 ),
-                text=validation_warning or TEMPORARY_FAILURE_FALLBACK,
+                text=(
+                    validation_warning
+                    or (
+                        SOURCE_RECOVERY_NOTICE
+                        if citation_ids
+                        else TEMPORARY_FAILURE_FALLBACK
+                    )
+                ),
+                failure_type=type(exc).__name__,
                 language=language,
-                citation_ids=set(citations.mapping()) - prior_citation_ids,
+                citation_ids=citation_ids,
             )
             self._merge_safety_usage(result, safety_run)
             self._merge_scope_usage(result, scope_run)
@@ -2206,6 +2384,7 @@ class PydanticRuntimeAdapter:
                 and language is not None
             ):
                 result.diagnostics["safety_language"] = language
+            await self._apply_output_guard(result, deps, language)
             if isinstance(exc, (UnexpectedModelBehavior, TimeoutError)):
                 # A TimeoutError here is EITHER the run wall or the per-request bound giving up
                 # after its retry. Reporting both as "run exceeded <wall>" sent an operator
@@ -2245,6 +2424,7 @@ class PydanticRuntimeAdapter:
             prior_action_links=action_links,
             prior_typed_result_citation_ids=typed_result_citation_ids,
         )
+        self._apply_validation_failure_result(result, deps, language)
         await self._apply_output_guard(result, deps, language)
         result.usage["model_request_ms"] = timing_capability.request_ms
         if timing_capability.stalled_requests:
@@ -2863,6 +3043,24 @@ class PydanticAgentSession:
                     )
         except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
             new_messages = captured[len(self.state.messages):]
+            validation_warning = (
+                _validation_warning_text(
+                    new_messages,
+                    deps.validation_rejections,
+                    citations,
+                    self.state.safety_language,
+                )
+                if isinstance(exc, UnexpectedModelBehavior)
+                else None
+            )
+            citation_ids = set(citations.mapping()) - prior_citation_ids
+            if validation_warning:
+                citation_ids = _validation_citation_ids(
+                    deps.validation_rejections,
+                    citations,
+                ) | set(
+                    used_citations(validation_warning, citations.mapping())
+                ) or citation_ids
             result = self.runtime._failed_result(
                 new_messages,
                 citations=citations,
@@ -2876,11 +3074,25 @@ class PydanticAgentSession:
                     if isinstance(exc, UsageLimitExceeded)
                     else "error"
                 ),
+                text=(
+                    validation_warning
+                    or (
+                        SOURCE_RECOVERY_NOTICE
+                        if citation_ids
+                        else TEMPORARY_FAILURE_FALLBACK
+                    )
+                ),
+                failure_type=type(exc).__name__,
                 language=self.state.safety_language,
-                citation_ids=set(citations.mapping()) - prior_citation_ids,
+                citation_ids=citation_ids,
             )
             if self.state.safety_language is not None:
                 result.diagnostics["safety_language"] = self.state.safety_language
+            await self.runtime._apply_output_guard(
+                result,
+                deps,
+                self.state.safety_language,
+            )
             if isinstance(exc, TimeoutError):
                 result.diagnostics["run_timeout_s"] = self.runtime._run_timeout_s
                 _finish_events(event_sink, message_id, result)
@@ -2911,6 +3123,11 @@ class PydanticAgentSession:
             language=self.state.safety_language,
             prior_action_links=self.state.action_links,
             prior_typed_result_citation_ids=self.state.typed_result_citation_ids,
+        )
+        self.runtime._apply_validation_failure_result(
+            result,
+            deps,
+            self.state.safety_language,
         )
         await self.runtime._apply_output_guard(result, deps, self.state.safety_language)
         result.usage["model_request_ms"] = timing_capability.request_ms

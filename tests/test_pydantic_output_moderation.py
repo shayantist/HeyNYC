@@ -3,13 +3,20 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from heynyc.core import events
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.safety import build_output_moderator
 from heynyc.core.registry import Registry
+from heynyc.core.tools.base import Tool, ToolContext
 
 
 class _Categories:
@@ -164,3 +171,52 @@ async def test_output_guard_failure_fails_closed_without_a_model_retry() -> None
     assert not [event for event in emitted if isinstance(event, events.TextDelta)]
     errors = [event for event in emitted if isinstance(event, events.ErrorEvent)]
     assert [event.retryable for event in errors] == [False]
+
+
+@pytest.mark.asyncio
+async def test_output_guard_failure_preserves_retrieved_source_material() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/service",
+            title="Official service row",
+            kind="DATA",
+            snippet="The service record remains available.",
+            provenance={"snapshot": {"status": "available"}},
+        )
+        return f"Service record. {{cite:{citation_id}}}"
+
+    async def model(
+        messages: list[ModelMessage],
+        _info: AgentInfo,
+    ) -> ModelResponse:
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([TextPart("unreviewed answer {cite:S1}")])
+
+    async def unavailable(_text: str) -> frozenset[str]:
+        raise RuntimeError("offline")
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Retrieve official evidence",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        guard_grounding=False,
+        output_guard=unavailable,
+    ).run("Help")
+
+    assert result.status == "error"
+    assert "unreviewed answer" not in result.text
+    assert "safety review" in result.text
+    assert "The service record remains available." in result.text
+    assert "https://data.cityofnewyork.us/service" in result.text

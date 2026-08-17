@@ -20,16 +20,31 @@ def record_interaction(*, telemetry_path: Path, model: str, user_key: str, chann
     )
     used = used_citations(result.text, result.citations)
     used_doc_citations = sum(citation.get("kind") == "DOC" for citation in used.values())
+    diagnostics = result.diagnostics or {}
+    rejections = diagnostics.get("validation_rejections") or []
+    extra = {
+        "channel": channel,
+        "outcome": outcome,
+        "n_citations": len(result.citations),
+        "used_doc_citations": used_doc_citations,
+    }
+    if result.status not in ("success", None):
+        extra.update({
+            "failure_type": diagnostics.get("failure_type", "unknown"),
+            "validation_rejection_stages": list(dict.fromkeys(
+                rejection["stage"] for rejection in rejections if rejection.get("stage")
+            )),
+            "validation_rejection_count": len(rejections),
+            "retry_kinds": list(result.usage.get("retry_kinds") or []),
+            "stalled_model_requests": int(
+                result.usage.get("stalled_model_requests", 0) or 0
+            ),
+        })
     return telemetry.record_turn(
         telemetry_path, session_id=user_key, model=model, usage=result.usage,
         n_tool_calls=len(result.tool_calls_made), tool_names=result.tool_calls_made,
         status=result.status,
-        extra={
-            "channel": channel,
-            "outcome": outcome,
-            "n_citations": len(result.citations),
-            "used_doc_citations": used_doc_citations,
-        },
+        extra=extra,
     )
 
 

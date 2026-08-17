@@ -57,14 +57,15 @@
   abstain: false
   capability: grounding
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
-  tags: [F236, F237, general-chat, must-win]
+  tags: [F236, F237, F270, F271, general-chat, must-win]
   utility_criterion: >-
     Give a useful short list of distinct NYC events the resident can still attend today, with
     grounded start times and direct links. Do not return a verification abstention after the live
     event tool returned usable current listings, duplicate the same attraction as separate choices,
-    recommend an event whose known start time has passed, or attach an advisory to an unrelated
-    event citation. If a retrieved event has started but has a known future end time, describe it as
-    in progress instead of later or ended.
+    recommend an event whose known start time has passed, omit a source-stated registration
+    limitation such as closed registration, or attach an advisory to an unrelated event citation.
+    If a retrieved event has started but has a known future end time, describe it as in progress
+    instead of later or ended.
   notes: Exact public-channel query that abstained after a successful live events lookup.
 
 - id: events_f268_primary_sources_and_shortlist_followup

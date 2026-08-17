@@ -15,7 +15,7 @@ from heynyc.core.registry import Registry
 
 def test_chinese_current_turn_localizes_deterministic_failure_copies() -> None:
     assert localization.localize(TEMPORARY_FAILURE_FALLBACK, "zh-CN") == (
-        "我在核实答案之前遇到了暂时性问题。请稍后再试。如果您现在需要帮助，请拨打 311，并说明您需要的服务。"
+        "我无法完成这次请求，而且本次尝试没有返回来源或部分结果。请重试。"
     )
     assert localization.localize(VERIFICATION_ABSTAIN_FALLBACK, "zh-CN") == (
         "我无法根据找到的可靠来源核实这一点，所以不想猜测。请尝试提供更多细节，我会再帮您查询。"
@@ -77,5 +77,5 @@ async def test_pydantic_failure_uses_the_current_screen_language(monkeypatch) ->
         await runtime.run("中文地点查询")
 
     assert caught.value.partial_result.text == (
-        "我在核实答案之前遇到了暂时性问题。请稍后再试。如果您现在需要帮助，请拨打 311，并说明您需要的服务。"
+        "我无法完成这次请求，而且本次尝试没有返回来源或部分结果。请重试。"
     )

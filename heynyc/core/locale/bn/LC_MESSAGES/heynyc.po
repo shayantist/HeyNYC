@@ -6,8 +6,38 @@ msgstr ""
 msgid "Sources"
 msgstr "উৎসসমূহ"
 
+msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
+msgstr "নিচের প্রতিটি তথ্য আমি যাচাই করতে পারিনি। এর ওপর নির্ভর করার আগে দেওয়া উৎসগুলো দেখুন:"
+
+msgid "I couldn't complete every requested part below. Here is the partial result I have:"
+msgstr "অনুরোধ করা প্রতিটি অংশ সম্পূর্ণ করতে পারিনি। আমার কাছে থাকা আংশিক ফলটি নিচে দেওয়া হলো:"
+
+msgid "I couldn't complete this request, and no source or partial result was available from this attempt. Please try again."
+msgstr "আমি এই অনুরোধটি সম্পূর্ণ করতে পারিনি এবং এই চেষ্টায় কোনো উৎস বা আংশিক ফল পাওয়া যায়নি। আবার চেষ্টা করুন।"
+
+msgid "I couldn't complete the answer, but I did retrieve the sources below."
+msgstr "আমি উত্তরটি সম্পূর্ণ করতে পারিনি, তবে নিচের উৎসগুলো উদ্ধার করতে পেরেছি।"
+
+msgid "I couldn't complete the safety review of the generated wording, so I am not showing that wording. The sources retrieved are below."
+msgstr "তৈরি করা লেখাটির নিরাপত্তা যাচাই সম্পূর্ণ করতে পারিনি, তাই লেখাটি দেখাচ্ছি না। উদ্ধার করা উৎসগুলো নিচে দেওয়া হলো।"
+
+msgid "I couldn't safely deliver the generated wording. The sources retrieved are below."
+msgstr "তৈরি করা লেখাটি নিরাপদভাবে দেওয়া যায়নি। উদ্ধার করা উৎসগুলো নিচে দেওয়া হলো।"
+
 msgid "Source note"
 msgstr "উৎসের নোট"
+
+msgid "Structured data record"
+msgstr "কাঠামোবদ্ধ ডেটা রেকর্ড"
+
+msgid "Verified source"
+msgstr "যাচাইকৃত উৎস"
+
+msgid "Unverified search result"
+msgstr "যাচাই না করা অনুসন্ধান ফলাফল"
+
+msgid "Unverified source"
+msgstr "যাচাই না করা উৎস"
 
 msgid "I can't tell you to double the missed dose. Follow the medicine label and contact the dispensing pharmacist or prescriber now. If an extra dose was already taken, call Poison Control at 1-800-222-1222. Call 911 for emergency symptoms."
 msgstr "আমি বাদ পড়া ডোজের জন্য দ্বিগুণ ট্যাবলেট নিতে বলতে পারি না। ওষুধের লেবেলের নির্দেশনা মেনে চলুন এবং এখনই ওষুধ সরবরাহকারী ফার্মাসিস্ট বা যিনি ওষুধ লিখেছেন তাঁর সঙ্গে যোগাযোগ করুন। অতিরিক্ত ডোজ ইতিমধ্যে নেওয়া হয়ে থাকলে Poison Control-এ 1-800-222-1222 নম্বরে ফোন করুন। জরুরি উপসর্গ হলে 911-এ ফোন করুন।"

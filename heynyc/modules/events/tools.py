@@ -83,6 +83,7 @@ class Event:
     provider_id: str = ""
     provider_record: dict = field(default_factory=dict)
     retrieved_at: str = ""
+    registration_info: str = ""
 
 
 def _iso_date(value: object) -> str:
@@ -175,6 +176,7 @@ def _from_parks(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         borough=_PARK_BOROUGHS.get(park_id[:1], ""),
         url=url or PARKS_SOURCE_URL, source="NYC Parks", tier="authoritative",
         free_evidence=free_evidence, audience=audience,
+        registration_info=str(raw.get("registration_description") or "").strip(),
         provider_id=str(raw.get(":id") or url or title),
         provider_record=raw,
         retrieved_at=retrieved_at,
@@ -350,6 +352,7 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     end = f"; ends {ev.end_time}" if ev.end_time else ""
     free = "; free" if ev.free_evidence else ""
     audience = f"; {ev.audience}" if ev.audience else ""
+    registration = f"; registration: {ev.registration_info}" if ev.registration_info else ""
     status = f"; status {ev.provider_status}" if ev.provider_status else ""
     accessibility = (
         f"; accessibility: {ev.accessibility_info or ev.venue_accessibility}"
@@ -358,7 +361,8 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     )
     details = f"\n  Details: {ev.url}" if ev.url else ""
     return (
-        f"- {ev.name}{where}, {when}{timing}{end}{free}{audience}{status}{accessibility} "
+        f"- {ev.name}{where}, {when}{timing}{end}{free}{audience}{registration}{status}"
+        f"{accessibility} "
         f"({ev.source}) {{cite:{cite}}}{details}"
     )
 
@@ -592,11 +596,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     def _window_filter(rows: list[Event]) -> list[Event]:
         kept = _future_only(rows, window_start)
-        kept = _not_ended_today(kept, now)
+        if ctx.event_turn != "preparation":
+            kept = _not_ended_today(kept, now)
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
         kept = _explicitly_free(kept, ctx.query)
-        if "tonight" in ctx.query.lower():
+        if "tonight" in ctx.query.lower() and ctx.event_turn != "preparation":
             kept = _tonight_only(kept, now)
         if borough:
             kept = [e for e in kept if borough in e.borough.lower()]
@@ -747,6 +752,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"Timing at lookup: {timing}" if timing else "",
             f"Cost evidence: {ev.free_evidence}" if ev.free_evidence else "",
             f"Audience: {ev.audience}" if ev.audience else "",
+            f"Registration: {ev.registration_info}" if ev.registration_info else "",
             f"Ticketmaster status: {ev.provider_status}" if ev.provider_status else "",
             f"Timezone: {ev.timezone}" if ev.timezone else "",
             f"Public sale start: {ev.public_sale_start}" if ev.public_sale_start else "",

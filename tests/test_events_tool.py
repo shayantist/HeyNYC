@@ -138,6 +138,86 @@ def test_from_parks_preserves_source_free_audience_and_borough_fields():
     assert "Best for Kids" in block
 
 
+async def test_from_parks_preserves_registration_limitations_in_event_and_citation_text(
+    monkeypatch,
+):
+    row = {
+        "title": "Family Camping: Staten Island",
+        "description": "Families are chosen by lottery.",
+        "registration_description": "Registration is closed.",
+        "startdate": "2099-08-16T00:00:00.000",
+    }
+    event = _from_parks(row)
+
+    assert event is not None
+    assert event.registration_info == "Registration is closed."
+    assert "registration: Registration is closed." in _event_block(event, "S1")
+
+    async def no_ticketmaster(**kwargs):
+        return _tm_result()
+
+    async def city_rows(dataset_id, **kwargs):
+        return [row] if dataset_id == events.PARKS_DATASET_ID else []
+
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="family camping",
+    )
+    output = await get_tools()[0].handler(
+        {"window_start": "2099-08-16", "window_end": "2099-08-16"}, ctx,
+    )
+
+    assert "registration: Registration is closed." in output
+    assert "Registration: Registration is closed." in next(
+        iter(ctx.citations.mapping().values())
+    )["snippet"]
+
+
+async def test_named_event_lookup_keeps_a_started_registration_closed_record(monkeypatch):
+    class FixedDateTime(events.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 16, 19, 30, tzinfo=tz)
+
+    async def no_ticketmaster(**kwargs):
+        return _tm_result()
+
+    async def city_rows(dataset_id, **kwargs):
+        if dataset_id != events.PARKS_DATASET_ID:
+            return []
+        return [{
+            "title": "Family Camping: Staten Island",
+            "description": "Families are chosen by lottery.",
+            "registration_description": "Registration is closed.",
+            "startdate": "2026-08-16T00:00:00.000",
+            "starttime": "2026-08-16 18:00:00",
+        }]
+
+    monkeypatch.setattr(events, "datetime", FixedDateTime)
+    monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="Can I still register for Family Camping: Staten Island tonight?",
+        event_turn="preparation",
+    )
+
+    output = await get_tools()[0].handler(
+        {
+            "keyword": "Family Camping: Staten Island",
+            "window_start": "2026-08-16",
+            "window_end": "2026-08-16",
+        },
+        ctx,
+    )
+
+    assert "Family Camping: Staten Island" in output
+    assert "already started or ended earlier today" in output
+    assert "registration: Registration is closed." in output
+
+
 def test_from_parks_drops_cancelled_titles():
     for title in ("CANCELLED: Movie Night", "Canceled - Outdoor Concert", "POSTPONED: Movie"):
         assert _from_parks({"title": title, "startdate": "2026-07-19"}) is None

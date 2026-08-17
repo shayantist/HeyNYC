@@ -3468,11 +3468,13 @@ async def test_approval_resume_honors_runtime_request_limit() -> None:
     assert result.hit_max_iters
     assert result.status == "max_turns"
     assert result.usage["requests"] == 1
+    assert "{cite:S999}" not in result.text
     assert result.diagnostics == {
         "semantic_verifier_runs": [],
         "validation_rejections": [
             {"attempt": 1, "stage": "unknown_citation"},
         ],
+        "failure_type": "UsageLimitExceeded",
     }
 
 
@@ -3857,6 +3859,7 @@ async def test_eval_retains_usage_after_output_retry_failure() -> None:
     assert result.usage["requests"] == 3
     assert result.usage["retry_kinds"] == ["unknown_citation", "unknown_citation"]
     assert result.turn_results[0].status == "error"
+    assert "{cite:S999}" not in result.text
     assert "resident-secret" not in json.dumps(result.usage)
     assert result.diagnostics == {
         "semantic_verifier_runs": [],
@@ -3865,6 +3868,7 @@ async def test_eval_retains_usage_after_output_retry_failure() -> None:
             {"attempt": 2, "stage": "unknown_citation"},
             {"attempt": 3, "stage": "unknown_citation"},
         ],
+        "failure_type": "UnexpectedModelBehavior",
     }
     assert "resident-secret" not in json.dumps(result.diagnostics)
 
@@ -5539,14 +5543,13 @@ async def test_a_persistently_stalled_request_gives_up_at_the_request_bound() ->
     assert capability.stalled_requests == 1
 
 
-# F151: a family at PATH intake with a stroller got a bare "temporary problem" apology after
-# twelve successful retrieval steps, and every source the runtime was holding was discarded
-def test_failure_copy_routes_the_resident_somewhere() -> None:
-    assert "311" in TEMPORARY_FAILURE_FALLBACK
+# A pre-retrieval failure must describe the actual gap without an unrelated service route
+def test_failure_copy_says_no_source_or_partial_result_was_available() -> None:
+    assert "no source or partial result" in TEMPORARY_FAILURE_FALLBACK
+    assert "311" not in TEMPORARY_FAILURE_FALLBACK
 
 
-# F166: F151's fix added the 911 clause unconditionally, so a 71-year-old asking about a Medicaid
-# renewal error was told to call 911. 311 fits any turn; 911 does not
+# F166: a 71-year-old asking about a Medicaid renewal error was told to call 911
 def test_failure_copy_does_not_raise_an_emergency_on_a_screened_turn() -> None:
     assert "911" not in TEMPORARY_FAILURE_FALLBACK
 
@@ -5555,7 +5558,6 @@ def test_failure_copy_does_not_raise_an_emergency_on_a_screened_turn() -> None:
 # emergency, so that copy is the one place the 911 pointer must survive
 def test_failure_copy_keeps_911_when_the_turn_could_not_be_screened() -> None:
     assert "911" in UNSCREENED_FAILURE_FALLBACK
-    assert "311" in UNSCREENED_FAILURE_FALLBACK
 
 
 def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
@@ -5578,11 +5580,10 @@ def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
     text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
 
     assert "https://www.nyc.gov/site/dhs/shelter/families/path.page" in text
-    # A discovery hit is a search waypoint, not somewhere to send a family in crisis
-    assert "google.com" not in text
+    assert "google.com" in text
 
 
-def test_failure_text_localizes_the_official_pages_heading() -> None:
+def test_failure_text_localizes_the_sources_heading() -> None:
     citations = CitationRegistry()
     citations.register(
         "https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page",
@@ -5598,10 +5599,11 @@ def test_failure_text_localizes_the_official_pages_heading() -> None:
         language="es",
     )
 
-    assert "Páginas oficiales que sí pude consultar antes del problema:" in text
+    assert "Fuentes:" in text
+    assert "Fuente verificada" in text
 
 
-def test_failure_text_is_unchanged_when_nothing_authoritative_was_reached() -> None:
+def test_failure_text_surfaces_an_unverified_source_for_resident_review() -> None:
     citations = CitationRegistry()
     citations.register(
         "https://example.org/whatever",
@@ -5611,10 +5613,10 @@ def test_failure_text_is_unchanged_when_nothing_authoritative_was_reached() -> N
         provenance={"evidence_grade": "discovery"},
     )
 
-    assert (
-        _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
-        == TEMPORARY_FAILURE_FALLBACK
-    )
+    text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+
+    assert "Sources:" in text
+    assert "https://example.org/whatever" in text
 
 
 async def test_a_healthy_model_request_is_not_retried() -> None:
@@ -6137,7 +6139,7 @@ async def test_pydantic_event_sink_finishes_failed_runs(monkeypatch) -> None:
 
     assert isinstance(seen_events[-1], events.Done)
     assert seen_events[-1].status == "error"
-    assert "temporary problem" in seen_events[-1].result.text
+    assert "no source or partial result" in seen_events[-1].result.text
 
 
 async def test_pydantic_approval_resume_emits_events() -> None:
