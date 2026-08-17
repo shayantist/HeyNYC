@@ -1,13 +1,21 @@
 # HeyNYC
 
 [![CI](https://github.com/shayantist/HeyNYC/actions/workflows/ci.yml/badge.svg)](https://github.com/shayantist/HeyNYC/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
 **HeyNYC is an open interoperability and usability layer for NYC public services. It connects fragmented city and agency data, normalizes it into predictable, source-traceable records, applies deterministic location and time logic, and makes it accessible through SMS, WhatsApp, and compatible agents. The chatbot is one interface to that layer.** ([service modules](heynyc/modules/README.md), [typed tool boundary](heynyc/core/tools/base.py), [location and time example](heynyc/modules/cooling_centers/tools.py), [channels](heynyc/channels/README.md))
 
 Text HeyNYC about life in New York: your commute on a flood-watch morning, this weekend's free events, a SNAP application, or an eviction notice. It uses public-service sources, cites factual claims so you can check them, and says when the available evidence cannot answer the question ([safety boundary](SAFETY.md)).
 
 > Open-source civic project. Not affiliated with the City of New York.
+
+Licensed under [AGPL-3.0-only](LICENSE). Git revisions through
+[`15d20c4`](https://github.com/shayantist/HeyNYC/commit/15d20c4e25d00e330c3f23ae4f2e34792dc8293c)
+retain the licenses attached to each revision. In particular, `15d20c4` remains available under
+[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0); its existing license grant is unchanged.
+Operators running a modified network version must offer its corresponding source and set
+`HEYNYC_SOURCE_URL` to that location, as required by
+[AGPL section 13](https://www.gnu.org/licenses/agpl-3.0.html#section13).
 
 ## Try it
 

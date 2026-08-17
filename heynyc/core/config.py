@@ -7,6 +7,10 @@ from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent  # the `heynyc` package
 PROJECT_ROOT = PACKAGE_DIR.parent  # repo root (holds pyproject, .env, docs)
+HEYNYC_SOURCE_URL = os.getenv(
+    "HEYNYC_SOURCE_URL",
+    "https://github.com/shayantist/HeyNYC",
+)
 # NOTE: this module no longer loads .env on import, the app entrypoint (heynyc/__main__.py)
 # does, so the reusable engine never auto-reads a dotenv and tests stay hermetic.
 

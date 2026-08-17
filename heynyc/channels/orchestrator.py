@@ -84,7 +84,8 @@ def _welcome_footer(registry, language: str | None = None) -> str | None:
     time (the same zero-drift pattern as HELP and the README table), so new modules appear here
     automatically and this copy can never lie about what is installed."""
     categories = sorted({m.category for m in registry.modules if m.category})
-    return _localized_welcome_footer(categories, language)
+    footer = _localized_welcome_footer(categories, language)
+    return f"{footer}\nSource code: {config.HEYNYC_SOURCE_URL}" if footer is not None else None
 _NEW_MESSAGE = (
     "Started a new conversation. I won't use the earlier chat as context. "
     "This does not delete stored records."

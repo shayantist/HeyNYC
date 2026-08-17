@@ -484,6 +484,7 @@ async def test_first_contact_appends_a_welcome_footer_exactly_once(tmp_path):
     await handle(_msg(text="when do cooling centers open?", mid="w1"), r1, deps)
     footer = " ".join(r1.sent)
     assert "HeyNYC" in footer                                  # one line on what HeyNYC is
+    assert "https://github.com/shayantist/HeyNYC" in footer    # AGPL source offer
     for command in ("HELP", "PRIVACY", "REPORT", "DELETE MY DATA"):
         assert command in footer                               # names every control, once
 
@@ -537,7 +538,11 @@ async def test_first_contact_passes_native_safety_language_to_welcome(tmp_path, 
     await handle(_msg(text="where can I find food?", mid="native-welcome"), replier, deps)
 
     assert captured == [([], "es")]
-    assert replier.sent == ["Localized welcome\n\nNow, about your message:", "Answer"]
+    assert replier.sent == [
+        "Localized welcome\nSource code: https://github.com/shayantist/HeyNYC"
+        "\n\nNow, about your message:",
+        "Answer",
+    ]
 
 
 def _welcome_test_agent(language):
@@ -580,10 +585,11 @@ async def test_first_contact_accepts_regional_english_language_once(tmp_path):
 
     assert replier.sent == [
         "First time here? I'm HeyNYC. I help with NYC services across NYC, grounded in real city "
-        "data, and I cite my sources.\n"
-        "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
-        "flag a bad answer, or DELETE MY DATA to erase everything I keep.\n\n"
-        "Now, about your message:",
+            "data, and I cite my sources.\n"
+            "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
+            "flag a bad answer, or DELETE MY DATA to erase everything I keep.\n"
+            "Source code: https://github.com/shayantist/HeyNYC\n\n"
+            "Now, about your message:",
         "Grounded answer",
     ]
 

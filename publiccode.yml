@@ -36,7 +36,7 @@ description:
       - PII-free eligibility screening via the city's official Benefits Screening API
       - Public failure register, red-team records, and benchmark methodology
 legal:
-  license: Apache-2.0
+  license: AGPL-3.0-only
 maintenance:
   type: community
   contacts:

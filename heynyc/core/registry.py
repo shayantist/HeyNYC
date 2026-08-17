@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+from . import config
 from .manifest import DatasetBinding, ServiceModule, SituationHint
 
 # Trust-tier ordering for web_search ranking; higher = more trusted. (§10.4)
@@ -297,6 +298,8 @@ class Registry:
             "",
             "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
             "double-check anything important against the official source.",
+            "",
+            f"Source code: {config.HEYNYC_SOURCE_URL}",
         ]
         return "\n".join(lines)
 

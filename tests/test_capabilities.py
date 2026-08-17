@@ -46,6 +46,10 @@ def test_welcome_text_discloses_it_is_an_ai_not_a_city_employee():
     assert "not a city employee" in low
 
 
+def test_welcome_text_offers_network_users_the_corresponding_source():
+    assert "https://github.com/shayantist/HeyNYC" in _reg().welcome_text()
+
+
 def test_capability_table_is_one_row_per_top_level_module():
     reg = _reg()
     rows = reg.capability_table()
