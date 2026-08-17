@@ -2763,6 +2763,8 @@ class Agent:
 
     def _runtime_scope_reminder(self, user_message: str) -> str:
         """Return the one current-source reminder added to the real request."""
+        if self._scope_fn is not None:
+            return ""
         if "web_fetch" in self.tools or "web_search" in self.tools:
             lockout_entry = self.registry.situation_hints().get("active_lockout")
             if lockout_entry is not None and _needs_current_lockout_guidance(user_message):
@@ -2863,11 +2865,14 @@ class Agent:
         """Run one turn, yielding events (text deltas, tool lifecycle, terminal done)."""
         initial_forced_tool = forced_tool
         initial_forced_args = forced_tool_args
+        regex_routing_fallback = self._scope_fn is None
         snap_work_rule_turn = False
         benefits_recovery_turn = False
         immigrant_benefits_turn = False
         lockout_turn = False
-        civic_law_search = _current_civic_law_search(user_message)
+        civic_law_search = (
+            _current_civic_law_search(user_message) if regex_routing_fallback else None
+        )
         has_current_source = "web_fetch" in self.tools or "web_search" in self.tools
         lockout_entry = self.registry.situation_hints().get("active_lockout")
         lockout_hint = lockout_entry[1] if lockout_entry is not None else None
@@ -2875,6 +2880,7 @@ class Agent:
         snap_hint = snap_entry[1] if snap_entry is not None else None
         if (
             initial_forced_tool is None
+            and regex_routing_fallback
             and has_current_source
             and lockout_hint is not None
             and _needs_current_lockout_guidance(user_message)
@@ -2885,6 +2891,7 @@ class Agent:
             )
         elif (
             initial_forced_tool is None
+            and regex_routing_fallback
             and has_current_source
             and snap_hint is not None
             and _needs_current_snap_work_rule_guidance(user_message)
@@ -2895,6 +2902,7 @@ class Agent:
             )
         elif (
             initial_forced_tool is None
+            and regex_routing_fallback
             and has_current_source
             and _needs_current_immigrant_benefits_guidance(user_message)
         ):
@@ -2906,6 +2914,7 @@ class Agent:
             )
         elif (
             initial_forced_tool is None
+            and regex_routing_fallback
             and has_current_source
             and _needs_current_benefits_recovery_guidance(user_message)
         ):

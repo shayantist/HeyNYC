@@ -4001,6 +4001,33 @@ async def test_ordinary_snap_apply_question_does_not_trigger_work_rule_machinery
     assert "This turn is about SNAP work-rule recovery" not in prompt
 
 
+async def test_semantic_scope_prevents_legacy_civic_regex_from_forcing_or_narrowing_tools(
+    monkeypatch,
+):
+    """Regex topic routes are rollback-only fallbacks when no semantic scope screen exists."""
+    from heynyc.core.agent import ScopeResult
+
+    async def scope(_message, _history):
+        return ScopeResult(model="test", modules=("workers",), situations=())
+
+    tools = {
+        "web_fetch": Tool("web_fetch", "x", {}, lambda a, c: "official source"),
+        "worker_guidance": Tool("worker_guidance", "x", {}, lambda a, c: "guidance"),
+    }
+    calls = []
+
+    async def model_stream(messages, tool_schemas, forced_tool=None):
+        calls.append((forced_tool, [schema["function"]["name"] for schema in tool_schemas]))
+        yield {"type": "message", "message": _assistant(content="I can check the current rule.")}
+
+    agent = Agent(Registry([]), tools=tools, scope_fn=scope, guard_grounding=False)
+    monkeypatch.setattr(agent, "_litellm_stream", model_stream)
+
+    await agent.run("Can my restaurant be cashless?")
+
+    assert calls == [(None, ["web_fetch", "worker_guidance"])]
+
+
 def test_agent_default_model_comes_from_config(monkeypatch):
     """Owner ruling 2026-07-21 ('just use the .env value and keep it consistent'): the agent's
     default model is config.HEYNYC_MODEL, the single source of truth. The old hardcoded Sonnet
