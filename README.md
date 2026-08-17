@@ -9,14 +9,6 @@ Text HeyNYC about life in New York: your commute on a flood-watch morning, this 
 
 > Open-source civic project. Not affiliated with the City of New York.
 
-Licensed under [AGPL-3.0-only](LICENSE). Git revisions through
-[`15d20c4`](https://github.com/shayantist/HeyNYC/commit/15d20c4e25d00e330c3f23ae4f2e34792dc8293c)
-retain the licenses attached to each revision. In particular, `15d20c4` remains available under
-[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0); its existing license grant is unchanged.
-Operators running a modified network version must offer its corresponding source and set
-`HEYNYC_SOURCE_URL` to that location, as required by
-[AGPL section 13](https://www.gnu.org/licenses/agpl-3.0.html#section13).
-
 ## Try it
 
 The pilot is live at **1-888-212-0042** (toll-free):
