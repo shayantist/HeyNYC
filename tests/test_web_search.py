@@ -31,7 +31,7 @@ async def test_web_search_keeps_unlisted_results_and_marks_them_unverified():
     out = await tool.handler({"query": "world cup nyc"}, ctx)
     assert "Official" in out
     assert "Unlisted" in out
-    assert "unverified source" in out.lower()
+    assert "search excerpt, cite only what it states" in out.lower()
     assert ctx.citations.mapping()["S1"]["kind"] == "WEB"
     assert ctx.citations.mapping()["S1"]["provenance"] == {
         "evidence_grade": "authoritative_excerpt",
@@ -466,7 +466,7 @@ async def test_web_search_keeps_ugc_off_allowlist_as_an_unverified_lead():
     tool = web_search_tools(["nycgovparks.org"], source_tiers={}, search_fn=fake_search)[0]
     out = await _run(tool, "house party")
     assert "lu.ma" in out
-    assert "unverified source" in out.lower()
+    assert "search excerpt, cite only what it states" in out.lower()
 
 
 async def test_web_search_prefer_boosts_domain():

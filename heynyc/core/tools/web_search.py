@@ -240,7 +240,7 @@ _TIER_LABELS = {
     "community": "⚠️ community-posted, confirm before you go",
     "editorial": "editorial source, cite only what the excerpt states",
     "news": "📰 news source, cite only what the excerpt states",
-    "unverified": "⚠️ unverified source, check before relying on it",
+    "unverified": "search excerpt, cite only what it states",
 }
 
 
