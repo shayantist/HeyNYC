@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 from collections.abc import AsyncIterable, Awaitable, Sequence
 from copy import deepcopy
 from dataclasses import replace
@@ -179,6 +180,26 @@ _DISCOVERY_CORRECTION_REMINDER = (
     "web_fetch, or clearly label the unresolved claim as unverified and retain its source, "
     "then return the complete resident answer."
 )
+
+
+def _unexpected_non_latin_scripts(text: str, evidence: str) -> set[str]:
+    unexpected: set[str] = set()
+    run = ""
+    run_script = ""
+    for char in text + " ":
+        name = unicodedata.name(char, "")
+        script = name.split(" ", 1)[0] if char.isalpha() and name else ""
+        if unicodedata.category(char).startswith("M") and run_script:
+            run += char
+            continue
+        if script and script != "LATIN" and script == run_script:
+            run += char
+            continue
+        if run and run not in evidence:
+            unexpected.add(run_script)
+        run = char if script and script != "LATIN" else ""
+        run_script = script if run else ""
+    return unexpected
 _COOLING_SYNTHESIS_REMINDER = (
     "The current cooling lookup is definitive for the selected unavailable site. Finish the "
     "answer now from the conversation and retrieved evidence. Answer each requested condition, "
@@ -1471,6 +1492,25 @@ class PydanticRuntimeAdapter:
             rendered = NONFACTUAL_OUTCOME_TEXT
         else:
             rendered = output
+        if ctx.deps.language == "en":
+            source_text = "\n".join([
+                ctx.deps.query,
+                *(
+                    f"{citation.get('title', '')}\n{citation.get('snippet', '')}"
+                    for citation in used_citations(rendered, mapping).values()
+                ),
+            ])
+            if unexpected_scripts := _unexpected_non_latin_scripts(
+                rendered,
+                source_text,
+            ):
+                reject(
+                    "unexpected_script",
+                    "The English answer contains non-Latin text that is absent from both the "
+                    "resident message and retrieved evidence. Remove the unrelated text and "
+                    "return the complete answer.",
+                    scripts=sorted(unexpected_scripts),
+                )
         default_event_shortlist = any(
             isinstance(part, ToolReturnPart)
             and part.tool_name == "find_nyc_events"
