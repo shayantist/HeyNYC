@@ -1064,7 +1064,7 @@ async def test_native_retry_safe_approval_recovers_after_partial_failure(
     failed = FakeReplier()
     await handle(_msg(text="YES", mid="approval-failure-2"), failed, deps)
 
-    assert "temporary problem" in failed.sent[0]
+    assert "no source or partial result was available" in failed.sent[0]
     assert deps.store.has_pending_approval(key) is True
 
     retried = FakeReplier()

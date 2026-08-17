@@ -379,6 +379,7 @@ def test_console_turn_records_pii_free_telemetry_tagged_console(tmp_path):
         usage={"latency_ms": 250.0, "tool_time_ms": 40.0},
         tool_calls_made=["screen_access_nyc_eligibility"],
         citations={},
+        diagnostics={},
         status="success",
         text="here you go",
     )

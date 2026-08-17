@@ -303,7 +303,7 @@ async def test_unavailable_crisis_screen_fails_closed_before_answering() -> None
 
     result = await runtime.run("Where is the nearest SNAP center?")
 
-    assert "temporary problem" in result.text
+    assert "no source or partial result was available" in result.text
     assert "911" in result.text
     assert answer_calls == 0
     assert result.diagnostics["safety_error"] == "TimeoutError"
@@ -413,7 +413,7 @@ async def test_runtime_fails_closed_on_a_missing_risk_language() -> None:
 
     result = await runtime.run("Where can I get food?")
 
-    assert "temporary problem" in result.text
+    assert "no source or partial result was available" in result.text
     assert "911" in result.text
     assert result.diagnostics["safety_error"] == "MissingCrisisLanguage"
     assert result.usage["safety_error"] == "MissingCrisisLanguage"
@@ -492,7 +492,7 @@ async def test_runtime_fails_closed_on_unhashable_language() -> None:
 
     result = await runtime.run("Where can I get food?")
 
-    assert "temporary problem" in result.text
+    assert "no source or partial result was available" in result.text
     assert "911" in result.text
     assert result.diagnostics["safety_error"] == "InvalidCrisisLanguage"
     assert result.usage["safety_error"] == "InvalidCrisisLanguage"
@@ -518,8 +518,8 @@ async def test_screened_downstream_failure_does_not_add_911() -> None:
         await runtime.run("Where can I renew Medicaid?")
 
     result = failed.value.partial_result
-    assert "temporary problem" in result.text
-    assert "311" in result.text
+    assert "no source or partial result was available" in result.text
+    assert "311" not in result.text
     assert "911" not in result.text
     assert result.diagnostics["safety_language"] == "en"
 
