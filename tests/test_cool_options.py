@@ -513,7 +513,7 @@ async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypat
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Rockefeller Center", "kind": "all", "limit": 2}, ctx
+        {"near": "Rockefeller Center", "kind": "all", "max_results": 2}, ctx
     )
 
     assert "POPS - 645 Fifth Avenue" in output
@@ -663,7 +663,7 @@ async def test_distance_lookup_returns_the_nearest_site_even_when_it_is_closed(m
     handler = _patch_lookup(monkeypatch, [row])
 
     output = await handler(
-        {"near": "Flushing, Queens", "kind": "all", "limit": 1},
+        {"near": "Flushing, Queens", "kind": "all", "max_results": 1},
         _context("How far is the closest cooling spot?"),
     )
 
@@ -1119,7 +1119,7 @@ async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch
         {
             "near": "Columbia University",
             "kind": "cooling_center",
-            "limit": 1,
+            "max_results": 1,
             "open_now_only": True,
         },
         ctx,
@@ -1205,7 +1205,7 @@ async def test_older_adult_centers_annotated_and_all_ages_note(monkeypatch):
             "near": "Central Park",
             "kind": "cooling_center",
             "audience": "not_age_restricted",
-            "limit": 2,
+            "max_results": 2,
         },
         ctx,
     )
@@ -1253,7 +1253,7 @@ async def test_all_ages_results_get_no_restriction_note(monkeypatch):
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Central Park", "kind": "cooling_center", "limit": 2}, ctx
+        {"near": "Central Park", "kind": "cooling_center", "max_results": 2}, ctx
     )
 
     assert "age-restricted" not in output.lower()
@@ -1331,7 +1331,7 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
         {
             "near": "Flushing, Queens",
             "kind": "cooling_center",
-            "limit": 2,
+            "max_results": 2,
             "visit_date": "2026-07-25",
         },
         ctx,
@@ -1351,5 +1351,16 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
     assert "scheduled open now" not in output
 
     schema = cooling.get_tools()[0].parameters
-    assert schema["properties"]["visit_date"]["format"] == "date"
+    assert {item.get("format") for item in schema["properties"]["visit_date"]["anyOf"]} == {
+        "date",
+        None,
+    }
     assert "visit_date" not in schema["required"]
+    assert "limit" not in schema["properties"]
+    max_results = next(
+        item
+        for item in schema["properties"]["max_results"]["anyOf"]
+        if item.get("type") == "integer"
+    )
+    assert max_results["minimum"] == 1
+    assert max_results["maximum"] == 10

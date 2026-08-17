@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..citations import data_provenance
@@ -42,24 +43,6 @@ _COORDINATE_RE = re.compile(
     r"^\s*(?P<lat>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*"
     r"(?P<lon>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*$"
 )
-_COUNT_VALUE = r"one|two|three|four|five|six|seven|eight|nine|ten|\d+"
-_VERB_COUNT_RE = re.compile(
-    rf"\b(?:show|give|list|find|return|need|want|have)\s+(?:me\s+)?(?P<count>{_COUNT_VALUE})\b",
-    re.IGNORECASE,
-)
-_NOUN_COUNT_RE = re.compile(
-    rf"\b(?P<count>{_COUNT_VALUE})\s+"
-    r"(?:(?:nearest|nearby|cooling|water|drinking|public|food|indoor|activated|free)\s+)?"
-    r"(?:results?|places?|options?|locations?|centers?|stations?|fountains?|restrooms?|pantries?|clinics?|events?)\b",
-    re.IGNORECASE,
-)
-_MORE_RESULTS_RE = re.compile(r"\b(?:all|more|additional|another)\b", re.IGNORECASE)
-_COUNT_VALUES = {
-    word: number
-    for number, word in enumerate(
-        ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
-    )
-}
 _LOCATION_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _LOCATION_NEGATION_RE = re.compile(
     r"\b(?:no|not|never|without|don['’]?t|do\s+not)\b", re.IGNORECASE,
@@ -115,20 +98,22 @@ def _intersection_identity_matches(query: str, label: str) -> bool:
     return not query_directions or query_directions.issubset(label_directions)
 
 
-def _requested_result_limit(value: object, query: str, *, default: int = 3) -> int:
-    """Trust model counts only when the resident asked for a count or more results."""
-    try:
-        requested = min(max(int(value), 1), 10)
-    except (TypeError, ValueError):
-        requested = default
-    if not query or _MORE_RESULTS_RE.search(query):
-        return requested
-    match = _VERB_COUNT_RE.search(query) or _NOUN_COUNT_RE.search(query)
-    if match:
-        raw_count = match.group("count").casefold()
-        count = _COUNT_VALUES.get(raw_count, int(raw_count) if raw_count.isdigit() else default)
-        return min(max(count, 1), 10)
-    return default
+class NearestQuery(BaseModel):
+    """Validated constraints for the shared nearest-location lookup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str = Field(description="A known dataset category, such as cooling_center.")
+    near: str = Field(description="The NYC address or place to search near.")
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        le=10,
+        description=(
+            "Maximum locations requested by the resident. Set only when the resident explicitly "
+            "asks for a number; otherwise omit it and the server returns three."
+        ),
+    )
 
 
 def resident_supplied_location(
@@ -983,19 +968,20 @@ def _place_citation(
 
 
 async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
-    category = args["category"]
+    query = NearestQuery.model_validate(args)
+    category = query.category
     binding = ctx.registry.dataset_bindings().get(category)
     if binding is None:
         available = list(ctx.registry.dataset_bindings())
         return f"No dataset for category '{category}'. Available categories: {available}"
-    if args["near"].strip().casefold() in {"new york", "new york city", "nyc", "the city"}:
+    if query.near.strip().casefold() in {"new york", "new york city", "nyc", "the city"}:
         return "Ask the user for a NYC neighborhood, address, or landmark before ranking nearby sites."
 
-    origin = await geocode(args["near"], client=ctx.http)
+    origin = await geocode(query.near, client=ctx.http)
     if origin is None:
-        return f"Could not locate '{args['near']}'. Ask the user for a specific NYC address."
+        return f"Could not locate '{query.near}'. Ask the user for a specific NYC address."
     if origin.low_confidence:
-        return _clarify_message(args["near"])
+        return _clarify_message(query.near)
 
     if binding.source == "arcgis":
         records = await query_feature_service(binding.url, where=binding.where or "1=1", client=ctx.http)
@@ -1007,12 +993,12 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     if not places:
         return f"No '{category}' locations found in the dataset."
 
-    k = _requested_result_limit(args.get("k", 3), ctx.query)
+    max_results = query.max_results or 3
     ranked = rank_nearby(
         origin,
         places,
         key=lambda place: place.name.strip().casefold(),
-        limit=k,
+        limit=max_results,
     )
 
     lines = [f"Origin: {origin.label} ({origin.lat:.5f},{origin.lon:.5f})"]
@@ -1023,7 +1009,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
             ctx,
             place,
             binding,
-            origin_query=args["near"],
+            origin_query=query.near,
             origin=origin,
             dist_mi=dist_mi,
         )
@@ -1034,7 +1020,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         website = f", official info: {place.website}" if place.website else ""
         hours = f", hours: {place.hours}" if place.hours else ""
         lines.append(
-            f"- {place.name} ({where}), {format_distance(args['near'], origin, dist_mi)}, "
+            f"- {place.name} ({where}), {format_distance(query.near, origin, dist_mi)}, "
             f"status={place.status or 'unknown'}{phone}{updated} {{cite:{cite}}}, "
             f"directions: {maps_link(place.lat, place.lon)}{website}{hours}"
         )
@@ -1123,15 +1109,7 @@ def geo_tools() -> list[Tool]:
                 "Find the nearest NYC locations of a given category (e.g. cooling_center) to an "
                 "address, ranked by distance. NEVER guess locations, always use this."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "category": {"type": "string", "description": "A known dataset category, e.g. 'cooling_center'."},
-                    "near": {"type": "string", "description": "The NYC address or place to search near."},
-                    "k": {"type": "integer", "description": "How many results (default 3).", "default": 3},
-                },
-                "required": ["category", "near"],
-            },
+            parameters=NearestQuery.model_json_schema(),
             open_world=True,  # external dataset (Socrata) + geocoder
             handler=_nearest_handler,
         ),

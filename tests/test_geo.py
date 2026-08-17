@@ -762,7 +762,10 @@ async def test_nearest_handler_ranks_and_cites():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
-    out = await _nearest_handler({"category": "cooling_center", "near": "40.7500,-73.9900", "k": 2}, ctx)
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "40.7500,-73.9900", "max_results": 2},
+        ctx,
+    )
     await client.aclose()
 
     # Closest first, bad-coords row skipped
@@ -783,7 +786,7 @@ async def test_nearest_handler_ranks_and_cites():
     assert "hours: Monday-Friday 8:30am to 5:00pm" in lines[0]
 
 
-async def test_nearest_handler_defaults_to_three_when_model_overrequests():
+async def test_nearest_handler_uses_typed_max_results_or_defaults_to_three():
     def handler(request: httpx.Request) -> httpx.Response:
         if "geosearch" in request.url.host:
             return _geosearch_response(40.7500, -73.9900, "Origin, Manhattan")
@@ -809,7 +812,7 @@ async def test_nearest_handler_defaults_to_three_when_model_overrequests():
         http=client,
     )
     out = await _nearest_handler(
-        {"category": "cooling_center", "near": "Rockefeller Center", "k": 5}, ctx
+        {"category": "cooling_center", "near": "Rockefeller Center"}, ctx
     )
     await client.aclose()
 
@@ -823,25 +826,24 @@ async def test_nearest_handler_defaults_to_three_when_model_overrequests():
         http=client,
     )
     out = await _nearest_handler(
-        {"category": "cooling_center", "near": "Rockefeller Center", "k": 5}, ctx
+        {
+            "category": "cooling_center",
+            "near": "Rockefeller Center",
+            "max_results": 5,
+        },
+        ctx,
     )
     await client.aclose()
 
     assert len([line for line in out.splitlines() if line.startswith("- ")]) == 5
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    ctx = ToolContext(
-        citations=CitationRegistry(),
-        registry=_registry_with_cooling(),
-        query="I need 5 cooling centers",
-        http=client,
+    schema = geo_tools()[1].parameters["properties"]
+    assert "k" not in schema
+    max_results = next(
+        item for item in schema["max_results"]["anyOf"] if item.get("type") == "integer"
     )
-    out = await _nearest_handler(
-        {"category": "cooling_center", "near": "Rockefeller Center", "k": 8}, ctx
-    )
-    await client.aclose()
-
-    assert len([line for line in out.splitlines() if line.startswith("- ")]) == 5
+    assert max_results["minimum"] == 1
+    assert max_results["maximum"] == 10
 
 
 def _registry_with_arcgis_cooling() -> Registry:
@@ -888,7 +890,10 @@ async def test_nearest_handler_arcgis_ranks_surfaces_phone_and_cites():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_arcgis_cooling(), http=client)
-    out = await _nearest_handler({"category": "cooling_center", "near": "40.7500,-73.9900", "k": 2}, ctx)
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "40.7500,-73.9900", "max_results": 2},
+        ctx,
+    )
     await client.aclose()
 
     site_lines = [l for l in out.splitlines() if l.startswith("- ")]
@@ -920,7 +925,10 @@ async def test_nearest_handler_dedupes_repeated_sites():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling(), http=client)
-    out = await _nearest_handler({"category": "cooling_center", "near": "40.7500,-73.9900", "k": 3}, ctx)
+    out = await _nearest_handler(
+        {"category": "cooling_center", "near": "40.7500,-73.9900", "max_results": 3},
+        ctx,
+    )
     await client.aclose()
     site_lines = [l for l in out.splitlines() if l.startswith("- ")]
     assert len(site_lines) == 2  # dup collapsed

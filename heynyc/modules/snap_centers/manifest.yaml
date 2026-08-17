@@ -40,7 +40,7 @@ focus_tools:
   - web_fetch
 prompt: |
   For "where do I apply for SNAP / food stamps in person" or "SNAP center/office near me",
-  call nearest(category="snap_center", near=<the resident's supplied location>, k=1). An address,
+  call nearest(category="snap_center", near=<the resident's supplied location>, max_results=1). An address,
   landmark, neighborhood, or borough is enough to run a rough search. Disclose when a broad origin
   makes distance approximate and offer to refine afterward. Do not block urgent help on a more
   precise origin. Report ONLY the center the tool returns and cite each one, these are the ~13 HRA

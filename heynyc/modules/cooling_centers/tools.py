@@ -1,16 +1,17 @@
 """Live lookup for NYC cooling centers and other Cool Options."""
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
+from typing import Literal
 from zoneinfo import ZoneInfo
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from heynyc.core.citations import content_hash, data_provenance
-from heynyc.core.grounding import resident_calendar_dates
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
-    _requested_result_limit,
     current_resolved_location,
     directions_link,
     format_distance,
@@ -41,6 +42,46 @@ _SELECTED_INDOOR_UNAVAILABLE = (
     "The selected indoor Cool Option is not confirmed open now. The City result does not "
     "confirm usable air conditioning there now."
 )
+
+
+class CoolingQuery(BaseModel):
+    """Validated resident constraints for one Cool Options lookup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    near: str = Field(description="NYC address or landmark.")
+    site: str | None = Field(
+        default=None,
+        description="Exact facility name already selected in the conversation.",
+    )
+    exclude_sites: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Exact facility names the resident rejected in this turn.",
+    )
+    kind: Literal["all", "indoor", "cooling_center"] = "all"
+    audience: Literal["any", "not_age_restricted"] = "any"
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        le=10,
+        description=(
+            "Maximum locations requested by the resident. Set only when the resident explicitly "
+            "asks for a number; otherwise omit it and the server returns three."
+        ),
+    )
+    visit_date: date | None = Field(
+        default=None,
+        description="Visit date extracted from the resident's request.",
+    )
+    visit_time: time | None = Field(
+        default=None,
+        description="Visit time in America/New_York extracted from the resident's request.",
+    )
+    open_now_only: bool = Field(
+        default=False,
+        description="True only when the resident explicitly asks for a place open right now.",
+    )
 
 
 def _nyc_now() -> datetime:
@@ -317,9 +358,10 @@ def _decode_site_fact(
 
 
 async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
-    near = str(args.get("near", "")).strip()
+    query = CoolingQuery.model_validate(args)
+    near = query.near.strip()
     current_turn = ctx.query
-    site = str(args.get("site") or "").strip()
+    site = (query.site or "").strip()
     offered_fact = ctx.resident_facts.get(_OFFERED_SITE_FACT)
     prior_offered = (
         _decode_site_fact(offered_fact.value, offered=True)
@@ -373,8 +415,8 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     except Exception:
         return "The NYC Cool Options finder was unavailable, so I cannot safely list locations."
 
-    kind = str(args.get("kind", "all")).strip().casefold()
-    audience = str(args.get("audience", "any")).strip().casefold()
+    kind = query.kind
+    audience = query.audience
     items = []
     for record in records:
         space_type = str(record.get("Space_type") or "").strip().lower()
@@ -434,7 +476,7 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     offered_items = [item for item in unique if _site_key(item) in offered_keys]
     excluded_names = {
         _site_name(name)
-        for name in args.get("exclude_sites", [])
+        for name in query.exclude_sites
         if _site_name(name)
     }
     excluded = {
@@ -475,27 +517,15 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
     candidate_items = [item for item in offered_items if _site_key(item) not in excluded]
 
     now = _nyc_now()
-    requested_on = str(args.get("visit_date") or args.get("on") or "").strip()
-    requested_at = str(args.get("visit_time") or args.get("at_time") or "").strip()
-    if not requested_on:
-        resident_dates = resident_calendar_dates(ctx.query, now.date())
-        if len(resident_dates) == 1:
-            requested_on = resident_dates.pop().isoformat()
-    try:
-        target_date = date.fromisoformat(requested_on) if requested_on else now.date()
-    except ValueError:
-        return "The date must use YYYY-MM-DD. Ask the resident to clarify the date."
-    try:
-        target_time = datetime.strptime(requested_at, "%H:%M").time() if requested_at else None
-    except ValueError:
-        return "The visit time must use 24-hour HH:MM in New York time."
+    target_date = query.visit_date or now.date()
+    target_time = query.visit_time
     target_at = (
         datetime.combine(target_date, target_time, _NYC_TZ)
         if target_time is not None
         else None
     )
-    planning_ahead = bool(requested_on or requested_at)
-    open_now_only = args.get("open_now_only") is True
+    planning_ahead = query.visit_date is not None or query.visit_time is not None
+    open_now_only = query.open_now_only
     target_day_name = _DAY_NAMES[target_date.weekday()]
     for item in candidate_items:
         item["open_now"] = _open_now(item["record"], now)
@@ -606,8 +636,7 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         else []
     )
 
-    limit = _requested_result_limit(args.get("limit", 3), ctx.query)
-    selected = unique[:limit]
+    selected = unique[:query.max_results or 3]
     day_name = _DAY_NAMES[now.weekday()]
     target_date_label = (
         f"{target_date.strftime('%A, %B')} {target_date.day}, {target_date.year}"
@@ -757,80 +786,7 @@ def get_tools() -> list[Tool]:
                 "Use audience='not_age_restricted' when the resident needs options without a City "
                 "age restriction, including when asking for children."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {"type": "string", "description": "NYC address or landmark"},
-                    "site": {
-                        "type": "string",
-                        "description": (
-                            "Optional exact facility name when checking hours for a site already "
-                            "selected in the conversation; preserves that destination instead of reranking."
-                        ),
-                    },
-                    "exclude_sites": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "description": "One exact facility name to exclude",
-                        },
-                        "maxItems": 10,
-                        "description": (
-                            "Exact facility names the resident rejected in this turn"
-                        ),
-                    },
-                    "kind": {
-                        "type": "string",
-                        "enum": list(_KINDS),
-                        "default": "all",
-                        "description": "Type of heat-relief location requested",
-                    },
-                    "audience": {
-                        "type": "string",
-                        "enum": list(_AUDIENCES),
-                        "default": "any",
-                        "description": (
-                            "Use not_age_restricted when the resident needs options without a "
-                            "City-listed age restriction. This does not prove child-specific "
-                            "amenities or suitability."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "default": 3,
-                        "description": "Maximum results; use the user's requested count",
-                    },
-                    "visit_date": {
-                        "type": "string",
-                        "format": "date",
-                        "description": (
-                            "Optional visit date in YYYY-MM-DD. Pass this when the resident names "
-                            "a day or date; omit when no specific day or date was requested."
-                        ),
-                    },
-                    "visit_time": {
-                        "type": "string",
-                        "format": "time",
-                        "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
-                        "description": (
-                            "Optional visit time as 24-hour HH:MM in America/New_York. Pass when "
-                            "the resident names a time. Use with `visit_date` when they name a date."
-                        ),
-                    },
-                    "open_now_only": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": (
-                            "Set true only when the resident explicitly asks for a place open "
-                            "right now. Leave false for nearest, distance, or general location "
-                            "questions; those results still report the current listed schedule."
-                        ),
-                    },
-                },
-                "required": ["near"],
-            },
+            parameters=CoolingQuery.model_json_schema(),
             handler=_find_cool_options,
             open_world=True,
             title="Find Cool Options",

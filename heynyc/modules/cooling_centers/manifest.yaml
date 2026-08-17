@@ -51,7 +51,8 @@ prompt: |
   names a day or date; omit it when no specific date was requested. Pass `visit_time` as 24-hour
   New York local time whenever the resident names a visit time. The tool, not the model, computes
   scheduled status for that time. Set `open_now_only=true` only when the resident explicitly asks
-  for a place open right now. Pass limit when the user requests a count. Use
+  for a place open right now. Pass `max_results` only when the resident explicitly requests a
+  count; otherwise omit it and let the tool use its default. Use
   audience="not_age_restricted" when the resident needs options without a City-listed age
   restriction, including when asking for children. This field does not prove child-specific
   amenities or suitability.

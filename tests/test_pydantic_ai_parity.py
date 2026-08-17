@@ -738,7 +738,11 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
         nonlocal model_calls
         model_calls += 1
         if model_calls in {1, 3, 5, 7}:
-            args = {"near": "Flushing, Queens", "kind": "cooling_center", "limit": 2}
+            args = {
+                "near": "Flushing, Queens",
+                "kind": "cooling_center",
+                "max_results": 2,
+            }
             if model_calls in {3, 5}:
                 args["site"] = "Raices Times Square"
             elif model_calls == 7:
