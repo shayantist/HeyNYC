@@ -262,6 +262,7 @@ def _make_handler(
         published_after = args.get("published_after")
         published_before = args.get("published_before")
         topic = args.get("topic")
+        relevance_first = ctx.event_turn == "discovery" and not ctx.current_turn_high_stakes
         if topic not in {None, "general", "news", "finance"}:
             return "topic must be general, news, or finance."
         try:
@@ -296,13 +297,17 @@ def _make_handler(
         results = results[:max(1, min(count, 10))]
         if not results:
             return abstain_msg
-        # Tag with trust tier, then rank: preferred domains first, then authoritative→…→community.
+        # Trust leads high-stakes lookups. Low-stakes discovery may explicitly lead with the
+        # provider's relevance score while retaining the same evidence labels.
         tagged = [(r, _tier_of(r["url"], source_tiers, news_tier)) for r in results]
         tagged.sort(
             key=lambda rt: (
                 _prefers(rt[0]["url"], prefer),
-                TIER_RANK.get(rt[1], 0),
-                rt[0].get("score", -1.0),
+                *(
+                    (rt[0].get("score", -1.0), TIER_RANK.get(rt[1], 0))
+                    if relevance_first
+                    else (TIER_RANK.get(rt[1], 0), rt[0].get("score", -1.0))
+                ),
             ),
             reverse=True,
         )

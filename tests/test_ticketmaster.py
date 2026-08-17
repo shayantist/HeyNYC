@@ -45,6 +45,27 @@ async def test_builds_nyc_params_and_returns_events():
     assert events.retrieved_at
 
 
+async def test_sends_exact_date_window_and_requested_page_size():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={})
+
+    async with _mock_client(handler) as client:
+        await ticketmaster_events(
+            start_datetime="2026-08-17T04:00:00Z",
+            end_datetime="2026-08-18T04:00:00Z",
+            size=200,
+            client=client,
+            api_key="test-key",
+        )
+
+    assert seen["params"]["startDateTime"] == "2026-08-17T04:00:00Z"
+    assert seen["params"]["endDateTime"] == "2026-08-18T04:00:00Z"
+    assert seen["params"]["size"] == "200"
+
+
 async def test_no_key_returns_empty_without_network():
     # No api_key and no config key is unavailable, not an empty successful search.
     events = await ticketmaster_events(keyword="anything", api_key="")

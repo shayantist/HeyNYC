@@ -10,9 +10,11 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.index.corpus import clean_html
@@ -42,6 +44,7 @@ PERMITTED_SOURCE_URL = (
 )
 NYC_TZ = ZoneInfo("America/New_York")
 _SOURCE_TIMEOUT_S = 8.0
+_PAGE_FETCH_TIMEOUT_S = 20.0
 _PARK_BOROUGHS = {
     "B": "Brooklyn",
     "M": "Manhattan",
@@ -52,11 +55,94 @@ _PARK_BOROUGHS = {
 _TICKETMASTER_NYC_CITIES = {
     "bronx", "brooklyn", "new york", "new york city", "queens", "staten island",
 }
-_SOURCE_PRIORITY = {
-    "NYC Parks": 0,
-    "NYC Permitted Events": 1,
-    "Ticketmaster Discovery": 2,
-}
+
+
+class EventQuery(BaseModel):
+    """Validated resident constraints for one event lookup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keyword: str | None = Field(
+        default=None,
+        description=(
+            "Specific named event, artist, genre, or topic, such as 'Joe Hisaishi' or 'jazz'. "
+            "Do not repeat a broad classification such as Music or Sports here."
+        ),
+    )
+    classification: str | None = Field(
+        default=None,
+        description="Optional Ticketmaster segment, such as Music, Sports, or Arts & Theatre.",
+    )
+    borough: str | None = Field(
+        default=None,
+        description=(
+            "Optional NYC borough. Pass only when the resident names one; NYC is citywide."
+        ),
+    )
+    audience: Literal["kids"] | None = Field(
+        default=None,
+        description="Use kids only when the resident asks for children's events.",
+    )
+    web_query: str | None = Field(
+        default=None,
+        description=(
+            "Short noun phrase for current-web discovery preserving every requested constraint, "
+            "including date, place, audience, cost, topic, and indoor or outdoor setting."
+        ),
+    )
+    setting: Literal["indoor", "outdoor"] | None = Field(
+        default=None,
+        description="Optional requested physical setting: indoor or outdoor.",
+    )
+    relative_window: Literal["today", "tonight", "this_weekend"] | None = Field(
+        default=None,
+        description=(
+            "Resident-stated relative window. Use this instead of calculating dates for today, "
+            "tonight, or this weekend."
+        ),
+    )
+    window_start: date | None = Field(
+        default=None,
+        description=(
+            "Explicit ISO date when the requested event window starts. Do not calculate this "
+            "for a relative phrase; use relative_window instead."
+        ),
+    )
+    window_end: date | None = Field(
+        default=None,
+        description="Optional ISO date when the requested event window ends.",
+    )
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description=(
+            "Maximum choices requested by the resident. Set this only when the resident explicitly "
+            "asks for a number; otherwise omit it and the server returns the default shortlist."
+        ),
+    )
+    @field_validator("audience", mode="before")
+    @classmethod
+    def supported_audience(cls, value: str | None) -> str | None:
+        if value not in {None, "kids"}:
+            raise ValueError(f"Unsupported audience: {value}")
+        return value
+
+    @field_validator("setting", mode="before")
+    @classmethod
+    def supported_setting(cls, value: str | None) -> str | None:
+        if value not in {None, "indoor", "outdoor"}:
+            raise ValueError(f"Unsupported setting: {value}")
+        return value
+
+
+    @model_validator(mode="after")
+    def ordered_window(self) -> "EventQuery":
+        if self.relative_window and (self.window_start or self.window_end):
+            raise ValueError("relative_window cannot be combined with explicit dates")
+        if self.window_start and self.window_end and self.window_end < self.window_start:
+            raise ValueError("window_end must not be before window_start")
+        return self
 
 
 @dataclass
@@ -234,10 +320,17 @@ def _not_ended_today(events: list[Event], now: datetime) -> list[Event]:
 
 
 def _shortlist(events: list[Event], limit: int) -> list[Event]:
-    """Cap the merged lanes while preserving source and requested-date coverage."""
+    """Cap structured rows while preserving source and requested-date coverage."""
     unique: list[Event] = []
     identities: set[tuple[str, ...]] = set()
+    urls: set[str] = set()
+    generic_urls = {
+        DISCOVERY_URL.casefold(), PARKS_SOURCE_URL.casefold(), PERMITTED_SOURCE_URL.casefold(),
+    }
     for event in events:
+        url = event.url.strip().casefold()
+        if url and url not in generic_urls and url in urls:
+            continue
         identity = (
             event.source.casefold(),
             event.start_date,
@@ -250,6 +343,8 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
         )
         if identity in identities:
             continue
+        if url and url not in generic_urls:
+            urls.add(url)
         identities.add(identity)
         unique.append(event)
     seen: dict[tuple[str, str], int] = {}
@@ -262,21 +357,9 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
     ranked.sort(key=lambda item: (
         item[0],
         item[1],
-        _SOURCE_PRIORITY.get(item[2].source, len(_SOURCE_PRIORITY)),
+        _parse_start_time(item[2].start_time) or datetime.max.time(),
     ))
     return [event for _, _, event in ranked[:limit]]
-
-
-def _resident_limit(query: str) -> tuple[int, bool]:
-    match = re.search(
-        r"\b(?:show|give|list|find|send)(?:\s+me)?\s+(?:up to\s+)?(\d{1,2})\b"
-        r"|\b(\d{1,2})\s+(?:events?|options?|choices?)\b",
-        query,
-        re.IGNORECASE,
-    )
-    if not match:
-        return 5, False
-    return max(1, min(int(next(group for group in match.groups() if group)), 20)), True
 
 
 def _requested_window(query: str, today: str) -> tuple[str, str | None]:
@@ -308,6 +391,14 @@ def _requested_window(query: str, today: str) -> tuple[str, str | None]:
     if "this week" in low:
         return today, (current + timedelta(days=6 - current.weekday())).isoformat()
     return today, None
+
+
+def _relative_window(value: str, today: str) -> tuple[str, str]:
+    if value == "this_weekend":
+        current = date.fromisoformat(today)
+        saturday = current + timedelta(days=(5 - current.weekday()) % 7)
+        return saturday.isoformat(), (saturday + timedelta(days=1)).isoformat()
+    return today, today
 
 
 _NO_RESULTS = (
@@ -413,47 +504,58 @@ def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
 
 
 async def _handler(args: dict, ctx: ToolContext) -> str:
-    keyword = (args.get("keyword") or "").strip() or None
+    query = EventQuery.model_validate(args)
+    keyword = (query.keyword or "").strip() or None
     if keyword and not _keyword_terms(keyword):
         keyword = None
-    classification = (args.get("classification") or "").strip() or None
-    borough = (args.get("borough") or "").strip().lower()
-    audience = (args.get("audience") or "").strip().lower()
-    web_query = (args.get("web_query") or "").strip()
-    setting = (args.get("setting") or "").strip().lower()
-    if audience not in {"", "kids"}:
-        raise ValueError(f"Unsupported audience: {audience}")
-    if setting not in {"", "indoor", "outdoor"}:
-        raise ValueError(f"Unsupported setting: {setting}")
-    limit, resident_requested_count = _resident_limit(ctx.query)
+    classification = (query.classification or "").strip() or None
+    borough = (query.borough or "").strip().lower()
+    audience = (query.audience or "").strip().lower()
+    web_query = (query.web_query or "").strip()
+    setting = (query.setting or "").strip().lower()
+    resident_requested_count = query.max_results is not None
+    max_results = query.max_results or 5
 
     now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
 
-    def _valid_iso(value):
-        try:
-            return date.fromisoformat(value).isoformat()
-        except (TypeError, ValueError):
-            return None
-
     # F085: the resident's timeframe is the model's to state (a date, a range, a month, the
     # past); the deterministic relative phrases remain the fallback when no args arrive.
-    arg_start = _valid_iso((args.get("window_start") or "").strip() or None)
-    arg_end = _valid_iso((args.get("window_end") or "").strip() or None)
-    if arg_start or arg_end:
+    arg_start = query.window_start.isoformat() if query.window_start else None
+    arg_end = query.window_end.isoformat() if query.window_end else None
+    if query.relative_window:
+        window_start, window_end = _relative_window(query.relative_window, today)
+    elif arg_start or arg_end:
         window_start, window_end = arg_start or today, arg_end
     else:
         window_start, window_end = _requested_window(ctx.query, today)
+    def utc_midnight(day: date) -> str:
+        return datetime.combine(day, datetime.min.time(), tzinfo=NYC_TZ).astimezone(
+            timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     start_dt = (
-        f"{window_start}T00:00:00Z"
+        utc_midnight(date.fromisoformat(window_start))
         if window_start != today
-        else now.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
+        else now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
+    end_dt = (
+        utc_midnight(date.fromisoformat(window_end) + timedelta(days=1))
+        if window_end
+        else None
+    )
+    ticketmaster_keyword = keyword
+    if keyword and classification and keyword.casefold() == classification.casefold():
+        ticketmaster_keyword = None
 
     async def ticketmaster_source():
         return await ticketmaster_events(
-            keyword=keyword, classification=classification, start_datetime=start_dt,
-            size=20, client=ctx.http,
+            keyword=ticketmaster_keyword,
+            classification=classification,
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            size=200,
+            client=ctx.http,
         )
 
     async def parks_source():
@@ -500,6 +602,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         and ctx.toolbox is not None
         and "web_search" in ctx.toolbox
     )
+    search_query = ""
+    web_citations_before = set(ctx.citations.mapping())
     if broad_web:
         query_terms = [
             term for term in (keyword or classification, borough, audience, setting) if term
@@ -547,18 +651,41 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     web_failed = isinstance(web_context, BaseException)
     if web_failed:
         web_context = None
-    web_appendix = (
-        "\n\nCurrent web event leads, searched in parallel with the structured catalogs:\n"
-        "Candidate event choices. Choose by exact date and topic match first. Among equally "
-        "matching pages, prefer an organizer, venue, or city page over a ticket marketplace. "
-        "Keep the complete answer within the requested result limit:\n"
-        f"{web_context}"
-        if web_context
-        else (
-            "\n\nCurrent web event leads were unavailable. Results are partial."
-            if web_failed
-            else ""
+    if (
+        web_context
+        and (keyword or classification)
+        and ctx.toolbox is not None
+        and "web_fetch" in ctx.toolbox
+    ):
+        added = ctx.citations.mapping()
+        primary = next(
+            (
+                citation
+                for citation_id, citation in added.items()
+                if citation_id not in web_citations_before
+                and citation.get("provenance", {}).get("evidence_grade")
+                == "authoritative_excerpt"
+            ),
+            None,
         )
+        if primary is not None:
+            try:
+                fetched = await asyncio.wait_for(
+                    ctx.toolbox["web_fetch"].handler(
+                        {"url": primary["url"], "query": search_query},
+                        ctx,
+                    ),
+                    timeout=_PAGE_FETCH_TIMEOUT_S,
+                )
+            except Exception:
+                fetched = ""
+            if fetched:
+                web_context = f"{web_context}\n\nPrimary-source page fallback:\n{fetched}"
+    web_candidates = f"Web-discovered candidates:\n{web_context}" if web_context else ""
+    web_limitation = (
+        "Current web event leads were unavailable. Results are partial."
+        if web_failed
+        else ""
     )
     ticketmaster_result = results["ticketmaster"]
     if not isinstance(ticketmaster_result, BaseException):
@@ -601,7 +728,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
         kept = _explicitly_free(kept, ctx.query)
-        if "tonight" in ctx.query.lower() and ctx.event_turn != "preparation":
+        if (
+            query.relative_window == "tonight" or "tonight" in ctx.query.lower()
+        ) and ctx.event_turn != "preparation":
             kept = _tonight_only(kept, now)
         if borough:
             kept = [e for e in kept if borough in e.borough.lower()]
@@ -617,7 +746,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                         continue
                 diverse.append(event)
             kept = diverse
-        return _shortlist(kept, limit)
+        return _shortlist(kept, max_results)
 
     events = _window_filter(events)
     limited_catalog = set(unavailable_catalog)
@@ -734,7 +863,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"{{cite:{permitted_cite}}}."
         )
     if not events:
-        return setting_note + no_results + web_appendix
+        if not web_candidates:
+            return "\n\n".join(
+                part for part in (setting_note + no_results, web_limitation) if part
+            )
+        candidate_pool = "\n\n".join(
+            part for part in (web_candidates, setting_note + no_results, web_limitation) if part
+        )
+        return (
+            "Candidate event choices from current web and structured catalogs. Rank every candidate "
+            "together. Choose by exact date and topic match first, then apply still-attendable "
+            "time and NYC location "
+            "before relevance and variety. Source tier describes evidence confidence, not how "
+            "interesting an event is. Preserve a useful link as an unconfirmed lead when its "
+            "excerpt does not establish every hard constraint:\n"
+            + candidate_pool
+        )
 
     blocks = []
     for ev in events:
@@ -804,7 +948,25 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if not resident_requested_count
         else ""
     )
-    return catalog + web_appendix + followup
+    candidate_pool = "\n\n".join(
+        part
+        for part in (
+            web_candidates,
+            f"Structured catalog candidates:\n{catalog}",
+            web_limitation,
+        )
+        if part
+    )
+    return (
+        "Candidate event choices from current web and structured catalogs. Rank every candidate "
+        "together. Choose by exact date and topic match first, then apply still-attendable time "
+        "and NYC location "
+        "before relevance and variety. Source tier describes evidence confidence, not how "
+        "interesting an event is. Preserve a useful link as an unconfirmed lead when its excerpt "
+        "does not establish every hard constraint:\n"
+        + candidate_pool
+        + followup
+    )
 
 
 def get_tools() -> list[Tool]:
@@ -826,58 +988,7 @@ def get_tools() -> list[Tool]:
                 "For a constrained request, pass `web_query` as a short noun phrase that preserves "
                 "every requested constraint so the coordinator runs one matching web lane."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "keyword": {
-                        "type": "string",
-                        "description": (
-                            "Specific event topic, e.g. 'world cup' or 'jazz'. Omit for broad "
-                            "requests such as 'things to do', 'events', or 'free events'."
-                        ),
-                    },
-                    "classification": {"type": "string", "description": "Optional Ticketmaster segment: Music, Sports, Arts & Theatre, etc."},
-                    "borough": {
-                        "type": "string",
-                        "description": (
-                            "Optional NYC borough filter, e.g. 'Brooklyn'. Pass it only when "
-                            "the resident names one; NYC means citywide, so omit this field."
-                        ),
-                    },
-                    "audience": {"type": "string", "enum": ["kids"], "description": "Optional evidence-backed audience filter. Use `kids` only when the resident asks for children's events; returned rows must carry a source audience label for kids."},
-                    "web_query": {
-                        "type": "string",
-                        "description": (
-                            "Short noun phrase for the coordinator's single current-web lane. "
-                            "Preserve every requested constraint, including place, date, audience, "
-                            "cost, and indoor or outdoor setting. Omit when the resident's message "
-                            "already states the complete request."
-                        ),
-                    },
-                    "setting": {
-                        "type": "string",
-                        "enum": ["indoor", "outdoor"],
-                        "description": (
-                            "Requested physical setting. Pass only when the resident explicitly "
-                            "asks for indoor or outdoor options. Structured catalogs do not carry "
-                            "this field; it preserves the constraint for the web lane and makes "
-                            "the catalog limitation explicit."
-                        ),
-                    },
-                    "window_start": {"type": "string", "format": "date", "description": "Optional ISO date (YYYY-MM-DD) the resident's timeframe starts. Pass when they name a date, range, month, or ask about past events; omit for today."},
-                    "window_end": {"type": "string", "format": "date", "description": "Optional ISO date the timeframe ends; omit for open-ended."},
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 20,
-                        "default": 5,
-                        "description": (
-                            "Maximum structured listings to return. Default to five; pass another "
-                            "count only when the resident asks for it."
-                        ),
-                    },
-                },
-            },
+            parameters=EventQuery.model_json_schema(),
             handler=_handler,
             open_world=True,  # hits live Ticketmaster + Socrata
             title="Find NYC events",

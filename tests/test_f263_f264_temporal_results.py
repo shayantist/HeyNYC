@@ -69,7 +69,7 @@ async def test_f263_explicit_same_day_date_is_planning_not_open_now(monkeypatch)
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Flushing, Queens", "on": "2026-08-15"},
+        {"near": "Flushing, Queens", "visit_date": "2026-08-15"},
         _context("Where can we cool down in Flushing on Saturday?"),
     )
 
@@ -80,14 +80,14 @@ async def test_f263_explicit_same_day_date_is_planning_not_open_now(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_f263_resident_weekday_survives_missing_model_date_argument(monkeypatch) -> None:
+async def test_f263_agent_extracted_weekday_date_reaches_deterministic_schedule(monkeypatch) -> None:
     _patch_cooling_lookup(
         monkeypatch,
         [_cooling_row(1, "Saturday Library", 40.7581, saturday=("09:00 AM", "05:00 PM"))],
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Flushing, Queens"},
+        {"near": "Flushing, Queens", "visit_date": "2026-08-15"},
         _context("Free events and a cooling place near Flushing on Saturday"),
     )
 
@@ -110,7 +110,11 @@ async def test_f263_tool_computes_planned_local_time_and_keeps_unknown_distinct(
     )
 
     output = await cooling.get_tools()[0].handler(
-        {"near": "Flushing, Queens", "on": "2026-08-15", "at_time": "12:00"},
+        {
+            "near": "Flushing, Queens",
+            "visit_date": "2026-08-15",
+            "visit_time": "12:00",
+        },
         _context("What will be open Saturday at noon near Flushing, Queens?"),
     )
 
@@ -119,8 +123,14 @@ async def test_f263_tool_computes_planned_local_time_and_keeps_unknown_distinct(
     assert "scheduled closed at 12:00 PM America/New_York" in output
 
     schema = cooling.get_tools()[0].parameters["properties"]
-    assert schema["visit_date"]["format"] == "date"
-    assert schema["visit_time"]["format"] == "time"
+    assert {item.get("format") for item in schema["visit_date"]["anyOf"]} == {
+        "date",
+        None,
+    }
+    assert {item.get("format") for item in schema["visit_time"]["anyOf"]} == {
+        "time",
+        None,
+    }
 
 
 @pytest.mark.asyncio
@@ -161,7 +171,7 @@ def test_f263_planned_status_handles_overnight_hours() -> None:
 
 
 @pytest.mark.asyncio
-async def test_f264_event_tool_defaults_to_five_and_exposes_limit(monkeypatch) -> None:
+async def test_f264_event_tool_defaults_to_five_and_exposes_max_results(monkeypatch) -> None:
     async def fake_ticketmaster(**kwargs):
         return TicketmasterSearchResult(
             status="complete",
@@ -189,9 +199,47 @@ async def test_f264_event_tool_defaults_to_five_and_exposes_limit(monkeypatch) -
     )
 
     assert output.count("(Ticketmaster Discovery)") == 5
-    schema = events.get_tools()[0].parameters["properties"]["limit"]
-    assert schema["default"] == 5
-    assert schema["maximum"] == 20
+    schema = events.get_tools()[0].parameters["properties"]["max_results"]
+    assert schema["default"] is None
+    integer_schema = next(item for item in schema["anyOf"] if item.get("type") == "integer")
+    assert integer_schema["maximum"] == 20
+
+
+@pytest.mark.asyncio
+async def test_f264_agent_extracted_max_results_controls_the_shortlist(monkeypatch) -> None:
+    async def fake_ticketmaster(**kwargs):
+        return TicketmasterSearchResult(
+            status="complete",
+            events=[
+                {
+                    "id": str(index),
+                    "name": f"Event {index}",
+                    "url": f"https://example.com/{index}",
+                    "dates": {
+                        "start": {"localDate": "2099-08-15", "localTime": "12:00:00"}
+                    },
+                }
+                for index in range(12)
+            ],
+            retrieved_at="2099-08-01T00:00:00+00:00",
+        )
+
+    async def empty_dataset(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", empty_dataset)
+
+    output = await events.get_tools()[0].handler(
+        {
+            "window_start": "2099-08-15",
+            "window_end": "2099-08-15",
+            "max_results": 10,
+        },
+        _context("please give me ten events on August 15"),
+    )
+
+    assert output.count("(Ticketmaster Discovery)") == 10
 
 
 @pytest.mark.asyncio

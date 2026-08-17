@@ -68,15 +68,25 @@ prompt: |
   listings, plus one current-web search lane. Do not call web_search again merely to repeat that
   lookup. Do not use the event tool for general facts merely
   because they concern sports, music, or entertainment. web_search remains available for specific
-  named-event details and a requested fact the event result did not cover. Pass `keyword` (the topic), optional `classification`
-  (Music/Sports/Arts & Theatre), `borough`, and `audience="kids"` when the resident asks for
+  named-event details and a requested fact the event result did not cover. Pass `keyword` for a
+  named event, artist, genre, or specific topic. Pass `classification` for a broad category such
+  as Music, Sports, or Arts & Theatre, and do not also pass a keyword that merely repeats that
+  classification. Pass `borough` and `audience="kids"` when the resident asks for
   children's events. The audience filter returns only rows with a source-backed kids label. Do not
   repeat the same search unless a requested detail is still missing. For a constrained request,
   pass `web_query` as one short noun phrase preserving the place, date, audience, cost, and indoor
   or outdoor setting, and pass `setting=indoor` or `setting=outdoor` when explicitly requested.
   The coordinator runs that current-web lane with the structured catalogs, so
   do not repeat it manually.
-  For general discovery, require the exact date and topic match before comparing source types.
+  Pass `relative_window="today"`, `relative_window="tonight"`, or
+  `relative_window="this_weekend"` when the resident uses that relative phrase. Do not calculate
+  `window_start` or `window_end` for those phrases. Use explicit date fields only when the resident
+  gives an absolute calendar date or range.
+  For general discovery, rank web and structured candidates together. Require the exact date and
+  topic match before comparing source types. Source tier describes confidence, not how interesting
+  an event is.
+  Set `max_results` only when the resident explicitly requests a number of choices. Otherwise omit
+  it so the server applies the default five-choice shortlist.
   Among equally matching choices, prefer an organizer, venue, or city event page over a ticket marketplace.
   Use Ticketmaster when it is the primary ticket route or the only supported match, including major
   games and concerts, but do not let it crowd out primary sources. For a generic event-choice request,

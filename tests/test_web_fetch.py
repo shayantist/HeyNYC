@@ -673,6 +673,39 @@ async def test_web_fetch_renders_when_static_text_misses_the_query_target(monkey
     assert "Wheelchair accessible" in out
 
 
+async def test_web_fetch_renders_a_static_calendar_that_reports_zero_events(monkeypatch):
+    url = "https://www.example.com/calendar"
+    browser_calls: list[str] = []
+
+    async def static_download(_requested_url, **_kwargs):
+        return _Response(
+            "<title>Event Calendar</title><main><h1>Upcoming Events</h1>"
+            "<p>Showing 0 Events</p>"
+            + ("<p>Music sports family tickets venue calendar.</p>" * 12)
+            + "</main>"
+        )
+
+    async def rendered(requested_url):
+        browser_calls.append(requested_url)
+        return _rendered_result(
+            requested_url,
+            "Event Calendar",
+            "Joe Hisaishi at Radio City Music Hall on August 17 at 8 PM.",
+        )
+
+    monkeypatch.setattr(web_fetch_module, "safe_download", static_download)
+    monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await web_fetch_tools()[0].handler(
+        {"url": url, "query": "music events NYC Monday August 17 2026"},
+        ctx,
+    )
+
+    assert browser_calls == [url]
+    assert "Joe Hisaishi" in out
+
+
 async def test_web_fetch_can_explicitly_render_a_page_with_usable_static_text(
     monkeypatch,
 ):

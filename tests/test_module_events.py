@@ -1,3 +1,7 @@
+import asyncio
+
+import pytest
+
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.prompts import BASE_SYSTEM_PROMPT
@@ -5,7 +9,7 @@ from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.eval.cases import load_cases
 from heynyc.modules.events import tools as event_tools
-from heynyc.modules.events.tools import Event, _shortlist
+from heynyc.modules.events.tools import Event, EventQuery, _shortlist
 
 
 def test_ended_world_cup_case_uses_open_web_orientation() -> None:
@@ -48,7 +52,7 @@ def test_event_shortlist_preserves_each_requested_date() -> None:
     assert {event.start_date for event in shortlisted} == {"2026-08-15", "2026-08-16"}
 
 
-def test_event_shortlist_prefers_primary_city_sources_to_ticket_marketplaces() -> None:
+def test_event_shortlist_uses_event_time_not_source_as_the_tiebreaker() -> None:
     events = [
         Event(
             "Marketplace concert", "2026-08-16", "8:00 PM", "Club", "Brooklyn", "tm",
@@ -67,8 +71,8 @@ def test_event_shortlist_prefers_primary_city_sources_to_ticket_marketplaces() -
     shortlisted = _shortlist(events, 2)
 
     assert [event.source for event in shortlisted] == [
-        "NYC Parks",
         "NYC Permitted Events",
+        "NYC Parks",
     ]
 
 
@@ -158,9 +162,174 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
     assert "Choose by exact date and topic match first" in result
 
 
+async def test_topical_event_lookup_fetches_the_first_authoritative_search_page(
+    monkeypatch,
+) -> None:
+    fetched = []
+
+    async def no_ticketmaster(**kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    async def web_search(args, ctx):
+        cite = ctx.citations.register(
+            "https://venue.example/calendar",
+            title="Venue calendar",
+            snippet="Upcoming music at the venue",
+            kind="WEB",
+            provenance={"evidence_grade": "authoritative_excerpt"},
+        )
+        return f"[{cite}] (authoritative) Venue calendar"
+
+    async def web_fetch(args, ctx):
+        await asyncio.sleep(0.01)
+        fetched.append(args)
+        return "SOURCE: Official named concert on the requested date"
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    monkeypatch.setattr(event_tools, "_SOURCE_TIMEOUT_S", 0.001)
+    monkeypatch.setattr(event_tools, "_PAGE_FETCH_TIMEOUT_S", 0.05)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="Anything music related?",
+        event_turn="discovery",
+        toolbox={
+            "web_search": Tool("web_search", "Search", {}, web_search),
+            "web_fetch": Tool("web_fetch", "Fetch", {}, web_fetch),
+        },
+    )
+
+    result = await event_tools.get_tools()[0].handler(
+        {
+            "classification": "Music",
+            "window_start": "2099-08-16",
+            "window_end": "2099-08-16",
+        },
+        ctx,
+    )
+
+    assert fetched == [{
+        "url": "https://venue.example/calendar",
+        "query": "NYC Music events August 16, 2099",
+    }]
+    assert "Official named concert on the requested date" in result
+
+
+async def test_music_category_uses_ticketmaster_classification_and_exact_window(monkeypatch) -> None:
+    ticketmaster_calls = []
+
+    async def capture_ticketmaster(**kwargs):
+        ticketmaster_calls.append(kwargs)
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", capture_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="Anything music related?",
+        event_turn="discovery",
+    )
+
+    await event_tools.get_tools()[0].handler(
+        {
+            "keyword": "music",
+            "classification": "Music",
+            "window_start": "2099-08-16",
+            "window_end": "2099-08-16",
+        },
+        ctx,
+    )
+
+    assert ticketmaster_calls[0]["keyword"] is None
+    assert ticketmaster_calls[0]["classification"] == "Music"
+    assert ticketmaster_calls[0]["start_datetime"] == "2099-08-16T04:00:00Z"
+    assert ticketmaster_calls[0]["end_datetime"] == "2099-08-17T04:00:00Z"
+    assert ticketmaster_calls[0]["size"] == 200
+
+
 def test_event_sources_recognize_the_official_msg_venue_domain() -> None:
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
     module = next(item for item in registry.modules if item.name == "events")
 
     assert "msg.com" in module.allowlist
     assert "msg.com" in module.source_tiers["authoritative"]
+
+
+def test_event_tool_schema_comes_from_the_typed_query_model() -> None:
+    schema = event_tools.get_tools()[0].parameters
+
+    assert schema["title"] == "EventQuery"
+    assert schema["additionalProperties"] is False
+
+
+def test_event_query_rejects_a_reversed_date_window() -> None:
+    with pytest.raises(ValueError, match="window_end must not be before window_start"):
+        EventQuery.model_validate({
+            "window_start": "2099-08-17",
+            "window_end": "2099-08-16",
+        })
+
+
+def test_event_query_does_not_mix_relative_and_absolute_windows() -> None:
+    with pytest.raises(ValueError, match="relative_window cannot be combined"):
+        EventQuery.model_validate({
+            "relative_window": "this_weekend",
+            "window_start": "2099-08-17",
+        })
+
+
+async def test_web_and_catalog_events_share_one_ranked_candidate_pool(monkeypatch) -> None:
+    async def one_ticketmaster_event(**kwargs):
+        return event_tools.TicketmasterSearchResult(
+            status="complete",
+            events=[{
+                "name": "Catalog concert",
+                "url": "https://tickets.example/catalog",
+                "dates": {"start": {"localDate": "2099-08-16", "localTime": "20:00:00"}},
+                "_embedded": {"venues": [{"name": "Club", "city": {"name": "New York"}}]},
+            }],
+        )
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    async def web_search(args, ctx):
+        return "[S1] (community-posted, confirm before you go) Web concert"
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", one_ticketmaster_event)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="music on August 16",
+        event_turn="discovery",
+        toolbox={
+            "web_search": Tool(
+                "web_search",
+                "Search the web",
+                {"type": "object", "properties": {}},
+                web_search,
+            )
+        },
+    )
+
+    output = await event_tools.get_tools()[0].handler(
+        {
+            "classification": "Music",
+            "window_start": "2099-08-16",
+            "window_end": "2099-08-16",
+        },
+        ctx,
+    )
+
+    assert "Current web event leads" not in output
+    assert "Rank every candidate together" in output
+    assert output.index("Web concert") < output.index("Catalog concert")

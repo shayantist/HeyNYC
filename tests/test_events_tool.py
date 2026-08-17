@@ -579,7 +579,8 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
     output = await get_tools()[0].handler({}, ctx)
 
     assert calls == [{"query": "what to do in nyc today", "count": 10}]
-    assert "Current web event leads" in output
+    assert "Web-discovered candidates" in output
+    assert "Rank every candidate together" in output
     assert "Three things happening today" in output
 
 
@@ -790,6 +791,44 @@ def test_shortlist_deduplicates_ticket_products_for_one_venue_and_time():
     assert events._shortlist(rows, 12) == [rows[0]]
 
 
+def test_shortlist_deduplicates_one_event_url_across_entry_times():
+    rows = [
+        Event(
+            "DAYDREAM | Air Becomes Art", "2026-08-22", "9:00 AM",
+            "Balloon Museum NYC", "New York", "https://example.com/daydream",
+            "Ticketmaster Discovery", "authoritative",
+        ),
+        Event(
+            "DAYDREAM | Air Becomes Art", "2026-08-22", "9:15 AM",
+            "Balloon Museum NYC", "New York", "https://example.com/daydream",
+            "Ticketmaster Discovery", "authoritative",
+        ),
+    ]
+
+    assert events._shortlist(rows, 12) == [rows[0]]
+
+
+def test_shortlist_does_not_treat_a_generic_source_page_as_event_identity():
+    rows = [
+        Event(
+            "Morning yoga", "2026-08-22", "9:00 AM", "Park A", "Manhattan",
+            events.PARKS_SOURCE_URL, "NYC Parks", "authoritative",
+        ),
+        Event(
+            "Outdoor concert", "2026-08-22", "10:00 AM", "Park B", "Brooklyn",
+            events.PARKS_SOURCE_URL, "NYC Parks", "authoritative",
+        ),
+    ]
+
+    assert events._shortlist(rows, 12) == rows
+
+
+def test_relative_weekend_window_uses_saturday_and_sunday():
+    assert events._relative_window("this_weekend", "2026-08-17") == (
+        "2026-08-22", "2026-08-23",
+    )
+
+
 def test_tonight_filter_keeps_only_parseable_future_evening_events():
     morning = Event("Morning", "2026-07-16", "9:00 am", "", "", "u1", "NYC Parks", "authoritative")
     evening = Event("Evening", "2026-07-16", "7:00 pm", "", "", "u2", "NYC Parks", "authoritative")
@@ -973,7 +1012,7 @@ def test_find_nyc_events_borough_schema_keeps_citywide_requests_citywide():
     assert "only when the resident names one" in (
         tool.parameters["properties"]["borough"]["description"]
     )
-    assert "NYC means citywide" in (
+    assert "NYC is citywide" in (
         tool.parameters["properties"]["borough"]["description"]
     )
 
@@ -1254,7 +1293,8 @@ async def test_find_nyc_events_keeps_free_parks_rows_in_the_requested_borough(mo
     assert "Best for Kids" in output
     assert "Queens General Concert" not in output
     assert "Brooklyn Open Run" not in output
-    assert get_tools()[0].parameters["properties"]["audience"]["enum"] == ["kids"]
+    audience = get_tools()[0].parameters["properties"]["audience"]
+    assert {"const": "kids", "type": "string"} in audience["anyOf"]
 
 
 async def test_find_nyc_events_does_not_mix_unfiltered_context_into_audience_results(
@@ -1539,19 +1579,23 @@ async def test_window_args_from_the_model_override_the_phrase_window(monkeypatch
     await events.get_tools()[0].handler(
         {"keyword": "concerts", "window_start": "2026-08-03", "window_end": "2026-08-05"}, ctx,
     )
-    assert captured["start_datetime"] == "2026-08-03T00:00:00Z"
+    assert captured["start_datetime"] == "2026-08-03T04:00:00Z"
     assert any("startdate >= '2026-08-03'" in w and "2026-08-05" in w for w in captured["wheres"])
 
 
-def test_find_nyc_events_schema_enforces_documented_dates_and_limit():
+def test_find_nyc_events_schema_enforces_documented_dates_and_max_results():
     properties = get_tools()[0].parameters["properties"]
-    assert properties["window_start"]["format"] == "date"
-    assert properties["window_end"]["format"] == "date"
-    assert properties["limit"]["default"] == 5
-    assert properties["limit"]["maximum"] == 20
+    assert {"format": "date", "type": "string"} in properties["window_start"]["anyOf"]
+    assert {"format": "date", "type": "string"} in properties["window_end"]["anyOf"]
+    assert "limit" not in properties
+    max_results = next(
+        item for item in properties["max_results"]["anyOf"] if item.get("type") == "integer"
+    )
+    assert max_results["minimum"] == 1
+    assert max_results["maximum"] == 20
     assert "short noun phrase" in properties["web_query"]["description"].lower()
     assert "every requested constraint" in properties["web_query"]["description"]
-    assert properties["setting"]["enum"] == ["indoor", "outdoor"]
+    assert {"enum": ["indoor", "outdoor"], "type": "string"} in properties["setting"]["anyOf"]
 
 
 @pytest.mark.parametrize(
@@ -1586,7 +1630,11 @@ async def test_find_nyc_events_enforces_default_unless_resident_asks_for_count(
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), query=query)
 
     output = await get_tools()[0].handler(
-        {"window_start": "2099-08-15", "window_end": "2099-08-15", "limit": 10},
+        {
+            "window_start": "2099-08-15",
+            "window_end": "2099-08-15",
+            **({"max_results": 10} if expected == 10 else {}),
+        },
         ctx,
     )
 

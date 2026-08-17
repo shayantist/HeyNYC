@@ -44,6 +44,7 @@ async def ticketmaster_events(
     keyword: Optional[str] = None,
     classification: Optional[str] = None,
     start_datetime: Optional[str] = None,
+    end_datetime: Optional[str] = None,
     size: int = 20,
     client: Optional[httpx.AsyncClient] = None,
     api_key: Optional[str] = None,
@@ -61,6 +62,8 @@ async def ticketmaster_events(
     }
     if start_datetime:
         params["startDateTime"] = start_datetime
+    if end_datetime:
+        params["endDateTime"] = end_datetime
     if keyword:
         params["keyword"] = keyword
     if classification:

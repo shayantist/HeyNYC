@@ -428,6 +428,8 @@ async def _fetch_page_with_browser(
         return await _fetch_rendered_page(url)
     if client is None and len(fetched.text.strip()) < _MIN_STATIC_TEXT_CHARS:
         return await _fetch_rendered_page(url)
+    if "showing 0 events" in fetched.text.lower():
+        return await _fetch_rendered_page(url)
     wanted = _terms(query)
     if wanted and not wanted & _terms(fetched.text):
         return await _fetch_rendered_page(url)
