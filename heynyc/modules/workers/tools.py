@@ -80,25 +80,10 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
     ),
 }
 
-# free-text → canonical topic. The `topic` arg SHOULD be a key, but the model may hand us the user's
-# words ("my boss is keeping our tips"); map those to a topic rather than fail.
-_TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("tips", ("tip", "tips", "stolen tips", "tip theft", "gratuity", "gratuities", "took my tips",
-              "keeping our tips", "keep our tips", "pockets our tips", "tip pool", "tipped",
-              "tip jar", "cut of our tips", "propina", "propinas", "se queda con mis propinas")),
-)
-
-
 def _resolve_topic(raw: str) -> str | None:
-    """Map the `topic` arg (a canonical key or free text) to one of the guidance topics."""
+    """Accept only the canonical topic already constrained by the tool schema."""
     key = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if key in _GUIDANCE:
-        return key
-    text = (raw or "").lower()
-    for topic, needles in _TOPIC_KEYWORDS:
-        if any(n in text for n in needles):
-            return topic
-    return None
+    return key if key in _GUIDANCE else None
 
 
 async def _guidance_handler(args: dict, ctx: ToolContext) -> str:

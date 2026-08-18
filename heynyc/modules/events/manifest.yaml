@@ -78,10 +78,12 @@ prompt: |
   or outdoor setting, and pass `setting=indoor` or `setting=outdoor` when explicitly requested.
   The coordinator runs that current-web lane with the structured catalogs, so
   do not repeat it manually.
-  Pass `relative_window="today"`, `relative_window="tonight"`, or
+  Pass `relative_window="today"`, `relative_window="tonight"`,
+  `relative_window="tomorrow"`, `relative_window="this_week"`, or
   `relative_window="this_weekend"` when the resident uses that relative phrase. Do not calculate
   `window_start` or `window_end` for those phrases. Use explicit date fields only when the resident
-  gives an absolute calendar date or range.
+  gives an absolute calendar date or range. Pass `cost="free"` only when the resident explicitly
+  asks for free events.
   For general discovery, rank web and structured candidates together. Require the exact date and
   topic match before comparing source types. Source tier describes confidence, not how interesting
   an event is.

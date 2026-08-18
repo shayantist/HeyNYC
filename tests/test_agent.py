@@ -415,7 +415,9 @@ async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
     assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
 
 
-async def test_discovery_event_turn_gets_no_preparation_reminder(empty_registry):
+async def test_semantic_discovery_event_turn_overrides_preparation_shaped_query(
+    empty_registry,
+):
     """F058: a discovery turn ('what's happening', 'is there a game today') reaches the events
     lanes but is NOT a preparation turn, so the identity-resolution preparation reminder that
     prep turns get must not be injected."""
@@ -439,7 +441,8 @@ async def test_discovery_event_turn_gets_no_preparation_reminder(empty_registry)
         complete_fn=complete, scope_fn=discovery_scope,
     )
 
-    await agent.run("What free events are happening in NYC parks this weekend?")
+    assert agent._runtime_scope_reminder("What should I bring to the final tomorrow?") == ""
+    await agent.run("What should I bring to the final tomorrow?")
 
     assert not any(_EVENT_PREPARATION_SCOPE_REMINDER in m for m in seen)
 
@@ -3907,7 +3910,8 @@ async def test_checked_snap_work_rule_situation_forces_manifest_retrieval(monkey
 
     assert result.tool_calls_made == ["web_search"]
     assert calls[0][0] == "web_search"
-    assert "SNAP" in seen["query"] and "fair hearing" in seen["query"]
+    assert "SNAP" in seen["query"] and "ABAWD" in seen["query"]
+    assert "fair hearing" not in seen["query"]
     assert calls[0][1] == ["web_search"]
     assert "housing_guidance" not in calls[0][1]  # single-module turn keeps the manifest focus
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])

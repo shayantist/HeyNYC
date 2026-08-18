@@ -2,7 +2,7 @@
 
 Static-but-official facts (NY Labor Law section 196-d + the NYS DOL tips FAQ) are baked in and
 returned WITH a DOC citation - no network. Mirrors the housing guidance tests: a grounding tool
-call, a DOC citation whose snippet is backed by the returned fact, free-text topic resolution, and
+call, a DOC citation whose snippet is backed by the returned fact, typed topic validation, and
 that the shipped module loads with its tool + eval cases.
 """
 from __future__ import annotations
@@ -47,14 +47,11 @@ async def test_tips_grounds_section_196d_body_and_cites():
     assert "{cite:S1}" in out and "{cite:S2}" in out and "{cite:S3}" in out
 
 
-async def test_tips_maps_free_text_to_topic():
-    # the model may pass the user's words instead of the canonical key
-    out, _ = await _run("my boss is keeping our tips")
-    assert "section 196-d" in out
-    slang, _ = await _run("my manager pockets our tips every shift")
-    assert "section 196-d" in slang
-    spanish, _ = await _run("mi jefe se queda con mis propinas, ¿es legal?")
-    assert "section 196-d" in spanish
+async def test_tips_does_not_interpret_free_text_tool_arguments():
+    out, citations = await _run("my boss is keeping our tips")
+
+    assert "section 196-d" not in out
+    assert len(citations) == 0
 
 
 async def test_tips_grounds_immigrant_worker_protections_and_cites():

@@ -15,7 +15,6 @@ from heynyc.modules.events.tools import (
     _from_parks,
     _from_ticketmaster,
     _future_only,
-    _requested_window,
     get_tools,
 )
 
@@ -132,7 +131,7 @@ def test_from_parks_preserves_source_free_audience_and_borough_fields():
     assert ev.start_time == "3:00 PM"
     assert "free" in ev.free_evidence.lower()
     assert ev.audience == "Best for Kids"
-    assert _explicitly_free([ev], "free events in Queens") == [ev]
+    assert _explicitly_free([ev], "free") == [ev]
     block = _event_block(ev, "S1")
     assert "free" in block.lower()
     assert "Best for Kids" in block
@@ -312,47 +311,6 @@ def test_known_finished_events_do_not_block_current_results():
     ) == [still_open, later]
 
 
-def test_requested_window_resolves_this_weekend_from_nyc_date():
-    assert _requested_window("free events this weekend", "2026-07-16") == (
-        "2026-07-18", "2026-07-19",
-    )
-    assert _requested_window("events this weekend", "2026-07-18") == (
-        "2026-07-18", "2026-07-19",
-    )
-    assert _requested_window("events today", "2026-07-16") == (
-        "2026-07-16", "2026-07-16",
-    )
-    assert _requested_window("what is happening tonight", "2026-07-16") == (
-        "2026-07-16", "2026-07-16",
-    )
-    assert _requested_window("things to do this week", "2026-07-16") == (
-        "2026-07-16", "2026-07-19",
-    )
-
-
-def test_requested_window_resolves_tomorrow():
-    assert _requested_window("what to prepare for tomorrows wc game", "2026-07-17") == (
-        "2026-07-18", "2026-07-18",
-    )
-    assert _requested_window("what should i bring to the game tmrw", "2026-07-31") == (
-        "2026-08-01", "2026-08-01",
-    )
-    assert _requested_window("what game is happening tomorow", "2026-07-17") == (
-        "2026-07-18", "2026-07-18",
-    )
-    assert _requested_window("events at the department", "2026-07-17") == ("2026-07-17", None)
-
-
-def test_requested_window_resolves_numeric_dates():
-    assert _requested_window("what should i bring to the game on 7/18", "2026-07-17") == (
-        "2026-07-18", "2026-07-18",
-    )
-    # A month/day earlier in the year means the next occurrence.
-    assert _requested_window("the parade on 1/1", "2026-07-17") == ("2027-01-01", "2027-01-01")
-    # Invalid calendar dates fall through to the default window.
-    assert _requested_window("ratio is 19/32 exactly", "2026-07-17") == ("2026-07-17", None)
-
-
 def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
     listed_free = Event(
         "Free Yoga", "2026-07-18", "9:00 AM", "Park", "", "u1", "NYC Parks", "authoritative",
@@ -361,8 +319,8 @@ def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
         "Open Run", "2026-07-18", "9:00 AM", "Park", "", "u2", "NYC Parks", "authoritative",
     )
 
-    assert _explicitly_free([listed_free, unknown_cost], "free events") == [listed_free]
-    assert _explicitly_free([listed_free, unknown_cost], "events") == [listed_free, unknown_cost]
+    assert _explicitly_free([listed_free, unknown_cost], "free") == [listed_free]
+    assert _explicitly_free([listed_free, unknown_cost], None) == [listed_free, unknown_cost]
     assert "Saturday, 2026-07-18" in _event_block(listed_free, "S1")
     assert "Details: u1" in _event_block(listed_free, "S1")
 
@@ -1423,7 +1381,7 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
 
     monkeypatch.setattr(events, "datetime", FixedDateTime)
     today = events.datetime.now(events.NYC_TZ).strftime("%Y-%m-%d")
-    window_start, _window_end = events._requested_window("what's happening this weekend", today)
+    window_start, _window_end = events._relative_window("this_weekend", today)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if "ticketmaster" in request.url.host:
@@ -1465,7 +1423,7 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
             citations=citations, registry=Registry([]), http=client,
             query="what's happening this weekend",
         )
-        out = await get_tools()[0].handler({}, ctx)
+        out = await get_tools()[0].handler({"relative_window": "this_weekend"}, ctx)
 
     assert "Inwood Greenmarket" in out          # permitted row competes despite the cap
     assert "Ticketmaster Show" in out            # alongside Ticketmaster

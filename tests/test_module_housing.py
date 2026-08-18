@@ -518,16 +518,11 @@ def test_shelter_men_intake_helper_handles_the_official_transition_dates():
     assert "8 East 3rd Street" in _single_adult_men_intake(date(2026, 8, 1))
 
 
-async def test_guidance_maps_free_text_to_topic():
-    # the model may pass the user's words instead of a canonical key — they map to a topic.
-    heat_out, _ = await _run_guidance("my landlord shut off the heat")
-    assert "october 1" in heat_out.lower()
-    lawyer_out, _ = await _run_guidance("I need a lawyer for my eviction case")
-    assert "free legal help" in lawyer_out.lower()
-    shelter_out, _ = await _run_guidance("we have nowhere to stay tonight")
-    assert "PATH" in shelter_out
-    adult_family_out, _ = await _run_guidance("we are an adult family and need intake")
-    assert "333 Bowery" in adult_family_out
+async def test_guidance_does_not_interpret_free_text_tool_arguments():
+    heat_out, citations = await _run_guidance("my landlord shut off the heat")
+
+    assert "october 1" not in heat_out.lower()
+    assert len(citations) == 0
 
 
 async def test_guidance_source_of_income_grounds_protection_and_cites():
@@ -547,13 +542,6 @@ async def test_guidance_source_of_income_grounds_protection_and_cites():
     assert any("cchr" in u for u in urls)
     assert any("amlegal" in u for u in urls)
     assert "{cite:S1}" in out and "{cite:S2}" in out
-
-
-async def test_guidance_maps_voucher_refusal_free_text_to_source_of_income():
-    # "won't take my voucher"-style free text resolves to the source_of_income topic
-    out, _ = await _run_guidance("my landlord won't take my voucher")
-    assert "212-416-0197" in out                      # resolved to source_of_income
-    assert "illegal" in out.lower()
 
 
 async def test_guidance_unknown_topic_abstains_without_citation():

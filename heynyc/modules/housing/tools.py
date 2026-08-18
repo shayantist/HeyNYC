@@ -500,25 +500,6 @@ _GUIDANCE: dict[str, tuple[str, tuple[_Fact, ...]]] = {
     ),
 }
 
-# free-text → canonical topic. The `topic` arg SHOULD be one of the keys, but the model may
-# hand us the user's words ("my landlord shut the heat off"); map those to a topic rather than fail.
-_TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("bronx_housing_court", ("bronx housing court", "mount hope housing court",
-                              "housing court in the bronx")),
-    ("right_to_counsel", ("counsel", "lawyer", "attorney", "legal", "represent", "housing court",
-                          "eviction help", "sued", "taken to court")),
-    # No bare "cold" here: it inverted a COLD-water outage into the hot-water frame (F070). The
-    # model routes by the resident's noun via the tool description; this fallback stays for clean
-    # heat words only. no_water is intentionally NOT keyworded, the model passes its canonical key.
-    ("no_heat", ("heat", "hot water", "boiler", "radiator", "temperature", "freezing")),
-    ("shelter", ("shelter", "homeless", "nowhere", "no place", "sleep tonight", "intake", "path",
-                 "afic", "adult family", "kicked out", "nowhere to stay")),
-    ("source_of_income", ("voucher", "section 8", "cityfheps", "source of income",
-                          "won't take my voucher", "refused my voucher", "no programs",
-                          "no vouchers")),
-)
-
-
 def _single_adult_men_intake(as_of: date | None = None) -> str:
     as_of = as_of or datetime.now(NYC_TZ).date()
     if as_of < date(2026, 8, 1):
@@ -555,15 +536,9 @@ def _shelter_facts(as_of: date | None = None) -> tuple[_Fact, ...]:
 
 
 def _resolve_topic(raw: str) -> str | None:
-    """Map the `topic` arg (a canonical key or free text) to a guidance topic."""
+    """Accept only the canonical topic already constrained by the tool schema."""
     key = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if key in _GUIDANCE:
-        return key
-    text = (raw or "").lower()
-    for topic, needles in _TOPIC_KEYWORDS:
-        if any(n in text for n in needles):
-            return topic
-    return None
+    return key if key in _GUIDANCE else None
 
 
 async def _guidance_handler(args: dict, ctx: ToolContext) -> str:

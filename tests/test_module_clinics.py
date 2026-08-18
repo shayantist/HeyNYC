@@ -402,9 +402,13 @@ async def test_health_coverage_public_charge_grounds_body_and_cites():
     assert "{cite:S2}" in out
 
 
-async def test_health_coverage_free_text_maps_to_topic():
-    out, _ = await _run_coverage("I'm undocumented and pregnant, how do I pay for the delivery")
-    assert "Emergency Medicaid" in out               # resolved to emergency_medicaid
+async def test_health_coverage_does_not_interpret_free_text_tool_arguments():
+    out, citations = await _run_coverage(
+        "I'm undocumented and pregnant, how do I pay for the delivery"
+    )
+
+    assert "Emergency Medicaid" not in out
+    assert len(citations) == 0
 
 
 async def test_health_coverage_unknown_topic_abstains_without_citation():

@@ -45,6 +45,41 @@
     Saturday and Sunday rather than Friday.
     The answer must not append unrelated text that is absent from the request and retrieved sources.
 
+- id: events_typed_free_tomorrow
+  query: "Show me free NYC events tomorrow."
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    The event tool call uses `relative_window="tomorrow"` and `cost="free"`. Every presented
+    choice is on tomorrow's NYC calendar date and has retrieved evidence that it is free. Unknown
+    prices may be retained only as clearly labeled unverified leads, not presented as free choices.
+
+- id: events_typed_this_week
+  query: "What music events are happening in NYC this week?"
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    The event tool call uses `relative_window="this_week"` and a music classification or keyword.
+    Presented choices stay between today and Sunday in NYC local time.
+
+- id: events_typed_single_absolute_date
+  query: "What NYC events are happening on August 20, 2026?"
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    The event tool call passes `window_start="2026-08-20"`; `window_end` may match it or be omitted
+    because the server treats one absolute start date as one day. Every presented choice is dated
+    August 20, 2026, not a later date.
+
 - id: events_stale_not_happening
   tags: [must-win]
   query: "Is the 2023 SummerStage opening concert happening this weekend?"

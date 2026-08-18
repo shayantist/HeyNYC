@@ -94,11 +94,13 @@ class EventQuery(BaseModel):
         default=None,
         description="Optional requested physical setting: indoor or outdoor.",
     )
-    relative_window: Literal["today", "tonight", "this_weekend"] | None = Field(
+    relative_window: Literal[
+        "today", "tonight", "tomorrow", "this_week", "this_weekend",
+    ] | None = Field(
         default=None,
         description=(
             "Resident-stated relative window. Use this instead of calculating dates for today, "
-            "tonight, or this weekend."
+            "tonight, tomorrow, this week, or this weekend."
         ),
     )
     window_start: date | None = Field(
@@ -110,7 +112,14 @@ class EventQuery(BaseModel):
     )
     window_end: date | None = Field(
         default=None,
-        description="Optional ISO date when the requested event window ends.",
+        description=(
+            "ISO end date for an explicit multi-day range. Omit for a single absolute date; "
+            "window_start then applies to that day only."
+        ),
+    )
+    cost: Literal["free"] | None = Field(
+        default=None,
+        description="Use free only when the resident explicitly asks for free events.",
     )
     max_results: int | None = Field(
         default=None,
@@ -362,42 +371,20 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
     return [event for _, _, event in ranked[:limit]]
 
 
-def _requested_window(query: str, today: str) -> tuple[str, str | None]:
-    """Resolve only the relative window the tool can enforce without model interpretation."""
-    current = date.fromisoformat(today)
-    low = query.lower()
-    if "this weekend" in low:
-        start = (
-            current + timedelta(days=5 - current.weekday())
-            if current.weekday() < 5 else current
-        )
-        end = start + timedelta(days=6 - start.weekday())
-        return start.isoformat(), end.isoformat()
-    if re.search(r"\btom{1,2}or{1,2}ow(?:'?s)?\b|\btmrw\b|\btm\b|\bma[ñn]ana\b", low):
-        day = (current + timedelta(days=1)).isoformat()
-        return day, day
-    numeric = re.search(r"\b(\d{1,2})/(\d{1,2})\b", low)
-    if numeric:
-        try:
-            day_date = date(current.year, int(numeric.group(1)), int(numeric.group(2)))
-        except ValueError:
-            day_date = None
-        if day_date is not None:
-            if day_date < current:
-                day_date = day_date.replace(year=current.year + 1)
-            return day_date.isoformat(), day_date.isoformat()
-    if "today" in low or "tonight" in low:
-        return today, today
-    if "this week" in low:
-        return today, (current + timedelta(days=6 - current.weekday())).isoformat()
-    return today, None
-
-
 def _relative_window(value: str, today: str) -> tuple[str, str]:
+    current = date.fromisoformat(today)
     if value == "this_weekend":
-        current = date.fromisoformat(today)
-        saturday = current + timedelta(days=(5 - current.weekday()) % 7)
+        if current.weekday() == 6:
+            return today, today
+        saturday = current if current.weekday() == 5 else current + timedelta(
+            days=5 - current.weekday()
+        )
         return saturday.isoformat(), (saturday + timedelta(days=1)).isoformat()
+    if value == "tomorrow":
+        tomorrow = current + timedelta(days=1)
+        return tomorrow.isoformat(), tomorrow.isoformat()
+    if value == "this_week":
+        return today, (current + timedelta(days=6 - current.weekday())).isoformat()
     return today, today
 
 
@@ -458,8 +445,8 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     )
 
 
-def _explicitly_free(events: list[Event], query: str) -> list[Event]:
-    if "free" not in query.lower():
+def _explicitly_free(events: list[Event], cost: Literal["free"] | None) -> list[Event]:
+    if cost != "free":
         return events
     return [
         event for event in events
@@ -519,16 +506,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
 
-    # F085: the resident's timeframe is the model's to state (a date, a range, a month, the
-    # past); the deterministic relative phrases remain the fallback when no args arrive.
+    # The agent extracts the resident's timeframe into typed fields. Python only resolves the
+    # bounded relative values against the NYC clock.
     arg_start = query.window_start.isoformat() if query.window_start else None
     arg_end = query.window_end.isoformat() if query.window_end else None
     if query.relative_window:
         window_start, window_end = _relative_window(query.relative_window, today)
-    elif arg_start or arg_end:
-        window_start, window_end = arg_start or today, arg_end
+    elif arg_start:
+        window_start, window_end = arg_start, arg_end or arg_start
+    elif arg_end:
+        window_start, window_end = today, arg_end
     else:
-        window_start, window_end = _requested_window(ctx.query, today)
+        window_start, window_end = today, None
     def utc_midnight(day: date) -> str:
         return datetime.combine(day, datetime.min.time(), tzinfo=NYC_TZ).astimezone(
             timezone.utc
@@ -727,10 +716,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             kept = _not_ended_today(kept, now)
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
-        kept = _explicitly_free(kept, ctx.query)
-        if (
-            query.relative_window == "tonight" or "tonight" in ctx.query.lower()
-        ) and ctx.event_turn != "preparation":
+        kept = _explicitly_free(kept, query.cost)
+        if query.relative_window == "tonight" and ctx.event_turn != "preparation":
             kept = _tonight_only(kept, now)
         if borough:
             kept = [e for e in kept if borough in e.borough.lower()]
@@ -935,7 +922,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         blocks.append(_event_block(ev, cite, now))
 
     window = f" for {window_start} through {window_end}" if window_end else ""
-    free_scope = " whose official source evidence says free" if "free" in ctx.query.lower() else ""
+    free_scope = " whose official source evidence says free" if query.cost == "free" else ""
     header = (
         f"{setting_note}{coverage_note}"
         f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "

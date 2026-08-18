@@ -286,6 +286,134 @@ def test_event_query_does_not_mix_relative_and_absolute_windows() -> None:
         })
 
 
+def test_event_query_owns_relative_time_and_cost_constraints() -> None:
+    query = EventQuery.model_validate({
+        "relative_window": "tomorrow",
+        "cost": "free",
+    })
+
+    assert query.relative_window == "tomorrow"
+    assert query.cost == "free"
+    assert event_tools._relative_window("tomorrow", "2026-08-17") == (
+        "2026-08-18", "2026-08-18",
+    )
+    assert event_tools._relative_window("this_weekend", "2026-08-22") == (
+        "2026-08-22", "2026-08-23",
+    )
+    assert event_tools._relative_window("this_weekend", "2026-08-23") == (
+        "2026-08-23", "2026-08-23",
+    )
+
+
+async def test_event_tool_does_not_reinterpret_raw_resident_constraints(monkeypatch) -> None:
+    class FixedDateTime(event_tools.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 17, 15, 0, tzinfo=tz)
+
+    async def no_ticketmaster(**kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def city_rows(dataset_id, **kwargs):
+        if dataset_id != event_tools.PARKS_DATASET_ID:
+            return []
+        return [
+            {
+                "title": "Afternoon drawing",
+                "startdate": "2026-08-17",
+                "starttime": "16:00:00",
+                "link": "https://example.com/drawing",
+            },
+            {
+                "title": "Free evening music",
+                "description": "This concert is free.",
+                "startdate": "2026-08-17",
+                "starttime": "19:00:00",
+                "link": "https://example.com/music",
+            },
+        ]
+
+    monkeypatch.setattr(event_tools, "datetime", FixedDateTime)
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        query="Show me free events tonight",
+    )
+
+    output = await event_tools.get_tools()[0].handler(
+        {"relative_window": "today"}, ctx,
+    )
+
+    assert "Afternoon drawing" in output
+    assert "Free evening music" in output
+
+
+async def test_event_tool_applies_typed_free_constraint(monkeypatch) -> None:
+    async def no_ticketmaster(**kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def city_rows(dataset_id, **kwargs):
+        if dataset_id != event_tools.PARKS_DATASET_ID:
+            return []
+        return [
+            {
+                "title": "Unknown-price drawing",
+                "startdate": "2099-08-17",
+                "starttime": "16:00:00",
+                "link": "https://example.com/drawing",
+            },
+            {
+                "title": "Free evening music",
+                "description": "This concert is free.",
+                "startdate": "2099-08-17",
+                "starttime": "19:00:00",
+                "link": "https://example.com/music",
+            },
+        ]
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="events",
+    )
+
+    output = await event_tools.get_tools()[0].handler(
+        {
+            "window_start": "2099-08-17",
+            "window_end": "2099-08-17",
+            "cost": "free",
+        },
+        ctx,
+    )
+
+    assert "Unknown-price drawing" not in output
+    assert "Free evening music" in output
+
+
+async def test_single_absolute_event_date_is_not_an_open_ended_window(monkeypatch) -> None:
+    calls = []
+
+    async def capture_ticketmaster(**kwargs):
+        calls.append(kwargs)
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", capture_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="events on August 20",
+    )
+
+    await event_tools.get_tools()[0].handler({"window_start": "2099-08-20"}, ctx)
+
+    assert calls[0]["start_datetime"] == "2099-08-20T04:00:00Z"
+    assert calls[0]["end_datetime"] == "2099-08-21T04:00:00Z"
+
+
 async def test_web_and_catalog_events_share_one_ranked_candidate_pool(monkeypatch) -> None:
     async def one_ticketmaster_event(**kwargs):
         return event_tools.TicketmasterSearchResult(

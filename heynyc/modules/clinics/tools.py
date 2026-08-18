@@ -881,31 +881,10 @@ PUBLIC_CHARGE_FINAL_RULE = _Fact(
           "case-specific review. DHS said additional implementation guidance would follow."),
 )
 
-# free-text → canonical coverage topic (the model may hand us the user's words instead of a key).
-_COVERAGE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("emergency_care", ("tourist visa", "tourist", "visitor", "emergency medical care",
-                        "denied emergency care", "emergency treatment")),
-    ("emergency_medicaid", ("emergency medicaid", "emergency room", "er bill", "hospital bill",
-                            "labor and delivery", "giving birth", "delivery", "dialysis",
-                            "emergency medical", "ambulance bill")),
-    ("public_charge", ("public charge", "green card", "green-card", "hurt my green card",
-                       "affect my green card", "affect my immigration", "hurt my immigration",
-                       "immigration case", "will using benefits", "public benefit immigration")),
-    ("nyc_care", ("nyc care", "nyccare", "646-nyc-care", "own doctor", "primary care", "coverage",
-                  "health insurance", "get insurance", "sign up for insurance", "no insurance")),
-)
-
-
 def _resolve_coverage_topic(raw: str) -> str | None:
-    """Map the `topic` arg (a canonical key or free text) to one of the coverage topics."""
+    """Accept only the canonical topic already constrained by the tool schema."""
     key = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if key in _COVERAGE:
-        return key
-    text = (raw or "").lower()
-    for topic, needles in _COVERAGE_KEYWORDS:
-        if any(n in text for n in needles):
-            return topic
-    return None
+    return key if key in _COVERAGE else None
 
 
 async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
