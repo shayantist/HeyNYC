@@ -157,7 +157,7 @@ def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatc
     assert captured["stream_model_requests"] is False
 
 
-def test_configured_runtime_keeps_semantic_checker_out_of_public_path(
+def test_configured_runtime_uses_configured_semantic_checker_in_public_path(
     monkeypatch,
 ):
     captured = {}
@@ -187,8 +187,8 @@ def test_configured_runtime_keeps_semantic_checker_out_of_public_path(
 
     build_configured_runtime(Registry([]), model="openai/gpt-5.6-luna")
 
-    assert captured["semantic_verifier"] is None
-    assert verifier_models == []
+    assert captured["semantic_verifier"] is not None
+    assert verifier_models == [config.HEYNYC_CITATION_CHECK_MODEL]
     assert "openai/gpt-5.6-luna" in configured
 
 

@@ -94,7 +94,7 @@ from heynyc.core.crisis_lines import (
     crisis_response,
 )
 from heynyc.core.freshness import attach_temporal_provenance
-from heynyc.core.grounding import check_grounding
+from heynyc.core.grounding import _cited_claims, check_grounding
 from heynyc.core.localization import localize
 from heynyc.core.memory import (
     CompactFn,
@@ -323,6 +323,8 @@ def _degraded_failure_text(
             else "Unverified source"
         ), language)
         detail = " ".join(str(citation.get("snippet") or "").split())[:240]
+        for embedded_url in _urls_in(detail):
+            detail = detail.replace(embedded_url, "")
         seen.setdefault(
             citation["url"],
             (
@@ -1656,22 +1658,41 @@ class PydanticRuntimeAdapter:
                     "from multiple sources, cite each supporting source or split the sentence.",
                     items=rejected,
                 )
-        if isinstance(output, GroundedAnswer) and self._semantic_verifier is not None:
+        if isinstance(output, (str, GroundedAnswer)) and self._semantic_verifier is not None:
             mapping = ctx.deps.citations.mapping()
-            inputs = []
-            inputs.extend(
+            claims = (
+                [
+                    (
+                        f"block-{index}",
+                        _semantic_claim_text(block),
+                        block.kind,
+                        block.citation_ids,
+                        None,
+                    )
+                    for index, block in enumerate(output.grounded_blocks)
+                ]
+                if isinstance(output, GroundedAnswer)
+                else [
+                    (f"claim-{index}", claim, "claim", citation_ids, original)
+                    for index, (original, claim, citation_ids) in enumerate(
+                        _cited_claims(rendered)
+                    )
+                    if citation_ids
+                ]
+            )
+            inputs = [
                 NLIInput(
-                    id=f"block-{index}",
-                    claim=_semantic_claim_text(block),
-                    kind=block.kind,
+                    id=item_id,
+                    claim=claim,
+                    kind=kind,
                     source="\n\n".join(
                         f"[{citation_id}] "
                         f"{_semantic_citation_evidence(mapping[citation_id])}"
-                        for citation_id in block.citation_ids
+                        for citation_id in citation_ids
                     )[:_SEMANTIC_EVIDENCE_CHARS],
                 )
-                for index, block in enumerate(output.grounded_blocks)
-            )
+                for item_id, claim, kind, citation_ids, _original in claims
+            ]
             if not inputs:
                 return output
             semantic = await self._semantic_verifier.arun_many(inputs)
@@ -1706,7 +1727,7 @@ class PydanticRuntimeAdapter:
                 })
                 return output
             if any(not verdict.supported for verdict in semantic.verdicts):
-                rejected = [
+                rejected_all = [
                     {
                         "id": item.id,
                         "label": (
@@ -1715,35 +1736,63 @@ class PydanticRuntimeAdapter:
                             in {"partial", "unsupported", "contradicted"}
                             else "unsupported"
                         ),
+                        "citation_ids": next(
+                            citation_ids
+                            for item_id, _claim, _kind, citation_ids, _original in claims
+                            if item_id == item.id
+                        ),
                     }
                     for item, verdict in zip(inputs, semantic.verdicts, strict=True)
                     if not verdict.supported
-                ][:_SEMANTIC_RETRY_ITEMS]
-                labels = ", ".join(
-                    f"{item['id']} ({item['label']})" for item in rejected
-                )
-                supported = ", ".join(
-                    item.id
-                    for item, verdict in zip(inputs, semantic.verdicts, strict=True)
-                    if verdict.supported
-                ) or "none"
-                reject(
-                    "semantic_grounding",
-                    "The cited evidence does not support every claim in the candidate answer. "
-                    "Return one complete replacement answer that keeps all supported outcomes, "
-                    "corrects or explicitly limits unsupported claims, and cites only evidence "
-                    "that directly supports them. Never assert an unsupported fact and then say "
-                    "it could not be verified. State only what the evidence establishes and the "
-                    "limitation. Partial means only part of the block is supported, so narrow or "
-                    "split that block to the facts the evidence establishes. Unsupported means "
-                    "the cited evidence does not establish the claim. Contradicted means the "
-                    "evidence conflicts with the claim. A past appointment, opening, closure, or "
-                    "eligibility decision does not establish current status unless the evidence "
-                    "also places that status in the resident's current time window. "
-                    f"Supported items to preserve: {supported}. Unsupported items: "
-                    f"{labels}.",
-                    items=rejected,
-                )
+                ]
+                rejected = rejected_all[:_SEMANTIC_RETRY_ITEMS]
+                ctx.deps.validation_rejections.append({
+                    "attempt": len(ctx.deps.validation_rejections) + 1,
+                    "stage": "semantic_grounding",
+                    "items": rejected,
+                    "citation_ids": sorted({
+                        citation_id
+                        for item in rejected_all
+                        for citation_id in item["citation_ids"]
+                    }),
+                })
+                rejected_ids = {item["id"] for item in rejected_all}
+                if isinstance(output, GroundedAnswer):
+                    return output.model_copy(update={
+                        "grounded_blocks": [
+                            block.model_copy(update={"citation_ids": []})
+                            if f"block-{index}" in rejected_ids
+                            else block
+                            for index, block in enumerate(output.grounded_blocks)
+                        ]
+                    })
+                blocks = output.split("\n\n")
+                for item_id, _claim, _kind, citation_ids, original in claims:
+                    if item_id not in rejected_ids or original is None:
+                        continue
+                    for index, block in enumerate(blocks):
+                        if original not in block:
+                            continue
+                        cited_original = original
+                        if any(
+                            f"{{cite:{citation_id}}}" in cited_original
+                            for citation_id in citation_ids
+                        ):
+                            for citation_id in citation_ids:
+                                marker = f"{{cite:{citation_id}}}"
+                                cited_original = cited_original.replace(
+                                    f" {marker}", ""
+                                ).replace(marker, "")
+                            block = block.replace(original, cited_original, 1)
+                        else:
+                            for citation_id in citation_ids:
+                                marker = f"{{cite:{citation_id}}}"
+                                block = block.replace(f" {marker}", "").replace(
+                                    marker, ""
+                                )
+                        blocks[index] = block.rstrip()
+                        break
+                return "\n\n".join(blocks)
         return output
 
     async def _apply_output_guard(
@@ -1793,17 +1842,21 @@ class PydanticRuntimeAdapter:
     ) -> None:
         if not deps.validation_rejections or (
             deps.validation_rejections[-1].get("stage")
-            != "semantic_verifier_unavailable"
+            not in {"semantic_grounding", "semantic_verifier_unavailable"}
         ):
             return
-        citation_ids = set(used_citations(result.text, deps.citations.mapping()))
+        citation_ids = _validation_citation_ids(
+            deps.validation_rejections,
+            deps.citations,
+        ) | set(used_citations(result.text, deps.citations.mapping()))
         result.text = _degraded_failure_text(
             f"{localize(UNVERIFIED_DRAFT_NOTICE, language)}\n\n{result.text}",
             deps.citations,
             language,
             citation_ids or set(deps.citations.mapping()),
         )
-        result.status = "error"
+        if deps.validation_rejections[-1].get("stage") == "semantic_verifier_unavailable":
+            result.status = "error"
 
     @staticmethod
     def _merge_safety_usage(result: AgentResult, run: Any) -> None:
@@ -1890,6 +1943,10 @@ class PydanticRuntimeAdapter:
             "semantic_verifier_cost_usd": semantic_cost,
             "semantic_verifier_time_ms": sum(float(run["latency_ms"]) for run in runs),
         })
+        result.usage["model_time_ms"] = (
+            float(result.usage.get("model_time_ms", 0.0))
+            + result.usage["semantic_verifier_time_ms"]
+        )
         if errors := [run["error"] for run in runs if run.get("error")]:
             result.usage["semantic_verifier_error"] = errors[-1]
         labels: dict[str, int] = {}

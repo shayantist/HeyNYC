@@ -385,7 +385,15 @@ async def handle(
                             ttl_s=config.CHANNEL_APPROVAL_TTL_S,
                         )
                 turn_cost = result.usage.get("cost_usd")
-                deps.store.add_spend(key, _nyc_day(), float(turn_cost) if turn_cost else 0.0)
+                deps.store.add_spend(
+                    key,
+                    _nyc_day(),
+                    (
+                        float(turn_cost)
+                        if isinstance(turn_cost, (int, float))
+                        else float(deps.user_daily_spend_cap or 0.0)
+                    ),
+                )
                 analytics.record_interaction(
                     telemetry_path=deps.telemetry_path, model=deps.agent.model,
                     user_key=key, channel=msg.channel, result=result,

@@ -1186,3 +1186,33 @@ async def test_turn_cost_accrues_to_the_daily_tally(tmp_path):
 
     key = _uk(message.channel, message.sender, "s")
     assert deps.store.daily_spend(key, _nyc_day()) >= 0.0  # tally exists (cost may be 0 in fakes)
+
+
+async def test_unpriced_turn_exhausts_the_configured_daily_cap(tmp_path, monkeypatch):
+    from heynyc.channels.identity import user_key as _uk
+    from heynyc.channels.orchestrator import _nyc_day
+    from heynyc.core.session import PendingTurn, Session
+
+    async def prepare(_session, message, **_kwargs):
+        return PendingTurn(
+            user_message=message,
+            result=AgentResult(
+                text="Useful answer",
+                citations={},
+                tool_calls_made=[],
+                iterations=1,
+                status="success",
+                messages=[],
+                usage={"cost_usd": None, "cost_status": "unpriced"},
+            ),
+        )
+
+    monkeypatch.setattr(Session, "prepare", prepare)
+    deps, replier = _deps(tmp_path), FakeReplier()
+    deps.user_daily_spend_cap = 0.50
+    message = _msg(text="ordinary question", mid="unpriced-cap")
+
+    await handle(message, replier, deps)
+
+    key = _uk(message.channel, message.sender, "s")
+    assert deps.store.daily_spend(key, _nyc_day()) == 0.50
