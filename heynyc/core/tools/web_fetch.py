@@ -44,6 +44,10 @@ class _RenderedFetchNeeded(Exception):
     pass
 
 
+class _UnsafePublicUrl(ValueError):
+    pass
+
+
 class WebFetchAcquisition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -227,8 +231,11 @@ def _url_safe_shape(url: str) -> bool:
 
 async def _validate_public_url(url: str) -> None:
     if not _url_safe_shape(url):
-        raise ValueError("URL must be public HTTPS without credentials")
-    await validate_and_resolve_url(url, allow_local=False)
+        raise _UnsafePublicUrl("URL must be public HTTPS without credentials")
+    try:
+        await validate_and_resolve_url(url, allow_local=False)
+    except Exception as exc:
+        raise _UnsafePublicUrl("URL did not resolve to a public address") from exc
 
 
 def _is_access_wall(title: str, text: str) -> bool:
@@ -315,6 +322,7 @@ async def _fetch_page(
     if not _url_safe_shape(url):
         raise ValueError("URL must be public HTTPS without credentials")
     if client is None:
+        await _validate_public_url(url)
         response = await safe_download(
             url,
             allow_local=False,
@@ -439,6 +447,13 @@ async def _fetch_page_with_browser(
 def web_fetch_tools() -> list[Tool]:
     async def _handler(args: dict, ctx: ToolContext) -> str:
         url = str(args["url"]).strip()
+        try:
+            safe_shape = _url_safe_shape(url)
+            urlsplit(url).port
+        except ValueError:
+            safe_shape = False
+        if not safe_shape:
+            return "The page could not be fetched."
         query = str(args.get("query") or ctx.query).strip()
         evidence_scope = str(args.get("evidence_scope") or "").strip()
         render = bool(args.get("render", False))
@@ -454,8 +469,14 @@ def web_fetch_tools() -> list[Tool]:
                 query,
                 render=render,
             )
-        except Exception:
+        except _UnsafePublicUrl:
             return "The page could not be fetched."
+        except Exception:
+            return (
+                f"The page could not be fetched: {url}\n"
+                "No page content was retrieved. Any claim attributed only to this source is "
+                "unverified; preserve the URL so the resident can check it."
+            )
         final_url, title, text = fetched.final_url, fetched.title, fetched.text
         chunks = _evidence_chunks(text, query)
         if not chunks:
@@ -472,7 +493,12 @@ def web_fetch_tools() -> list[Tool]:
         )
         authoritative = tier == "authoritative" and not warning
         if tier != "authoritative":
-            evidence = f"SOURCE TRUST: {_TIER_LABELS.get(tier, tier)}\n\n{evidence}"
+            label = (
+                "unverified source, check before relying on it"
+                if tier == "unverified"
+                else _TIER_LABELS.get(tier, tier)
+            )
+            evidence = f"SOURCE TRUST: {label}\n\n{evidence}"
         if warning:
             evidence = f"{warning}\n\n{evidence}"
         provenance = {

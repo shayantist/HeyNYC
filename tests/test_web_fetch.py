@@ -390,9 +390,9 @@ async def test_web_fetch_validates_dns_before_using_an_injected_client(monkeypat
     client = _Client({url: "Private service content."})
     checked: list[str] = []
 
-    async def reject_private_resolution(candidate: str) -> None:
+    async def reject_private_resolution(candidate: str, **kwargs) -> None:
         checked.append(candidate)
-        raise ValueError("URL resolved to a private address")
+        raise web_fetch_module._UnsafePublicUrl("URL resolved to a private address")
 
     monkeypatch.setattr(
         web_fetch_module,

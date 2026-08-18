@@ -276,7 +276,7 @@
     requested phone while leaving an instruction to call an unnamed number.
 
 - id: benefits_snap_work_rule_loss
-  tags: [must-win]
+  tags: [F187, must-win]
   query: "HRA says my SNAP is stopping because of a work rule. I cannot afford food now. What can I do?"
   capability: dataset_grounding
   test_type: DIR
@@ -302,12 +302,15 @@
     to report it to HRA. Do not decide the exemption or invent required evidence.
 
 - id: benefits_snap_work_rule_reporting
-  tags: [must-win]
+  tags: [F275, must-win]
   query: "I completed my SNAP work hours. How do I report them so my benefits do not stop?"
   capability: dataset_grounding
   test_type: MFT
   expect_tools: [web_fetch]
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Give only reporting and appeal steps supported by retrieved evidence. If an official page cannot
+    be fetched, label any lead from that page unverified and preserve its URL for the resident.
   notes: >-
     Use current HRA or ACCESS NYC instructions for reporting activity and proof. Do not guarantee
     that HRA will accept the proof or preserve benefits.

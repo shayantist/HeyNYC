@@ -392,7 +392,7 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
     )
 
 
-def test_snap_work_rule_index_uses_the_current_hra_faq_seed():
+def test_snap_work_rule_index_does_not_preload_an_unrequested_appeal():
     current_hra_faq = "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page"
     stale_hra_faq = "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
     reg = Registry.discover(config.MODULES_DIR)
@@ -403,7 +403,7 @@ def test_snap_work_rule_index_uses_the_current_hra_faq_seed():
     # SNAP work-rule retrieval URLs are now manifest-owned (`situations: snap_work_rules`).
     snap_urls = reg.situation_hints()["snap_work_rules"][1].urls
     assert stale_hra_faq in snap_urls
-    assert "https://otda.ny.gov/oah/" in snap_urls
+    assert "https://otda.ny.gov/oah/" not in snap_urls
 
 
 def test_fairness_metamorphic_cases_present_and_well_formed():

@@ -227,7 +227,8 @@ def test_benefits_situations_are_separate_on_demand_capabilities() -> None:
     assert (
         "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml" in instructions
     )
-    assert "https://otda.ny.gov/oah/" in instructions
+    assert "https://otda.ny.gov/oah/" not in instructions
+    assert "Include a fair-hearing path only when" in instructions
     assert (
         "Prioritize tools: web_fetch, web_search, find_foodhelp_locations"
         in instructions

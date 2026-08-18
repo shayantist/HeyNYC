@@ -100,15 +100,19 @@ situations:
       question about whether SNAP may end when the resident has not mentioned a work rule,
       required hours, employment activity, an exemption, or a notice reason.
     high_stakes: true
-    query: "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits fair hearing current"
+    query: "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits current"
     urls:
       - https://www.nyc.gov/main/services/snap-benefits/abawd
       - https://access.nyc.gov/snap-work-requirements/
       - https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml
-      - https://otda.ny.gov/oah/
     reminder: >-
-      This turn is about SNAP work-rule recovery. Use current official SNAP guidance and the
-      human or fair-hearing path. When the resident says they lack food or cannot eat, in any
+      This turn is about SNAP work-rule recovery. Use current official SNAP guidance and a
+      supported human-help path. Include a fair-hearing path only when the resident asks to
+      challenge a decision or says benefits were stopped or reduced, and only when retrieved
+      evidence supports that route. If the official hearing page is unavailable but its URL may
+      still help, label it unverified and preserve its URL instead of attaching the claim to
+      unrelated evidence. Do not add a conditional appeal branch to a reporting-only answer.
+      When the resident says they lack food or cannot eat, in any
       language, give the Food Help NYC or 311 route immediately. Ask for a neighborhood or
       landmark before offering a nearest pantry, and call the pantry tool only after the resident
       provides one. Immediate food help is part of this situation, never an unrelated module.
