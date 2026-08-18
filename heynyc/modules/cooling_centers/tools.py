@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
-from typing import Literal
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,13 +54,19 @@ class CoolingQuery(BaseModel):
         default=None,
         description="Exact facility name already selected in the conversation.",
     )
-    exclude_sites: list[str] = Field(
+    exclude_sites: list[Annotated[str, Field(description="Exact rejected facility name.")]] = Field(
         default_factory=list,
         max_length=10,
         description="Exact facility names the resident rejected in this turn.",
     )
-    kind: Literal["all", "indoor", "cooling_center"] = "all"
-    audience: Literal["any", "not_age_restricted"] = "any"
+    kind: Literal["all", "indoor", "cooling_center"] = Field(
+        default="all",
+        description="Type of Cool Option requested by the resident.",
+    )
+    audience: Literal["any", "not_age_restricted"] = Field(
+        default="any",
+        description="Whether to exclude City rows marked as age-restricted.",
+    )
     max_results: int | None = Field(
         default=None,
         ge=1,
