@@ -3,14 +3,6 @@ category: community
 description: >-
   Current branch hours, locations, computers, printing, and other public-library services from
   New York City's three official library systems.
-keywords:
-  - library
-  - libraries
-  - print homework
-  - printing
-  - public computer
-  - computer access
-  - late library
 examples:
   - "Is a library near me open late, and can I print homework there?"
 allowlist:

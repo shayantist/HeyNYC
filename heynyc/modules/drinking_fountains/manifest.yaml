@@ -4,16 +4,6 @@ description: >-
   Find nearby outdoor drinking fountains listed by NYC Parks, with grounded
   distance and directions, and answer current NYC fire-hydrant drinking or
   spray-cap cooling safety questions from official DEP guidance.
-keywords:
-  - water station
-  - drinking fountain
-  - water fountain
-  - bottle filling
-  - bottle refill
-  - hydration station
-  - fire hydrant
-  - hydrant water
-  - spray cap
 examples:
   - "Where is the nearest drinking fountain?"
   - "Where can I refill my water bottle near Rockefeller Center?"

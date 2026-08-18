@@ -5,19 +5,13 @@ The prompt is assembled in two tiers so a hosted (Anthropic/OpenAI) caller can c
   - STABLE tier  = BASE_SYSTEM_PROMPT (all 15 safety rules), the always-on capability MENU, and the
     byte-static conversation-interpretation + reply-language rules. It is query-independent and
     time-independent, so it is byte-identical across calls and safe to mark as a cacheable prefix.
-  - VOLATILE tier = the DETAILED per-module blurbs selected for THIS query (progressive disclosure)
-    plus the current-date line. Both change between calls, so they must sit AFTER the stable prefix,
+  - VOLATILE tier = the DETAILED per-module blurbs plus the current-date line. The date changes
+    between calls, so this tier must sit AFTER the stable prefix,
     and in the agent they ride a reminder-shaped user message injected AFTER the growing history,
     never inside any cached block, or the cache never hits.
-
-Blurb selection is a small, transparent keyword router (route_modules): it never gates a safety
-rule or a tool. A routing miss can only omit a detailed how-to blurb; the always-on menu still names
-every capability. Fail-open: query=None loads every blurb (the original behavior); a query that
-matches nothing loads none (menu + rules only).
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -206,65 +200,15 @@ city's page says", "I couldn't confirm that from the city's pages".
 """
 
 
-# A tiny, transparent stopword set so generic filler that appears across many modules' examples and
-# descriptions ("the", "near", "nearest", "help", "today", "nyc") does not make every module match
-# every query. Deliberately small and readable; this is a keyword router, not an NLP pipeline.
-_ROUTER_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "for", "with", "from",
-    "my", "me", "i", "you", "your", "it", "its", "is", "are", "am", "be", "do", "does",
-    "can", "could", "how", "what", "where", "when", "who", "which", "this", "that",
-    "need", "want", "find", "get", "got", "help", "near", "nearest", "around", "here",
-    "today", "tonight", "now", "right", "please", "some", "any", "there", "about",
-    "nyc", "new", "york", "city",
-})
-
-_WORD_RE = re.compile(r"[a-z0-9]+")
-
-
-def _content_tokens(text: str) -> set[str]:
-    """Lowercase content tokens of `text`: words of length >= 3 that are not stopwords. Short and
-    generic words are dropped so token overlap stays high-signal."""
-    return {t for t in _WORD_RE.findall(text.lower()) if len(t) >= 3 and t not in _ROUTER_STOPWORDS}
-
-
-def route_modules(query: str, registry: Registry) -> set[str]:
-    """Return the names of the modules whose manifest signal (keywords / examples / description)
-    matches `query`. Pure and deterministic, with no LLM and no embeddings.
-
-    Two case-insensitive match rules, either of which selects a module:
-      1. a curated `keyword` phrase occurs in the query on WORD boundaries. Word boundaries keep a
-         2-letter keyword like "ac" from matching inside "beach" or "back" (high precision); and
-      2. a content token (>= 3 chars, non-stopword) is shared between the query and the module's
-         keywords + examples + description (recall for phrasings the curated keywords miss).
-
-    A routing miss is safe by construction: it can only omit a detailed blurb, never a safety rule
-    (those live in BASE_SYSTEM_PROMPT) or a tool (tools are passed to the model separately)."""
-    q_lower = query.lower()
-    q_tokens = _content_tokens(query)
-    matched: set[str] = set()
-    for module in registry.modules:
-        keywords = [k for k in module.keywords if k.strip()]
-        if any(re.search(rf"\b{re.escape(k.lower())}\b", q_lower) for k in keywords):
-            matched.add(module.name)
-            continue
-        signal = _content_tokens(" ".join([module.description, *keywords, *module.examples]))
-        if q_tokens & signal:
-            matched.add(module.name)
-    return matched
-
-
 def _capability_menu_text(registry: Registry) -> str:
-    """The always-on capability MENU (progressive-disclosure level 1): one compact line per module
-    so the model knows every capability EXISTS even when its detailed blurb is not loaded. Query- and
-    time-independent, so it belongs in the cacheable stable tier."""
+    """The always-on capability menu. It is query- and time-independent, so it belongs in the
+    cacheable stable tier."""
     rows = registry.capability_menu()
     if not rows:
         return ""
     lines = [
         "# Services you can help with (quick menu)",
-        "Every service below is available. Detailed how-to-use notes for the ones relevant to the "
-        "current question load in the next section; for anything else, this menu tells you the "
-        "service exists so you can still route the user or ask a quick follow-up.",
+        "Every service below is available. Detailed how-to-use notes load in the next section.",
     ]
     for category, blurb, examples in rows:
         line = f"- {category}: {' '.join(blurb.split())}"
@@ -310,28 +254,14 @@ def _stable_tier(registry: Registry, *, include_module_guidance: bool = True) ->
     return base + _CONVERSATION_AND_LANGUAGE_RULES
 
 
-def _selected_blurbs(registry: Registry, query: Optional[str]) -> str:
-    """The DETAILED per-module blurbs for this call (progressive disclosure). Fail-open:
-      - query is None       -> every blurb (preserves the original always-on behavior);
-      - query matches modules -> only those modules' blurbs;
-      - query matches nothing -> no detailed blurbs (the menu + safety rules still stand)."""
-    if query is None:
-        return registry.capability_blurbs()
-    matched = route_modules(query, registry)
-    if not matched:
-        return ""
-    return registry.capability_blurbs(only=matched)
-
-
 def _volatile_tier(
     registry: Registry,
     now: Optional[datetime],
-    query: Optional[str],
     *,
     include_module_guidance: bool = True,
 ) -> str:
-    """The current-date suffix, plus legacy query-selected module blurbs when requested."""
-    blurbs = _selected_blurbs(registry, query) if include_module_guidance else ""
+    """The current-date suffix, plus complete legacy module blurbs when requested."""
+    blurbs = registry.capability_blurbs() if include_module_guidance else ""
     section = f"\n\n# How to use the relevant services\n{blurbs}" if blurbs else ""
     return section + _now_line(now)
 
@@ -339,28 +269,24 @@ def _volatile_tier(
 def build_system_prompt_tiers(
     registry: Registry,
     now: Optional[datetime] = None,
-    query: Optional[str] = None,
     *,
     include_module_guidance: bool = True,
 ) -> tuple[str, str]:
     """The system prompt split into (stable, volatile) tiers. `stable` is the cacheable prefix
-    and `volatile` is the changing date and per-turn guidance. Native capabilities can own module
-    discovery and instructions by setting `include_module_guidance=False`."""
+    and `volatile` contains the date and module guidance. Native capabilities can own module discovery
+    and instructions by setting `include_module_guidance=False`."""
     return _stable_tier(
         registry, include_module_guidance=include_module_guidance
     ), _volatile_tier(
         registry,
         now,
-        query,
         include_module_guidance=include_module_guidance,
     )
 
 
 def build_system_prompt(
-    registry: Registry, now: Optional[datetime] = None, query: Optional[str] = None
+    registry: Registry, now: Optional[datetime] = None
 ) -> str:
-    """The full system prompt as one string: stable prefix + volatile suffix. `query` drives
-    progressive disclosure of the detailed blurbs; query=None keeps the original all-blurbs behavior
-    (backward-compatible with existing callers)."""
-    stable, volatile = build_system_prompt_tiers(registry, now=now, query=query)
+    """The full system prompt as one string: stable prefix plus volatile suffix."""
+    stable, volatile = build_system_prompt_tiers(registry, now=now)
     return stable + volatile

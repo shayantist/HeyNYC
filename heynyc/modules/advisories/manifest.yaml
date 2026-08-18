@@ -3,16 +3,6 @@ category: alerts
 description: >-
   Current NYC emergency advisories and alerts (extreme heat, air quality, closures,
   boil-water, and more) from Notify NYC / NYC Emergency Management.
-keywords:
-  - advisory
-  - alert
-  - emergency
-  - heat warning
-  - air quality
-  - is it safe outside
-  - beach closure
-  - notify nyc
-  - boil water
 examples:
   - "Are there any advisories right now?"
   - "Is it safe to be outside today?"

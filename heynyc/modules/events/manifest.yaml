@@ -3,17 +3,6 @@ category: events
 description: >-
   Find current NYC event choices by date, place, audience, or topic, grounded in
   live structured listings and current web sources with direct links.
-keywords:
-  - events
-  - what's on
-  - what's happening
-  - this weekend
-  - tonight
-  - concert
-  - festival
-  - free things
-  - things to do
-  - pop-up
 examples:
   - "What's happening in NYC this weekend?"
   - "Any free events tonight?"

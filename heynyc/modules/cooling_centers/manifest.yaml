@@ -3,19 +3,6 @@ category: health
 description: >-
   Find activated NYC cooling centers and other currently listed Cool Options,
   with current City-listed hours, access details, distance, and directions.
-keywords:
-  - cooling
-  - cooling center
-  - heat
-  - hot
-  - heat wave
-  - heat emergency
-  - air conditioning
-  - ac
-  - beat the heat
-  - stay cool
-  - library
-  - older adult center
 examples:
   - "Where's the nearest cooling center?"
   - "It's too hot, where can I cool off indoors today?"

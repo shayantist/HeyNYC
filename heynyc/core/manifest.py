@@ -77,7 +77,6 @@ class ServiceModule(BaseModel):
     name: str
     category: str = "general"
     description: str = ""
-    keywords: list[str] = Field(default_factory=list)
     examples: list[str] = Field(default_factory=list)  # user-facing example queries, the single source for capability discovery
     datasets: list[DatasetBinding] = Field(default_factory=list)
     official_link: str = ""  # public service link, independent from RAG index seeds

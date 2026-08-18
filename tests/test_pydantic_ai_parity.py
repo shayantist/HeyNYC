@@ -6215,7 +6215,6 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
                 name="benefits",
                 description="Help with SNAP",
                 prompt="UNIQUE BENEFITS INSTRUCTIONS",
-                keywords=["snap"],
             )
         ]
     )

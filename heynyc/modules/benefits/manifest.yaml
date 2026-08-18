@@ -5,25 +5,6 @@ description: >-
   freeze, IDNYC, WIC, Cash Assistance, child care, and more): what they offer, who
   may roughly qualify, and how to apply, grounded in the city's Benefits & Programs
   dataset, with an "as of" date on every fact.
-keywords:
-  - benefits
-  - snap
-  - food stamps
-  - fair fares
-  - heap
-  - scrie
-  - drie
-  - rent freeze
-  - idnyc
-  - wic
-  - cash assistance
-  - child care
-  - help paying
-  - do i qualify
-  - what am i eligible for
-  - eligibility
-  - medicaid termination
-  - medicaid fair hearing
 examples:
   - "I'm struggling to afford groceries, what can I get?"
   - "Am I eligible for SNAP?"

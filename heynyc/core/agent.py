@@ -1966,16 +1966,6 @@ def _discovery_citation_feedback(ids: list[str]) -> str:
     )
 
 
-def _routing_query(user_message: str, history: Optional[list[dict]]) -> str:
-    """Route detailed blurbs from the current turn plus recent resident messages."""
-    context = [
-        str(message.get("content") or "")
-        for message in history or []
-        if message.get("role") == "user"
-    ][-2:]
-    return "\n".join([*context, user_message])
-
-
 def _history_messages(history: Optional[list[dict]]) -> list[dict]:
     """Return provider-safe dialogue history with prior assistant turns readable (F052).
 
@@ -2817,7 +2807,7 @@ class Agent:
 
         For an Anthropic model we emit `content` as one text block marked with cache_control so repeat
         calls read that prefix from cache (~90% cheaper). Every other provider (openai, ollama, ...)
-        gets a plain-string `content`. The volatile tier (date line + query-selected blurbs) is NOT
+        gets a plain-string `content`. The volatile tier (date line + module blurbs) is NOT
         here: `_build_messages` injects it after history so it never breaks the cached prefix."""
         if _is_anthropic(self.model):
             return {"role": "system", "content": [
@@ -2830,12 +2820,10 @@ class Agent:
     ) -> list[dict]:
         if citations is None:
             citations = CitationRegistry()
-        stable, volatile = build_system_prompt_tiers(
-            self.registry, query=_routing_query(user_message, history),
-        )
+        stable, volatile = build_system_prompt_tiers(self.registry)
         messages: list[dict] = [self._system_message(stable)]
         messages.extend(_history_messages(history))
-        # The volatile tier (current-date line + query-selected blurbs) rides a reminder-shaped user
+        # The volatile tier (current-date line + module blurbs) rides a reminder-shaped user
         # message placed AFTER history, next to the user turn. Keeping these mutables out of the
         # system prefix is what lets the growing history cache (static-first / dynamic-last); the
         # existing reminders (scope, continuity) already sit in this same post-history band.

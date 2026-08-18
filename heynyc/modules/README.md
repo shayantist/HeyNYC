@@ -38,7 +38,7 @@ heynyc/modules/<name>/
   topics/<topic>/   # optional, a submodule (reuses the parent's tool; own sources + eval)
 ```
 
-The registry auto-discovers every folder under `modules/` at startup and wires it in: its keywords + capability blurb go into the agent's system prompt, its datasets become `nearest()` categories, its seeds enter the maintained local corpus, its known domains guide web-search trust and ranking, and its eval cases join the test gate. The corpus is an internal retrieval asset, not a competing model-visible tool.
+The registry auto-discovers every folder under `modules/` at startup and wires it in: its capability blurb becomes agent guidance, its datasets become `nearest()` categories, its seeds enter the maintained local corpus, its known domains guide web-search trust and ranking, and its eval cases join the test gate. The corpus is an internal retrieval asset, not a competing model-visible tool.
 
 ---
 
@@ -49,11 +49,6 @@ name: cooling_centers            # unique id (folder name)
 category: health                 # health | transit | housing | benefits | events | tourism | ...
 description: >-                   # one line; shown in listings
   Find cooling and heat-relief sites across NYC during hot weather.
-keywords:                         # words that should make the agent reach for this module
-  - cooling
-  - heat
-  - beat the heat
-
 datasets:                         # OPTIONAL, enables "nearest X" via NYC Open Data
   - id: h2bn-gu9k                 # the dataset id from its data.cityofnewyork.us URL
     category: cooling_center      # the category the agent passes to nearest()
@@ -79,7 +74,7 @@ prompt: |                         # the behavior rules: how to help, what to cit
 eval: eval.yaml                   # OPTIONAL but recommended
 ```
 
-Everything except `name` is optional. A module with just `name`, `description`, `keywords`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group known domains by trust, `authoritative` / `editorial` / `community`, so `web_search` ranks and disclaims them) and a **`topics/`** folder for submodules. See `modules/events/` for both.
+Everything except `name` is optional. A module with just `name`, `description`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group known domains by trust, `authoritative` / `editorial` / `community`, so `web_search` ranks and disclaims them) and a **`topics/`** folder for submodules. See `modules/events/` for both.
 
 ### Finding a dataset + its column names (for "nearest X")
 1. Go to <https://data.cityofnewyork.us> and search (e.g. "senior centers").
@@ -121,7 +116,6 @@ Edit `heynyc/modules/senior_centers/manifest.yaml`:
 name: senior_centers
 category: health
 description: Find NYC senior centers near you.
-keywords: [senior center, older adults, seniors, aging]
 datasets:
   - id: 3ptp-nu4r
     category: senior_center
@@ -182,7 +176,6 @@ Run: `uv run python -m heynyc eval`. See [the eval guide](../eval/README.md) for
 ---
 
 ## Checklist for a good module
-- [ ] `keywords` cover how real people phrase it.
 - [ ] `field_map` matches the dataset's actual columns (check the dataset page).
 - [ ] `prompt` says which tool to use, to cite, and **when to abstain**.
 - [ ] The answer exposes the source's real update or verification time, never the fetch date as a freshness substitute.

@@ -30,7 +30,6 @@ def modules_dir(tmp_path: Path) -> Path:
 name: cooling_centers
 category: health
 description: Find cooling centers during heat.
-keywords: [cooling, heat]
 datasets:
   - id: h2bn-gu9k
     category: cooling_center
@@ -51,7 +50,6 @@ prompt: |
 name: world_cup
 category: events
 description: World Cup 2026 events and watch parties.
-keywords: [world cup, soccer]
 seeds:
   - https://www.nyc.gov/cooling
   - https://nynjfwc26.com/schedule

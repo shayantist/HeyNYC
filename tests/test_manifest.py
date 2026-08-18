@@ -12,7 +12,6 @@ def test_from_manifest_parses_all_fields(modules_dir: Path):
     module = ServiceModule.from_manifest(modules_dir / "cooling_centers" / "manifest.yaml")
     assert module.name == "cooling_centers"
     assert module.category == "health"
-    assert "cooling" in module.keywords
     assert module.datasets[0].id == "h2bn-gu9k"
     assert module.datasets[0].category == "cooling_center"
     assert module.datasets[0].field_map["lat"] == "latitude"

@@ -3,13 +3,6 @@ category: city services
 description: >-
   Find the nearest public restrooms listed by New York City, with grounded
   distance and directions.
-keywords:
-  - restroom
-  - bathroom
-  - toilet
-  - public restroom
-  - public bathroom
-  - comfort station
 examples:
   - "Where is the nearest public restroom?"
   - "Is there a public bathroom near Union Square?"

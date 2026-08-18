@@ -1,7 +1,5 @@
 name: nyc311_status
 category: city services
-# Meaning-based, not a keyword list: routing draws its signal from this description and the
-# examples below (prompts.route_modules content-token match), never a curated keyword phrase.
 description: >-
   Check the status of an existing NYC 311 service request, or see what recent 311
   complaints about a problem are doing near a location, grounded in the city's own

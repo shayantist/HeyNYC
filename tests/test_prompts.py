@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -9,8 +10,7 @@ from heynyc.core.registry import Registry
 
 
 def _real_registry() -> Registry:
-    """The live, module-discovered registry (real keywords, examples, and blurbs). The router and
-    progressive-disclosure tests need real manifests, not the empty registry."""
+    """The live, module-discovered registry with real capability blurbs."""
     return Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
 
 
@@ -323,25 +323,6 @@ def test_system_prompt_minimizes_missing_attachment_recovery():
     assert "never ask for a full case number" in low
 
 
-# --- Change 1: progressive disclosure of the per-module detailed blurbs ---------------------------
-
-def test_router_matches_module_on_curated_keyword():
-    from heynyc.core.prompts import route_modules
-
-    assert "food_pantries" in route_modules("where's the nearest food pantry?", _real_registry())
-
-
-def test_router_loads_cooling_and_water_details_for_combined_request():
-    from heynyc.core.prompts import route_modules
-
-    matched = route_modules(
-        "Where are the nearest cooling centers and water stations to Rockefeller Center?",
-        _real_registry(),
-    )
-
-    assert {"cooling_centers", "drinking_fountains"} <= matched
-
-
 def test_phone_style_limits_combined_default_without_capping_user_requests():
     from heynyc.core.prompts import BASE_SYSTEM_PROMPT
 
@@ -349,97 +330,54 @@ def test_phone_style_limits_combined_default_without_capping_user_requests():
     assert "honor the user's requested count" in BASE_SYSTEM_PROMPT
 
 
-def test_router_returns_empty_set_on_unrelated_query():
-    from heynyc.core.prompts import route_modules
-
-    assert route_modules("what's the capital of France?", _real_registry()) == set()
-
-
-def test_router_short_keyword_is_not_substring_matched():
-    # cooling_centers has the 2-letter keyword "ac"; it must NOT match inside "beach". A beach-closure
-    # question routes to advisories (which owns "beach closure"), never to cooling via a substring hit.
-    from heynyc.core.prompts import route_modules
-
-    matched = route_modules("is the beach closed today?", _real_registry())
-    assert "cooling_centers" not in matched
-    assert "advisories" in matched
-
-
-def test_query_loads_only_matching_blurbs_but_keeps_menu_and_all_rules():
-    prompt = build_system_prompt(_real_registry(), query="where's the nearest food pantry?")
-    # the matched module's DETAILED blurb loads
-    assert "find_foodhelp_locations(near=" in prompt
-    # clearly-unrelated modules' DETAILED blurbs do NOT load
-    assert "find_cool_options" not in prompt             # cooling blurb text
-    assert "check_notify_nyc" not in prompt                 # advisories blurb text
-    assert "PROGRAM INFO" not in prompt                   # housing blurb text
-    # the always-on capability menu + every safety rule stay present (a routing miss drops neither)
-    assert "Services you can help with (quick menu)" in prompt
-    assert "GROUND EVERYTHING" in prompt
-    assert "911" in prompt                                # rule 13 (emergencies)
-    assert "PUBLIC CHARGE" in prompt                      # rule 14 (SNAP / public charge)
-
-
-def test_no_match_query_keeps_menu_and_rules_but_loads_no_detailed_blurbs():
-    prompt = build_system_prompt(_real_registry(), query="what's the capital of France?")
-    # fail-open on a routing miss: NO detailed blurbs at all...
-    assert "find_foodhelp_locations(near=" not in prompt
-    assert "search_benefits(query=" not in prompt
-    assert "check_notify_nyc" not in prompt
-    # ...but the menu + safety rules are never dropped
-    assert "Services you can help with (quick menu)" in prompt
-    assert "GROUND EVERYTHING" in prompt
-    assert "911" in prompt
-
-
-def test_query_none_includes_every_blurb_backward_compat():
-    prompt = build_system_prompt(_real_registry())  # query defaults to None -> today's behavior
+def test_legacy_module_guidance_is_complete_and_query_independent():
+    assert "query" not in inspect.signature(build_system_prompt).parameters
+    prompt = build_system_prompt(_real_registry())
     assert "find_foodhelp_locations(near=" in prompt      # food blurb
     assert "search_benefits(query=" in prompt         # benefits blurb
     assert "find_cool_options" in prompt             # cooling blurb
     assert "check_notify_nyc" in prompt                 # advisories blurb
 
 
-def test_capability_menu_names_every_service_regardless_of_routing():
-    # The cheap always-on menu names capabilities the current query didn't select, so a routing miss
-    # never hides a service from the model. Holds for query=None, a matched query, and a no-match query.
-    for query in (None, "where's the nearest food pantry?", "what's the capital of France?"):
-        low = build_system_prompt(_real_registry(), query=query).lower()
-        assert "cooling" in low
-        assert "eviction" in low or "housing" in low
-        assert "benefit" in low
+def test_capability_menu_names_every_service_regardless_of_query():
+    low = build_system_prompt(_real_registry()).lower()
+    assert "cooling" in low
+    assert "eviction" in low or "housing" in low
+    assert "benefit" in low
 
 
-def test_tiers_keep_date_and_selected_blurbs_out_of_the_stable_prefix():
+def test_tiers_keep_date_and_module_blurbs_out_of_the_stable_prefix():
     from heynyc.core.prompts import build_system_prompt_tiers
 
     stable, volatile = build_system_prompt_tiers(
-        _real_registry(), query="where's the nearest food pantry?")
+        _real_registry())
     # stable = safety rules + menu, query- and time-independent (the cacheable prefix)
     assert "GROUND EVERYTHING" in stable
     assert "Services you can help with (quick menu)" in stable
     assert "Current date & time" not in stable          # the date must NOT sit inside the cached prefix
-    assert "find_foodhelp_locations(near=" not in stable     # selected blurbs are volatile, not cached
-    # volatile = the selected blurbs + the date line
+    assert "find_foodhelp_locations(near=" not in stable     # module blurbs are volatile, not cached
+    # volatile = every module blurb + the date line
     assert "Current date & time" in volatile
     assert "find_foodhelp_locations(near=" in volatile
+    assert "find_cool_options" in volatile
+    assert "check_notify_nyc" in volatile
 
 
 def test_static_conversation_and_language_rules_live_in_the_stable_prefix():
     # Cache-layout fix (2026-07-21): the conversation-interpretation and reply-language rules are
     # byte-static (query- and time-independent), so they belong in the cacheable stable prefix, not
     # in the volatile suffix that changes every turn. Only the true mutables (the date line and the
-    # query-selected blurbs) stay in the volatile suffix.
+    # module blurbs) stay in the volatile suffix.
     from heynyc.core.prompts import build_system_prompt_tiers
 
     stable, volatile = build_system_prompt_tiers(
-        _real_registry(), query="where's the nearest food pantry?")
+        _real_registry())
     assert "Interpret the latest message using the conversation" in stable
     assert "Reply in the same language as the resident" in stable
     # the static rules are NOT duplicated into the volatile suffix
     assert "Interpret the latest message using the conversation" not in volatile
     assert "Reply in the same language as the resident" not in volatile
-    # the volatile suffix is only the true mutables: the date line and the selected blurbs
+    # the volatile suffix contains the date line and module blurbs
     assert "Current date & time" in volatile
     assert "find_foodhelp_locations(near=" in volatile
     assert "Current date & time" not in stable
@@ -459,12 +397,3 @@ def test_conversation_rules_preserve_transform_only_followups_without_retrieval(
     assert "retrieve again only when the resident asks for updated or new facts" in low
     assert "earlier answer lacks the evidence" in low
     assert "when a new or current factual answer is needed" in low
-
-
-def test_capability_blurbs_only_filters_to_named_modules():
-    reg = _real_registry()
-    only = reg.capability_blurbs(only={"food_pantries"})
-    assert "## food_pantries" in only
-    assert "## benefits" not in only
-    # the default (no filter) still returns every module's blurb (backward-compat)
-    assert "## benefits" in reg.capability_blurbs()

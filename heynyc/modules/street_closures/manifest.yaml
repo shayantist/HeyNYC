@@ -1,7 +1,5 @@
 name: street_closures
 category: transit
-# Meaning-based routing, not a keyword list: the signal comes from this description and the
-# examples below (prompts.route_modules content-token match), never a curated phrase list.
 description: >-
   Check scheduled NYC street closures near a place for game-day or travel planning,
   grounded in DOT's construction street-closure schedule (NYC Open Data). Planned

@@ -3606,7 +3606,7 @@ def test_system_message_is_a_single_cached_stable_block_for_anthropic():
     from heynyc.core.prompts import build_system_prompt_tiers
 
     agent = _real_agent("anthropic/claude-sonnet-4-6")
-    stable, _ = build_system_prompt_tiers(agent.registry, query="where's the nearest food pantry?")
+    stable, _ = build_system_prompt_tiers(agent.registry)
     sysmsg = agent._system_message(stable)
 
     assert sysmsg["role"] == "system"
@@ -3617,9 +3617,9 @@ def test_system_message_is_a_single_cached_stable_block_for_anthropic():
     assert "GROUND EVERYTHING" in content[0]["text"]
 
 
-def test_cached_stable_block_excludes_volatile_date_and_selected_blurbs():
+def test_cached_stable_block_excludes_volatile_date_and_module_blurbs():
     # The cache never hits if volatile content sits in the cached system prefix: the date and the
-    # query-selected blurbs must live in the post-history reminder, not the system message.
+    # module blurbs must live in the post-history reminder, not the system message.
     agent = _real_agent("anthropic/claude-sonnet-4-6")
     messages = agent._build_messages("where's the nearest food pantry?", None, None)
     stable_text = "".join(b["text"] for b in messages[0]["content"])
@@ -3640,19 +3640,19 @@ def test_system_message_is_plain_string_for_non_anthropic():
     from heynyc.core.prompts import build_system_prompt_tiers
 
     agent = _real_agent("openai/gpt-4o-mini")
-    stable, _ = build_system_prompt_tiers(agent.registry, query="where's the nearest food pantry?")
+    stable, _ = build_system_prompt_tiers(agent.registry)
     content = agent._system_message(stable)["content"]
 
     assert isinstance(content, str)
     assert "GROUND EVERYTHING" in content              # rules present
     assert "Current date & time" not in content        # the mutable date is NOT in the prefix
-    assert "find_foodhelp_locations(near=" not in content  # selected blurbs are NOT in the prefix
+    assert "find_foodhelp_locations(near=" not in content  # module blurbs are NOT in the prefix
 
 
 def test_system_message_is_stable_only_and_mutables_ride_a_post_history_reminder():
     # Cache-layout fix (2026-07-21): static-first / dynamic-last. The system message is the STABLE
-    # prefix only (no minute-resolution timestamp, no query-selected blurbs), so the prefix stays
-    # byte-identical across turns and the growing history caches. The now-line and the selected
+    # prefix only (no minute-resolution timestamp or module blurbs), so the prefix stays
+    # byte-identical across turns and the growing history caches. The now-line and the module
     # blurbs ride a <system-reminder> user message placed AFTER history, next to the user turn.
     agent = _real_agent("openai/gpt-4o-mini")
     history = [
@@ -3665,7 +3665,7 @@ def test_system_message_is_stable_only_and_mutables_ride_a_post_history_reminder
     system_text = "".join(b["text"] for b in system) if isinstance(system, list) else system
     assert "GROUND EVERYTHING" in system_text
     assert "Current date & time" not in system_text          # the mutable date is NOT in the prefix
-    assert "find_foodhelp_locations(near=" not in system_text     # selected blurbs are NOT in the prefix
+    assert "find_foodhelp_locations(near=" not in system_text     # module blurbs are NOT in the prefix
 
     reminder_idx = next(
         i for i, m in enumerate(messages)

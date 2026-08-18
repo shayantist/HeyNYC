@@ -106,7 +106,6 @@ def build_runtime(
         )
     stable_prompt, _ = build_system_prompt_tiers(
         registry,
-        query="",
         include_module_guidance=not use_module_capabilities,
     )
     return PydanticRuntimeAdapter(
@@ -114,9 +113,8 @@ def build_runtime(
         registry=registry,
         tools=runtime_tools,
         system_prompt=stable_prompt,
-        prompt_builder=lambda query: build_system_prompt_tiers(
+        prompt_builder=lambda _query: build_system_prompt_tiers(
             registry,
-            query=query,
             include_module_guidance=not use_module_capabilities,
         )[1],
         use_module_capabilities=use_module_capabilities,

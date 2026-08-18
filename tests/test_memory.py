@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from heynyc.core.agent import _history_messages, _routing_query
+from heynyc.core.agent import _history_messages
 from heynyc.core.memory import (
     ContextCapacityError,
     ContinuityRecord,
@@ -171,20 +171,6 @@ def test_stamped_prior_turns_carry_their_sent_time_instead_of_blanket_staleness(
     assert "shared context" in content.lower()
     assert "retrieve current evidence" in content.lower()
     assert "may be stale" not in content.lower()
-
-
-def test_prior_assistant_facts_are_not_used_to_build_the_system_prompt():
-    query = _routing_query(
-        "what about tomorrow?",
-        [
-            {"role": "user", "content": "When is the office open?"},
-            {"role": "assistant", "content": "It closes at 5 p.m. https://example.gov/old"},
-        ],
-    )
-
-    assert "When is the office open?" in query
-    assert "5 p.m." not in query
-    assert "https://" not in query
 
 
 @pytest.mark.asyncio

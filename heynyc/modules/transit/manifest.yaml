@@ -3,16 +3,6 @@ category: transportation
 description: >-
   Plan an accessible NYC subway or bus trip and check current MTA elevator and
   escalator status using official MTA accessibility information.
-keywords:
-  - subway
-  - bus
-  - MTA
-  - transit
-  - accessible route
-  - wheelchair
-  - elevator
-  - escalator
-  - step-free
 examples:
   - "How do I get there by subway with a wheelchair?"
   - "Are the elevators working at my station?"

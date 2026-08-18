@@ -4,19 +4,6 @@ description: >-
   Find free food pantries and soup kitchens across NYC, the nearest open sites with
   their address, hours, phone, and dietary/access options (Halal, Kosher, HIV-focused,
   mobile), grounded in the city's official FoodHelp finder.
-keywords:
-  - food pantry
-  - food pantries
-  - food bank
-  - soup kitchen
-  - free food
-  - free groceries
-  - emergency food
-  - food help
-  - hungry
-  - meals
-  - halal food
-  - kosher food
 examples:
   - "Where's the nearest food pantry?"
   - "I need free food today near me"

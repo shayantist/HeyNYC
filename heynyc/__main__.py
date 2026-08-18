@@ -59,8 +59,6 @@ name: {name}
 category: general            # health | transit | housing | benefits | events | tourism | ...
 description: >-
   One sentence describing what this service helps people find or do.
-keywords:                     # words/phrases that should trigger this module
-  - {name}
 # Optional: a NYC Open Data (Socrata) dataset for "nearest X" lookups.
 # Find datasets at https://data.cityofnewyork.us, copy the dataset id from its URL.
 datasets: []
