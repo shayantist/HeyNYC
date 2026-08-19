@@ -147,9 +147,17 @@ async def test_hpd_building_lookup_grounds_counts_callouts_and_cites(monkeypatch
     # The as-of date is the most recent row date, not fetch time.
     assert complaints_cite["valid_as_of"] == "2026-06-15"
     assert violations_cite["valid_as_of"] == "2026-06-20"
+    assert "HEAT/HOT WATER: 2" in complaints_cite["snippet"]
+    assert "2026-06-15" in complaints_cite["snippet"]
+    assert "C: 2" in violations_cite["snippet"]
+    assert "2026-06-20" in violations_cite["snippet"]
+    assert "immediately hazardous" not in out
     assert "https://portal.311.nyc.gov/report-problems/" in out
     assert mapping["S3"]["url"] == "https://portal.311.nyc.gov/report-problems/"
+    assert "file a new problem" in mapping["S3"]["snippet"].lower()
     assert "{cite:S3}" in out
+    assert "or call 311" not in out
+    assert "Do not attach the resolved street address" in out
 
 
 # --- 2. abstention: no building BBL (a bare ZIP / neighborhood) -------------

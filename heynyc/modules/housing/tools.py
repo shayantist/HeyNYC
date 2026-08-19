@@ -5,7 +5,7 @@ Grounded in two NYC Open Data (Socrata) datasets, addressed by the building's ta
   - Housing Maintenance Code Complaints  (ygpa-z7cr), filtered to complaint_status='OPEN',
     summarized by major_category (HEAT/HOT WATER called out).
   - Housing Maintenance Code Violations  (wvxf-dwi5), filtered to violationstatus='Open',
-    summarized by class (class C = immediately hazardous, e.g. no-heat-in-season, called out).
+    summarized by class with class C called out.
 
 Flow: geocode the address (reusing the shared geocoder, which now carries the PAD `bbl`), then
 query both datasets by BBL. A specific street address is REQUIRED, a bare ZIP or a neighborhood
@@ -152,7 +152,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                            snapshot={"bbl": bbl, "open_violations": 0}, valid_as_of="")
         cite_311 = ctx.citations.register(
             NYC311_REPORT_URL,
-            snippet="Report an apartment maintenance, heat, or hot-water problem through NYC311",
+            snippet="Use NYC311's official Report Problems page to file a new problem",
             title="Report Problems, NYC311",
             kind="DOC",
         )
@@ -162,7 +162,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"record for this building right now. That only reflects what tenants have reported to HPD "
             f"and what HPD has cited, it doesn't guarantee there are no problems. If the user has a "
             f"heat, hot-water, or repair issue, they can still file a complaint through "
-            f"{NYC311_REPORT_URL} {{cite:{cite_311}}} or call 311."
+            f"{NYC311_REPORT_URL} {{cite:{cite_311}}}."
         )
 
     cite_c = _register(
@@ -170,6 +170,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         title="HPD Housing Maintenance Code Complaints (open)",
         snippet=f"BBL {bbl}: {_reported_count(complaint_total, complaints_incomplete)} open HPD complaints "
                 f"({_reported_count(heat_complaints, bool(missing_heat_ids))} heat/hot-water)"
+                + (f"; categories: {_summary_line(cat_counts)}" if cat_counts else "")
+                + (f"; most recent received {complaints_recent}" if complaints_recent else "")
                 + (f"; {missing_complaint_ids} problem rows lack a complaint ID"
                    if missing_complaint_ids else "")
                 + ("; result limited to 1,000 rows" if complaints_truncated else ""),
@@ -187,6 +189,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         title="HPD Housing Maintenance Code Violations (open)",
         snippet=f"BBL {bbl}: {_reported_count(len(violations), violations_truncated)} open HPD violations "
                 f"({class_c} class C)"
+                + (f"; classes: {_summary_line(class_counts)}" if class_counts else "")
+                + (f"; most recent issued {violations_recent}" if violations_recent else "")
                 + ("; result limited to 1,000 rows" if violations_truncated else ""),
         snapshot={"bbl": bbl, "open_violations": len(violations),
                   "violations_truncated": violations_truncated,
@@ -197,12 +201,17 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
     cite_311 = ctx.citations.register(
         NYC311_REPORT_URL,
-        snippet="Report an apartment maintenance, heat, or hot-water problem through NYC311",
+        snippet="Use NYC311's official Report Problems page to file a new problem",
         title="Report Problems, NYC311",
         kind="DOC",
     )
 
-    lines = [f"Building: {origin.label} (BBL {bbl})", "Grounded in NYC HPD open data, report only these:"]
+    lines = [
+        f"Building lookup context: {origin.label} (BBL {bbl})",
+        "Grounded in NYC HPD open data, report only these:",
+        "Do not attach the resolved street address to a cited count or date claim. The HPD "
+        f"citations below prove the records returned for BBL {bbl}.",
+    ]
 
     lines.append(f"- Open HPD complaints: {_reported_count(complaint_total, complaints_incomplete)} total"
                  + (f", including {_reported_count(heat_complaints, bool(missing_heat_ids))} "
@@ -220,12 +229,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         lines.append(f"  Most recent complaint received: {complaints_recent}")
 
     lines.append(f"- Open HPD violations: {_reported_count(len(violations), violations_truncated)} total"
-                 + (f", including {class_c} class C (immediately hazardous, includes no-heat in season)"
+                 + (f", including {class_c} class C"
                     if class_c else "")
                  + f" {{cite:{cite_v}}}")
     if violations:
-        lines.append(f"  By class: {_summary_line(class_counts)}"
-                     " (A = non-hazardous, B = hazardous, C = immediately hazardous)")
+        lines.append(f"  By class: {_summary_line(class_counts)}")
     if violations_truncated:
         lines.append("  The violations result was limited to 1,000 rows, so the total is a lower bound.")
     if violations_recent:
@@ -234,7 +242,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     lines.append(
         f"Tell the tenant these are the building's OPEN records only (issues already reported/cited). "
         f"To report a NEW no-heat / no-hot-water or repair problem, use {NYC311_REPORT_URL} "
-        f"{{cite:{cite_311}}} or call 311. "
+        f"{{cite:{cite_311}}}. "
         f"Don't invent counts, dates, or outcomes beyond what's cited above."
     )
     return "\n".join(lines)
@@ -581,8 +589,8 @@ def get_tools() -> list[Tool]:
                 "Look up a specific NYC building's OPEN HPD complaints and violations (heat/hot-water, "
                 "safety, unsanitary conditions, etc.), grounded in NYC Open Data and cited. Pass "
                 "`address` = a specific NYC STREET address (building number + street). Returns counts "
-                "by category/class, calling out HEAT/HOT WATER complaints and class C (immediately "
-                "hazardous) violations, plus the most recent dates. If the address is only a ZIP or a "
+                "by category/class, calling out HEAT/HOT WATER complaints and class C violations, "
+                "plus the most recent dates. If the address is only a ZIP or a "
                 "neighborhood (no building BBL), the tool abstains and asks for a street address; it "
                 "never guesses a building. Empty results are reported as 'no open records', not "
                 "'problem-free'. Use for 'does my building have heat/violations, is my landlord in "

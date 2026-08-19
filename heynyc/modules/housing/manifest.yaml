@@ -64,6 +64,91 @@ situations:
     focus_tools:
       - web_fetch
       - get_housing_guidance
+  - name: housing_complaint_identity
+    definition: >-
+      The resident asks whether a housing, building, repair, occupancy, or conversion complaint can
+      be anonymous, whether they must give their name or contact information, whether the landlord
+      or other subject will learn who reported it, or whether an agency will contact the subject.
+      This includes a short follow-up to an already named complaint type, in any language.
+    high_stakes: true
+    query: >-
+      current official NYC311 exact housing complaint identity contact information anonymous
+      confidentiality owner notification procedure
+    urls:
+      - https://portal.311.nyc.gov/article/?kanumber=KA-02025
+      - https://portal.311.nyc.gov/article/?kanumber=KA-01036
+      - https://www.nyc.gov/site/hpd/services-and-information/heat-and-hot-water-information.page
+      - https://www.nyc.gov/site/hpd/services-and-information/report-a-maintenance-issue.page
+    reminder: >-
+      Use only the current official page for the exact complaint type the resident named. The
+      Building Conversion or Occupancy page and the residential Heat or Hot Water page are separate
+      procedures. Read the matching page and report only what its current text establishes about
+      required contact information, anonymity, identity disclosure, agency follow-up, or subject
+      notification. Do not transfer either procedure to another complaint type. If neither declared
+      page matches the resident's complaint, search for and fetch that exact NYC311 complaint page.
+      For a heat complaint, fetch exactly the NYC311 Heat or Hot Water page KA-01036, the HPD Heat
+      and Hot Water Information page, and the HPD Report a Maintenance Issue page. Do not fetch the
+      conversion page KA-02025 for a heat complaint. For a conversion complaint, fetch KA-02025 and
+      do not use either heat procedure as evidence.
+      Fetch NYC311 complaint pages with render=true because their interactive sections can be
+      missing from the static extraction.
+      Answer every privacy part the resident asked. For the residential heat page, keep its
+      contact-information requirement separate from its published managing-agent contact process.
+      If current official pages conflict, lead with the conflict rather than a yes or no answer.
+      Put each page's anonymity statement in its own sentence with only that page's citation. State
+      the conflict itself as a separate limitation without trying to cite both claims as one block.
+      Do not reconcile the conflict. Give the resident the official channel where they can confirm
+      the procedure before sharing identifying information.
+      If the exact source is silent, say so, keep the supported filing route and source link, and
+      suggest asking 311 before sharing identifying information.
+    focus_tools:
+      - web_fetch
+      - web_search
+  - name: chronic_tenant_repairs
+    definition: >-
+      A tenant describes a repair or building condition that has continued after one or more 311
+      reports, says several tenants or apartments have the same unresolved condition, asks what the
+      public 311 and HPD records show together, or asks how tenants in the building can organize or
+      form a tenant association. This includes repeated elevator, pest, mold, heat, water, and other
+      repair problems, in any language. A routine request for the status of one 311 number alone is
+      not this situation.
+    high_stakes: true
+    query: >-
+      current official NYC chronic building repairs tenant organizing Talk to Tenants Partners in
+      Preservation 311 HPD
+    urls:
+      - https://www.nyc.gov/content/organize/pages/talk-to-tenants-nav
+      - https://www.nyc.gov/site/hpd/services-and-information/partners-in-preservation.page
+    reminder: >-
+      Compose records without merging their meanings. Use check_311_request when a request number is
+      supplied. If a request number is supplied, do not also call search_311_complaints unless the
+      resident explicitly asks for other recent nearby reports. Use search_311_complaints when no
+      request number is available. Before any other lookup in that path, call
+      load_capability(id="nyc311_status") directly. For a rat complaint, pass
+      complaint_terms=["rodent"], not a short fragment or a combined
+      phrase. Use get_hpd_building_records for separate HPD complaint and violation records. Load the
+      parent housing capability for that HPD building tool. Use
+      get_hpd_litigation_records only when the resident asks about court or litigation records.
+      Preserve each source's agency, record type, dates, and status. Closed does not prove repaired.
+      Keep each sentence or bullet to one factual or procedural claim and its direct citation. Give
+      only the next action supported by that record. Offer the current Talk to Tenants or Partners in
+      Preservation route when repeated conditions or organizing are relevant, without claiming
+      affiliation, enrollment, or contact. Use the Talk to Tenants page for its published organizing
+      information. Fetch Partners in Preservation with the focused query "call 311 ask for Tenant
+      Helpline other questions" and evidence_scope="Tenant Helpline route" for that handoff, and
+      report only the Tenant Helpline sentence from that source. Do not add a purpose qualifier such
+      as "for tenant-organizing questions" to that sentence. Do not name program partners or
+      districts unless the resident asks for them. Do
+      not state common-area or retaliation details in this path because that focused citation does
+      not contain them. Do not add a recordkeeping checklist unless the retrieved source supplies
+      those steps. Keep the cited reporting action in its own sentence and state the read-only
+      limitation separately. HeyNYC is read-only and does not file, update, send, or close anything.
+      Do not add organizing or legal escalation to an ordinary single-request lookup.
+    focus_tools:
+      - check_311_request
+      - search_311_complaints
+      - get_hpd_building_records
+      - web_fetch
 seeds:
   - https://access.nyc.gov
   - https://portal.311.nyc.gov/article/?kanumber=KA-02518
@@ -175,3 +260,10 @@ prompt: |
 
   Eviction and shelter are high-stakes and stressful. Be warm and plain, lead with the one next step,
   and never fabricate a form, deadline, amount, or eligibility outcome, route to 311 when unsure.
+
+  COMPLAINT IDENTITY / PRIVACY PROCEDURE is complaint-specific. When the resident asks whether a
+  housing report can be anonymous, whether contact information is required, or whether the owner
+  will be contacted, use the exact current NYC311 complaint page loaded for that situation. Never
+  reuse a heat, conversion, short-term-rental, discrimination, or other complaint's procedure for a
+  different report. If the exact page is silent, say that the page does not confirm it, keep the
+  supported reporting route and link, and suggest asking 311 before sharing identifying information.

@@ -163,6 +163,11 @@ explicitly covers every location or names that location. Otherwise state the gap
 Match every conclusion to the evidence's time and population scope. Preserve the source's as-of date. \
 A sample or shortlist does not describe the complete population. Do not call a condition current, \
 permanent, temporary, or citywide unless the cited evidence establishes that exact scope. \
+When a resident asks whether a report or application is anonymous, confidential, or disclosed, \
+use the source for that exact complaint or application procedure. Do not transfer a privacy rule, \
+identity requirement, subject-notification rule, or follow-up process from another procedure. If \
+that procedure's source is silent, say you could not confirm it and preserve the supported filing \
+route and source link. \
 When evidence does not substantiate a premise, say that. Do not assert the opposite unless the \
 cited evidence establishes it. \
 When a resident asks whether an activity is medically safe for their health condition or recovery, \

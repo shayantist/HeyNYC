@@ -1731,6 +1731,36 @@ def test_attach_location_action_urls_keeps_adjacent_citations_with_the_claim():
     assert "query=40.76545,-73.97496" in text
 
 
+def test_attach_location_action_urls_separates_the_next_claim():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "First location. {cite:S1} Second location. {cite:S2}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "title": "NYC 311 Service Request 1",
+                "provenance": {"snapshot": {"lat": 40.76082, "lon": -73.97737}},
+            },
+            "S2": {
+                "kind": "DATA",
+                "title": "NYC 311 Service Request 2",
+                "provenance": {"snapshot": {"lat": 40.76545, "lon": -73.97496}},
+            },
+        },
+    )
+
+    assert (
+        "Directions for NYC 311 Service Request 1: "
+        "https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737"
+    ) in text
+    assert (
+        "Directions for NYC 311 Service Request 2: "
+        "https://www.google.com/maps/search/?api=1&query=40.76545,-73.97496"
+    ) in text
+    assert "\n\n\n" not in text
+
+
 def test_attach_location_action_urls_does_not_duplicate_existing_map():
     from heynyc.core.agent import _attach_location_action_urls
 

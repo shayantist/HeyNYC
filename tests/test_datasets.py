@@ -42,11 +42,21 @@ async def test_query_dataset_sends_soql_and_token():
         return httpx.Response(200, json=[{"ok": 1}])
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    out = await query_dataset("abc-1234", where="status='Activated'", limit=5, client=client, app_token="TKN")
+    out = await query_dataset(
+        "abc-1234",
+        where="status='Activated'",
+        select="status, count(*) as count",
+        group="status",
+        limit=5,
+        client=client,
+        app_token="TKN",
+    )
     await client.aclose()
 
     assert out == [{"ok": 1}]
     assert seen["params"]["$where"] == "status='Activated'"
+    assert seen["params"]["$select"] == "status, count(*) as count"
+    assert seen["params"]["$group"] == "status"
     assert seen["params"]["$limit"] == "5"
     assert seen["token"] == "TKN"
 
@@ -186,3 +196,25 @@ async def test_query_dataset_requests_system_fields():
     await query_dataset("abc-1234", client=client)
     await client.aclose()
     assert seen["params"]["$$exclude_system_fields"] == "false"
+
+
+async def test_query_dataset_can_omit_row_only_defaults_for_an_aggregate():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json=[])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await query_dataset(
+        "abc-1234",
+        select="status, count(*) as count",
+        group="status",
+        limit=None,
+        exclude_system_fields=None,
+        client=client,
+    )
+    await client.aclose()
+
+    assert "$limit" not in seen["params"]
+    assert "$$exclude_system_fields" not in seen["params"]

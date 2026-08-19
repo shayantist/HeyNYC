@@ -2330,6 +2330,13 @@ def _attach_location_action_urls(
     """Keep a usable map beside every cited NYC location when the model drops it."""
     answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
     available_ids = set(citations) if available_citation_ids is None else available_citation_ids
+    mapped_ids = {
+        cid
+        for cid in _CITE_MARKER_RE.findall(answer_body)
+        if cid in available_ids
+        and citations.get(cid, {}).get("kind") == "DATA"
+        and _citation_coordinates(citations.get(cid, {})) is not None
+    }
     for cid in dict.fromkeys(_CITE_MARKER_RE.findall(answer_body)):
         citation = citations.get(cid, {})
         if cid not in available_ids or citation.get("kind") != "DATA":
@@ -2339,16 +2346,19 @@ def _attach_location_action_urls(
         if coordinates is None:
             continue
         url = maps_link(*coordinates)
+        title = " ".join(str(citation.get("title") or "").split())[:120]
+        directions = f"Directions for {title}" if len(mapped_ids) > 1 and title else "Directions"
         if _block_has_map_for_coordinates(answer_body, coordinates):
             continue
         text = re.sub(
-            rf"{re.escape(marker)}(?:[ \t]+{{cite:S\d+}})*(?:\n  Directions: https?://\S+)*",
-            lambda match: f"{match.group(0)}\n  Directions: {url}",
+            rf"{re.escape(marker)}(?:[ \t]+{{cite:S\d+}})*[.!?]?"
+            rf"(?:\n  Directions: https?://\S+)*",
+            lambda match: f"{match.group(0)}\n  {directions}: {url}\n",
             text,
             count=1,
         )
         answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
-    return text
+    return re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", text)
 
 
 def _broad_event_context_feedback(

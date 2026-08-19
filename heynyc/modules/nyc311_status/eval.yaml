@@ -54,8 +54,21 @@
   utility_criterion: >-
     Summarize recent matching 311 complaints near the location by status and list a few of the most
     recent with their complaint type, status, and open date, each cited. Do not assert a citywide
-    total the data does not support, and state the once-a-day update caveat.
+    total the data does not support. State the time window and radius used.
   notes: The about + near lane. Filter on complaint_type and location; cite every listed request.
+
+- id: sr311_area_custom_window_radius
+  tags: [must-win]
+  query: "Show me noise complaints from the last 7 days within 1600 meters of Union Square."
+  expect_tools: [search_311_complaints]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Pass within_days=7 and radius_meters=1600 to the tool. Report that exact time window and radius,
+    summarize the complete filtered status counts, and cite any individual examples separately.
 
 - id: sr311_not_found_abstains
   tags: [must-win]

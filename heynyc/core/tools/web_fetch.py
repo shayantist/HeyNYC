@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import unicodedata
 from datetime import datetime
 from io import BytesIO
@@ -168,8 +169,18 @@ def _terms(text: str) -> set[str]:
 
 
 def _relevant_chunks(text: str, query: str, limit: int = 2) -> list[str]:
-    chunks = chunk_text(text, max_chars=1800, overlap=180)
     wanted = _terms(query)
+    chunks = []
+    for index, chunk in enumerate(chunk_text(text, max_chars=1800, overlap=180)):
+        if index:
+            boundary = re.search(r'[.!?]["\'’”]?\s+', chunk)
+            if boundary:
+                tail = chunk[boundary.end():]
+                lost_terms = (wanted & _terms(chunk[:boundary.end()])) - _terms(tail)
+                chunk = chunk.partition(" ")[2] or chunk if lost_terms else tail
+            else:
+                chunk = chunk.partition(" ")[2] or chunk
+        chunks.append(chunk)
     scored = [
         (
             index,
@@ -196,7 +207,11 @@ def _text_tokens(text: str) -> int:
     return int(litellm.token_counter(model=config.HEYNYC_MODEL, text=text))
 
 
-def _evidence_chunks(text: str, query: str) -> list[str]:
+def _evidence_chunks(
+    text: str, query: str, *, force_focus: bool = False,
+) -> list[str]:
+    if force_focus and query:
+        return _relevant_chunks(text, query)
     if _text_tokens(text) <= _MAX_FULL_PAGE_TOKENS:
         return [text]
     return _relevant_chunks(text, query) if query else chunk_text(text)[:2]
@@ -478,7 +493,7 @@ def web_fetch_tools() -> list[Tool]:
                 "unverified; preserve the URL so the resident can check it."
             )
         final_url, title, text = fetched.final_url, fetched.title, fetched.text
-        chunks = _evidence_chunks(text, query)
+        chunks = _evidence_chunks(text, query, force_focus=bool(evidence_scope))
         if not chunks:
             return "The page was fetched but did not contain text relevant to the requested query."
         content_scope = (
@@ -501,6 +516,15 @@ def web_fetch_tools() -> list[Tool]:
             evidence = f"SOURCE TRUST: {label}\n\n{evidence}"
         if warning:
             evidence = f"{warning}\n\n{evidence}"
+        citation_evidence = evidence
+        if chunks == [text] and query:
+            focused = _relevant_chunks(text, query)
+            if focused:
+                citation_evidence = "\n\n".join(focused)
+                if tier != "authoritative":
+                    citation_evidence = f"SOURCE TRUST: {label}\n\n{citation_evidence}"
+                if warning:
+                    citation_evidence = f"{warning}\n\n{citation_evidence}"
         provenance = {
             "evidence_grade": (
                 "discovery" if warning else "authoritative" if authoritative else "fetched"
@@ -510,7 +534,7 @@ def web_fetch_tools() -> list[Tool]:
         }
         cite = ctx.citations.register(
             final_url,
-            snippet=evidence,
+            snippet=citation_evidence,
             title=title or "Fetched page",
             kind="WEB",
             provenance=provenance,

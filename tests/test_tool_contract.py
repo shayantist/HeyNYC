@@ -39,6 +39,7 @@ CAPABILITY_TOOLS = {
     "benefits": {
         "search_benefits",
         "confirm_screen_access_nyc_eligibility_facts",
+        "get_utility_shutoff_guidance",
     },
     "childcare": {"find_child_care_connect_programs"},
     "clinics": {"find_clinics", "get_health_coverage_guidance"},
@@ -63,9 +64,7 @@ CAPABILITY_TOOLS = {
     "workers": {"get_worker_rights_guidance"},
 }
 
-SITUATION_CAPABILITY_TOOLS = {
-    "benefits-utility-shutoff": {"get_utility_shutoff_guidance"},
-}
+SITUATION_CAPABILITY_TOOLS = {}
 
 
 def _registry() -> Registry:
@@ -286,8 +285,10 @@ def test_model_visible_surface_is_pinned():
         if capability.id == "benefits-utility-shutoff"
     )
     utility_instructions = "\n".join(utility._instructions)
-    assert "Enabled situation tools: `get_utility_shutoff_guidance`" in utility_instructions
-    assert "Load the parent `benefits` capability" not in utility_instructions
+    assert (
+        "Load the parent `benefits` capability if you need module tools: "
+        "`get_utility_shutoff_guidance`"
+    ) in utility_instructions
 
     runtime = build_runtime(
         registry,

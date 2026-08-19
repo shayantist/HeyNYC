@@ -286,6 +286,36 @@ async def test_web_fetch_uses_the_resident_turn_when_query_is_omitted(monkeypatc
     assert "help complete an online or paper application" in out
 
 
+async def test_web_fetch_registers_query_focused_semantic_evidence_for_full_pages(
+    monkeypatch,
+):
+    url = "https://www.nyc.gov/example"
+    text = (
+        "Official program overview. " * 180
+        + "Tenants have the right to organize and may call the Tenant Helpline."
+    )
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 2_000)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([
+            ServiceModule(
+                name="housing",
+                source_tiers={"authoritative": ["nyc.gov"]},
+            )
+        ]),
+        http=_Client({url: text}),
+    )
+
+    out = await web_fetch_tools()[0].handler(
+        {"url": url, "query": "tenant right organize Tenant Helpline"}, ctx,
+    )
+
+    assert "Official program overview" in out
+    snippet = ctx.citations.mapping()["S1"]["snippet"]
+    assert "right to organize" in snippet
+    assert len(snippet) < len(text)
+
+
 def test_web_fetch_schema_accepts_one_public_url():
     tool = web_fetch_tools()[0]
 
@@ -347,6 +377,53 @@ async def test_web_fetch_preserves_caller_evidence_scope():
 
     assert out.startswith("EVIDENCE SCOPE: SHUTOFF PROTECTIONS\n")
     assert "SOURCE S1:" in out
+
+
+async def test_web_fetch_evidence_scope_limits_full_page_output(monkeypatch):
+    url = "https://example.com/tenant-help"
+    text = (
+        "Unrelated program history and partner directory. " * 80
+        + "For other questions, call 311 and ask for the Tenant Helpline."
+    )
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 2_000)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=_Client({url: text}),
+    )
+
+    out = await web_fetch_tools()[0].handler(
+        {
+            "url": url,
+            "query": "call 311 ask Tenant Helpline",
+            "evidence_scope": "Tenant Helpline route",
+        },
+        ctx,
+    )
+
+    assert "Tenant Helpline" in out
+    assert out.count("Unrelated program history") < 80
+    assert "CONTENT SCOPE: query-selected excerpts" in out
+
+
+def test_relevant_web_excerpts_do_not_start_inside_a_word():
+    words = [f"distinctword{index}" for index in range(500)]
+    text = " ".join(words)
+
+    chunks = web_fetch_module._relevant_chunks(text, "distinctword300")
+
+    assert all(chunk.split()[0] in words for chunk in chunks)
+
+
+def test_relevant_web_excerpts_start_at_a_complete_sentence():
+    text = (
+        "Background " + ("context " * 230) + ". "
+        "For organizing questions, call 311 and ask for the Tenant Helpline."
+    )
+
+    chunks = web_fetch_module._relevant_chunks(text, "call 311 Tenant Helpline")
+
+    assert chunks[0].startswith("For organizing questions")
 
 
 async def test_web_fetch_rejects_userinfo_before_network():

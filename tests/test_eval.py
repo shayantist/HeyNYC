@@ -1200,6 +1200,8 @@ def test_public_capability_gate_stays_compact_and_complete():
         "public_capability_landmark_essentials",
         "public_capability_new_parent_services",
         "public_capability_spanish_snap_food_and_center",
+        "tenant_repair_closed_elevator_record_composition",
+        "tenant_repair_repeated_pests_without_request_number",
         "public_capability_tenant_rights_and_311_status",
         "public_capability_urgent_housing_then_lotteries",
         "workers_tip_theft",

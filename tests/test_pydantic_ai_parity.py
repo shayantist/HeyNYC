@@ -6252,7 +6252,8 @@ async def test_native_capabilities_replace_duplicate_prompt_module_guidance() ->
     assert capability.get_instructions() == [
         "UNIQUE BENEFITS INSTRUCTIONS\n\n"
         "This capability has no module-specific action tools enabled. Other workflows "
-        "may be available through the deferred capability catalog. Do not collect inputs "
+        "may be available through the deferred capability catalog. Never load a capability "
+        "that is already available. Do not collect inputs "
         "for or claim to perform an action unless its tool is loaded."
     ]
 

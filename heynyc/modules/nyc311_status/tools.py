@@ -3,7 +3,7 @@
   - "is my complaint moving?"  -> sr_number: look up one row by its own unique_key
     (the SR number). ONLY the number is sent; a resident's address is never geocoded
     or logged on this path.
-  - "what's happening with 311 complaints about X near me?" -> about / near: recent
+  - "what's happening with 311 complaints about X near me?" -> complaint_terms / near: recent
     rows filtered on the dataset's own columns (complaint_type, created_date) and the
     location point column (within_circle), summarized by status.
 
@@ -15,21 +15,27 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from datetime import datetime, timedelta
-from urllib.parse import quote
+from datetime import UTC, datetime, timedelta
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import dataset_url, query_dataset
-from heynyc.core.tools.geo import geocode, maps_link
+from heynyc.core.tools.geo import GeoPoint, geocode, maps_link
 
 # ponytail: single source for the dataset id; the manifest declares the matching binding
 # (category service_request_311) only so the capability table / grounding label read it.
 DATASET_ID = "erm2-nwe9"
 _NYC_TZ = ZoneInfo("America/New_York")
-_RECENT_DAYS = 30   # area lane window: "recent" 311 activity, keeps the query cheap + honest
-_RADIUS_M = 800     # ~0.5 mile, the "near me" bound handed to Socrata within_circle
+_DEFAULT_WITHIN_DAYS = 30
+_MIN_WITHIN_DAYS = 1
+_MAX_WITHIN_DAYS = 365
+_DEFAULT_RADIUS_METERS = 800
+_MIN_RADIUS_METERS = 100
+_MAX_RADIUS_METERS = 50_000
+_AREA_ORDER = "created_date DESC"
+_AREA_SELECT = "status, count(*) as count"
 _REFILE_URL = "https://portal.311.nyc.gov/article/?kanumber=KA-02419"
 _REFILE_VERIFIED_ON = "2026-07-26"
 _REFILE_GUIDANCE = (
@@ -94,6 +100,106 @@ def _refile_citation(ctx: ToolContext) -> str:
     )
 
 
+def _empty_area_citation(
+    ctx: ToolContext,
+    where: str,
+    scope: str,
+    origin: GeoPoint | None,
+) -> str:
+    checked_at = _nyc_now().isoformat()
+    url = _area_query_url(where)
+    return ctx.citations.register(
+        url,
+        snippet=f"No matching 311 rows for {scope}; checked {checked_at}",
+        title="NYC 311 Service Requests search",
+        kind="DATA",
+        valid_as_of=checked_at,
+        provenance=data_provenance(
+            {"status_counts": {}, "examples": []},
+            record_id="empty-area-search",
+            field_pointer="/",
+            derivation=_area_derivation(where, origin=origin, checked_at=checked_at),
+        ),
+    )
+
+
+def _area_citation(
+    ctx: ToolContext,
+    where: str,
+    scope: str,
+    rows: list[dict],
+    counts: Counter,
+    max_results: int,
+    origin: GeoPoint | None,
+) -> str:
+    checked_at = _nyc_now().isoformat()
+    breakdown = ", ".join(f"{n} {status}" for status, n in counts.most_common())
+    total = sum(counts.values())
+    return ctx.citations.register(
+        _area_query_url(where),
+        snippet=(
+            f"{total} recent 311 rows for {scope}; {total} total matches; "
+            f"{len(rows)} most recent examples shown; status: {breakdown}"
+        ),
+        title="NYC 311 Service Requests search",
+        kind="DATA",
+        valid_as_of=checked_at,
+        provenance=data_provenance(
+            {"status_counts": dict(counts), "examples": rows},
+            record_id="area-search",
+            field_pointer="/",
+            derivation=_area_derivation(
+                where,
+                max_results,
+                origin=origin,
+                checked_at=checked_at,
+            ),
+        ),
+    )
+
+
+def _area_derivation(
+    where: str,
+    max_results: int | None = None,
+    *,
+    origin: GeoPoint | None = None,
+    checked_at: str | None = None,
+) -> dict:
+    derivation = {
+        "where": where,
+        "aggregate": {"select": _AREA_SELECT, "group": "status"},
+    }
+    if origin is not None:
+        derivation["origin"] = {
+            "label": origin.label,
+            "latitude": origin.lat,
+            "longitude": origin.lon,
+        }
+    if checked_at is not None:
+        derivation["checked_at"] = checked_at
+    if max_results is not None:
+        derivation["examples"] = {
+            "order": _AREA_ORDER,
+            "limit": max_results,
+            "exclude_system_fields": False,
+        }
+    return derivation
+
+
+def _area_query_url(where: str) -> str:
+    return dataset_url(DATASET_ID) + "?" + urlencode({
+        "$where": where,
+        "$select": _AREA_SELECT,
+        "$group": "status",
+    })
+
+
+def _approximate_miles(radius_meters: int) -> str:
+    miles = round(radius_meters / 1609.344, 1)
+    amount = str(int(miles)) if miles.is_integer() else str(miles)
+    return f"about {amount} {'mile' if miles <= 1 else 'miles'}"
+
+
 async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
     # PII/injection boundary: reduce to digits, so ONLY the number reaches Socrata and a stray
     # quote can never alter the SoQL. NYC SR numbers are all digits (verified live).
@@ -141,12 +247,29 @@ async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-async def _lookup_area(about: str, near: str, limit: int, ctx: ToolContext) -> str:
-    cutoff = (_nyc_now() - timedelta(days=_RECENT_DAYS)).strftime("%Y-%m-%dT00:00:00")
+async def _lookup_area(
+    complaint_terms: list[str],
+    near: str,
+    max_results: int,
+    within_days: int,
+    radius_meters: int,
+    ctx: ToolContext,
+) -> str:
+    cutoff = (
+        (_nyc_now().astimezone(UTC) - timedelta(days=within_days))
+        .astimezone(_NYC_TZ)
+        .strftime("%Y-%m-%dT%H:%M:%S")
+    )
     clauses = [f"created_date > '{cutoff}'"]
-    if about:
-        safe = about.replace("'", "''")  # SoQL escapes a quote by doubling it
-        clauses.append(f"upper(complaint_type) like upper('%{safe}%')")
+    if complaint_terms:
+        matches = []
+        for term in complaint_terms:
+            safe = term.replace("'", "''")  # SoQL escapes a quote by doubling it
+            matches.extend([
+                f"upper(complaint_type) like upper('%{safe}%')",
+                f"upper(descriptor) like upper('%{safe}%')",
+            ])
+        clauses.append(f"({' OR '.join(matches)})")
 
     origin = None
     if near:
@@ -159,33 +282,79 @@ async def _lookup_area(about: str, near: str, limit: int, ctx: ToolContext) -> s
                 f"'{near}' could match several places. Give me a specific NYC address or landmark "
                 "and I'll check 311 activity there."
             )
-        clauses.append(f"within_circle(location, {origin.lat}, {origin.lon}, {_RADIUS_M})")
+        clauses.append(
+            f"within_circle(location, {origin.lat}, {origin.lon}, {radius_meters})"
+        )
 
-    rows = await query_dataset(
+    where = " AND ".join(clauses)
+    aggregate_rows = await query_dataset(
         DATASET_ID,
-        where=" AND ".join(clauses),
-        order="created_date DESC",
-        limit=200,
+        where=where,
+        select=_AREA_SELECT,
+        group="status",
+        limit=None,
+        exclude_system_fields=None,
         client=ctx.http,
     )
+    counts = Counter()
+    for row in aggregate_rows:
+        status = str(row.get("status", "") or "").strip() or "Unknown"
+        try:
+            count = int(row.get("count", 0))
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counts[status] += count
 
-    scope = f'about "{about}" ' if about else ""
-    where_label = f"near {origin.label}" if origin else "in that area"
-    if not rows:
+    scope = (
+        "about " + " or ".join(f'\"{term}\"' for term in complaint_terms) + " "
+        if complaint_terms
+        else ""
+    )
+    where_label = (
+        f"within {radius_meters} meters ({_approximate_miles(radius_meters)}) of {origin.label}"
+        if origin
+        else "in that area"
+    )
+    if not counts:
+        cite = _empty_area_citation(
+            ctx,
+            where,
+            f'{scope}{where_label} in the last {within_days} days',
+            origin,
+        )
         return (
-            f"I found no recent NYC 311 complaints {scope}{where_label} in the last {_RECENT_DAYS} "
-            "days. That could mean none were filed, or they are older than this window. To report a "
+            f"I found no recent NYC 311 complaints {scope}{where_label} in the last {within_days} "
+            f"days. That could mean none were filed, or they are older than this window. {{cite:{cite}}} "
+            "To report a "
             "new problem or check official status, use portal.311.nyc.gov or call 311."
         )
 
-    counts = Counter(str(r.get("status", "") or "").strip() or "Unknown" for r in rows)
+    rows = await query_dataset(
+        DATASET_ID,
+        where=where,
+        order=_AREA_ORDER,
+        limit=max_results,
+        client=ctx.http,
+    )
     breakdown = ", ".join(f"{n} {status}" for status, n in counts.most_common())
+    area_cite = _area_citation(
+        ctx,
+        where,
+        f"{scope}{where_label} in the last {within_days} days".strip(),
+        rows,
+        counts,
+        max_results,
+        origin,
+    )
+    total = sum(counts.values())
     lines = [
-        f"Recent NYC 311 complaints {scope}{where_label} (created in the last {_RECENT_DAYS} days):",
-        f"- Of the {len(rows)} I found, status is: {breakdown}",
+        f"Recent NYC 311 complaints {scope}{where_label} "
+        f"(created in the last {within_days} days) {{cite:{area_cite}}}:",
+        f"- Of the {total} I found, status is: {breakdown} {{cite:{area_cite}}}",
         "Most recent:",
     ]
-    for index, record in enumerate(rows[:limit], 1):
+    for index, record in enumerate(rows[:max_results], 1):
         key = str(record.get("unique_key", "") or "").strip()
         status = str(record.get("status", "") or "").strip() or "Unknown"
         opened = str(record.get("created_date", "") or "")[:10]
@@ -207,20 +376,54 @@ async def _check_311_request(args: dict, ctx: ToolContext) -> str:
     return await _lookup_sr(str(args.get("sr_number", "") or "").strip(), ctx)
 
 
+def _bounded_int(args: dict, name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
 async def _search_311_complaints(args: dict, ctx: ToolContext) -> str:
-    about = str(args.get("about", "") or "").strip()
+    raw_terms = [
+        str(term).strip()
+        for term in (args.get("complaint_terms") or [])[:3]
+        if str(term).strip()
+    ]
+    complaint_terms = [
+        term for term in raw_terms if 4 <= len(term) <= 40
+    ]
+    if raw_terms and len(complaint_terms) != len(raw_terms):
+        return "Use one to three complaint-type or descriptor terms of at least 4 characters each."
     near = str(args.get("near", "") or "").strip()
-    if not about and not near:
+    if not complaint_terms and not near:
         return (
             "Tell me your 311 service request number to check its status, or a complaint type and an "
             "NYC location (like 'noise complaints near Union Square') to see recent 311 activity."
         )
-    try:
-        limit = int(args.get("limit", 5))
-    except (TypeError, ValueError):
-        limit = 5
-    limit = min(max(limit, 1), 10)
-    return await _lookup_area(about, near, limit, ctx)
+    max_results = _bounded_int(args, "max_results", 5, 1, 10)
+    within_days = _bounded_int(
+        args,
+        "within_days",
+        _DEFAULT_WITHIN_DAYS,
+        _MIN_WITHIN_DAYS,
+        _MAX_WITHIN_DAYS,
+    )
+    radius_meters = _bounded_int(
+        args,
+        "radius_meters",
+        _DEFAULT_RADIUS_METERS,
+        _MIN_RADIUS_METERS,
+        _MAX_RADIUS_METERS,
+    )
+    return await _lookup_area(
+        complaint_terms,
+        near,
+        max_results,
+        within_days,
+        radius_meters,
+        ctx,
+    )
 
 
 def get_tools() -> list[Tool]:
@@ -254,23 +457,50 @@ def get_tools() -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "about": {
-                        "type": "string",
-                        "description": "Complaint topic to match, such as noise or illegal parking",
+                    "complaint_terms": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {
+                            "type": "string",
+                            "minLength": 4,
+                            "maxLength": 40,
+                            "description": "One short complaint-type or descriptor term",
+                        },
+                        "description": (
+                            "One to three short, dataset-facing alternative terms matched "
+                            "independently against complaint type and descriptor. Prefer a stable "
+                            "category word, such as ['rodent'] for rats. Do not pass a sentence, "
+                            "combine alternatives into one string, or use a 2-3 letter fragment."
+                        ),
                     },
                     "near": {
                         "type": "string",
                         "description": "Optional NYC address or landmark to bound the search",
                     },
-                    "limit": {
+                    "max_results": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 10,
                         "default": 5,
                         "description": "Maximum recent complaints to list",
                     },
+                    "within_days": {
+                        "type": "integer",
+                        "minimum": _MIN_WITHIN_DAYS,
+                        "maximum": _MAX_WITHIN_DAYS,
+                        "default": _DEFAULT_WITHIN_DAYS,
+                        "description": "Lookback window in elapsed days; omit to use 30 days",
+                    },
+                    "radius_meters": {
+                        "type": "integer",
+                        "minimum": _MIN_RADIUS_METERS,
+                        "maximum": _MAX_RADIUS_METERS,
+                        "default": _DEFAULT_RADIUS_METERS,
+                        "description": "Search radius around near, in meters; omit to use 800 meters",
+                    },
                 },
-                "required": ["about"],
+                "required": ["complaint_terms"],
             },
             handler=_search_311_complaints,
             open_world=True,

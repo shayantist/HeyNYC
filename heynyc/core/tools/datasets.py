@@ -121,21 +121,29 @@ async def query_dataset(
     *,
     where: Optional[str] = None,
     select: Optional[str] = None,
+    group: Optional[str] = None,
     order: Optional[str] = None,
     q: Optional[str] = None,
-    limit: int = 1000,
+    limit: Optional[int] = 1000,
     offset: int = 0,
     client: Optional[httpx.AsyncClient] = None,
     app_token: Optional[str] = None,
+    exclude_system_fields: Optional[bool] = False,
 ) -> list[dict]:
     """Run a SoQL query against a Socrata dataset and return raw records."""
-    # `$$exclude_system_fields=false` returns the `:id` / `:updated_at` system fields so each
-    # row is addressable (row permalink) and carries its own "as of" date.
-    params: dict = {"$limit": limit, "$$exclude_system_fields": "false"}
+    # By default, `$$exclude_system_fields=false` returns `:id` / `:updated_at` so each row is
+    # addressable and carries its own "as of" date. Aggregate callers can omit row-only params.
+    params: dict = {}
+    if limit is not None:
+        params["$limit"] = limit
+    if exclude_system_fields is not None:
+        params["$$exclude_system_fields"] = "true" if exclude_system_fields else "false"
     if where:
         params["$where"] = where
     if select:
         params["$select"] = select
+    if group:
+        params["$group"] = group
     if order:
         params["$order"] = order
     if q:

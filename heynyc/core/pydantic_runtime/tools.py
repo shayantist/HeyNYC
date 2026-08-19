@@ -692,34 +692,10 @@ def build_module_capabilities(
         for module_name, available in module_tools.items()
         for tool in available
     }
-    situation_references: dict[str, list[str]] = {}
-    for module in registry.modules:
-        if module.parent:
-            continue
-        for member in descendants[module.name]:
-            for hint in member.situations:
-                for name in hint.focus_tools:
-                    if tool_owners.get(name) == module.name:
-                        situation_references.setdefault(name, []).append(
-                            situation_id(module, hint)
-                        )
-    situation_tool_capabilities = {
-        name: capability_ids[0]
-        for name, capability_ids in situation_references.items()
-        if len(capability_ids) == 1
-    }
-
     def situation_instructions(module: Any, hint: Any, available_names: set[str]) -> str:
         capability_id = situation_id(module, hint)
         owned_focus_tools = [
             name for name in hint.focus_tools if name in available_names
-        ]
-        direct_focus_tools = [
-            name for name in owned_focus_tools
-            if situation_tool_capabilities.get(name) == capability_id
-        ]
-        parent_focus_tools = [
-            name for name in owned_focus_tools if name not in direct_focus_tools
         ]
         external_focus_tools: dict[str, list[str]] = {}
         for name in hint.focus_tools:
@@ -739,13 +715,8 @@ def build_module_capabilities(
                 "Official pages: " + ", ".join(hint.urls) if hint.urls else "",
                 (
                     f"Load the parent `{module.name}` capability if you need module tools: "
-                    + ", ".join(f"`{name}`" for name in parent_focus_tools)
-                    if parent_focus_tools else ""
-                ),
-                (
-                    "Enabled situation tools: "
-                    + ", ".join(f"`{name}`" for name in direct_focus_tools)
-                    if direct_focus_tools else ""
+                    + ", ".join(f"`{name}`" for name in owned_focus_tools)
+                    if owned_focus_tools else ""
                 ),
                 *(
                     f"Load the parent `{owner}` capability if you need its tools: "
@@ -786,10 +757,7 @@ def build_module_capabilities(
             if member.prompt.strip()
         )
         all_guidance_tools = module_tools.get(module.name, ())
-        guidance_tools = [
-            tool for tool in all_guidance_tools
-            if tool.name not in situation_tool_capabilities
-        ]
+        guidance_tools = list(all_guidance_tools)
         available_tools = [*guidance_tools, *governed_available_tools]
         availability = (
             "Enabled module action tools: "
@@ -800,6 +768,7 @@ def build_module_capabilities(
         )
         availability += (
             " Other workflows may be available through the deferred capability catalog. "
+            "Never load a capability that is already available. "
             "Do not collect inputs for or claim to perform an action unless its tool is loaded."
         )
         available_tool_names = {tool.name for tool in all_guidance_tools}
@@ -872,10 +841,7 @@ def build_module_capabilities(
                         instructions=situation_instructions(
                             module, hint, available_tool_names
                         ),
-                        tools=[
-                            tool for tool in all_guidance_tools
-                            if situation_tool_capabilities.get(tool.name) == capability_id
-                        ],
+                        tools=[],
                         defer_loading=True,
                     )
                 )

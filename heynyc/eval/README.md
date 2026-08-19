@@ -1,6 +1,6 @@
 # HeyNYC evals, the no-hallucination gate
 
-How HeyNYC proves the agent doesn't lie before it ships. Every fact the agent states must trace to a real source it retrieved, or it abstains, and this suite enforces that. It's also the **definition of done** for a service module: a module isn't ready until its `eval.yaml` is green.
+How HeyNYC tests the complete resident path before it ships. Verified factual claims must trace to retrieved evidence; unsupported material must remain visibly limited and retain useful source links rather than disappearing behind generic fallback copy. A module is not ready until its relevant offline checks, live evals, and fresh trace review pass.
 
 ## Two judges: Agent (default, free) vs API (opt-in, paid)
 

@@ -308,6 +308,76 @@ def test_system_prompt_preserves_source_time_and_population_scope():
     assert "do not assert the opposite" in low
 
 
+def test_system_prompt_keeps_complaint_privacy_rules_procedure_specific():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "anonymous, confidential, or disclosed" in low
+    assert "exact complaint or application procedure" in low
+    assert "do not transfer a privacy rule" in low
+    assert "if that procedure's source is silent" in low
+
+
+def test_housing_privacy_situation_fetches_each_exact_complaint_page():
+    _module, hint = _real_registry().situation_hints()["housing_complaint_identity"]
+
+    assert hint.high_stakes is True
+    assert "KA-02025" in " ".join(hint.urls)
+    assert "KA-01036" in " ".join(hint.urls)
+    assert any("heat-and-hot-water-information" in url for url in hint.urls)
+    assert any("report-a-maintenance-issue" in url for url in hint.urls)
+    assert "exact complaint type" in hint.reminder
+    assert "source is silent" in hint.reminder
+    assert "render=true" in hint.reminder
+    assert "managing-agent contact" in hint.reminder
+    assert "lead with the conflict" in hint.reminder.lower()
+    assert "do not reconcile" in hint.reminder.lower()
+    assert "for a heat complaint, fetch exactly" in hint.reminder.lower()
+    assert "do not fetch the conversion page" in hint.reminder.lower()
+    assert "each page's anonymity statement in its own sentence" in hint.reminder.lower()
+    assert "conflict itself as a separate limitation" in hint.reminder.lower()
+
+
+def test_chronic_repair_situation_uses_current_city_organizing_routes():
+    _module, hint = _real_registry().situation_hints()["chronic_tenant_repairs"]
+
+    assert hint.high_stakes is True
+    assert any("talk-to-tenants" in url for url in hint.urls)
+    assert any("partners-in-preservation" in url for url in hint.urls)
+    assert "does not file" in hint.reminder
+    assert "ordinary single-request lookup" in hint.reminder
+    assert "load the parent housing capability" in hint.reminder.lower()
+    assert "get_hpd_building_records" in hint.focus_tools
+    assert "request number is supplied" in hint.reminder
+    assert "one factual or procedural claim" in hint.reminder.lower()
+    assert "call 311 ask for tenant helpline other questions" in hint.reminder.lower()
+    assert "do not add a recordkeeping checklist" in hint.reminder.lower()
+    assert "state the read-only limitation separately" in hint.reminder.lower()
+    assert "do not name program partners" in hint.reminder.lower()
+    assert "report only the tenant helpline sentence" in hint.reminder.lower()
+    assert "do not add a purpose qualifier" in hint.reminder.lower()
+    assert "do not state common-area or retaliation details" in hint.reminder.lower()
+    assert "load_capability(id=\"nyc311_status\")" in hint.reminder
+    assert "do not use search_tools" not in hint.reminder
+    assert 'complaint_terms=["rodent"]' in hint.reminder
+    assert 'evidence_scope="tenant helpline route"' in hint.reminder.lower()
+
+
+def test_311_status_hands_unresolved_building_repairs_to_composed_records():
+    module = next(
+        module for module in _real_registry().modules
+        if module.name == "nyc311_status"
+    )
+    low = module.prompt.lower()
+
+    assert "housing-chronic-tenant-repairs" in low
+    assert "do not also search nearby" in low
+    assert "ordinary status lookup" in low
+    assert "30-day" in low
+    assert "800-meter" in low
+    assert "within_days" in low
+    assert "radius_meters" in low
+
+
 def test_system_prompt_preserves_official_handoff_without_reasking_named_landmarks():
     low = build_system_prompt(Registry([])).lower()
 

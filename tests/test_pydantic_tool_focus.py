@@ -201,3 +201,11 @@ def test_cross_module_situation_names_the_capability_that_owns_its_tool():
 
     assert "Load the parent `food_pantries` capability" in instructions
     assert "`find_foodhelp_locations`" in instructions
+
+
+def test_loaded_capability_instructions_forbid_reloading_it():
+    registry = Registry([ServiceModule(name="housing", description="Housing help")])
+    _adapted, capabilities = build_module_capabilities(registry, {})
+    instructions = "\n".join(capabilities[0].get_instructions()).lower()
+
+    assert "never load a capability that is already available" in instructions
