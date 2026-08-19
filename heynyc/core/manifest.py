@@ -1,8 +1,9 @@
-"""ServiceModule manifest, the extension contract.
+"""ServiceModule manifest, the internal module contract.
 
-Each pluggable service ("skill") lives in `heynyc/modules/<name>/manifest.yaml`
-and declares its data sources, index seeds, web allowlist, capability blurb,
-optional tools, and eval cases. Adding a service never touches the core.
+Each service module lives in `heynyc/modules/<name>/manifest.yaml` and
+declares its data sources, index seeds, preferred domains, capability guidance,
+optional tools, and eval cases. The runtime projects these packages into agent
+capabilities; they are not Agent Skills or MCP servers.
 """
 from __future__ import annotations
 
@@ -70,7 +71,7 @@ class SituationHint(BaseModel):
 
 
 class ServiceModule(BaseModel):
-    """A single city service, loaded from a manifest.yaml."""
+    """One service module loaded from manifest.yaml."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -93,7 +94,7 @@ class ServiceModule(BaseModel):
     # RULED 2026-07-18, stakes-tiered retrieval: official modules (the DEFAULT) answer from
     # official sources only, because being wrong costs someone a benefit, a home, or their
     # safety. A module opts out (`official_only: false`) only when its answers are lifestyle
-    # discovery — events atmosphere, where-to-watch, fun — where a governed editorial pool
+    # discovery, such as events atmosphere, where-to-watch, or fun, where an editorial pool
     # matches the stakes. Enforced at load: no opt-out, no editorial/community tiers.
     official_only: bool = True
     # Submodule hint (events topics): the Ticketmaster `keyword` the agent should pass to

@@ -1,17 +1,20 @@
 # Contributing to HeyNYC
 
-HeyNYC is open source and grows through community-contributed service modules. If there's a gov't service that we haven't covered (DMV, Fair Fares, loans), we would appreciate any help with creating a well-grounded module for that service.
+HeyNYC is open source and grows through contributions that make NYC services easier to find and use.
 
-There are two ways to help:
+There are several useful ways to help:
 
-1. **Request a module** (no code): open a [New service module issue](#requesting-a-module-issue).
-2. **Add a module** (a little YAML): open a [pull request](#adding-a-module-pull-request).
+1. **Report a wrong or unhelpful answer:** use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml), without including anyone's personal information.
+2. **Propose a module:** open a [module request](#requesting-a-module).
+3. **Improve a source mapping or eval:** correct how an existing module reads, labels, or tests its source.
+4. **Add a module:** open a [pull request](#adding-a-module).
+5. **Improve the core, channels, privacy, safety, or documentation:** describe the resident or contributor problem and keep the change focused.
 
 ---
 
-## The module convention (and why it's shaped this way)
+## What a module is
 
-A module is **one folder with a YAML manifest** at its root:
+A **module** packages one area of resident help with its sources, typed operations, instructions, limitations, and evals. HeyNYC keeps each module in one folder with a YAML manifest:
 
 ```
 heynyc/modules/<name>/
@@ -22,80 +25,86 @@ heynyc/modules/<name>/
   topics/<topic>/   # optional: a submodule (reuses the parent's tool; own sources + eval)
 ```
 
-To not reinvent the wheel, we use the same **"one descriptor file per unit, in its own folder"** convention as [Backstage `catalog-info.yaml`](https://backstage.io/docs/features/software-catalog/descriptor-format/) and Helm's `Chart.yaml`: the manifest carries `name` + `description` + keywords for routing, and adding a unit means dropping in a folder: **convention over configuration**. (A HeyNYC module is a plain MCP-style tool + a schema-validated manifest; we deliberately do **not** use Anthropic Agent Skills, which are for reusable techniques, not project-specific data + config.)
+This is HeyNYC's internal package boundary, not a claimed civic-data standard. At runtime, the package becomes a deferred agent capability; source adapters translate external systems inside it, while Agent Skills, MCP, OpenAPI, and data profiles serve different boundaries. The canonical definitions, standards, and reasons for those distinctions live in the [service-module terminology guide](heynyc/modules/README.md#terminology-what-each-layer-is-called).
 
-**Shallow by default.** A module is a folder with the manifest at its root; the only nesting is an optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder for a **submodule**: a light sub-service that reuses the parent's tool and owns its own sources + eval (e.g. `events/topics/world_cup/`). Most modules are a single `manifest.yaml`.
+**Shallow by default.** A module is a folder with the manifest at its root; the only nesting is an optional `data/` subfolder for curated data, or a `topics/<topic>/` subfolder for a **submodule**: a light sub-service that reuses the parent's tool and owns its own sources and evals (for example, `events/topics/world_cup/`).
 
 The module manifest and examples live in the [modules README](heynyc/modules/README.md) and the existing module folders.
 
 ---
 
-## How your module plugs in
+## How a module plugs in
 
-You drop in a folder. The registry discovers it at startup and fans it out into the prompt, the shared grounded tools, and the test gate. At query time, factual claims your module returns pass through the grounding guard before a New Yorker sees them, so the "grounded or it abstains" contract applies no matter which module answered.
+The [registry](heynyc/core/registry.py) discovers direct module folders and one optional `topics/` level at startup. It supplies source bindings, tools, and capability instructions to the shared runtime. The [eval loader](heynyc/eval/cases.py) reads each package's eval cases separately. The [grounding boundary](heynyc/core/grounding.py) checks cited claims before delivery. If a claim cannot be verified, HeyNYC preserves useful retrieved material and source links while labeling the limitation rather than replacing the whole answer with generic fallback copy.
 
 ```mermaid
 flowchart TD
     M["Your folder<br/>manifest.yaml (+ optional tools.py, data/, eval.yaml)"]
     M --> REG["Registry auto-discovers the folder at startup"]
-    REG --> PR["Adds your keywords + blurb to the agent's prompt"]
-    REG --> TL["Wires your datasets/seeds into the shared grounded tools"]
-    REG --> EV["Adds your eval.yaml cases to the no-hallucination gate"]
-    Q["A New Yorker asks a question"] --> AGENT["Agent routes to your module, calls the grounded tools"]
-    PR --> AGENT
+    REG --> CAP["Builds deferred capabilities from descriptions, instructions, and tools"]
+    REG --> TL["Wires datasets, sources, and tools into the runtime"]
+    M --> EV["Eval loader adds eval.yaml cases to the evaluation gate"]
+    Q["A New Yorker asks a question"] --> AGENT["Agent loads the relevant capability and calls its tools"]
+    CAP --> AGENT
     TL --> AGENT
     AGENT --> GUARD{"Grounding guard:<br/>is every cited fact in the source it cited?"}
-    GUARD -->|yes| OUT["Cited answer"]
-    GUARD -->|no| ABS["Abstain or hedge, route to 311 or a human"]
+    GUARD -->|yes| OUT["Verified claim with its citation"]
+    GUARD -->|no| LIMIT["Useful evidence and links retained; limitation labeled"]
 ```
 
-The upshot for you as an author: you never have to build the safety machinery. Point the manifest at a real dataset or official page, tell the agent when to abstain, and the shared tools + guard + eval gate carry the rest.
+The shared runtime provides citation, verification, privacy, and evaluation machinery. Module authors still own accurate source mappings, typed constraints, honest limitations, and cases that prove the normal and failure paths.
 
 ---
 
-## Requesting a module (issue)
+## Requesting a module
 
 No coding required. Open an issue using the **"Propose a new service module"** template and fill in:
 - the service name and what it helps people do,
-- the official NYC page(s) for it,
-- a NYC Open Data dataset id if it's a "find nearest X" service (search
-  <https://data.cityofnewyork.us>),
+- the pages from the agency, organization, or data publisher responsible for it,
+- a NYC Open Data dataset id if it is a "find nearest X" service (search the
+  [NYC Open Data catalog](https://data.cityofnewyork.us)),
 - 2-3 real questions a person would ask.
 
-A maintainer (or you!) can turn that into a module.
+A maintainer or contributor can turn that into a module.
 
 ---
 
-## Adding a module (pull request)
+## Adding a module
 
 ```bash
 # 1. Fork + clone, then run from the repository root
 uv sync --extra dev
 
-# 2. Scaffold a module
+# 2. Scaffold the internal module package
 uv run python -m heynyc new-module <name>
 
 # 3. Edit heynyc/modules/<name>/manifest.yaml  (see heynyc/modules/README.md)
-#    Add a few eval cases in eval.yaml, include at least one `abstain: true` case.
+#    Add normal, missing-source-detail, and relevant inverse cases in eval.yaml.
 
-# 4. Confirm it loads and tests pass
+# 4. Confirm it loads and offline tests pass
 uv run python -m heynyc modules
 uv run python -m pytest -q
 
-# 5. (If it indexes pages) rebuild + sanity-check
+# 5. Run the module's focused live eval with maintainer approval, then have
+#    a fresh-context reviewer inspect the saved trace.
+uv run python -m heynyc eval --module <name>
+
+# 6. (If it indexes pages) rebuild + sanity-check
 uv run python -m heynyc index-build
 uv run python -m heynyc chat "a question your module should handle"
 ```
 
-Open a PR using the template. Keep modules **grounded**: never return a fact (location, distance, hours, eligibility, price) that didn't come from a tool/dataset. When in doubt, the module's `prompt` should tell the agent to **abstain and link to the official page**.
+Open a PR using the template. Never present a location, distance, hour, eligibility rule, price, or deadline as verified unless a retrieved source supports it. When support is incomplete, keep the useful record and source link, identify the missing or conflicting detail, and never fill the gap from model memory.
 
 ### PR checklist
 - [ ] One folder under `heynyc/modules/<name>/` with `manifest.yaml`.
-- [ ] `keywords` reflect how real people phrase it.
+- [ ] `examples` reflect how residents actually phrase the need.
 - [ ] If using a dataset, `field_map` matches the dataset's actual columns.
-- [ ] `prompt` says which tool to use, to cite sources, and **when to abstain**.
-- [ ] `eval.yaml` has ≥1 grounded case and ≥1 `abstain: true` case.
+- [ ] `prompt` names the relevant operation, source boundaries, and limitations.
+- [ ] Typed inputs validate every resident or model supplied constraint.
+- [ ] `eval.yaml` covers the normal path, a relevant source gap or provider failure, and the inverse of any deterministic response.
 - [ ] `uv run python -m heynyc modules` lists it; `pytest` is green.
+- [ ] The focused live eval passes and a fresh-context reviewer has inspected the saved trace.
 
 ---
 

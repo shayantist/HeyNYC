@@ -53,12 +53,14 @@ def _load_retriever(required: bool):
 
 
 _MANIFEST_TEMPLATE = """\
-# {name} service module. Fill in the fields below, no code needed for most services.
+# {name} service module.
 # Docs: heynyc/modules/README.md
 name: {name}
 category: general            # health | transit | housing | benefits | events | tourism | ...
 description: >-
   One sentence describing what this service helps people find or do.
+examples:
+  - "A question a resident would ask about {name}."
 # Optional: a NYC Open Data (Socrata) dataset for "nearest X" lookups.
 # Find datasets at https://data.cityofnewyork.us, copy the dataset id from its URL.
 datasets: []
@@ -76,24 +78,24 @@ seeds: []                     # official pages to index for how-to / eligibility
 allowlist: []                 # extra trusted domains this module may web-search
 #  - example.nyc.gov
 prompt: |
-  Tell the agent how to help with this service: which tool to use, what to cite,
-  and when to abstain. Keep it short and concrete.
+  Tell the agent which operation and source to use, what the source can verify,
+  and which missing or conflicting details must remain visible. Keep it short and concrete.
 eval: eval.yaml
 """
 
 _EVAL_TEMPLATE = """\
-# Golden eval cases for the {name} module. Each is a real user question with the
-# expected behavior. These run in the eval gate (Phase 5) to prove no hallucination.
+# Eval cases for the {name} module. Each is a real resident question
+# with an expected outcome through the complete agent path.
 - id: {name}_basic
   query: "A typical question a user would ask about {name}."
-  expect_tools: []            # e.g. [nearest] or [index_search] or [web_search]
+  expect_tools: []            # e.g. [nearest] or [web_search]
   abstain: false
   notes: What a good grounded answer looks like.
 
-- id: {name}_out_of_scope
-  query: "Something this module should NOT answer."
-  abstain: true
-  notes: Should decline rather than guess.
+- id: {name}_source_gap
+  query: "Ask for a detail the declared source does not provide."
+  abstain: false
+  notes: Preserve supported records and source links, label the missing detail, and never invent it.
 """
 
 

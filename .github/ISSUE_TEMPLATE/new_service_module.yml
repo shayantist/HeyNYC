@@ -1,13 +1,14 @@
 name: Propose a new service module
 description: Suggest a NYC service or topic HeyNYC should be able to help with. No coding required.
 title: "[module] <service name>"
-labels: ["module-request"]
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for helping HeyNYC cover more of NYC! Fill in what you can, and a maintainer
-        (or you) can turn this into a module. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+        (or you) can connect it to the right sources, operations, and evals. See
+        [CONTRIBUTING.md](../../CONTRIBUTING.md).
   - type: input
     id: name
     attributes:
@@ -25,8 +26,8 @@ body:
   - type: textarea
     id: official_urls
     attributes:
-      label: Official NYC page(s)
-      description: Links to the authoritative nyc.gov / official pages for this service.
+      label: Responsible source page(s)
+      description: Links from the agency, organization, or data publisher responsible for this service.
       placeholder: |
         https://www.nyc.gov/...
     validations:
@@ -52,5 +53,5 @@ body:
     attributes:
       label: Grounding
       options:
-        - label: I understand HeyNYC must never invent facts; it should cite official sources or say it doesn't know.
+        - label: I understand verified facts need supporting sources, while incomplete evidence must stay labeled with useful links.
           required: true

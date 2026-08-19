@@ -22,7 +22,7 @@ Free, no account, no app; standard carrier messaging rates apply. How your messa
 
 ## What you can ask
 
-The table below is the full, generated list of current service modules, each with the official source that grounds it.
+The table below is the generated list of top-level service modules. Topic submodules reuse a parent module and are not listed separately. Each module packages one area of resident help with its sources, typed operations, instructions, limitations, and evals.
 
 <!-- CAPABILITIES:START -->
 
@@ -151,7 +151,7 @@ The default Pydantic runtime follows this path:
 .
 ├── heynyc/              Python package and CLI
 │   ├── core/            Agent loop, grounding, citations, RAG, and shared tools
-│   ├── modules/         Service modules, their manifests, data, and evals
+│   ├── modules/         Service modules and their data-source adapters
 │   ├── eval/            The live evaluation harness: runs the real model and tools against each module's eval.yaml contract and grades resident outcomes; inside the package because `heynyc eval` and `bench` are product commands
 │   └── channels/        SMS and WhatsApp adapters
 ├── docs/                Public docs
@@ -174,14 +174,14 @@ Offline tests prove contracts; live evals prove behavior.
 | [SECURITY.md](SECURITY.md) | How to report a security vulnerability through the private disclosure policy. |
 | [PRIVACY.md](PRIVACY.md) | Plain-language: what happens to your messages. The formal [Privacy Notice](docs/legal/HEYNYC-PRIVACY.md) controls. |
 | [Terms of Use](docs/legal/HEYNYC-TERMS.md) | Pilot limitations, messaging terms, and user responsibilities. |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | How to add a module or contribute. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to propose a module, improve a source or eval, or contribute code and docs. |
 | [CHANGELOG.md](CHANGELOG.md) | The running day-to-day log of what shipped. |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | The community standards for taking part. |
 | [LICENSE](LICENSE) | The open-source license the project ships under. |
 | [`docs/testing/`](docs/testing/) | HeyNYC's public test records; the eval harness that produces the gate results lives in [`heynyc/eval/`](heynyc/eval/README.md). Covers the [failure register](docs/testing/failure-db.md), the [red-team write-up](docs/testing/red-team.md), and the [benchmark methodology](docs/testing/benchmarks.md). |
 | [heynyc/eval/README.md](heynyc/eval/README.md) | The evaluation harness: cases, gates, rubric, and how to run it. |
 | [heynyc/channels/README.md](heynyc/channels/README.md) | SMS and WhatsApp adapter conventions. |
-| [heynyc/modules/README.md](heynyc/modules/README.md) | Service-module structure and how to scaffold one. |
+| [heynyc/modules/README.md](heynyc/modules/README.md) | Service-module structure and how the module package works. |
 
 ## FAQ
 
@@ -217,8 +217,8 @@ Offline tests prove contracts; live evals prove behavior.
 
 **What's the language-access story?** NYC Local Law 30's citywide languages are the bar we build toward, and the assistant replies in the resident's language with dedicated non-English safety cases. We claim testing, not certification; the honest state is in [SAFETY.md](SAFETY.md#limitations-what-we-havent-proven-yet).
 
-**Can we request or add a service module?** Yes: a module is one folder with a YAML manifest, and requesting one needs no code at all. [CONTRIBUTING.md](CONTRIBUTING.md) has both paths.
+**Can we request or add a module?** Yes. Requesting one needs no code. Implementing one means connecting the resident need to its responsible sources, operations, limitations, and evals; simple cases may use only a manifest, while source-specific behavior needs typed adapter code. [CONTRIBUTING.md](CONTRIBUTING.md) explains the contribution paths.
 
 **What would this cost a city?** Built-in telemetry records model, tool, latency, and cost usage for each evaluated turn. The configured resident path includes a semantic source-verification call, so deployments can measure its cost and latency alongside answer generation and compare model choices against the same live evaluation gate ([SAFETY.md](SAFETY.md), [telemetry implementation](heynyc/core/telemetry.py)).
 
-_Last updated: 2026-08-16_
+_Last updated: 2026-08-19_

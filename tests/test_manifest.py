@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
+from heynyc.__main__ import _EVAL_TEMPLATE, _MANIFEST_TEMPLATE
 from heynyc.core.manifest import ServiceModule
 
 
@@ -58,3 +60,14 @@ def test_manifest_parses_source_tiers_and_submodule_fields(tmp_path: Path):
     assert module.source_tiers["community"] == ["eventbrite.com"]
     assert module.ticketmaster_keyword == "world cup"
     assert module.parent is None  # populated by the registry loader, not YAML
+
+
+def test_new_module_templates_include_discovery_and_active_tool_guidance(tmp_path: Path):
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(_MANIFEST_TEMPLATE.format(name="parking"))
+
+    module = ServiceModule.from_manifest(manifest)
+    cases = yaml.safe_load(_EVAL_TEMPLATE.format(name="parking"))
+
+    assert module.examples
+    assert all("index_search" not in case.get("expect_tools", []) for case in cases)
