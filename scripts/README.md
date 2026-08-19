@@ -1,6 +1,6 @@
 # HeyNYC scripts
 
-Updated 2026-08-10.
+Updated 2026-08-18.
 
 ## Normal commands
 
@@ -70,5 +70,6 @@ The npm-style analogy is:
 | Script | Purpose | Live or paid effects |
 |---|---|---|
 | [`build_nta_gazetteer.py`](build_nta_gazetteer.py) | Rebuilds the bundled NYC neighborhood gazetteer from NYC Open Data | Network read, no model call |
+| [`export_service_field_inventory.py`](export_service_field_inventory.py) | Regenerates the typed service-location source coverage comparison | Offline |
 | [`export_testing_docs.py`](export_testing_docs.py) | Regenerates the public testing records from the internal sources | Offline |
 | [`unwrap_docs.py`](unwrap_docs.py) | Removes hard wrapping from Markdown without changing rendered content | Offline |
