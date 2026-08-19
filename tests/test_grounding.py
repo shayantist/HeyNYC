@@ -79,7 +79,7 @@ def test_fabricated_structured_fact_is_a_blocking_hard_failure():
     assert fail.kind == "phone"
     assert "(212) 555-0100" in fail.text
     assert "S1" in fail.message
-    assert fail.claim and fail.claim in "Call them at (212) 555-0100 {cite:S1}."
+    assert fail.claim == "Call them at (212) 555-0100."
 
 
 def test_trailing_citation_marker_checks_the_preceding_claim():

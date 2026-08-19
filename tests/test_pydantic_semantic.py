@@ -166,6 +166,8 @@ async def test_structured_data_mismatch_fails_closed_before_semantic_verificatio
         ).run("What is the benefit amount?")
 
     assert "$500" not in raised.value.partial_result.text
+    assert "couldn't verify every detail" in raised.value.partial_result.text
+    assert "https://data.cityofnewyork.us/example" in raised.value.partial_result.text
     assert raised.value.partial_result.diagnostics["validation_rejections"] == [
         {
             "attempt": 1,
@@ -1290,7 +1292,14 @@ async def legacy_semantic_verifier_bounds_total_evidence_per_claim() -> None:
     assert "[S1]" in grounded.source
 
 
-async def legacy_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
+@pytest.mark.parametrize(
+    ("verdict_label", "keeps_marker"),
+    [("partial", True), ("unsupported", False)],
+)
+async def test_failed_eval_labels_semantically_unsupported_claims(
+    verdict_label: str,
+    keeps_marker: bool,
+) -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -1310,9 +1319,12 @@ async def legacy_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
         model_calls += 1
         if model_calls == 1:
             return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        output_name = next(
+            tool.name for tool in info.output_tools if tool.name == "grounded_answer"
+        )
         return ModelResponse([
             ToolCallPart(
-                info.output_tools[0].name,
+                output_name,
                 {
                     "grounded_blocks": [
                         {
@@ -1334,7 +1346,7 @@ async def legacy_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
                         0.0,
                         "fake",
                         "private diagnostic reason",
-                        "unsupported",
+                        verdict_label,
                     )
                     for _ in inputs
                 ]
@@ -1365,28 +1377,29 @@ async def legacy_failed_eval_keeps_semantic_diagnostics_out_of_usage() -> None:
     )
 
     assert result.error is None
-    assert "Benefits may change." in result.text
+    assert "Unverified: Benefits may change." in result.text
+    assert ("{cite:S1}" in result.text) is keeps_marker
+    assert "https://www.nyc.gov/example" in result.text
     assert "couldn't verify every detail" in result.text
     assert result.usage.get("retry_kinds", []) == []
-    assert model_calls == 3
+    assert model_calls == 2
     assert result.diagnostics["validation_rejections"] == [
         {
             "attempt": 1,
             "stage": "semantic_grounding",
-            "items": [{"id": "block-0", "label": "unsupported"}],
-        },
-        {
-            "attempt": 2,
-            "stage": "semantic_grounding",
-            "items": [{"id": "block-0", "label": "unsupported"}],
-            "retry_exhausted": True,
+            "items": [{
+                "id": "block-0",
+                "label": verdict_label,
+                "citation_ids": ["S1"],
+            }],
+            "citation_ids": ["S1"],
         }
     ]
     item = result.diagnostics["semantic_verifier_runs"][0]["items"][0]
     assert item == {
         "position": 0,
         "kind": "claim",
-        "label": "unsupported",
+        "label": verdict_label,
     }
     assert "Benefits may change." not in str(result.diagnostics)
     assert "private diagnostic reason" not in str(result.usage)

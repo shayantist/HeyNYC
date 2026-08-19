@@ -1,6 +1,6 @@
 # HeyNYC channels, the messaging on-ramp
 
-This package puts the grounded agent in front of people on the platforms they already use. A New Yorker texts our number; the selected runtime answers, cited, multilingual, abstaining when it should, and the reply comes back as platform-native messages.
+This package puts the grounded agent in front of people on the platforms they already use. A New Yorker texts our number; the selected runtime returns a multilingual answer with inline sources, preserving useful evidence and labeling what it could not verify, and the reply comes back as platform-native messages.
 
 ## How it's shaped
 

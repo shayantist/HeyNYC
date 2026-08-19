@@ -110,6 +110,8 @@ def test_system_prompt_requires_citations_on_the_supported_sentence_or_bullet():
     assert "same sentence or bullet" in low
     assert "elsewhere in a paragraph or list does not count" in low
     assert "separate facts from different sources into separate sentences or bullets" in low
+    assert "one factual or procedural claim" in low
+    assert "one factual claim per `groundedanswer` block" in low
     assert "never put braces around a url" in low
 
 

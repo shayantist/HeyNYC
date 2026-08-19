@@ -244,8 +244,23 @@ def _split_claims(text: str) -> list[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def _without_citations(text: str) -> str:
+    bare = _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", text)).strip()
+    return re.sub(r"\s+([,.;:!?])", r"\1", bare)
+
+
 def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
     """Return original claim, marker-free text, and citations, joining trailing marker-only parts."""
+    text = re.sub(
+        r"(?<!a\.m)(?<!p\.m)(?<!a\. m)(?<!p\. m)"
+        r"(?P<punct>[.!?])(?P<space>[ \t]+)(?P<cites>(?:\{cite:S\d+\}[ \t]*)+)",
+        lambda match: (
+            f"{match.group('cites').rstrip()}{match.group('punct')}"
+            f"{match.group('space')}"
+        ),
+        text,
+        flags=re.IGNORECASE,
+    )
     out: list[tuple[str, str, list[str]]] = []
     for block in re.split(r"\n\s*\n", text):
         block_cited = _CITE_REF_RE.findall(block)
@@ -260,7 +275,7 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
             claims = _split_claims(block[:tail.start()])
             if claims:
                 out.extend(
-                    (claim, _WS_RE.sub(" ", claim).strip(), cited)
+                    (claim, _without_citations(claim), cited)
                     for claim in claims
                 )
             elif out:
@@ -271,7 +286,7 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
                 out.extend(
                     (
                         claim,
-                        _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", claim)).strip(),
+                        _without_citations(claim),
                         merged_cited,
                     )
                     for claim in _split_claims(original)
@@ -279,7 +294,7 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
             continue
         for seg in _split_claims(block):
             cited = _CITE_REF_RE.findall(seg)
-            bare = _WS_RE.sub(" ", _CITE_REF_RE.sub(" ", seg)).strip()
+            bare = _without_citations(seg)
             if cited and not bare and out:
                 original, prev_bare, prev_cited = out[-1]
                 out[-1] = (
@@ -772,7 +787,7 @@ def check_grounding(
             if not blobs:
                 continue
             msg = f"{'/'.join(cited)}: {tok['kind']} '{tok['text']}' not in cited source"
-            mismatch = Mismatch(claim=claim, cited=cited, kind=tok["kind"], text=tok["text"], message=msg)
+            mismatch = Mismatch(claim=bare_claim, cited=cited, kind=tok["kind"], text=tok["text"], message=msg)
             # Parsed dates are conclusive. Unparsed dates can be translated month names or civic
             # identifiers such as "Executive Order 13 2026", so record them without blocking.
             hard = tok["kind"] != "proper_noun" and not (

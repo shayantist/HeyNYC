@@ -94,7 +94,7 @@ from heynyc.core.crisis_lines import (
     crisis_response,
 )
 from heynyc.core.freshness import attach_temporal_provenance
-from heynyc.core.grounding import _cited_claims, check_grounding
+from heynyc.core.grounding import _cited_claims, _split_claims, check_grounding
 from heynyc.core.localization import localize
 from heynyc.core.memory import (
     CompactFn,
@@ -309,7 +309,7 @@ def _degraded_failure_text(
     ]
     if not reached:
         return text
-    seen: dict[str, tuple[str, str]] = {}
+    seen: dict[str, tuple[str, list[str]]] = {}
     for citation in reached:
         provenance = citation.get("provenance") or {}
         grade = provenance.get("evidence_grade")
@@ -318,24 +318,40 @@ def _degraded_failure_text(
             if citation.get("kind") == "DATA"
             else "Verified source"
             if grade == "authoritative"
+            else "Official search excerpt"
+            if grade == "authoritative_excerpt"
             else "Unverified search result"
-            if grade in {"authoritative_excerpt", "discovery", "search_excerpt"}
+            if grade in {"discovery", "search_excerpt"}
             else "Unverified source"
         ), language)
-        detail = " ".join(str(citation.get("snippet") or "").split())[:240]
+        detail = re.sub(
+            r"\[([^\]]+)\]\([^)]+\)",
+            r"\1",
+            " ".join(str(citation.get("snippet") or "").split()),
+        )
         for embedded_url in _urls_in(detail):
             detail = detail.replace(embedded_url, "")
-        seen.setdefault(
+        detail = re.sub(r"^#{1,6}\s*", "", detail).replace("**", "").replace("__", "")
+        segments = _split_claims(" ".join(detail.split()))
+        if detail[:1].islower():
+            segments = segments[1:]
+        preview: list[str] = []
+        for segment in segments:
+            if len(" ".join([*preview, segment])) > 240:
+                break
+            preview.append(segment)
+        detail = " ".join(preview)
+        _title, labels = seen.setdefault(
             citation["url"],
-            (
-                citation.get("title") or citation["url"],
-                f"{label}: {detail}" if detail else label,
-            ),
+            (citation.get("title") or citation["url"], []),
         )
+        source_label = f"{label}: {detail}" if detail else label
+        if source_label not in labels:
+            labels.append(source_label)
     lines = [text, "", f"{localize('Sources', language)}:"]
     lines += [
-        f"- {label} ({title}): {url}"
-        for url, (title, label) in seen.items()
+        f"- {' '.join(labels)} ({title}): {url}"
+        for url, (title, labels) in seen.items()
     ]
     return "\n".join(lines)
 
@@ -1757,39 +1773,58 @@ class PydanticRuntimeAdapter:
                     }),
                 })
                 rejected_ids = {item["id"] for item in rejected_all}
+                rejected_labels = {
+                    item["id"]: item["label"] for item in rejected_all
+                }
                 if isinstance(output, GroundedAnswer):
                     return output.model_copy(update={
                         "grounded_blocks": [
-                            block.model_copy(update={"citation_ids": []})
+                            block.model_copy(update={
+                                "text": (
+                                    f"{localize('Unverified', ctx.deps.language)}: "
+                                    f"{block.text}"
+                                    if block.kind == "claim"
+                                    else block.text
+                                ),
+                                "citation_ids": (
+                                    block.citation_ids
+                                    if rejected_labels[f"block-{index}"] == "partial"
+                                    else []
+                                ),
+                            })
                             if f"block-{index}" in rejected_ids
                             else block
                             for index, block in enumerate(output.grounded_blocks)
                         ]
                     })
                 blocks = output.split("\n\n")
-                for item_id, _claim, _kind, citation_ids, original in claims:
+                for item_id, claim, _kind, citation_ids, original in claims:
                     if item_id not in rejected_ids or original is None:
                         continue
                     for index, block in enumerate(blocks):
-                        if original not in block:
+                        trailing = re.search(
+                            re.escape(claim) + r"(?:[ \t]*\{cite:S\d+\})+",
+                            block,
+                        )
+                        target = (
+                            original
+                            if original in block
+                            else trailing.group() if trailing else claim
+                        )
+                        if target not in block:
                             continue
-                        cited_original = original
-                        if any(
-                            f"{{cite:{citation_id}}}" in cited_original
-                            for citation_id in citation_ids
-                        ):
+                        labeled = target
+                        if rejected_labels[item_id] != "partial":
                             for citation_id in citation_ids:
                                 marker = f"{{cite:{citation_id}}}"
-                                cited_original = cited_original.replace(
-                                    f" {marker}", ""
-                                ).replace(marker, "")
-                            block = block.replace(original, cited_original, 1)
-                        else:
-                            for citation_id in citation_ids:
-                                marker = f"{{cite:{citation_id}}}"
-                                block = block.replace(f" {marker}", "").replace(
+                                labeled = labeled.replace(f" {marker}", "").replace(
                                     marker, ""
                                 )
+                        block = block.replace(
+                            target,
+                            f"{localize('Unverified', ctx.deps.language)}: {labeled}",
+                            1,
+                        )
                         blocks[index] = block.rstrip()
                         break
                 return "\n\n".join(blocks)

@@ -40,6 +40,65 @@ def test_f213_failure_links_only_include_sources_reached_this_turn() -> None:
     assert "Immigration help" not in text
 
 
+def test_failure_source_list_does_not_dump_truncated_web_excerpts() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/help",
+        title="Tenant help",
+        kind="WEB",
+        snippet=(
+            "##### **Call 311 and ask for the Tenant Helpline.** "
+            "[Tenant Bill of Rights](https://www.nyc.gov/rights) "
+            + "more guidance " * 30
+        ),
+        provenance={"evidence_grade": "authoritative"},
+    )
+
+    text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+
+    assert "Tenant help" in text
+    assert "https://www.nyc.gov/help" in text
+    assert "Call 311 and ask for the Tenant Helpline." in text
+    assert "Tenant Bill of Rights" not in text
+    assert "[Tenant Bill of Rights" not in text
+    assert "https://www.nyc.gov/rights" not in text
+    assert "#####" not in text
+    assert "**" not in text
+
+
+def test_failure_source_list_keeps_distinct_evidence_from_one_page() -> None:
+    citations = CitationRegistry()
+    for snippet in ("PACE providers can help.", "The work rule is 80 hours per month."):
+        citations.register(
+            "https://www.nyc.gov/snap",
+            title="SNAP work rules",
+            kind="WEB",
+            snippet=snippet,
+            provenance={"evidence_grade": "authoritative"},
+        )
+
+    text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+
+    assert "PACE providers can help." in text
+    assert "The work rule is 80 hours per month." in text
+
+
+def test_failure_source_list_labels_official_search_excerpts_transparently() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/snap",
+        title="SNAP work rules",
+        kind="WEB",
+        snippet="The work rule is 80 hours per month.",
+        provenance={"evidence_grade": "authoritative_excerpt"},
+    )
+
+    text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+
+    assert "Official search excerpt" in text
+    assert "Unverified search result" not in text
+
+
 @pytest.mark.asyncio
 async def test_f213_approval_resume_failure_excludes_preexisting_sources(
     monkeypatch,

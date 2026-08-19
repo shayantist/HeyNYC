@@ -542,14 +542,21 @@ async def test_guard_abstains_after_retry_cap_and_does_not_loop():
     assert complete.calls["i"] == 4                       # cap respected: 1 tool + 3 terminal attempts
 
 
-async def test_non_load_bearing_fact_is_stripped_answer_survives():
+@pytest.mark.parametrize(
+    "bad_claim",
+    [
+        "For their hotline, call (212) 555-0100 {cite:S1}.",
+        "For their hotline, call (212) 555-0100. {cite:S1}",
+    ],
+)
+async def test_non_load_bearing_fact_is_stripped_answer_survives(bad_claim):
     # The answer has a grounded main answer PLUS a trailing sentence with a fabricated phone. After the
     # cap, the offending sentence is stripped but the grounded answer survives (no full abstention).
     snap = {"name": "New York Common Pantry", "address": "8 East 109th Street",
             "phone": "(917) 720-9700"}
     bad = _assistant(content=(
         "The nearest food pantry is New York Common Pantry at 8 East 109th Street {cite:S1}. "
-        "For their hotline, call (212) 555-0100 {cite:S1}."
+        + bad_claim
     ))
     complete = _scripted(_assistant(tool_calls=[_tool_call("lookup", {})]), bad, bad, bad)
     agent = _agent(complete, snapshot=snap, snippet="New York Common Pantry — Manhattan",
@@ -558,7 +565,27 @@ async def test_non_load_bearing_fact_is_stripped_answer_survives():
 
     assert "(212) 555-0100" not in result.text            # fabricated hotline stripped
     assert "8 East 109th Street" in result.text           # grounded main answer preserved
+    assert result.text.count("{cite:S1}") == 1             # rejected claim's marker is not reassigned
     assert result.text != GROUNDING_ABSTAIN_FALLBACK
+
+
+async def test_sentence_end_rejection_does_not_reassign_its_citation():
+    snap = {"phone": "(917) 720-9700"}
+    bad = _assistant(content=(
+        "The official page may still be useful, so review it before deciding what to do next. "
+        "For their hotline, call (212) 555-0100. {cite:S1}"
+    ))
+    complete = _scripted(_assistant(tool_calls=[_tool_call("lookup", {})]), bad, bad, bad)
+    result = await _agent(
+        complete,
+        snapshot=snap,
+        snippet="New York Common Pantry",
+        guard_max_retries=2,
+    ).run("food pantry near me", max_iters=12)
+
+    assert "(212) 555-0100" not in result.text
+    assert "{cite:S1}" not in result.text
+    assert "official page may still be useful" in result.text
 
 
 # --- No over-block: correct answers pass through unchanged -----------------------------------------

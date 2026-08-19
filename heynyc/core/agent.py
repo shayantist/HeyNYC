@@ -38,7 +38,7 @@ from .crisis_lines import (
     SELF_HARM_RESPONSE_ES as _SELF_HARM_RESPONSE_ES,
 )
 from .freshness import attach_temporal_provenance
-from .grounding import GroundingResult, check_grounding
+from .grounding import GroundingResult, _cited_claims, check_grounding
 from .localization import localize
 from .memory import (
     ContextCapacityError,
@@ -1921,8 +1921,26 @@ def _strip_ungrounded_claims(text: str, result: GroundingResult) -> str:
     """Tier 4: remove the sentence(s) carrying an ungrounded structured fact; if that guts the answer
     (nothing substantive left), return the abstention that routes to 311. Otherwise return the answer
     with the offending claim(s), and their now-orphaned citations, excised."""
+    rejected = {m.claim for m in result.hard_failures}
+    cited_originals = {
+        original
+        for original, bare, _citation_ids in _cited_claims(text)
+        if bare in rejected
+    }
+    trailing_marker_spans = {
+        match.group()
+        for claim in rejected
+        for match in re.finditer(
+            re.escape(claim) + r"(?:[ \t]*\{cite:[^{}]+\})+",
+            text,
+        )
+    }
     stripped = text
-    for claim in {m.claim for m in result.hard_failures}:
+    for claim in sorted(
+        rejected | cited_originals | trailing_marker_spans,
+        key=len,
+        reverse=True,
+    ):
         if claim and claim in stripped:
             stripped = stripped.replace(claim, " ")
     stripped = re.sub(r"[ \t]+", " ", stripped)

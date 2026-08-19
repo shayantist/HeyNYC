@@ -2,7 +2,7 @@
 
 HeyNYC answers questions about NYC services over SMS and WhatsApp. Here is what happens to your messages, stated plainly. This is the short version; the formal notice, including service providers, children's privacy, and email contacts, is the [HeyNYC Privacy Notice](docs/legal/HEYNYC-PRIVACY.md), which controls if the two ever disagree.
 
-**What we process.** Your messages are carried by the SMS/WhatsApp network (Twilio) like any text you send, and the conversation context needed for a reply is sent to our configured AI model provider to generate the answer. The current safety screen may send the current message and one preceding resident message to the configured safety model before the answer is generated. That processing is what makes the service work; no service like this can truthfully promise your words touch no infrastructure.
+**What we process.** Your messages are carried by the SMS/WhatsApp network (Twilio) like any text you send. The conversation context needed for a reply goes to the configured answer-model provider. A safety model may receive the current message and one preceding resident message, and a source-verification model may receive answer claims with the source excerpts used to check them. The formal notice names the possible providers. This processing is what makes the service work; no service like this can truthfully promise your words touch no infrastructure.
 
 **What we keep.** An encrypted conversation transcript and any in-progress application draft, for the configured retention period, on our infrastructure. Twilio messages also enter an encrypted inbox before the webhook acknowledges them, so a restart does not silently lose the request; their queued content is scrubbed after the reply is accepted or removed when retention expires. The single-host deployment path creates snapshots containing those encrypted records and removes expired snapshots on the same configured schedule. We don't build a profile on you, and the eligibility-screening flow is PII-free by design. Don't paste an SSN or similar sensitive ID into the chat; the assistant will tell you the same.
 
@@ -16,4 +16,4 @@ HeyNYC answers questions about NYC services over SMS and WhatsApp. Here is what 
 
 **Spend and abuse limits.** Per-person daily usage caps protect the service without cutting anyone off from the deterministic emergency guidance, which always works.
 
-_Last updated: 2026-08-10. This document changes only to become more accurate, never more flattering._
+_Last updated: 2026-08-18. This document changes only to become more accurate, never more flattering._

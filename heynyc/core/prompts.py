@@ -52,7 +52,10 @@ dates, deadlines, or prices. Always get these from the appropriate tool.
 tools. Put each citation marker in the same sentence or bullet as the fact it supports; \
 a marker elsewhere in a paragraph or list does not count. Offer the official link so the \
 user can read more. Separate facts from different sources into separate sentences or bullets \
-so each marker clearly owns only the claim its source supports. \
+so each marker clearly owns only the claim its source supports. In high-stakes replies, keep each \
+sentence or bullet to one factual or procedural claim and its direct citation. When the output \
+schema uses `GroundedAnswer`, keep one factual claim per `GroundedAnswer` block because citation \
+verification evaluates each block as a unit. Put an uncited limitation in its own block. \
 Never put braces around a URL: write `[Map](https://...)`, not \
 `[Map]({https://...})`. ONLY use a URL that a \
 tool actually returned, never write or guess a web address from memory. If a tool gave \

@@ -54,32 +54,44 @@ _CITATION_MARKUP_RE = re.compile(
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\s)]+\)")
 
+
 class GroundedBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal["claim", "framing"] = Field(
         default="claim",
         description=(
             "Use claim for facts and procedures that the cited evidence must support. Use "
-            "framing only for empathy, signposting, or an honest limitation on what retrieval "
-            "established. Framing that adds a fact, prediction, or instruction still fails "
-            "semantic verification."
+            "framing for exactly one of: empathy, signposting, or an honest limitation on what "
+            "retrieval established. Never combine those purposes in one framing block. Framing "
+            "that adds a fact, prediction, product-capability statement, or instruction still "
+            "fails semantic verification."
         ),
     )
     text: str = Field(
         min_length=1,
         description=(
-            "One factual or procedural claim directly supported by its cited evidence, without "
-            "citation markers. Do not turn a cited prohibition into an unsupported positive "
-            "instruction. Do not assert an unsupported fact and then disclaim it. State only what "
-            "the evidence establishes, followed by the limitation when needed. If another sentence "
-            "needs different evidence, put it in a separate block."
+            "For kind=claim, write exactly one factual or procedural claim directly supported by "
+            "the cited evidence, without citation markers. Use a separate block with kind=framing for "
+            "a limitation. Do not turn a cited prohibition into "
+            "an unsupported positive instruction or assert an unsupported fact and then disclaim it."
         ),
     )
     citation_ids: list[str] = Field(
         min_length=1,
         max_length=8,
         description=(
-            "All sources needed to support every factual detail in this block. If different "
-            "details use different sources, include all sources or use separate blocks."
+            "For claims, all sources needed to support every factual detail in this block. For "
+            "framing, the sources the verifier should inspect; framing source markers are not "
+            "shown to residents. If details use different sources, use separate blocks."
+        ),
+    )
+    starts_new_paragraph: bool = Field(
+        default=False,
+        description=(
+            "Set true only when this block begins a new paragraph. Keep related "
+            "blocks in the same paragraph so the resident sees natural prose rather than one "
+            "paragraph per evidence unit."
         ),
     )
 
@@ -136,18 +148,31 @@ def _semantic_citation_evidence(citation: dict) -> str:
 
 
 def _render_grounded_answer(answer: GroundedAnswer) -> str:
-    return "\n\n".join(
+    rendered = [
         " ".join(
             (
                 _grounded_block_text(block),
                 " ".join(
                     f"{{cite:{citation_id}}}"
-                    for citation_id in dict.fromkeys(block.citation_ids)
+                    for citation_id in (
+                        dict.fromkeys(block.citation_ids)
+                        if block.kind == "claim"
+                        else ()
+                    )
                 ),
             )
-        )
+        ).rstrip()
         for block in answer.grounded_blocks
-    )
+    ]
+    parts: list[str] = []
+    for index, (block, text) in enumerate(zip(answer.grounded_blocks, rendered)):
+        first_word = text.lstrip().partition(" ")[0]
+        list_item = text.lstrip().startswith(("- ", "* ", "• ", "> ", "#")) or (
+            first_word.rstrip(".)").isdigit()
+        )
+        separator = "\n" if list_item else "\n\n" if block.starts_new_paragraph else " "
+        parts.append((separator if index else "") + text)
+    return "".join(parts)
 
 
 def _accepted_grounded_outputs(

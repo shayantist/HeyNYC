@@ -2,7 +2,7 @@
 
 HeyNYC is a civic project that helps New Yorkers find, understand, and apply for government services. The optional benefits application-draft workflow can handle resident personal information (PII), so we take security and privacy seriously and welcome responsible disclosure. The default screening path is PII-free, and forms are off unless explicitly enabled.
 
-This is the security policy, how to report a vulnerability. For how the assistant itself stays grounded and safe (guardrails, red-team, abstention), see [SAFETY.md](SAFETY.md).
+This is the security policy, how to report a vulnerability. For how the assistant checks sources, labels uncertainty, and tests unsafe failures, see [SAFETY.md](SAFETY.md).
 
 ## Reporting a vulnerability
 

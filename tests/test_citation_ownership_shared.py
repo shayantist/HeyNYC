@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -103,9 +104,9 @@ async def test_misowned_compound_claim_is_preserved_and_labeled_unverified() -> 
     assert calls == 2
     assert result.text.startswith(
         f"{UNVERIFIED_DRAFT_NOTICE}\n\n"
-        "HRA can review the closure, and Food Help NYC can help now."
+        "Unverified: HRA can review the closure, and Food Help NYC can help now."
     )
-    assert "{cite:S1}" not in result.text
+    assert "{cite:S1}" in result.text
     assert "https://finder.nyc.gov/foodhelp" in result.text
     assert "https://foodhelp.nyc.gov" not in result.text
     assert result.status == "success"
@@ -136,7 +137,7 @@ async def test_supported_multi_source_claims_remain_unchanged() -> None:
     assert result.usage["model_time_ms"] >= 12.0
 
 
-async def test_misowned_grounded_block_keeps_text_but_loses_false_citation() -> None:
+async def test_partial_grounded_block_keeps_text_and_source_lead() -> None:
     verifier = _OwnershipVerifier(partial=True)
 
     result, _calls = await _run(
@@ -146,11 +147,20 @@ async def test_misowned_grounded_block_keeps_text_but_loses_false_citation() -> 
     )
 
     assert "Call 311 for Food Help NYC." in result.text
-    assert "{cite:S1}" not in result.text
+    assert "{cite:S1}" in result.text
     assert "https://finder.nyc.gov/foodhelp" in result.text
 
 
-async def test_rejected_plain_claim_keeps_supported_sibling_citation() -> None:
+@pytest.mark.parametrize(
+    "unsupported_claim",
+    [
+        "Unsupported sentence {cite:S1}.",
+        "Unsupported sentence. {cite:S1}",
+    ],
+)
+async def test_rejected_plain_claim_keeps_supported_sibling_citation(
+    unsupported_claim: str,
+) -> None:
     class MixedVerifier(_OwnershipVerifier):
         async def arun_many(self, inputs):
             self.inputs.append(inputs)
@@ -165,9 +175,10 @@ async def test_rejected_plain_claim_keeps_supported_sibling_citation() -> None:
             ])
 
     result, _calls = await _run(
-        "Unsupported sentence {cite:S1}. Supported sentence {cite:S1}.",
+        f"{unsupported_claim} Supported sentence {{cite:S1}}.",
         MixedVerifier(partial=False),
     )
 
     assert "Unsupported sentence." in result.text
     assert "Supported sentence {cite:S1}." in result.text
+    assert result.text.count("{cite:S1}") == 1
