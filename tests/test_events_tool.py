@@ -517,7 +517,12 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
 
     async def web_handler(args, ctx):
         calls.append(args)
-        return "[S1] Current guide\nThree things happening today"
+        citation_id = ctx.citations.register(
+            "https://example.com/current-guide",
+            title="Current guide",
+            snippet="Three things happening today",
+        )
+        return f"[{citation_id}] Current guide\nThree things happening today"
 
     monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
     monkeypatch.setattr(events, "query_dataset", no_city_rows)
@@ -540,6 +545,9 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
     assert "Web-discovered candidates" in output
     assert "Rank every candidate together" in output
     assert "Three things happening today" in output
+    assert "exact-date editorial listing excerpt" in output
+    assert "include a matching non-marketplace candidate" in output
+    assert ctx.event_discovery_citation_ids == {"S1"}
 
 
 async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypatch):
@@ -732,6 +740,14 @@ async def test_event_citation_contains_end_time_and_derived_timing_status(monkey
     assert "in progress" in output
     assert "14:00" in citation["snippet"]
     assert "in progress" in citation["snippet"]
+    assert citation["provenance"]["derivation"]["temporal"] == {
+        "start_date": "2026-08-12",
+        "start_time": "10:00",
+        "end_date": "2026-08-12",
+        "end_time": "14:00",
+        "evaluated_at": "2026-08-12T12:00:00-04:00",
+        "status": "in_progress",
+    }
 
 
 def test_shortlist_deduplicates_ticket_products_for_one_venue_and_time():
@@ -781,21 +797,6 @@ def test_shortlist_does_not_treat_a_generic_source_page_as_event_identity():
     assert events._shortlist(rows, 12) == rows
 
 
-def test_relative_weekend_window_uses_saturday_and_sunday():
-    assert events._relative_window("this_weekend", "2026-08-17") == (
-        "2026-08-22", "2026-08-23",
-    )
-
-
-def test_tonight_filter_keeps_only_parseable_future_evening_events():
-    morning = Event("Morning", "2026-07-16", "9:00 am", "", "", "u1", "NYC Parks", "authoritative")
-    evening = Event("Evening", "2026-07-16", "7:00 pm", "", "", "u2", "NYC Parks", "authoritative")
-    unknown = Event("Unknown", "2026-07-16", "", "", "", "u3", "NYC Parks", "authoritative")
-    now = events.datetime(2026, 7, 16, 15, 0, tzinfo=events.NYC_TZ)
-
-    assert events._tonight_only([morning, evening, unknown], now) == [evening]
-
-
 @pytest.fixture(autouse=True)
 def _force_tm_key(monkeypatch):
     # Force the TM branch to run offline (the handler reads config.TICKETMASTER_API_KEY).
@@ -826,7 +827,7 @@ def _routed_client() -> httpx.AsyncClient:
 
 
 async def test_find_nyc_events_merges_grounds_and_filters_future():
-    [tool] = get_tools()
+    tool = get_tools()[0]
     citations = CitationRegistry()
     async with _routed_client() as client:
         ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
@@ -965,7 +966,7 @@ async def test_find_nyc_events_grounds_the_official_indexes_when_no_event_matche
 
 
 def test_find_nyc_events_borough_schema_keeps_citywide_requests_citywide():
-    [tool] = get_tools()
+    tool = get_tools()[0]
 
     assert "only when the resident names one" in (
         tool.parameters["properties"]["borough"]["description"]
@@ -1380,8 +1381,7 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
             return cls(2026, 8, 13, 12, 0, tzinfo=tz)
 
     monkeypatch.setattr(events, "datetime", FixedDateTime)
-    today = events.datetime.now(events.NYC_TZ).strftime("%Y-%m-%d")
-    window_start, _window_end = events._relative_window("this_weekend", today)
+    window_start = "2026-08-15"
 
     def handler(request: httpx.Request) -> httpx.Response:
         if "ticketmaster" in request.url.host:
@@ -1423,7 +1423,9 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
             citations=citations, registry=Registry([]), http=client,
             query="what's happening this weekend",
         )
-        out = await get_tools()[0].handler({"relative_window": "this_weekend"}, ctx)
+        out = await get_tools()[0].handler(
+            {"window_start": "2026-08-15", "window_end": "2026-08-16"}, ctx,
+        )
 
     assert "Inwood Greenmarket" in out          # permitted row competes despite the cap
     assert "Ticketmaster Show" in out            # alongside Ticketmaster

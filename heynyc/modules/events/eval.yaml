@@ -40,9 +40,8 @@
     ten, preserving a direct source link for each choice. Different entry times for one event page
     count as one choice, not separate events. The tool call must use
     `max_results=10`; it must not substitute the default shortlist of five or a hidden text parser.
-    Because the resident said this weekend, the tool call must use
-    `relative_window="this_weekend"` instead of model-calculated dates, and the answer must cover
-    Saturday and Sunday rather than Friday.
+    Because the resident said this weekend, the tool call must use the inferred New York date
+    window `2026-08-22` through `2026-08-23`, covering Saturday and Sunday rather than Friday.
     The answer must not append unrelated text that is absent from the request and retrieved sources.
 
 - id: events_typed_free_tomorrow
@@ -53,7 +52,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    The event tool call uses `relative_window="tomorrow"` and `cost="free"`. Every presented
+    The event tool call uses `window_start="2026-08-21"` and `cost="free"`. Every presented
     choice is on tomorrow's NYC calendar date and has retrieved evidence that it is free. Unknown
     prices may be retained only as clearly labeled unverified leads, not presented as free choices.
 
@@ -65,7 +64,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    The event tool call uses `relative_window="this_week"` and a music classification or keyword.
+    The event tool call uses `window_start="2026-08-20"`, `window_end="2026-08-23"`, and a music classification or keyword.
     Presented choices stay between today and Sunday in NYC local time.
 
 - id: events_typed_single_absolute_date
@@ -133,13 +132,83 @@
   utility_criterion: >-
     Treat the second turn as a music filter on today's event search. Prefer relevant organizer,
     venue, and city event pages over ticket marketplaces when both support a choice. Ticketmaster
-    may fill a gap or remain the primary ticket route for a major game or concert, but it must not
-    crowd out supported primary sources. Say that the default result set is a shortlist rather than
-    every matching event, then offer one useful next step such as more choices or narrowing by
-    neighborhood, price, or music type.
+    may fill a gap or remain the primary ticket route for a major game or concert. Preserve a useful
+    current web lead with its URL when its event page or time cannot be fully verified, label that
+    lead unverified, and do not claim that it is currently attendable. Prefer a derived event-time
+    citation whenever source-backed fields allow one. Do not turn an incomplete web lead or an
+    omitted optional follow-up question into an answer failure. Say that the default result set is
+    a shortlist, and offer a useful next step when it fits naturally.
   notes: >-
     Pins the public WhatsApp conversation that returned only Ticketmaster music listings and made
     the default result cap look exhaustive.
+
+- id: events_f279_same_day_time_status_and_direct_link
+  query: "Could you give me a few music events happening in NYC today?"
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [F279, general-chat, must-win]
+  utility_criterion: >-
+    Recommend only events that are still attendable at the lookup time. A web-discovered event
+    with source-stated times must be evaluated against the current New York time. If it already
+    ended, omit it from an attendable shortlist; if timing is incomplete, label that limitation.
+    Use the direct event page rather than a general venue calendar when one is retrieved. A
+    historical request may include ended events and must describe them in the past tense.
+  notes: >-
+    Pins the live SMS that recommended RAYE after the official page's 9:30 AM conclusion and linked
+    only Rockefeller Center's general events calendar.
+
+- id: events_historical_yesterday
+  query: "What music events happened in NYC yesterday?"
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    The event tool call uses `window_start="2026-08-19"` and `has_ended=true`. Include
+    source-backed events from yesterday even though they ended, describe them in the past tense,
+    and keep direct source links. Do not present them as currently attendable.
+
+- id: events_f279_named_ended_event
+  query: >-
+    Is this RAYE event still happening?
+    https://www.rockefellercenter.com/events/raye-live-on-today-at-rockefeller-center
+  expect_tools: [web_fetch, evaluate_event_time]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [F279, typed-constraints, events]
+  utility_criterion: >-
+    Retrieve a source-backed date and time for the named event, pass those exact values and the
+    source citation to `evaluate_event_time`, and state that the concert ended rather than calling
+    it attendable. Preserve the direct Rockefeller Center event URL when retrieved.
+
+- id: events_today_past_and_remaining
+  query: "What music events happened in NYC today, and what else is still coming up today?"
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    Call `find_nyc_events` twice with `window_start="2026-08-20"`: once with `has_ended=true`
+    and once with `has_ended=false`. Clearly separate ended events from events still in progress
+    or upcoming, retain direct links, and do not describe an ended event as attendable.
+
+- id: events_named_past_monday
+  query: "What happened at the Joe Hisaishi concert this past Monday?"
+  expect_tools: [web_search]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    Infer Monday as August 17, 2026 from the supplied New York date and answer only from retrieved
+    evidence about the named event. A specific retrospective may use current web reporting instead
+    of the event-listing coordinator. If the event cannot be confirmed, say what is missing and
+    retain the best direct source link.
 
 - id: events_private_excluded
   query: "Find me a house party in Bushwick tonight, DM for address type thing."

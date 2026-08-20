@@ -235,6 +235,24 @@ def _prefers(url: str, prefer: list[str]) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower()) for d in prefer)
 
 
+def _rrf_merge(*rankings: list[dict], rank_constant: int = 60) -> list[dict]:
+    """Merge independently ranked result lists without comparing provider scores."""
+    merged: dict[str, dict] = {}
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        seen: set[str] = set()
+        for rank, result in enumerate(ranking, 1):
+            url = result.get("url", "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            merged.setdefault(url, dict(result))
+            scores[url] = scores.get(url, 0.0) + 1 / (rank_constant + rank)
+    for url, result in merged.items():
+        result["_rrf_score"] = scores[url]
+    return sorted(merged.values(), key=lambda result: result["_rrf_score"], reverse=True)
+
+
 # Per-tier presentation label for a result block (falls back to the bare tier name).
 _TIER_LABELS = {
     "community": "⚠️ community-posted, confirm before you go",
@@ -279,21 +297,21 @@ def _make_handler(
             search_options["published_before"] = before.isoformat()
         if topic:
             search_options["topic"] = topic
-        results = await search(query, domains, **search_options)
-        results = [r for r in results if r.get("url")]
-        if prefer and not any(_prefers(r["url"], prefer) for r in results):
-            preferred = await search(
-                query,
-                domains,
-                include_domains=prefer,
-                **search_options,
+        if prefer:
+            broad, focused = await asyncio.gather(
+                search(query, domains, **search_options),
+                search(query, domains, include_domains=prefer, **search_options),
+                return_exceptions=True,
             )
-            seen = set()
-            results = [
-                result
-                for result in [*preferred, *results]
-                if result.get("url") and not (result["url"] in seen or seen.add(result["url"]))
-            ]
+            if isinstance(broad, BaseException) and isinstance(focused, BaseException):
+                raise broad
+            results = _rrf_merge(
+                [] if isinstance(broad, BaseException) else broad,
+                [] if isinstance(focused, BaseException) else focused,
+            )
+        else:
+            results = await search(query, domains, **search_options)
+        results = [r for r in results if r.get("url")]
         def page_key(result: dict) -> tuple[str, str]:
             parsed = urlparse(result["url"])
             return (
@@ -318,7 +336,6 @@ def _make_handler(
             if parsed.query == "":
                 merged[key] = dict(result)
         results = list(merged.values())
-        results = results[:max(1, min(count, 10))]
         if not results:
             return abstain_msg
         # Trust leads high-stakes lookups. Low-stakes discovery may explicitly lead with the
@@ -326,15 +343,24 @@ def _make_handler(
         tagged = [(r, _tier_of(r["url"], source_tiers, news_tier)) for r in results]
         tagged.sort(
             key=lambda rt: (
-                _prefers(rt[0]["url"], prefer),
                 *(
-                    (rt[0].get("score", -1.0), TIER_RANK.get(rt[1], 0))
-                    if relevance_first
-                    else (TIER_RANK.get(rt[1], 0), rt[0].get("score", -1.0))
+                    (
+                        rt[0].get("_rrf_score", -1.0),
+                        rt[0].get("score", -1.0),
+                        _prefers(rt[0]["url"], prefer),
+                        TIER_RANK.get(rt[1], 0),
+                    )
+                    if relevance_first else (
+                        TIER_RANK.get(rt[1], 0),
+                        _prefers(rt[0]["url"], prefer),
+                        rt[0].get("_rrf_score", -1.0),
+                        rt[0].get("score", -1.0),
+                    )
                 ),
             ),
             reverse=True,
         )
+        tagged = tagged[:max(1, min(count, 10))]
 
         providers = sorted({r["search_provider"] for r, _tier in tagged if r.get("search_provider")})
         degraded_topics = sorted({
@@ -448,8 +474,8 @@ def web_search_tools(
                 "description": "One domain to rank ahead of other returned results",
             },
             "description": (
-                "Optional domains to rank first. When none appear in the initial results, "
-                "one targeted search tries those domains and merges its results; it does not discard "
+                "Optional domains for one concurrent targeted search lane. Results are "
+                "deduplicated and rank-fused with the open-web lane, so it does not discard "
                 "unlisted sources."
             ),
         },

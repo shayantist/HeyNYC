@@ -548,17 +548,41 @@ async def test_web_search_prefer_boosts_domain():
     assert calls == [None, ["worldcup.nyc"]]
 
 
-async def test_web_search_does_not_repeat_when_preferred_domain_is_already_present():
-    calls = 0
+async def test_web_search_fuses_broad_and_focused_results_even_when_one_preferred_result_exists():
+    calls = []
 
     async def fake_search(query, allowed, published_after=None, published_before=None, count=5, include_domains=None):
-        nonlocal calls
-        calls += 1
-        return [{"title": "NYC", "url": "https://nyc.gov/a", "snippet": "s"}]
+        calls.append(include_domains)
+        if include_domains:
+            return [
+                {"title": "DoNYC concert", "url": "https://donyc.com/a", "snippet": "s"},
+                {"title": "Luma show", "url": "https://luma.com/b", "snippet": "s"},
+            ]
+        return [
+            {"title": "NYC Parks", "url": "https://nyc.gov/a", "snippet": "s"},
+            {"title": "Open-web venue", "url": "https://venue.example/c", "snippet": "s"},
+        ]
 
-    tool = web_search_tools(["nyc.gov"], search_fn=fake_search)[0]
-    await _run(tool, "parks", prefer=["nyc.gov"])
-    assert calls == 1
+    tiers = {
+        "nyc.gov": ("authoritative", "events"),
+        "donyc.com": ("editorial", "events"),
+        "luma.com": ("community", "events"),
+    }
+    tool = web_search_tools(list(tiers), source_tiers=tiers, search_fn=fake_search)[0]
+    out = await tool.handler(
+        {"query": "NYC music August 20, 2026", "prefer": ["donyc.com", "luma.com"]},
+        ToolContext(
+            citations=CitationRegistry(),
+            registry=Registry([]),
+            event_turn="discovery",
+        ),
+    )
+
+    assert calls == [None, ["donyc.com", "luma.com"]]
+    assert "NYC Parks" in out
+    assert "Open-web venue" in out
+    assert "DoNYC concert" in out
+    assert "Luma show" in out
 
 
 # --- One search operation with optional recency and source grading ---

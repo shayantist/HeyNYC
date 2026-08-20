@@ -30,8 +30,10 @@ from heynyc.core.pydantic_runtime.runtime import (
     PydanticRunFailure,
     _authoritative_output_tools,
     _final_answer,
+    _unverified_source_links,
 )
 from heynyc.core.registry import Registry
+from heynyc.core.temporal import temporal_tools
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
@@ -58,6 +60,294 @@ def test_final_answer_schema_keeps_completion_guidance_concise() -> None:
     assert "never choose transport from medical facts" in description
     assert "do not write urls" in description
     assert len(description.split()) <= 35
+
+
+def test_unverified_source_link_is_not_repeated_when_the_claim_already_has_the_url() -> None:
+    url = "https://donyc.com/events/music/2026/08/19"
+
+    assert _unverified_source_links(
+        ["S1"],
+        {"S1": {"url": url}},
+        "en",
+        existing_text=f"Check the listing: {url}",
+    ) == ""
+
+
+async def test_event_discovery_does_not_retry_a_supported_catalog_answer_for_source_mix() -> None:
+    async def event_search(_args: dict, ctx: ToolContext) -> str:
+        web_id = ctx.citations.register(
+            "https://example.com/editorial-events",
+            title="Current editorial events",
+            snippet="Editorial concert listing.",
+            kind="WEB",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        catalog_id = ctx.citations.register(
+            "https://example.com/catalog-event",
+            title="Catalog event",
+            snippet="Catalog concert listing for today.",
+            kind="DATA",
+            provenance=data_provenance(
+                {"name": "Catalog event"}, record_id="catalog-event", field_pointer="/"
+            ),
+        )
+        ctx.event_discovery_citation_ids.add(web_id)
+        return f"Web {{cite:{web_id}}}; catalog {{cite:{catalog_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
+        return ModelResponse([_cited_answer("Catalog concert. {cite:S2}")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "event_search": Tool(
+                name="event_search",
+                description="Find current events",
+                parameters={"type": "object", "properties": {}},
+                handler=event_search,
+            )
+        },
+        structured_grounding=True,
+    ).run("What music is happening today?")
+
+    assert calls == 2
+    assert result.text == "Catalog concert. {cite:S2}"
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_event_discovery_accepts_a_derived_temporal_citation() -> None:
+    async def event_search(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://example.com/editorial-events",
+            title="Latin Night",
+            snippet="Latin Night. August 20, 2026. Starts at 6:00 PM.",
+            kind="WEB",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        ctx.event_discovery_citation_ids.add(citation_id)
+        return f"Latin Night at 6:00 PM. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
+        if calls == 2:
+            return ModelResponse([ToolCallPart(
+                "evaluate_event_time",
+                {
+                    "event_name": "Latin Night",
+                    "event_date": "2026-08-20",
+                    "start_time": "6:00 PM",
+                    "citation_id": "S1",
+                },
+                "evaluate-1",
+            )])
+        return ModelResponse([_cited_answer("Latin Night is upcoming. {cite:S2}")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "event_search": Tool(
+                name="event_search",
+                description="Find current events",
+                parameters={"type": "object", "properties": {}},
+                handler=event_search,
+            ),
+            "evaluate_event_time": temporal_tools()[0],
+        },
+        structured_grounding=True,
+    ).run("What music is happening today?")
+
+    assert calls == 3
+    assert "{cite:S2}" in result.text
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_unevaluated_web_event_is_labeled_without_retrying_the_answer() -> None:
+    async def event_search(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://example.com/editorial-events",
+            title="Latin Night",
+            snippet="Latin Night. August 20, 2026. Starts at 6:00 PM.",
+            kind="WEB",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        ctx.event_discovery_citation_ids.add(citation_id)
+        return f"Latin Night at 6:00 PM. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
+        return ModelResponse([_cited_answer("Latin Night starts at 6:00 PM. {cite:S1}")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "event_search": Tool(
+                name="event_search",
+                description="Find current events",
+                parameters={"type": "object", "properties": {}},
+                handler=event_search,
+            )
+        },
+        structured_grounding=True,
+    ).run("What music is happening today?")
+
+    assert calls == 2
+    assert result.text == "Unverified: Latin Night starts at 6:00 PM. {cite:S1}"
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_multiple_unevaluated_events_on_one_line_get_one_label() -> None:
+    async def event_search(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://example.com/editorial-events",
+            title="Music listings",
+            snippet="Hiromi at 8 PM. Start Making Sense at 8 PM.",
+            kind="WEB",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        ctx.event_discovery_citation_ids.add(citation_id)
+        return f"Music listings. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
+        return ModelResponse([_cited_answer(
+            "A listing shows Hiromi: The Piano Quintet Feat. Publiquartet at 8 PM, "
+            "plus Start Making Sense! Talking Heads Tribute Concert Cruise!! at 8 PM. "
+            "Check the listing. [Music listings](https://example.com/editorial-events) {cite:S1}"
+            )])
+
+    class PartialVerifier:
+        async def arun_many(self, inputs):
+            return NLIBatchRun(
+                verdicts=[
+                    NLIVerdict(
+                        supported=False,
+                        score=0.5,
+                        backend="fake",
+                        reason="Partial excerpt support",
+                        label="partial",
+                    )
+                    for _input in inputs
+                ],
+                input_tokens=1,
+                output_tokens=1,
+                cached_input_tokens=0,
+                cost_usd=0.0,
+                latency_ms=1.0,
+            )
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "event_search": Tool(
+                name="event_search",
+                description="Find current events",
+                parameters={"type": "object", "properties": {}},
+                handler=event_search,
+            )
+        },
+        structured_grounding=True,
+        semantic_verifier=PartialVerifier(),
+    ).run("What music is happening today?")
+
+    assert calls == 2
+    assert result.text.count("Unverified:") == 1
+
+
+async def test_labeled_event_block_does_not_hide_a_later_unsupported_block() -> None:
+    async def event_search(_args: dict, ctx: ToolContext) -> str:
+        web_id = ctx.citations.register(
+            "https://example.com/event",
+            title="Event listing",
+            snippet="Event is at 8 PM.",
+            kind="WEB",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        ctx.event_discovery_citation_ids.add(web_id)
+        data_id = ctx.citations.register(
+            "https://example.com/data",
+            title="Data record",
+            snippet="Supported data.",
+            kind="DATA",
+            provenance=data_provenance(
+                {"value": "supported"}, record_id="data", field_pointer="/"
+            ),
+        )
+        return f"Event {{cite:{web_id}}}; data {{cite:{data_id}}}"
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolCallPart) and part.tool_name == "event_search"
+            for message in _messages
+            if isinstance(message, ModelResponse)
+            for part in message.parts
+        ):
+            return ModelResponse([_cited_answer(
+                "Event is at 8 PM. {cite:S1}\n\nUnsupported data claim. {cite:S2}"
+            )])
+        return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
+
+    class RejectingVerifier:
+        async def arun_many(self, inputs):
+            return NLIBatchRun(
+                verdicts=[
+                    NLIVerdict(
+                        supported=False,
+                        score=0.0,
+                        backend="fake",
+                        reason="Unsupported",
+                        label="unsupported",
+                    )
+                    for _input in inputs
+                ],
+                input_tokens=1,
+                output_tokens=1,
+                cached_input_tokens=0,
+                cost_usd=0.0,
+                latency_ms=1.0,
+            )
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "event_search": Tool(
+                name="event_search",
+                description="Find current events",
+                parameters={"type": "object", "properties": {}},
+                handler=event_search,
+            )
+        },
+        structured_grounding=True,
+        semantic_verifier=RejectingVerifier(),
+    ).run("What music is happening today?")
+
+    assert result.text.count("Unverified:") == 2
+    assert "Unverified: Unsupported data claim." in result.text
 
 
 class _Verifier:

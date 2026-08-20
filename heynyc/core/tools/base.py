@@ -66,6 +66,7 @@ class ToolContext:
     tool_result_urls: set[str] = field(default_factory=set)
     response_priority_citation_ids: set[str] = field(default_factory=set)
     required_response_citation_ids: set[str] = field(default_factory=set)
+    event_discovery_citation_ids: set[str] = field(default_factory=set)
     rendered_fetch_urls: set[str] = field(default_factory=set)
     language: str | None = None
     verify_output_language: bool = False

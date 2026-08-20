@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.index.corpus import clean_html
+from heynyc.core.temporal import EventStatus, event_status, nyc_datetime
 from heynyc.core.ticketmaster import (
     DISCOVERY_URL,
     TicketmasterSearchResult,
@@ -94,20 +95,25 @@ class EventQuery(BaseModel):
         default=None,
         description="Optional requested physical setting: indoor or outdoor.",
     )
-    relative_window: Literal[
-        "today", "tonight", "tomorrow", "this_week", "this_weekend",
-    ] | None = Field(
+    has_started: bool | None = Field(
         default=None,
         description=(
-            "Resident-stated relative window. Use this instead of calculating dates for today, "
-            "tonight, tomorrow, this week, or this weekend."
+            "Filter against the computed New York event interval: true for events that started, "
+            "false for events that have not started, or omit when start state is unrestricted."
+        ),
+    )
+    has_ended: bool | None = Field(
+        default=None,
+        description=(
+            "Filter against the computed New York event interval: true for ended events, false "
+            "for events not known to have ended, or omit to use the date-window default."
         ),
     )
     window_start: date | None = Field(
         default=None,
         description=(
-            "Explicit ISO date when the requested event window starts. Do not calculate this "
-            "for a relative phrase; use relative_window instead."
+            "ISO start date inferred from the resident's request using the current New York "
+            "date. Ask a clarification instead of guessing an ambiguous date."
         ),
     )
     window_end: date | None = Field(
@@ -116,6 +122,14 @@ class EventQuery(BaseModel):
             "ISO end date for an explicit multi-day range. Omit for a single absolute date; "
             "window_start then applies to that day only."
         ),
+    )
+    window_start_time: time | None = Field(
+        default=None,
+        description="Optional local New York lower time bound inferred from the request.",
+    )
+    window_end_time: time | None = Field(
+        default=None,
+        description="Optional local New York upper time bound inferred from the request.",
     )
     cost: Literal["free"] | None = Field(
         default=None,
@@ -147,10 +161,14 @@ class EventQuery(BaseModel):
 
     @model_validator(mode="after")
     def ordered_window(self) -> "EventQuery":
-        if self.relative_window and (self.window_start or self.window_end):
-            raise ValueError("relative_window cannot be combined with explicit dates")
         if self.window_start and self.window_end and self.window_end < self.window_start:
             raise ValueError("window_end must not be before window_start")
+        if (
+            self.window_start_time and self.window_end_time
+            and (self.window_end or self.window_start) == self.window_start
+            and self.window_end_time < self.window_start_time
+        ):
+            raise ValueError("window_end_time must not be before window_start_time")
         return self
 
 
@@ -166,6 +184,7 @@ class Event:
     tier: str    # authoritative | editorial | community
     free_evidence: str = ""
     audience: str = ""
+    end_date: str = ""
     end_time: str = ""
     provider_status: str = ""
     timezone: str = ""
@@ -208,6 +227,7 @@ def _from_ticketmaster(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     }:
         return None
     start = dates.get("start") or {}
+    end = dates.get("end") or {}
     start_date = _iso_date(start.get("localDate"))
     if not start_date:
         return None  # undated / TBA, don't surface as a real listing
@@ -228,6 +248,8 @@ def _from_ticketmaster(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         public_sale_start=public_sale.get("startDateTime") or "",
         public_sale_end=public_sale.get("endDateTime") or "",
         public_sale_start_tbd=start_tbd if isinstance(start_tbd, bool) else None,
+        end_date=_iso_date(end.get("localDate")),
+        end_time=end.get("localTime") or "",
         accessibility_info=(raw.get("accessibility") or {}).get("info") or "",
         venue_accessibility=(venues[0].get("accessibleSeatingDetail") or "") if venues else "",
         publishing_source=source.get("name") or source.get("id") or "",
@@ -271,6 +293,8 @@ def _from_parks(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         borough=_PARK_BOROUGHS.get(park_id[:1], ""),
         url=url or PARKS_SOURCE_URL, source="NYC Parks", tier="authoritative",
         free_evidence=free_evidence, audience=audience,
+        end_date=_iso_date(raw.get("enddate")),
+        end_time=_parks_time(raw.get("endtime")),
         registration_info=str(raw.get("registration_description") or "").strip(),
         provider_id=str(raw.get(":id") or url or title),
         provider_record=raw,
@@ -290,6 +314,7 @@ def _from_permitted(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     raw_start = str(raw.get("start_date_time") or "")
     start_time = raw_start[11:16] if len(raw_start) >= 16 else ""  # "HH:MM" from the ISO stamp
     raw_end = str(raw.get("end_date_time") or "")
+    end_date = _iso_date(raw_end)
     end_time = raw_end[11:16] if len(raw_end) >= 16 else ""
     row_id = str(raw.get(":id") or "")
     return Event(
@@ -297,7 +322,7 @@ def _from_permitted(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         venue=raw.get("event_location") or "", borough=raw.get("event_borough") or "",
         url=row_url(PERMITTED_DATASET_ID, row_id) if row_id else PERMITTED_SOURCE_URL,
         source="NYC Permitted Events", tier="authoritative",
-        end_time=end_time,
+        end_date=end_date, end_time=end_time,
         provider_id=row_id or str(raw.get("event_id") or ""),
         provider_record=raw,
         retrieved_at=retrieved_at,
@@ -310,22 +335,13 @@ def _future_only(events: list[Event], today: str) -> list[Event]:
 
 
 def _not_ended_today(events: list[Event], now: datetime) -> list[Event]:
-    """Keep same-day rows only when their structured time shows they remain attendable."""
-    current_time = now.replace(tzinfo=None).time()
-    kept = []
-    for event in events:
-        if event.start_date != now.date().isoformat():
-            kept.append(event)
-            continue
-        end = _parse_start_time(event.end_time)
-        start = _parse_start_time(event.start_time)
-        if (end is not None and end >= current_time) or (
-            not event.end_time.strip()
-            and start is not None
-            and start >= current_time
-        ):
-            kept.append(event)
-    return kept
+    """Legacy strict filter retained for callers that require confirmed attendability."""
+    return [
+        event
+        for event in events
+        if event.start_date != now.date().isoformat()
+        or _event_temporal_status(event, now) in {"upcoming", "in_progress"}
+    ]
 
 
 def _shortlist(events: list[Event], limit: int) -> list[Event]:
@@ -371,25 +387,8 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
     return [event for _, _, event in ranked[:limit]]
 
 
-def _relative_window(value: str, today: str) -> tuple[str, str]:
-    current = date.fromisoformat(today)
-    if value == "this_weekend":
-        if current.weekday() == 6:
-            return today, today
-        saturday = current if current.weekday() == 5 else current + timedelta(
-            days=5 - current.weekday()
-        )
-        return saturday.isoformat(), (saturday + timedelta(days=1)).isoformat()
-    if value == "tomorrow":
-        tomorrow = current + timedelta(days=1)
-        return tomorrow.isoformat(), tomorrow.isoformat()
-    if value == "this_week":
-        return today, (current + timedelta(days=6 - current.weekday())).isoformat()
-    return today, today
-
-
 _NO_RESULTS = (
-    "No upcoming NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
+    "No NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
     "NYC Permitted Events)."
 )
 
@@ -406,20 +405,74 @@ def _parse_start_time(text: str):
     return None
 
 
+def _event_temporal_status(ev: Event, now: datetime) -> EventStatus:
+    """Normalize one event's raw local fields and classify it against the NYC clock."""
+    event_day = date.fromisoformat(ev.start_date)
+    start_time = _parse_start_time(ev.start_time)
+    if start_time is None:
+        if event_day < now.date():
+            return "ended"
+        return "upcoming" if event_day > now.date() else "unknown"
+    start_at = nyc_datetime(event_day, start_time)
+    end_time = _parse_start_time(ev.end_time)
+    end_at = None
+    if end_time is not None:
+        end_day = date.fromisoformat(ev.end_date) if ev.end_date else event_day
+        if not ev.end_date and end_time <= start_time:
+            end_day += timedelta(days=1)
+        end_at = nyc_datetime(end_day, end_time)
+    return event_status(start_at, end_at, now)
+
+
+def _temporal_filter(
+    events: list[Event], *, has_started: bool | None, has_ended: bool | None, now: datetime,
+) -> list[Event]:
+    kept = []
+    for event in events:
+        status = _event_temporal_status(event, now)
+        if status == "unknown":
+            if has_ended is not True:
+                kept.append(event)
+            continue
+        started = status in {"in_progress", "ended"}
+        ended = status == "ended"
+        if has_started is not None and started != has_started:
+            continue
+        if has_ended is not None and ended != has_ended:
+            continue
+        kept.append(event)
+    return kept
+
+
+def _temporal_instruction(has_started: bool | None, has_ended: bool | None) -> str:
+    if has_ended is True:
+        return "include only ended events and describe them in the past tense"
+    if has_started is True:
+        return (
+            "recommend only events computed in progress; keep unknown-time leads separate and "
+            "say they are not confirmed happening now"
+        )
+    if has_started is False:
+        return "include only events that have not started; keep unknown-time leads separate"
+    return "exclude events known to have ended"
+
+
 def _today_timing_note(ev: Event, now: datetime) -> str:
-    """Describe a known same-day start relative to the NYC clock."""
-    if ev.start_date != now.date().isoformat() or not ev.start_time.strip():
-        return ""
-    parsed = _parse_start_time(ev.start_time)
-    if parsed is None:
-        return ""
-    current_time = now.replace(tzinfo=None).time()
-    if parsed < current_time:
-        end = _parse_start_time(ev.end_time)
-        if end is not None and end >= current_time:
-            return "; in progress"
-        return "; already started or ended earlier today"
-    return "; starts later today"
+    """Expose the deterministic status while retaining the source's raw times."""
+    status = _event_temporal_status(ev, now)
+    if ev.start_date != now.date().isoformat():
+        return "; ended" if status == "ended" else ""
+    start = _parse_start_time(ev.start_time)
+    if status == "unknown" and start is None:
+        return "; timing unknown, not confirmed currently attendable"
+    if status == "unknown":
+        return "; already started or ended earlier today; end time unknown"
+    return {
+        "upcoming": "; starts later today",
+        "in_progress": "; in progress",
+        "ended": "; ended",
+        "unknown": "",
+    }[status]
 
 
 def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
@@ -427,7 +480,10 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
     when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
     where = f" @ {ev.venue}" if ev.venue else ""
     timing = _today_timing_note(ev, now) if now else ""
-    end = f"; ends {ev.end_time}" if ev.end_time else ""
+    end_when = ev.end_time
+    if ev.end_date and ev.end_date != ev.start_date:
+        end_when = f"{date.fromisoformat(ev.end_date).strftime('%A')}, {ev.end_date} {ev.end_time}"
+    end = f"; ends {end_when}" if end_when else ""
     free = "; free" if ev.free_evidence else ""
     audience = f"; {ev.audience}" if ev.audience else ""
     registration = f"; registration: {ev.registration_info}" if ev.registration_info else ""
@@ -490,14 +546,8 @@ def _event_discovery_domains(ctx: ToolContext) -> list[str]:
     })
 
 
-def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
-    cutoff = max(now.replace(tzinfo=None).time(), datetime.strptime("17:00", "%H:%M").time())
-    kept = []
-    for event in events:
-        parsed = _parse_start_time(event.start_time)
-        if event.start_date == now.date().isoformat() and parsed is not None and parsed >= cutoff:
-            kept.append(event)
-    return kept
+def _is_generic_event_page(url: str) -> bool:
+    return urlsplit(url).path.rstrip("/").casefold() in {"", "/discover", "/event", "/events"}
 
 
 async def _handler(args: dict, ctx: ToolContext) -> str:
@@ -516,31 +566,46 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
 
-    # The agent extracts the resident's timeframe into typed fields. Python only resolves the
-    # bounded relative values against the NYC clock.
+    # The agent extracts the resident's date window. Python validates it and computes event state.
     arg_start = query.window_start.isoformat() if query.window_start else None
     arg_end = query.window_end.isoformat() if query.window_end else None
-    if query.relative_window:
-        window_start, window_end = _relative_window(query.relative_window, today)
-    elif arg_start:
+    if arg_start:
         window_start, window_end = arg_start, arg_end or arg_start
     elif arg_end:
         window_start, window_end = today, arg_end
     else:
         window_start, window_end = today, None
+    has_ended = query.has_ended
+    if has_ended is None:
+        has_ended = bool(window_end and window_end < today)
+    temporal_instruction = _temporal_instruction(query.has_started, has_ended)
+    start_time_bound = query.window_start_time
+    end_time_bound = query.window_end_time
+
+    def local_bound(day: date, value: time) -> str:
+        return datetime.combine(day, value, tzinfo=NYC_TZ).astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
     def utc_midnight(day: date) -> str:
         return datetime.combine(day, datetime.min.time(), tzinfo=NYC_TZ).astimezone(
             timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    start_day = date.fromisoformat(window_start)
+    end_day = date.fromisoformat(window_end) if window_end else None
     start_dt = (
-        utc_midnight(date.fromisoformat(window_start))
-        if window_start != today
+        local_bound(start_day, start_time_bound)
+        if start_time_bound
+        else utc_midnight(start_day)
+        if window_start != today or has_ended or query.has_started is True
         else now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     end_dt = (
-        utc_midnight(date.fromisoformat(window_end) + timedelta(days=1))
-        if window_end
+        local_bound(end_day, end_time_bound)
+        if end_day and end_time_bound
+        else utc_midnight(end_day + timedelta(days=1))
+        if end_day
         else None
     )
     ticketmaster_keyword = keyword
@@ -652,6 +717,74 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     web_failed = isinstance(web_context, BaseException)
     if web_failed:
         web_context = None
+    added = ctx.citations.mapping()
+    new_citations = [
+        citation
+        for citation_id, citation in added.items()
+        if citation_id not in web_citations_before
+    ]
+    generic = next(
+        (
+            citation
+            for citation in new_citations[:1]
+            if _is_generic_event_page(citation["url"])
+        ),
+        None,
+    )
+    resolved_primary = next(
+        (
+            citation
+            for citation in new_citations
+            if not _is_generic_event_page(citation["url"])
+            and (
+                generic is None
+                or (urlsplit(citation["url"]).hostname or "").removeprefix("www.")
+                == (urlsplit(generic["url"]).hostname or "").removeprefix("www.")
+            )
+        ),
+        None,
+    )
+    if generic is not None and ctx.toolbox is not None and "web_search" in ctx.toolbox:
+        host = (urlsplit(generic["url"]).hostname or "").removeprefix("www.")
+        resolved_primary = next(
+            (
+                citation
+                for citation_id, citation in added.items()
+                if citation_id not in web_citations_before
+                and citation["url"] != generic["url"]
+                and (urlsplit(citation["url"]).hostname or "").removeprefix("www.") == host
+                and not _is_generic_event_page(citation["url"])
+            ),
+            None,
+        )
+        focused_query = " ".join(
+            part for part in (generic.get("title", ""), generic.get("snippet", "")[:240])
+            if part
+        )
+        if resolved_primary is None and host and focused_query:
+            focused_citations_before = set(added)
+            try:
+                focused = await asyncio.wait_for(
+                    ctx.toolbox["web_search"].handler(
+                        {"query": focused_query, "prefer": [host], "count": 5}, ctx,
+                    ),
+                    timeout=_SOURCE_TIMEOUT_S,
+                )
+            except Exception:
+                focused = ""
+            if focused:
+                web_context = f"{web_context}\n\nFocused direct-page search:\n{focused}"
+                resolved_primary = next(
+                    (
+                        citation
+                        for citation_id, citation in ctx.citations.mapping().items()
+                        if citation_id not in focused_citations_before
+                        and (urlsplit(citation["url"]).hostname or "").removeprefix("www.")
+                        == host
+                        and not _is_generic_event_page(citation["url"])
+                    ),
+                    None,
+                )
     if (
         web_context
         and (keyword or classification)
@@ -659,13 +792,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         and "web_fetch" in ctx.toolbox
     ):
         added = ctx.citations.mapping()
-        primary = next(
+        primary = resolved_primary or next(
             (
                 citation
                 for citation_id, citation in added.items()
                 if citation_id not in web_citations_before
-                and citation.get("provenance", {}).get("evidence_grade")
-                == "authoritative_excerpt"
+                and not _is_generic_event_page(citation["url"])
             ),
             None,
         )
@@ -681,8 +813,11 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             except Exception:
                 fetched = ""
             if fetched:
-                web_context = f"{web_context}\n\nPrimary-source page fallback:\n{fetched}"
+                web_context = f"{web_context}\n\nSelected event page:\n{fetched}"
     web_candidates = f"Web-discovered candidates:\n{web_context}" if web_context else ""
+    ctx.event_discovery_citation_ids.update(
+        set(ctx.citations.mapping()) - web_citations_before
+    )
     web_limitation = (
         "Current web event leads were unavailable. Results are partial."
         if web_failed
@@ -724,13 +859,20 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
 
     def _window_filter(rows: list[Event]) -> list[Event]:
         kept = _future_only(rows, window_start)
-        if ctx.event_turn != "preparation":
-            kept = _not_ended_today(kept, now)
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
+        if ctx.event_turn != "preparation" or query.has_started is not None or query.has_ended is not None:
+            kept = _temporal_filter(
+                kept, has_started=query.has_started, has_ended=has_ended, now=now,
+            )
         kept = _explicitly_free(kept, query.cost)
-        if query.relative_window == "tonight" and ctx.event_turn != "preparation":
-            kept = _tonight_only(kept, now)
+        if start_time_bound or end_time_bound:
+            kept = [
+                event for event in kept
+                if (parsed := _parse_start_time(event.start_time)) is not None
+                and (start_time_bound is None or parsed >= start_time_bound)
+                and (end_time_bound is None or parsed <= end_time_bound)
+            ]
         if borough:
             kept = [e for e in kept if borough in e.borough.lower()]
         if audience == "kids":
@@ -871,11 +1013,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         )
         return (
             "Candidate event choices from current web and structured catalogs. Rank every candidate "
-            "together. Choose by exact date and topic match first, then apply still-attendable "
-            "time and NYC location "
-            "before relevance and variety. Source tier describes evidence confidence, not how "
-            "interesting an event is. Preserve a useful link as an unconfirmed lead when its "
-            "excerpt does not establish every hard constraint:\n"
+            "together. Choose by exact date and topic match first, then apply NYC location and "
+            f"this temporal rule: {temporal_instruction}, before relevance and variety. "
+            "Source tier describes evidence confidence, not how "
+            "interesting an event is. Before keeping any web candidate, call evaluate_event_time "
+            "with its exact name, date, and available times and cite its derived result. Omit "
+            "unavailable values so the result stays unknown instead of guessing. Resolve a general calendar URL to the "
+            "direct event page with one focused web search. Preserve a useful link as an "
+            "unconfirmed lead when its excerpt does not establish every hard constraint. An "
+            "exact-date editorial listing excerpt remains usable evidence for only the event "
+            "names, dates, venues, and times it explicitly states when its page cannot be fetched. "
+            "For general discovery, include a matching non-marketplace candidate when available "
+            "instead of returning only marketplace candidates:\n"
             + candidate_pool
         )
 
@@ -885,14 +1034,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         # The snapshot carries the FULL row the model will describe, time and source included,
         # so cited prose stays supported by its own evidence.
         timing = _today_timing_note(ev, now).removeprefix("; ")
+        temporal_status = _event_temporal_status(ev, now)
         snippet_bits = [
             f"Name: {ev.name}",
             f"Date: {weekday}, {ev.start_date}",
             f"Start time: {ev.start_time}" if ev.start_time else "",
+            f"End date: {ev.end_date}" if ev.end_date else "",
             f"End time: {ev.end_time}" if ev.end_time else "",
             f"Venue: {ev.venue}" if ev.venue else "",
             f"Borough: {ev.borough}" if ev.borough else "",
             f"Timing at lookup: {timing}" if timing else "",
+            f"Temporal status: {temporal_status}",
+            f"Evaluated at: {now.isoformat()}",
             f"Cost evidence: {ev.free_evidence}" if ev.free_evidence else "",
             f"Audience: {ev.audience}" if ev.audience else "",
             f"Registration: {ev.registration_info}" if ev.registration_info else "",
@@ -917,6 +1070,16 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             ev.provider_record,
             record_id=ev.provider_id,
             field_pointer="/",
+            derivation={
+                "temporal": {
+                    "start_date": ev.start_date,
+                    "start_time": ev.start_time,
+                    "end_date": ev.end_date,
+                    "end_time": ev.end_time,
+                    "evaluated_at": now.isoformat(),
+                    "status": temporal_status,
+                },
+            },
         )
         provenance["acquisition"] = {"retrieved_at": ev.retrieved_at}
         if ev.source == "Ticketmaster Discovery":
@@ -937,7 +1100,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     free_scope = " whose official source evidence says free" if query.cost == "free" else ""
     header = (
         f"{setting_note}{coverage_note}"
-        f"Upcoming NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
+        f"NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
         "NYC Permitted Events, the Street Activity Permit Office feed of street fairs, farmers "
         "markets, block parties, parades, and plaza events):\n"
     )
@@ -958,11 +1121,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     )
     return (
         "Candidate event choices from current web and structured catalogs. Rank every candidate "
-        "together. Choose by exact date and topic match first, then apply still-attendable time "
-        "and NYC location "
-        "before relevance and variety. Source tier describes evidence confidence, not how "
-        "interesting an event is. Preserve a useful link as an unconfirmed lead when its excerpt "
-        "does not establish every hard constraint:\n"
+        "together. Choose by exact date and topic match first, then apply NYC location and this "
+        f"temporal rule: {temporal_instruction}, before relevance and variety. "
+        "Source tier describes evidence confidence, not how "
+        "interesting an event is. Before keeping any web candidate, call evaluate_event_time with "
+        "its exact name, date, and available times and cite its derived result. Omit unavailable "
+        "values so the result stays unknown instead of guessing. Resolve a general calendar URL to the direct event page with "
+        "one focused web search. Preserve a useful link as an unconfirmed lead when its excerpt "
+        "does not establish every hard constraint. An exact-date editorial listing excerpt "
+        "remains usable evidence for only the event names, dates, venues, and times it explicitly "
+        "states when its page cannot be fetched. For general discovery, include a matching "
+        "non-marketplace candidate when available instead of returning only marketplace "
+        "candidates:\n"
         + candidate_pool
         + followup
     )
@@ -986,10 +1156,13 @@ def get_tools() -> list[Tool]:
                 "optional `classification`, `borough`, source-backed `audience`, and date window. "
                 "For a constrained request, pass `web_query` as a short noun phrase that preserves "
                 "every requested constraint so the coordinator runs one matching web lane."
+                " Pass the inferred ISO date and optional local time window. Use `has_started` "
+                "and `has_ended` only for a requested interval relation; the server computes "
+                "those values against the New York clock."
             ),
             parameters=EventQuery.model_json_schema(),
             handler=_handler,
             open_world=True,  # hits live Ticketmaster + Socrata
             title="Find NYC events",
-        )
+        ),
     ]

@@ -382,13 +382,17 @@ def _unverified_source_links(
     citation_ids: Sequence[str],
     citations: dict[str, dict],
     language: str | None,
+    *,
+    existing_text: str = "",
 ) -> str:
     label = localize("Unverified source", language)
+    existing_urls = _urls_in(existing_text)
     urls = list(
         dict.fromkeys(
             str(citations[citation_id].get("url") or "")
             for citation_id in citation_ids
             if citation_id in citations and citations[citation_id].get("url")
+            and citations[citation_id].get("url") not in existing_urls
         )
     )
     return "\n".join(f"[{label}](<{url}>)" for url in urls)
@@ -1580,28 +1584,6 @@ class PydanticRuntimeAdapter:
                     "return the complete answer.",
                     scripts=sorted(unexpected_scripts),
                 )
-        default_event_shortlist = any(
-            isinstance(part, ToolReturnPart)
-            and part.tool_name == "find_nyc_events"
-            and "This is a shortlist, not every matching event." in str(part.content)
-            for message in messages[current_turn + 1:]
-            if isinstance(message, ModelRequest)
-            for part in message.parts
-        )
-        answer_without_trailing_citations = re.sub(
-            r"(?:\s*\{cite:S\d+\})+\s*$", "", rendered
-        ).rstrip()
-        if (
-            isinstance(output, str)
-            and default_event_shortlist
-            and not answer_without_trailing_citations.endswith(("?", "؟", "？"))
-        ):
-            reject(
-                "shortlist_next_step",
-                "The event tool returned a default shortlist. End the complete answer with one "
-                "brief resident-facing question offering more choices or a narrower search. "
-                "Use the evidence already retrieved and do not search again.",
-            )
         if "{URL:" in rendered.upper() or _INTERNAL_TEMPLATE_TOKEN.search(rendered):
             reject(
                 "internal_markup",
@@ -1612,6 +1594,41 @@ class PydanticRuntimeAdapter:
                 "unknown_citation",
                 "Use only citation IDs returned by tools in this run.",
             )
+        answer_citations = used_citations(rendered, mapping)
+        evaluated_event_sources = {
+            str((citation.get("provenance") or {}).get("derivation", {}).get(
+                "source_citation_id"
+            ))
+            for citation in answer_citations.values()
+            if citation.get("kind") == "DATA"
+        }
+        unevaluated_event_sources = sorted(
+            (set(answer_citations) & ctx.deps.event_discovery_citation_ids)
+            - evaluated_event_sources
+        )
+        if unevaluated_event_sources:
+            label = f"{localize('Unverified', ctx.deps.language)}:"
+            if isinstance(output, GroundedAnswer):
+                output = output.model_copy(update={
+                    "grounded_blocks": [
+                        block.model_copy(update={"text": f"{label} {block.text}"})
+                        if set(block.citation_ids) & set(unevaluated_event_sources)
+                        and not block.text.startswith(label)
+                        else block
+                        for block in output.grounded_blocks
+                    ]
+                })
+                rendered = _render_grounded_answer(output)
+            else:
+                unevaluated = set(unevaluated_event_sources)
+                rendered = "\n".join(
+                    f"{label} {line}"
+                    if set(used_citations(line, mapping)) & unevaluated
+                    and not line.lstrip().startswith(label)
+                    else line
+                    for line in rendered.split("\n")
+                )
+                output = rendered
         missing_response_citations = sorted(
             ctx.deps.required_response_citation_ids
             - set(used_citations(rendered, mapping))
@@ -1834,13 +1851,20 @@ class PydanticRuntimeAdapter:
                                 "kind": "claim",
                                 "text": (
                                     "\n\n".join(filter(None, (
-                                        f"{localize('Unverified', ctx.deps.language)}: "
-                                        f"{block.text}",
+                                        (
+                                            block.text
+                                            if block.text.startswith(
+                                                f"{localize('Unverified', ctx.deps.language)}:"
+                                            )
+                                            else f"{localize('Unverified', ctx.deps.language)}: "
+                                            f"{block.text}"
+                                        ),
                                         (
                                             _unverified_source_links(
                                                 block.citation_ids,
                                                 mapping,
                                                 ctx.deps.language,
+                                                existing_text=block.text,
                                             )
                                             if rejected_labels[f"block-{index}"]
                                             != "partial"
@@ -1864,6 +1888,12 @@ class PydanticRuntimeAdapter:
                     if item_id not in rejected_ids or original is None:
                         continue
                     for index, block in enumerate(blocks):
+                        if block.lstrip().startswith(
+                            f"{localize('Unverified', ctx.deps.language)}:"
+                        ):
+                            if original in block or claim in block:
+                                break
+                            continue
                         trailing = re.search(
                             re.escape(claim) + r"(?:[ \t]*\{cite:S\d+\})+",
                             block,
@@ -1888,6 +1918,7 @@ class PydanticRuntimeAdapter:
                                     citation_ids,
                                     mapping,
                                     ctx.deps.language,
+                                    existing_text=labeled,
                                 ),
                             )))
                         block = block.replace(

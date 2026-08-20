@@ -295,31 +295,16 @@ def test_event_query_rejects_a_reversed_date_window() -> None:
         })
 
 
-def test_event_query_does_not_mix_relative_and_absolute_windows() -> None:
-    with pytest.raises(ValueError, match="relative_window cannot be combined"):
-        EventQuery.model_validate({
-            "relative_window": "this_weekend",
-            "window_start": "2099-08-17",
-        })
-
-
-def test_event_query_owns_relative_time_and_cost_constraints() -> None:
+def test_event_query_owns_date_time_and_cost_constraints() -> None:
     query = EventQuery.model_validate({
-        "relative_window": "tomorrow",
+        "window_start": "2026-08-18",
+        "window_start_time": "17:00:00",
         "cost": "free",
     })
 
-    assert query.relative_window == "tomorrow"
+    assert query.window_start.isoformat() == "2026-08-18"
+    assert query.window_start_time.isoformat() == "17:00:00"
     assert query.cost == "free"
-    assert event_tools._relative_window("tomorrow", "2026-08-17") == (
-        "2026-08-18", "2026-08-18",
-    )
-    assert event_tools._relative_window("this_weekend", "2026-08-22") == (
-        "2026-08-22", "2026-08-23",
-    )
-    assert event_tools._relative_window("this_weekend", "2026-08-23") == (
-        "2026-08-23", "2026-08-23",
-    )
 
 
 async def test_event_tool_does_not_reinterpret_raw_resident_constraints(monkeypatch) -> None:
@@ -360,7 +345,7 @@ async def test_event_tool_does_not_reinterpret_raw_resident_constraints(monkeypa
     )
 
     output = await event_tools.get_tools()[0].handler(
-        {"relative_window": "today"}, ctx,
+        {"window_start": "2026-08-17"}, ctx,
     )
 
     assert "Afternoon drawing" in output
