@@ -288,6 +288,9 @@
     compliance paths, and how to reach HRA or request a fair hearing without inventing a deadline or
     outcome. Give the City food finder or 311 route immediately and ask for a location before offering
     nearby sites. Do not treat a pantry as a replacement for SNAP or request or echo case numbers or PII.
+  utility_criterion: >-
+    Give immediate food help first, then a supported human route for challenging the stopped SNAP
+    benefits. Preserve the official fair-hearing URL as unverified if its page cannot be retrieved.
 
 - id: benefits_snap_work_rule_possible_exemption
   tags: [must-win]

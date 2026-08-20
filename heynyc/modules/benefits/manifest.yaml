@@ -84,19 +84,46 @@ situations:
     query: "NYC HRA SNAP ABAWD work requirements exemptions reporting activity restore benefits current"
     urls:
       - https://www.nyc.gov/main/services/snap-benefits/abawd
-      - https://access.nyc.gov/snap-work-requirements/
-      - https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml
+      - https://otda.ny.gov/hearings/faq.asp
+      - https://portal.311.nyc.gov/article/?kanumber=KA-02943
+      - https://finder.nyc.gov/foodhelp/
     reminder: >-
       This turn is about SNAP work-rule recovery. Use current official SNAP guidance and a
       supported human-help path. Include a fair-hearing path only when the resident asks to
       challenge a decision or says benefits were stopped or reduced, and only when retrieved
-      evidence supports that route. If the official hearing page is unavailable but its URL may
-      still help, label it unverified and preserve its URL instead of attaching the claim to
-      unrelated evidence. Do not add a conditional appeal branch to a reporting-only answer.
-      When the resident says they lack food or cannot eat, in any
-      language, give the Food Help NYC or 311 route immediately. Ask for a neighborhood or
-      landmark before offering a nearest pantry, and call the pantry tool only after the resident
-      provides one. Immediate food help is part of this situation, never an unrelated module.
+      evidence supports that route. Label unsupported details unverified and preserve the direct
+      request URL instead of attaching
+      the claim to unrelated evidence. Do not add a conditional appeal branch to a reporting-only answer.
+      Use https://portal.311.nyc.gov/article/?kanumber=KA-02943 only for Fair Hearing request
+      methods. Use the OTDA FAQ only for the SNAP-specific deadline. Do not use the NYC 311 page
+      for a SNAP deadline. Fetch the NYC 311 page with
+      evidence_scope="online phone fax mail in-person Fair Hearing request methods". Fetch the OTDA
+      FAQ with evidence_scope="SNAP benefits denied stopped reduced Fair Hearing time limit 60 90 days".
+      When the resident says they lack food or cannot eat, in any language, give immediate help.
+      For immediate food, fetch https://finder.nyc.gov/foodhelp/ and use only that page for Food
+      Help NYC claims. Put that action in the first actionable paragraph after one line of empathy,
+      before eligibility, paperwork, or appeal details. Ask for a neighborhood or landmark, not a
+      full address, before offering a nearest pantry, and call the pantry tool only after the resident
+      provides one. Immediate food help is part of this situation, never an unrelated module. Spell out Able-Bodied Adults
+      Without Dependents (ABAWD) on first use.
+      Required outcomes: immediate food help when requested; how to check whether the rule applies;
+      exemption examples and how HRA documents one; what to do when the rule applies, including work
+      80 hours per month or an approved activity for its required monthly hours; the applicable reporting
+      step supported by the retrieved source; and a Fair Hearing route only when the resident is challenging
+      a stopped or reduced benefit. Do not omit a required outcome merely because another path may apply.
+      Treat work, approved activities, and exemptions as alternatives, not cumulative requirements.
+      Do not join them as if the resident must complete every path. Keep any reporting step attached
+      only to the path the retrieved source says it applies to. For an approved activity, say it must
+      meet the required number of hours each month unless the retrieved source gives a more exact
+      requirement. Do not imply that any amount of participation is enough. Keep the notice condition
+      and retrieved Fair Hearing routes in separate claim blocks. Do not call a page an online route
+      unless its direct URL is registered for delivery. Use the Fair Hearings line only for requesting
+      or discussing the hearing, never for choosing a work activity or exemption. Use a retrieved PACE
+      or HRA route for activity and exemption help; if none was retrieved, say that route is incomplete.
+      Preserve deadline qualifiers exactly as retrieved. If a source says denial notice, say denial notice,
+      not a reduction notice or a broader category. State that condition as "If you received a denial
+      notice..." without changing the resident's current case status, then put supported ways to request
+      the hearing in a separate claim block.
       Beyond that, do not call or mention unrelated service modules unless the user separately
       asked for them. Start with the listed official pages. If they answer the resident's
       question, stop searching.
@@ -183,7 +210,6 @@ seeds:
   - https://www.nyc.gov/site/hra/about/immigration-faqs.page
   - https://www.nyc.gov/site/hra/help/legal-services-for-immigrant-new-yorkers.page
   - https://www.nyc.gov/assets/hra/ACCESSNYC/pdf/SNAPKit/english/LDSS_4826A.pdf
-  - https://access.nyc.gov/snap-work-requirements/
   - https://opendata.cityofnewyork.us/
 allowlist:
   - access.nyc.gov

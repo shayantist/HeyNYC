@@ -395,6 +395,7 @@ def test_benefits_prompt_surfaces_fair_hearing_appeal_path():
 def test_snap_work_rule_index_does_not_preload_an_unrequested_appeal():
     current_hra_faq = "https://www.nyc.gov/site/hra/about/frequently-asked-questions-faq.page"
     stale_hra_faq = "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml"
+    fair_hearing_hub = "https://portal.311.nyc.gov/article/?kanumber=KA-02943"
     reg = Registry.discover(config.MODULES_DIR)
     benefits = next(module for module in reg.modules if module.name == "benefits")
 
@@ -402,7 +403,8 @@ def test_snap_work_rule_index_does_not_preload_an_unrequested_appeal():
     assert stale_hra_faq not in benefits.seeds
     # SNAP work-rule retrieval URLs are now manifest-owned (`situations: snap_work_rules`).
     snap_urls = reg.situation_hints()["snap_work_rules"][1].urls
-    assert stale_hra_faq in snap_urls
+    assert stale_hra_faq not in snap_urls
+    assert fair_hearing_hub in snap_urls
     assert "https://otda.ny.gov/oah/" not in snap_urls
 
 

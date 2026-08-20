@@ -2254,7 +2254,7 @@ async def test_snap_work_rule_query_forces_current_official_search():
 
     async def search(args, ctx):
         assert "SNAP" in args["query"]
-        assert "fair hearing" in args["query"]
+        assert "fair hearing" not in args["query"].lower()
         return "current official HRA guidance"
 
     tool = Tool(
@@ -2286,8 +2286,9 @@ async def test_snap_work_rule_query_forces_current_official_search():
     assert result.tool_calls_made == ["web_search"]
     assert all("housing_guidance" not in names for names in schemas_seen)
     prompt = "\n".join(str(message.get("content", "")) for message in first_messages)
-    assert "give the Food Help NYC or 311 route immediately" in prompt
-    assert "Ask for a neighborhood or landmark" in prompt
+    assert "For immediate food, fetch https://finder.nyc.gov/foodhelp/" in prompt
+    assert "first actionable paragraph after one line of empathy" in prompt
+    assert "neighborhood or landmark, not a full address" in prompt
 
 
 async def test_generic_snap_question_does_not_force_current_rule_search(empty_registry):
