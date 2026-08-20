@@ -12,23 +12,14 @@ import logging
 from heynyc.core import config
 
 from .base import InboundMessage
-from .format import _split
+from .format import twilio_chunks as _ordered_chunks
 from .identity import user_key
 from .orchestrator import Deps, handle
 from .store import PENDING_APPROVAL_OUTBOX_KEY, InboxPayloadError
 
 _TYPING_URL = "https://messaging.twilio.com/v3/Indicators/Typing.json"
 _TYPING_REFRESH_SECONDS = 20
-_TEXT_LIMIT = 1600
-_PAGE_PREFIX_RESERVE = 16
 logger = logging.getLogger("heynyc.channels.twilio")
-
-
-def _ordered_chunks(text: str) -> list[str]:
-    chunks = _split(text, _TEXT_LIMIT - _PAGE_PREFIX_RESERVE)
-    return chunks if len(chunks) < 2 else [
-        f"{index}/{len(chunks)} {chunk}" for index, chunk in enumerate(chunks, 1)
-    ]
 
 
 class TwilioReplier:

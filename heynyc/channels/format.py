@@ -5,6 +5,7 @@ sessions and telemetry."""
 from __future__ import annotations
 
 import re
+from urllib.parse import quote
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -13,6 +14,8 @@ from heynyc.core.citations import used_citations
 from heynyc.core.localization import localize, localized_source_limit
 
 WA_LIMIT = 4096
+TWILIO_TEXT_LIMIT = 1600
+TWILIO_PAGE_PREFIX_RESERVE = 16
 _INLINE_CITE = re.compile(r"\s*\{cite:(S\d+)\}")
 _MARKDOWN_CITE_LINK = re.compile(r"\[([^\]\n]+)\]\(\s*\{cite:(S\d+)\}\s*\)")
 _CODE = re.compile(r"(`+|~{3,})(.*?)\1", re.DOTALL)
@@ -50,7 +53,7 @@ def _inline_text(tokens: list[Token], *, whatsapp: bool) -> str:
             url, start = links.pop()
             label = "".join(output[start:]).strip()
             if url and _canonical_url(label) != _canonical_url(url):
-                output.append(f": {url}")
+                output.append(f": {_delivery_url(url)}")
         elif token.type == "image":
             label = token.content or token.attrGet("alt") or "Image"
             url = token.attrGet("src") or ""
@@ -128,6 +131,11 @@ def _canonical_url(url: str) -> str:
     return url.rstrip(".,;:!?").split("#:~:text=", 1)[0].rstrip("/")
 
 
+def _delivery_url(url: str) -> str:
+    """Encode source links for text clients without changing the stored audit URL."""
+    return quote(url, safe=":/?&=%#+-._~(),")
+
+
 def _urls_in(text: str) -> set[str]:
     return {
         _canonical_url(token.attrGet("href") or "")
@@ -140,9 +148,41 @@ def _without_code_citations(text: str) -> str:
     return _CODE.sub(lambda match: _INLINE_CITE.sub("", match.group()), text)
 
 
-def _inline_citation_links(text: str, citations: dict, action_links: tuple) -> str:
+def _plain_title(value: str) -> str:
+    tokens = _MARKDOWN.parseInline(value)[0].children or ()
+    return "".join(token.content for token in tokens if token.type in {"text", "code_inline"})
+
+
+def _citation_notes(citation: dict, language: str | None) -> list[str]:
+    notes: list[str] = []
+    provenance = citation.get("provenance") or {}
+    if (
+        provenance.get("evidence_grade") == "search_excerpt"
+        and provenance.get("source_tier") == "unverified"
+    ):
+        notes.append(localize(
+            "Verification note for {source}: this source is a search-result excerpt. "
+            "I could not confirm it from the full page.",
+            language,
+        ).format(source=_plain_title(str(citation.get("title") or "source"))))
+    limitation = str(
+        provenance.get("derivation", {}).get("limitations") or ""
+    ).strip()
+    if source_note := localized_source_limit(limitation, language):
+        notes.append(source_note)
+    return notes
+
+
+def _inline_citation_links(
+    text: str,
+    citations: dict,
+    action_links: tuple,
+    language: str | None,
+) -> str:
     actions: dict[str, list] = {}
     rendered_actions: set[str] = set()
+    rendered_notes: set[str] = set()
+    item_urls_by_text: dict[str, set[str]] = {}
     for action in action_links:
         actions.setdefault(action.citation_id, []).append(action)
 
@@ -152,12 +192,19 @@ def _inline_citation_links(text: str, citations: dict, action_links: tuple) -> s
         source_url = str(citation.get("url") or "").split("#:~:text=", 1)[0]
         if not source_url:
             return match.group(0)
-        rendered = f"[{label}](<{source_url}>)"
+        rendered = f"[{label}](<{_delivery_url(source_url)}>)"
         for action in actions.get(citation_id, ()):
             action_url = _canonical_url(action.url)
             if action_url not in rendered_actions:
-                rendered += f" ([{action.label}](<{action.url}>))"
+                rendered += f" ([{action.label}](<{_delivery_url(action.url)}>))"
                 rendered_actions.add(action_url)
+        notes = [
+            note for note in _citation_notes(citation, language)
+            if note not in rendered_notes
+        ]
+        rendered_notes.update(notes)
+        if notes:
+            rendered += f" ({' '.join(notes)})"
         return rendered
 
     def replace(match: re.Match) -> str:
@@ -175,16 +222,26 @@ def _inline_citation_links(text: str, citations: dict, action_links: tuple) -> s
                 break
             scope_end = continuation_end
         item = subject[line_start:scope_end]
-        item_urls = _urls_in(item)
+        item_urls = item_urls_by_text.get(item)
+        if item_urls is None:
+            item_urls = item_urls_by_text[item] = _urls_in(item)
         links: list[str] = []
         source_url = str(citation.get("url") or "").split("#:~:text=", 1)[0]
-        if source_url and _canonical_url(source_url) not in item_urls:
-            links.append(f"[Source](<{source_url}>)")
+        source_key = _canonical_url(source_url)
+        if source_url and source_key not in item_urls:
+            links.append(f"[Source](<{_delivery_url(source_url)}>)")
+            item_urls.add(source_key)
         for action in actions.get(citation_id, ()):
             action_url = _canonical_url(action.url)
             if action_url not in item_urls and action_url not in rendered_actions:
-                links.append(f"[{action.label}](<{action.url}>)")
+                links.append(f"[{action.label}](<{_delivery_url(action.url)}>)")
                 rendered_actions.add(action_url)
+        notes = [
+            note for note in _citation_notes(citation, language)
+            if note not in rendered_notes
+        ]
+        rendered_notes.update(notes)
+        links.extend(notes)
         return f" ({'; '.join(links)})" if links else ""
 
     linked = _MARKDOWN_CITE_LINK.sub(replace_markdown_link, _without_code_citations(text))
@@ -192,58 +249,22 @@ def _inline_citation_links(text: str, citations: dict, action_links: tuple) -> s
     return _ATTACH.sub("", linked).replace("\N{EM DASH}", "-").strip()
 
 
-def _sources_footer(
-    citations: dict,
-    inline_urls: set[str] | None = None,
-    action_links: tuple = (),
-    language: str | None = None,
-) -> str:
-    if not citations:
-        return ""
-    inline_urls = inline_urls or set()
-    actions_by_citation: dict[str, list] = {}
-    for action in action_links:
-        actions_by_citation.setdefault(action.citation_id, []).append(action)
-    lines = [f"{localize('Sources', language)}:"]
-    seen: set[tuple[str, str]] = set()
-    rendered_actions: set[str] = set()
-    rendered_notes: set[str] = set()
-    for c in citations.values():
-        title = c.get("title") or c.get("url", "")
-        url = c["url"].split("#:~:text=", 1)[0]
-        if _canonical_url(url) not in inline_urls and (title, url) not in seen:
-            seen.add((title, url))
-            lines.append(f"• {title} - {url}")
-        provenance = c.get("provenance") or {}
-        if (
-            provenance.get("evidence_grade") == "search_excerpt"
-            and provenance.get("source_tier") == "unverified"
-        ):
-            lines.append(localize(
-                "Verification note for {source}: this source is a search-result excerpt. "
-                "I could not confirm it from the full page.",
-                language,
-            ).format(source=title))
-        for action in actions_by_citation.get(c.get("id", ""), ()):
-            canonical_action = _canonical_url(action.url)
-            if (
-                canonical_action not in inline_urls
-                and canonical_action not in rendered_actions
-            ):
-                rendered_actions.add(canonical_action)
-                lines.append(f"  {action.label} - {action.url}")
-        limitation = str(
-            (c.get("provenance") or {}).get("derivation", {}).get("limitations") or ""
-        ).strip()
-        source_note = localized_source_limit(limitation, language)
-        if source_note and source_note not in rendered_notes:
-            rendered_notes.add(source_note)
-            lines.append(f"  {localize('Source note', language)} - {source_note}")
-    return "\n".join(lines) if len(lines) > 1 else ""
-
-
 def _split(text: str, limit: int) -> list[str]:
-    """Split on blank-line (paragraph) boundaries, never exceeding `limit`."""
+    """Split at natural reading boundaries where possible, never exceeding `limit`."""
+    def split_long(value: str) -> tuple[str, str]:
+        boundaries = [
+            index + 1
+            for index in range(min(limit, len(value) - 1))
+            if value[index] in ".!?)" and value[index + 1] == " "
+        ]
+        balanced = [boundary for boundary in boundaries if len(value) - boundary <= limit]
+        boundary = (
+            min(balanced, key=lambda boundary: abs(boundary - len(value) / 2))
+            if balanced
+            else max(boundaries, default=limit)
+        )
+        return value[:boundary].rstrip(), value[boundary:].lstrip()
+
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []
@@ -266,14 +287,14 @@ def _split(text: str, limit: int) -> list[str]:
                 if current:
                     chunks.append(current)
                 while len(line) > limit:
-                    chunks.append(line[:limit])
-                    line = line[limit:]
+                    chunk, line = split_long(line)
+                    chunks.append(chunk)
                 current = line
             continue
-        # a single oversized paragraph: hard-wrap it
+        # A single oversized paragraph: prefer a sentence boundary, then hard-wrap.
         while len(para) > limit:
-            chunks.append(para[:limit])
-            para = para[limit:]
+            chunk, para = split_long(para)
+            chunks.append(chunk)
         current = para
     if current:
         chunks.append(current)
@@ -311,7 +332,13 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
         body = _link_markers(result.text, result.citations)
     else:
-        text = _inline_citation_links(result.text, result.citations, action_links)
+        language = (getattr(result, "diagnostics", {}) or {}).get("safety_language")
+        text = _inline_citation_links(
+            result.text,
+            result.citations,
+            action_links,
+            language,
+        )
         body = _render_markdown(text, whatsapp=not channel.startswith("sms"))
     candidate_urls = [
         str(citation.get("url") or "")
@@ -349,12 +376,22 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         ]
         footer = "Sources:\n" + "\n".join(rows) if rows else ""
     else:
-        footer = _sources_footer(
-            cited,
-            inline_urls,
-            action_links,
-            (getattr(result, "diagnostics", {}) or {}).get("safety_language"),
-        )
+        footer = ""
     if not footer:
         return _split(body, WA_LIMIT) or [""]
     return _split(f"{body}\n\n{footer}", WA_LIMIT)
+
+
+def twilio_chunks(text: str) -> list[str]:
+    chunks = _split(text, TWILIO_TEXT_LIMIT - TWILIO_PAGE_PREFIX_RESERVE)
+    return chunks if len(chunks) < 2 else [
+        f"{index}/{len(chunks)} {chunk}" for index, chunk in enumerate(chunks, 1)
+    ]
+
+
+def delivery_chunks(result, channel: str) -> list[str]:
+    """Render the exact text parts a channel adapter will send."""
+    chunks = render(result, channel)
+    if channel not in {"sms_twilio", "whatsapp_twilio"}:
+        return chunks
+    return [part for chunk in chunks for part in twilio_chunks(chunk)]

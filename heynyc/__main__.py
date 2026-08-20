@@ -739,6 +739,7 @@ async def _cmd_eval(
     seed: int = 0,
     run_all_cases: bool = False,
     model: str | None = None,
+    preview_channels: list[str] | None = None,
 ) -> None:
     from datetime import timezone
     from pathlib import Path
@@ -746,7 +747,7 @@ async def _cmd_eval(
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
     from heynyc.eval.bench import build_eval_agent
     from heynyc.eval.cases import select_cases
-    from heynyc.eval.report import progress_writer
+    from heynyc.eval.report import progress_writer, write_channel_previews
 
     if repeat < 1:
         raise ValueError("repeat must be at least 1")
@@ -875,8 +876,14 @@ async def _cmd_eval(
             billed_results,
             repeat_summary=repeat_summary,
         ),
-        overall_passed=report.promotion_ready and repeat_gate_passed,
+        overall_passed=False if not repeat_gate_passed else None,
     )
+    if preview_channels:
+        print("\nChannel previews:\n\n" + write_channel_previews(
+            run_dir,
+            results,
+            preview_channels,
+        ))
     print(f"\nRun written to {run_dir}")
     raise SystemExit(0 if report.promotion_ready and repeat_gate_passed else 1)
 
@@ -977,6 +984,14 @@ def main() -> None:
                     help="print every case on one line (id, source, flags, tags) and exit")
     ev.add_argument("--all", dest="run_all_cases", action="store_true",
                     help="confirm running the FULL live case set (large changes only)")
+    ev.add_argument(
+        "--preview-channel",
+        dest="preview_channels",
+        action="append",
+        choices=("sms_twilio", "whatsapp_twilio", "whatsapp_meta"),
+        default=[],
+        help="print and save the exact outgoing parts; repeat for more than one channel",
+    )
     bench = sub.add_parser("bench", help="run the eval cases across several candidate models and compare")
     bench.add_argument("--models", required=True,
                        help="comma-separated model ids to bench, e.g. gpt-5,claude-sonnet-4,gemini-2")
@@ -1024,7 +1039,8 @@ def main() -> None:
         asyncio.run(_cmd_eval(model=args.model, use_api_judge=args.api_judge, repeat=args.repeat, out=args.out,
                               module=args.module, case_ids=args.case_ids,
                               tags=args.tags, sample=args.sample, seed=args.seed,
-                              run_all_cases=args.run_all_cases))
+                              run_all_cases=args.run_all_cases,
+                              preview_channels=args.preview_channels))
     elif args.command == "bench":
         models = [m.strip() for m in args.models.split(",") if m.strip()]
         asyncio.run(_cmd_bench(models=models, module=args.module, use_api_judge=args.api_judge, out=args.out))

@@ -50,6 +50,86 @@ def test_progress_writer_sums_every_turn_usage(tmp_path):
     assert row["stalled_model_requests"] == 3
 
 
+def test_channel_preview_uses_the_live_result_and_saves_exact_parts(tmp_path):
+    import json
+
+    from heynyc.eval.report import write_channel_previews
+
+    case = _case(id="clinic-preview")
+    result = _result(case)
+    result.turn_results = [SimpleNamespace(
+        text="Example clinic {cite:S1}.",
+        citations={
+            "S1": {
+                "id": "S1",
+                "url": "https://data.cityofnewyork.us/resource/abcd-1234/row.json",
+                "title": "Example clinic",
+                "kind": "DATA",
+            }
+        },
+        diagnostics={},
+        action_links=(SimpleNamespace(
+            citation_id="S1",
+            url="https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9",
+            label="Directions",
+        ),),
+    )]
+
+    rendered = write_channel_previews(
+        tmp_path,
+        [result],
+        ["sms_twilio", "whatsapp_meta"],
+    )
+
+    payload = json.loads((tmp_path / "channel-previews.json").read_text())
+    sms = payload["clinic-preview"]["sms_twilio"]
+    assert sms["parts"] == [
+        "Example clinic (Source: https://data.cityofnewyork.us/resource/abcd-1234/row.json; "
+        "Directions: https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9)."
+    ]
+    assert sms["character_counts"] == [len(sms["parts"][0])]
+    assert payload["clinic-preview"]["whatsapp_meta"]["parts"] == sms["parts"]
+    assert "clinic-preview · sms_twilio · part 1/1" in rendered
+    assert "Sources:" not in rendered
+
+
+async def test_eval_command_writes_requested_channel_preview(tmp_path, monkeypatch):
+    import json
+
+    import pytest
+
+    import heynyc.__main__ as cli
+    import heynyc.eval as eval_pkg
+    import heynyc.eval.bench as bench
+
+    case = _case(id="preview-command")
+    result = _result(case, text="A short answer")
+
+    async def fake_run_all(factory, cases, reminders=None, on_case=None, event_sink_factory=None):
+        return [result]
+
+    monkeypatch.setattr(
+        cli.Registry,
+        "discover",
+        lambda *args, **kwargs: SimpleNamespace(modules={"m": object()}),
+    )
+    monkeypatch.setattr(cli, "_load_retriever", lambda required=False: None)
+    monkeypatch.setattr(eval_pkg, "load_cases", lambda registry: [case])
+    monkeypatch.setattr(eval_pkg, "run_all", fake_run_all)
+    monkeypatch.setattr(bench, "build_eval_agent", lambda *args, **kwargs: object())
+
+    with pytest.raises(SystemExit):
+        await cli._cmd_eval(
+            use_api_judge=False,
+            out=str(tmp_path),
+            case_ids=[case.id],
+            preview_channels=["sms_twilio"],
+        )
+
+    previews = json.loads((tmp_path / "channel-previews.json").read_text())
+    assert previews[case.id]["sms_twilio"]["parts"] == ["A short answer"]
+
+
 # --- case loading ---------------------------------------------------------
 
 def test_load_cases_from_real_modules():
@@ -735,6 +815,9 @@ async def test_eval_repeat_reuses_initial_run_and_writes_every_trace(tmp_path, m
     assert metadata["n_model_calls"] == 6
     assert metadata["n_tool_calls"] == 3
     assert json.loads((tmp_path / "report.json").read_text())["promotion_ready"] is False
+    assert "MECHANICAL PASS, QUALITATIVE REVIEW REQUIRED" in (
+        tmp_path / "report.txt"
+    ).read_text()
     assert writes[-1] == tmp_path
 
 

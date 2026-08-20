@@ -68,10 +68,8 @@ def test_f176_channel_uses_the_complete_spanish_catalog_message() -> None:
     assert SPANISH_LIMITATION not in result.text
     rendered = render(result, "sms_twilio")[0]
     assert SPANISH_LIMITATION in rendered
-    assert "Fuentes:" in rendered
-    assert "Nota de la fuente -" in rendered
+    assert "Fuentes:" not in rendered
     assert "Sources:" not in rendered
-    assert "Source note -" not in rendered
 
 
 def test_f176_projection_does_not_add_a_limit_without_one() -> None:

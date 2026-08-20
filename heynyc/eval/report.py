@@ -238,6 +238,35 @@ def event_writer(directory: Path, case_id: str):
     return on_event
 
 
+def write_channel_previews(directory, results: list[CaseResult], channels: list[str]) -> str:
+    """Persist and print exact channel delivery parts from live in-memory results."""
+    from heynyc.channels.format import delivery_chunks
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    lines: list[str] = []
+    for result in results:
+        final = result.turn_results[-1] if result.turn_results else result
+        previews = {}
+        for channel in channels:
+            parts = delivery_chunks(final, channel)
+            previews[channel] = {
+                "parts": parts,
+                "character_counts": [len(part) for part in parts],
+            }
+            for index, part in enumerate(parts, 1):
+                lines.extend([
+                    f"{result.case.id} · {channel} · part {index}/{len(parts)}",
+                    part,
+                ])
+        payload[result.case.id] = previews
+    (directory / "channel-previews.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+    return "\n\n".join(lines)
+
+
 def write_run(
     directory,
     report: "GateReport",

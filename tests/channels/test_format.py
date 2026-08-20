@@ -1,7 +1,8 @@
 import signal
 from dataclasses import dataclass, field
 
-from heynyc.channels.format import WA_LIMIT, _split, render
+import heynyc.channels.format as channel_format
+from heynyc.channels.format import TWILIO_TEXT_LIMIT, WA_LIMIT, _split, render
 from heynyc.core.agent import ActionLink
 
 
@@ -200,6 +201,86 @@ def test_inline_source_url_does_not_drop_its_structured_source_note():
 
     assert rendered.count("https://nyc.gov/help") == 1
     assert limitation in rendered
+    assert "Sources:" not in rendered
+
+
+def test_text_channels_keep_discovery_warning_inline_without_an_endnote():
+    result = FakeResult(
+        "This may be available {cite:S1}.",
+        {
+            "S1": {
+                "id": "S1",
+                "url": "https://nyc.gov/search-result",
+                "title": "Official [click](<https://evil.example/phish>) result",
+                "kind": "WEB",
+                "provenance": {
+                    "evidence_grade": "search_excerpt",
+                    "source_tier": "unverified",
+                },
+            }
+        },
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert "Source: https://nyc.gov/search-result" in rendered
+    assert "search-result excerpt" in rendered
+    assert "evil.example" not in rendered
+    assert "Sources:" not in rendered
+
+
+def test_text_channels_percent_encode_source_urls_for_clickability():
+    raw = (
+        "https://data.cityofnewyork.us/resource/erm2-nwe9.json?"
+        "$where=unique_key='70056272' AND status='Closed'"
+    )
+    result = FakeResult(
+        "The request is closed {cite:S1}.",
+        {"S1": {"id": "S1", "url": raw, "title": "311 request", "kind": "DATA"}},
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert " " not in rendered.split("Source: ", 1)[1].split(")", 1)[0]
+    assert "%27" in rendered
+    assert "Sources:" not in rendered
+
+
+def test_text_channels_render_a_repeated_source_note_once():
+    limitation = (
+        "These are regular hours. Confirm holiday or temporary schedule exceptions before "
+        "traveling."
+    )
+    result = FakeResult(
+        "First claim {cite:S1}. Second claim {cite:S1}.",
+        {
+            "S1": {
+                "id": "S1",
+                "url": "https://nyc.gov/help",
+                "title": "Help",
+                "kind": "DATA",
+                "provenance": {"derivation": {"limitations": limitation}},
+            }
+        },
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count(limitation) == 1
+
+
+def test_text_channels_render_one_link_for_two_citations_to_the_same_page():
+    result = FakeResult(
+        "One supported route {cite:S1} {cite:S2}.",
+        {
+            "S1": {"id": "S1", "url": "https://nyc.gov/help", "title": "Help"},
+            "S2": {"id": "S2", "url": "https://nyc.gov/help", "title": "Help"},
+        },
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count("https://nyc.gov/help") == 1
 
 
 def test_inline_links_deduplicate_shared_action_urls():
@@ -288,6 +369,43 @@ def test_large_sources_footer_finishes_and_respects_the_limit():
         signal.signal(signal.SIGALRM, previous)
 
     assert all(len(chunk) <= WA_LIMIT for chunk in result)
+
+
+def test_delivery_chunks_match_twilio_numbering_and_meta_limit():
+    result = FakeResult(("a" * 1200) + "\n\n" + ("b" * 1200))
+    delivery_chunks = getattr(channel_format, "delivery_chunks", None)
+
+    assert delivery_chunks is not None
+    expected_twilio = [f"1/2 {'a' * 1200}", f"2/2 {'b' * 1200}"]
+    assert delivery_chunks(result, "sms_twilio") == expected_twilio
+    assert delivery_chunks(result, "whatsapp_twilio") == expected_twilio
+    assert delivery_chunks(result, "whatsapp_meta") == render(result, "whatsapp_meta")
+
+
+def test_twilio_split_keeps_a_final_limitation_sentence_together():
+    supported = (("Verified detail " * 95).strip() + ".")
+    limitation = (
+        "Unverified: I could not confirm a direct phone number. "
+        "Your notice should explain the next step."
+    )
+
+    chunks = channel_format.twilio_chunks(f"{supported} {limitation}")
+
+    assert chunks[0].endswith(".")
+    assert chunks[1].startswith("2/2 Unverified:")
+    assert all(len(chunk) <= TWILIO_TEXT_LIMIT for chunk in chunks)
+
+
+def test_natural_split_does_not_break_after_a_phone_area_code():
+    text = (
+        f"{'Context ' * 7}(800) 342-3334 is the phone number. "
+        f"{'Next step ' * 6}."
+    )
+
+    chunks = _split(text, 100)
+
+    assert chunks[0].endswith("number.")
+    assert chunks[1].startswith("Next step")
 
 
 def test_twilio_sized_split_keeps_each_source_url_intact():
@@ -379,6 +497,34 @@ def test_text_channels_recognize_an_existing_url_with_balanced_parentheses():
         rendered = render(result, channel)[0]
         assert rendered.count(url) == 1
         assert "Sources:" not in rendered
+
+
+def test_text_channels_emit_an_identical_source_limit_once() -> None:
+    limitation = (
+        "These are regular hours. Confirm holiday or temporary schedule exceptions before "
+        "traveling."
+    )
+    result = FakeResult(
+        "First schedule {cite:S1}. Second schedule {cite:S2}.",
+        {
+            "S1": {
+                "id": "S1",
+                "url": "https://nyc.gov/hours",
+                "title": "Hours",
+                "provenance": {"derivation": {"limitations": limitation}},
+            },
+            "S2": {
+                "id": "S2",
+                "url": "https://nyc.gov/hours",
+                "title": "Hours",
+                "provenance": {"derivation": {"limitations": limitation}},
+            },
+        },
+    )
+
+    rendered = "\n".join(render(result, "sms_twilio"))
+
+    assert rendered.count(limitation) == 1
 
 
 def test_text_channels_do_not_turn_code_literal_markers_into_citations():

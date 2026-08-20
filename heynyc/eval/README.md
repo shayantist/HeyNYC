@@ -37,6 +37,7 @@ These checks are deliberately narrow. Script matching is not full language ident
 uv run python -m heynyc eval                    # all modules: live agent + deterministic gate
 uv run python -m heynyc eval --module benefits  # just one module
 uv run python -m heynyc eval --case benefits_cross_module_snap_center  # repeat --case for more
+uv run python -m heynyc eval --case benefits_cross_module_snap_center --preview-channel sms_twilio
 uv run python -m heynyc eval --api-judge        # + the PAID cross-family API groundedness judge (parity/CI)
 uv run python -m heynyc eval --repeat 3         # pass^k reliability on the safety-critical subset
 uv run python -m heynyc eval --case benefits_cross_module_snap_center --repeat 3  # repeat this case
@@ -49,6 +50,10 @@ With `--repeat K`, the initial run counts as run one instead of being billed twi
 trace is retained under `repeats/<case-id>/run-NN/`, and the top-level usage metadata includes all
 K runs so a qualitative reviewer can inspect variance against the complete observed spend. Any
 mechanical repeat failure fails the command and the top-level report.
+`--preview-channel` prints and saves the exact text chunks produced by the production channel
+renderer. Repeat it to inspect more than one of `sms_twilio`, `whatsapp_twilio`, or
+`whatsapp_meta`. The artifact is `channel-previews.json`. It proves local formatting and message
+splitting, not provider delivery order, typing indicators, or device rendering.
 `heynyc eval` and `heynyc bench` honor `HEYNYC_AGENT_RUNTIME`, so their normal runs exercise the
 same selected runtime as resident-facing channels. Set it to `legacy` only when testing the
 retained rollback path.
