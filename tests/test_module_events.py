@@ -153,10 +153,12 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
         ctx,
     )
 
-    assert web_calls == [{
-        "query": "NYC music events August 16, 2099",
-        "count": 10,
-    }]
+    assert len(web_calls) == 1
+    assert web_calls[0]["query"] == "NYC music events August 16, 2099"
+    assert web_calls[0]["count"] == 10
+    assert {
+        "donyc.com", "eventbrite.com", "luma.com", "ma.to", "partiful.com",
+    } <= set(web_calls[0]["prefer"])
     assert "123 Main" not in str(web_calls)
     assert "Candidate event choices" in result
     assert "Choose by exact date and topic match first" in result
@@ -261,6 +263,21 @@ def test_event_sources_recognize_the_official_msg_venue_domain() -> None:
 
     assert "msg.com" in module.allowlist
     assert "msg.com" in module.source_tiers["authoritative"]
+
+
+def test_event_sources_include_current_approachable_discovery_domains() -> None:
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    module = next(item for item in registry.modules if item.name == "events")
+
+    discovery_domains = {
+        domain
+        for tier in ("editorial", "community")
+        for domain in module.source_tiers[tier]
+    }
+
+    assert {"donyc.com", "eventbrite.com", "luma.com", "ma.to", "partiful.com"} <= (
+        discovery_domains
+    )
 
 
 def test_event_tool_schema_comes_from_the_typed_query_model() -> None:

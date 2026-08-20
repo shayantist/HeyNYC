@@ -26,8 +26,10 @@ allowlist:
   - bkmag.com
   - nba.com
   - lu.ma
+  - luma.com
   - ma.to
   - partiful.com
+  - donyc.com
   - msg.com
 source_tiers:
   authoritative:
@@ -39,6 +41,7 @@ source_tiers:
     - cityparksfoundation.org
     - msg.com
   editorial:
+    - donyc.com
     - timeout.com
     - secretnyc.co
     - nycforfree.co
@@ -49,6 +52,7 @@ source_tiers:
   community:
     - eventbrite.com
     - lu.ma
+    - luma.com
     - ma.to
     - partiful.com
 prompt: |

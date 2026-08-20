@@ -480,6 +480,16 @@ def _matches_keyword(event: Event, keyword: str) -> bool:
     return not terms or any(term in blob for term in terms)
 
 
+def _event_discovery_domains(ctx: ToolContext) -> list[str]:
+    return sorted({
+        domain
+        for module in ctx.registry.modules
+        if module.name == "events"
+        for tier in ("editorial", "community")
+        for domain in module.source_tiers.get(tier, ())
+    })
+
+
 def _tonight_only(events: list[Event], now: datetime) -> list[Event]:
     cutoff = max(now.replace(tzinfo=None).time(), datetime.strptime("17:00", "%H:%M").time())
     kept = []
@@ -613,6 +623,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             " ".join(search_parts) if query_terms else ctx.query.strip()
         )
         web_args = {"query": search_query, "count": 10}
+        if preferred_domains := _event_discovery_domains(ctx):
+            web_args["prefer"] = preferred_domains
         sources.append((
             "broad_web",
             ctx.toolbox["web_search"].handler(web_args, ctx),
