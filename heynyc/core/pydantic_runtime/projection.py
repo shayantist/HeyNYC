@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_ai.messages import (
     LoadCapabilityCallPart,
     LoadCapabilityReturnPart,
@@ -190,6 +190,39 @@ def _render_grounded_answer(answer: GroundedAnswer) -> str:
     return "".join(parts)
 
 
+def _accepted_grounded_answer(args: dict) -> GroundedAnswer:
+    """Read accepted output written before non-claim citations were forbidden."""
+    try:
+        return GroundedAnswer.model_validate(args)
+    except ValidationError as exc:
+        legacy_error = (
+            "Value error, framing and question blocks cannot declare citations; "
+            "use a claim block"
+        )
+        if not all(
+            error["type"] == "value_error"
+            and len(error["loc"]) == 2
+            and error["loc"][0] == "grounded_blocks"
+            and error["msg"] == legacy_error
+            for error in exc.errors()
+        ):
+            raise
+        blocks = args.get("grounded_blocks")
+        if not isinstance(blocks, list):
+            raise
+        migrated = {
+            **args,
+            "grounded_blocks": [
+                {**block, "citation_ids": []}
+                if isinstance(block, dict)
+                and block.get("kind") in {"framing", "question"}
+                else block
+                for block in blocks
+            ],
+        }
+        return GroundedAnswer.model_validate(migrated)
+
+
 def _accepted_grounded_outputs(
     messages: Sequence[ModelMessage],
 ) -> dict[str, str]:
@@ -204,7 +237,7 @@ def _accepted_grounded_outputs(
     return {
         part.tool_call_id: (
             _render_grounded_answer(
-                GroundedAnswer.model_validate(part.args_as_dict())
+                _accepted_grounded_answer(part.args_as_dict())
             )
             if part.tool_name == _GROUNDED_OUTPUT_TOOL
             else (

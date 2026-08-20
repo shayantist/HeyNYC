@@ -1,11 +1,19 @@
 import pytest
 from pydantic import ValidationError
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from heynyc.core.grounding import _cited_claims
 from heynyc.core.pydantic_runtime.projection import (
     GroundedAnswer,
     GroundedBlock,
     _render_grounded_answer,
+    _resident_history,
 )
 
 
@@ -60,6 +68,74 @@ def test_framing_cannot_hide_a_resident_visible_source() -> None:
             text="That nearby search may not include every report from the building.",
             citation_ids=["S1"],
         )
+
+
+def test_history_migrates_accepted_legacy_framing_citations() -> None:
+    messages = [
+        ModelRequest(parts=[UserPromptPart("What can I do?")]),
+        ModelResponse(parts=[ToolCallPart(
+            "grounded_answer",
+            {
+                "grounded_blocks": [
+                    {
+                        "kind": "claim",
+                        "text": "Use the official application.",
+                        "citation_ids": ["S1"],
+                    },
+                    {
+                        "kind": "framing",
+                        "text": "I could not verify the deadline.",
+                        "citation_ids": ["S1"],
+                    },
+                ]
+            },
+            "accepted",
+        )]),
+        ModelRequest(parts=[ToolReturnPart(
+            "grounded_answer",
+            "Final result processed.",
+            "accepted",
+        )]),
+    ]
+
+    assert _resident_history(messages) == [
+        {"role": "user", "content": "What can I do?"},
+        {
+            "role": "assistant",
+            "content": (
+                "Use the official application. {cite:S1} "
+                "I could not verify the deadline."
+            ),
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "citation_ids",
+    ["S1", 1, {"S1": True}, [123], [f"S{index}" for index in range(9)]],
+)
+def test_history_rejects_malformed_legacy_framing_citations(citation_ids) -> None:
+    messages = [
+        ModelResponse(parts=[ToolCallPart(
+            "grounded_answer",
+            {
+                "grounded_blocks": [{
+                    "kind": "framing",
+                    "text": "I could not verify the deadline.",
+                    "citation_ids": citation_ids,
+                }]
+            },
+            "accepted",
+        )]),
+        ModelRequest(parts=[ToolReturnPart(
+            "grounded_answer",
+            "Final result processed.",
+            "accepted",
+        )]),
+    ]
+
+    with pytest.raises(ValidationError):
+        _resident_history(messages)
 
 
 def test_same_paragraph_claims_keep_their_own_citations() -> None:
