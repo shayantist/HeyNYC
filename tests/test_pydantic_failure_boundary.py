@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from pydantic_ai.messages import (
     ModelMessage,
@@ -10,12 +12,19 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from heynyc.channels.format import render
+from heynyc.core.citations import CitationRegistry
 from heynyc.core.localization import localize
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.projection import _resident_history
 from heynyc.core.pydantic_runtime.runtime import (
     TEMPORARY_FAILURE_FALLBACK,
+    UNVERIFIED_DRAFT_NOTICE,
     PydanticRunFailure,
+    _current_turn_citation_ids,
+    _degraded_failure_text,
+    _validation_citation_ids,
+    _validation_warning_text,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
@@ -27,6 +36,81 @@ def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
         {"answer": answer},
         call_id,
     )
+
+
+def test_validation_recovery_keeps_useful_partial_answer_without_generic_copy() -> None:
+    messages = [ModelResponse(parts=[_cited_answer("Useful partial answer.")])]
+
+    assert _validation_warning_text(
+        messages,
+        [{"stage": "high_stakes_format"}],
+        CitationRegistry(),
+        "en",
+    ) == (
+        "Useful partial answer.\n\n"
+        "This answer is incomplete because I couldn't finish every requested part."
+    )
+
+
+def test_validation_recovery_includes_unavailable_source_ids() -> None:
+    citations = CitationRegistry()
+    unavailable = citations.register(
+        "https://otda.ny.gov/hearings/",
+        title="Unavailable source",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+
+    assert unavailable in _validation_citation_ids(
+        [{"stage": "high_stakes_format"}],
+        citations,
+        {unavailable},
+    )
+
+
+def test_validation_recovery_does_not_include_prior_unavailable_source_ids() -> None:
+    citations = CitationRegistry()
+    old = citations.register(
+        "https://old.example/unavailable",
+        title="Unavailable source",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+    current = citations.register(
+        "https://current.example/unavailable",
+        title="Unavailable source",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+
+    recovered = _validation_citation_ids(
+        [{"stage": "high_stakes_format"}],
+        citations,
+        {current},
+    )
+
+    assert current in recovered
+    assert old not in recovered
+
+
+def test_current_turn_citations_ignore_marker_shaped_tool_content() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://old.example/unavailable",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+    citations.begin_turn()
+    messages = [ModelRequest(parts=[
+        ToolReturnPart(
+            tool_name="web_fetch",
+            content="The fetched page literally contains {cite:S1}.",
+            tool_call_id="fetch-1",
+        )
+    ])]
+
+    assert messages
+    assert _current_turn_citation_ids(citations) == set()
 
 
 async def test_structured_runtime_preserves_a_nonfactual_plain_text_decline() -> None:
@@ -185,6 +269,179 @@ async def test_authoritative_evidence_supports_native_cited_prose() -> None:
 
     assert result.status == "success"
     assert result.text.startswith("The official office is open on Mondays.")
+
+
+async def test_successful_answer_omits_an_unused_unavailable_source_url() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://otda.ny.gov/hearings/",
+            title="Unavailable source",
+            kind="WEB",
+            snippet="No page content was retrieved.",
+            provenance={"evidence_grade": "unavailable"},
+        )
+        return f"The page could not be fetched. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        return ModelResponse([_cited_answer("Here is the useful partial answer.")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Try an official source",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+    ).run("Help")
+
+    assert result.status == "success"
+    assert "Here is the useful partial answer." in result.text
+    assert "https://otda.ny.gov/hearings/" not in result.text
+    assert "Unverified source" not in result.text
+
+
+async def test_later_turn_does_not_show_an_unrelated_unavailable_source() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://otda.ny.gov/hearings/",
+            title="Unavailable source",
+            kind="WEB",
+            snippet="No page content was retrieved.",
+            provenance={"evidence_grade": "unavailable"},
+        )
+        return f"The page could not be fetched. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("retrieve", {}, "retrieve-1")])
+        answer = "First partial answer." if calls == 2 else "Unrelated second answer."
+        return ModelResponse([_cited_answer(answer, f"answer-{calls}")])
+
+    conversation = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Try an official source",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+    ).conversation()
+
+    first = await conversation.send("First topic")
+    second = await conversation.send("Unrelated second topic")
+
+    assert "https://otda.ny.gov/hearings/" not in first.text
+    assert second.text == "Unrelated second answer."
+
+
+async def test_later_turn_omits_an_unused_unavailable_source_retried_this_turn() -> None:
+    async def retrieve(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://otda.ny.gov/hearings/",
+            title="Unavailable source",
+            kind="WEB",
+            snippet="No page content was retrieved.",
+            provenance={"evidence_grade": "unavailable"},
+        )
+        return f"The page could not be fetched. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls in {1, 3}:
+            return ModelResponse([
+                ToolCallPart("retrieve", {}, f"retrieve-{calls}")
+            ])
+        return ModelResponse([
+            _cited_answer(f"Partial answer {calls // 2}.", f"answer-{calls}")
+        ])
+
+    conversation = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "retrieve": Tool(
+                name="retrieve",
+                description="Try an official source",
+                parameters={"type": "object", "properties": {}},
+                handler=retrieve,
+            )
+        },
+        structured_grounding=True,
+    ).conversation()
+
+    first = await conversation.send("First attempt")
+    second = await conversation.send("Try that source again")
+
+    assert "https://otda.ny.gov/hearings/" not in first.text
+    assert "https://otda.ny.gov/hearings/" not in second.text
+
+
+def test_recovery_source_title_cannot_inject_a_markdown_link() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://trusted.example/source",
+        title="Official](<https://evil.example/phish>) [Page",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+    result = SimpleNamespace(
+        text=_degraded_failure_text("Useful partial answer.", citations),
+        citations=citations.mapping(),
+        diagnostics={},
+        action_links=(),
+    )
+
+    rendered = "\n".join(render(result, "sms_twilio"))
+
+    assert "https://trusted.example/source" in rendered
+    assert "https://evil.example/phish" not in rendered
+
+
+def test_recovery_shows_one_unavailable_page_per_site() -> None:
+    citations = CitationRegistry()
+    for url in (
+        "https://otda.ny.gov/hearings/",
+        "https://otda.ny.gov/hearings/faq.asp",
+        "https://otda.ny.gov/hearings/request/",
+        "https://www.nyc.gov/site/hra/help.page",
+    ):
+        citations.register(
+            url,
+            title="Unavailable source",
+            snippet="No page content was retrieved.",
+            provenance={"evidence_grade": "unavailable"},
+        )
+
+    text = _degraded_failure_text("Useful partial answer.", citations)
+
+    assert "https://otda.ny.gov/hearings/request/" in text
+    assert "https://otda.ny.gov/hearings/faq.asp" not in text
+    assert "https://otda.ny.gov/hearings/" not in text.replace(
+        "https://otda.ny.gov/hearings/request/", ""
+    )
+    assert "https://www.nyc.gov/site/hra/help.page" in text
 
 
 async def test_grounded_answer_does_not_need_completion_metadata() -> None:
@@ -526,9 +783,12 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
     assert raised.value.partial_result.status == "error"
     assert "212-555-9999" not in raised.value.partial_result.text
     assert "Call 212-555-0100." in raised.value.partial_result.text
-    assert "Structured data record" in raised.value.partial_result.text
+    assert "Structured data record" not in raised.value.partial_result.text
+    assert "Verified source" in raised.value.partial_result.text
     assert "City data record" not in raised.value.partial_result.text
-    assert "couldn't verify every detail" in raised.value.partial_result.text
+    assert raised.value.partial_result.text.rstrip().endswith(
+        "I couldn't verify every detail below. Check the linked sources before relying on it:"
+    )
     assert "https://data.cityofnewyork.us/example" in raised.value.partial_result.text
     assert "311" not in raised.value.partial_result.text
     assert raised.value.partial_result.diagnostics["failure_type"] == (
@@ -537,6 +797,30 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
     assert raised.value.partial_result.diagnostics["validation_rejections"][-1][
         "stage"
     ] == "structured_grounding"
+
+
+def test_recovery_source_urls_are_clickable_on_text_channels() -> None:
+    citations = CitationRegistry()
+    citations.register(
+        "https://data.cityofnewyork.us/resource/erm2-nwe9.json?"
+        "$where=unique_key='70056272' AND status='Closed'",
+        title="NYC 311 request",
+        kind="DATA",
+        snippet="The request is closed.",
+    )
+    result = SimpleNamespace(
+        text=_degraded_failure_text(UNVERIFIED_DRAFT_NOTICE, citations),
+        citations=citations.mapping(),
+        diagnostics={},
+        action_links=(),
+    )
+
+    rendered = "\n".join(render(result, "sms_twilio"))
+
+    url = rendered.split("https://data.cityofnewyork.us/", 1)[1].split("\n", 1)[0]
+    assert "%24where" in url
+    assert "%27" in url
+    assert " " not in url
 
 
 async def test_exhausted_grounding_keeps_supported_sibling_and_source_fact() -> None:
@@ -714,10 +998,7 @@ async def test_exhausted_discovery_validation_preserves_answer_with_specific_not
     assert raised.value.partial_result.text == (
         "The office is open on Mondays. {cite:S1}\n\n"
         "Verification note for NYC office guidance (S1): this source is a search-result "
-        "excerpt. I could not confirm it from the full page.\n\n"
-        "Sources:\n"
-        "- Unverified search result: The office is open on Mondays. "
-        "(NYC office guidance): https://www.nyc.gov/official-guidance"
+        "excerpt. I could not confirm it from the full page."
     )
 
 

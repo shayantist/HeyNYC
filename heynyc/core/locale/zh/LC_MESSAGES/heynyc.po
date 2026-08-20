@@ -9,8 +9,8 @@ msgstr "来源"
 msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
 msgstr "我无法核实以下所有细节。请先查看所附来源，再决定是否采用这些信息："
 
-msgid "I couldn't complete every requested part below. Here is the partial result I have:"
-msgstr "我无法完成以下每个请求部分。这是我目前得到的部分结果："
+msgid "This answer is incomplete because I couldn't finish every requested part."
+msgstr "此回答不完整，因为我无法完成请求中的每个部分。"
 
 msgid "Source note"
 msgstr "来源说明"

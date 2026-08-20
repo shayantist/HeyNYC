@@ -56,7 +56,7 @@ async def test_default_event_shortlist_retries_for_a_useful_next_step() -> None:
     ]
 
 
-async def test_exhausted_shortlist_followup_is_labeled_incomplete_not_unverified() -> None:
+async def test_exhausted_shortlist_followup_keeps_useful_partial_without_generic_copy() -> None:
     calls = 0
 
     async def events(_args: dict, _ctx: ToolContext) -> str:
@@ -91,8 +91,11 @@ async def test_exhausted_shortlist_followup_is_labeled_incomplete_not_unverified
         ).run("What can I do today?")
 
     text = raised.value.partial_result.text
-    assert "couldn't complete every requested part" in text
-    assert "Here is one grounded option." in text
+    assert text == (
+        "Here is one grounded option.\n\n"
+        "This answer is incomplete because I couldn't finish every requested part."
+    )
+    assert "couldn't complete every requested part" not in text
     assert "couldn't verify every detail" not in text
 
 

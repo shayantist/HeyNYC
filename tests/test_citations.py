@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from heynyc.core import citations
+from heynyc.core.agent import _urls_in
 from heynyc.core.citations import (
     Citation,
     CitationRegistry,
@@ -12,6 +13,18 @@ from heynyc.core.citations import (
 
 def test_highlight_url_is_available():
     assert hasattr(citations, "text_fragment_url")
+
+
+def test_urls_in_ignores_markdown_emphasis_delimiters():
+    assert _urls_in("**https://otda.ny.gov/hearings/**") == {
+        "https://otda.ny.gov/hearings"
+    }
+
+
+def test_urls_in_keeps_an_internal_asterisk() -> None:
+    assert _urls_in("See https://example.org/a*b for details") == {
+        "https://example.org/a*b"
+    }
 
 
 def test_register_returns_sequential_ids():
@@ -27,6 +40,16 @@ def test_identical_source_dedupes():
     second = reg.register("https://a.gov", snippet="same", kind="DATA")
     assert first == second == "S1"
     assert len(reg) == 1
+
+
+def test_reused_source_is_marked_as_touched_in_the_current_turn() -> None:
+    reg = CitationRegistry()
+    citation_id = reg.register("https://a.gov", snippet="same", kind="WEB")
+    reg.begin_turn()
+
+    assert reg.touched_ids() == set()
+    assert reg.register("https://a.gov", snippet="same", kind="WEB") == citation_id
+    assert reg.touched_ids() == {citation_id}
 
 
 def test_same_url_with_different_evidence_does_not_reuse_stale_citation():

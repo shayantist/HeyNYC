@@ -5,7 +5,7 @@ import pytest
 import heynyc.core.tools.web_fetch as web_fetch_module
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import Tool, ToolContext
 
 
 @pytest.mark.asyncio
@@ -15,14 +15,88 @@ async def test_failed_web_fetch_preserves_safe_url_as_unverified(monkeypatch):
     async def fail_fetch(*args, **kwargs):
         raise RuntimeError("unavailable")
 
+    async def empty_search(_args, _ctx):
+        return "No results from the live web search."
+
     monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fail_fetch)
+    monkeypatch.setattr(
+        web_fetch_module,
+        "web_search_tools",
+        lambda *_args, **_kwargs: [
+            Tool(
+                name="web_search",
+                description="Search",
+                parameters={"type": "object", "properties": {}},
+                handler=empty_search,
+            )
+        ],
+    )
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
 
-    result = await web_fetch_module.web_fetch_tools()[0].handler({"url": url}, ctx)
+    result = await web_fetch_module.web_fetch_tools()[0].handler(
+        {"url": url, "evidence_scope": "SNAP hearing request and deadline"},
+        ctx,
+    )
 
     assert url in result
     assert "unverified" in result.lower()
-    assert len(ctx.citations) == 0
+    assert "run one focused web_search" not in result
+    assert "Focused search fallback" not in result
+    assert "{cite:S1}" in result
+    assert ctx.citations.mapping()["S1"] == {
+        "id": "S1",
+        "url": url,
+        "title": "Unavailable source",
+        "snippet": "No page content was retrieved.",
+        "kind": "WEB",
+        "valid_as_of": "",
+        "provenance": {"evidence_grade": "unavailable"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_web_fetch_runs_one_focused_search_fallback(monkeypatch):
+    url = "https://otda.ny.gov/hearings/faq.asp"
+    seen = []
+
+    async def fail_fetch(*args, **kwargs):
+        raise RuntimeError("unavailable")
+
+    async def search(args, _ctx):
+        seen.append(args)
+        return "[S2] (authoritative) OTDA FAQ\nSNAP hearings may be requested within 90 days."
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fail_fetch)
+    monkeypatch.setattr(
+        web_fetch_module,
+        "web_search_tools",
+        lambda *_args, **_kwargs: [
+            Tool(
+                name="web_search",
+                description="Search",
+                parameters={"type": "object", "properties": {}},
+                handler=search,
+            )
+        ],
+        raising=False,
+    )
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    result = await web_fetch_module.web_fetch_tools()[0].handler(
+        {
+            "url": url,
+            "evidence_scope": "SNAP Fair Hearing request deadline",
+        },
+        ctx,
+    )
+
+    assert seen == [{
+        "query": "SNAP Fair Hearing request deadline",
+        "prefer": ["otda.ny.gov"],
+        "count": 5,
+    }]
+    assert "The page could not be fetched" in result
+    assert "SNAP hearings may be requested within 90 days" in result
 
 
 @pytest.mark.asyncio

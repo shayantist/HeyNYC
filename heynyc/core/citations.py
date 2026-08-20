@@ -121,6 +121,13 @@ class CitationRegistry:
         # Monotonic id counter: ids survive discards, so a marker already emitted into text
         # can never silently point at a different, later-registered source.
         self._counter = 0
+        self._touched: set[str] = set()
+
+    def begin_turn(self) -> None:
+        self._touched.clear()
+
+    def touched_ids(self) -> set[str]:
+        return set(self._touched)
 
     def register(
         self,
@@ -146,6 +153,7 @@ class CitationRegistry:
         key = (kind, url, snippet, evidence_grade, data_hash)
         existing = self._by_key.get(key)
         if existing is not None:
+            self._touched.add(existing.id)
             return existing.id
         self._counter += 1
         cite_id = f"S{self._counter}"
@@ -155,6 +163,7 @@ class CitationRegistry:
         )
         self._by_key[key] = citation
         self._ordered.append(citation)
+        self._touched.add(cite_id)
         return cite_id
 
     def discard(self, ids: set[str]) -> None:
@@ -165,6 +174,7 @@ class CitationRegistry:
             return
         self._ordered = [c for c in self._ordered if c.id not in ids]
         self._by_key = {key: c for key, c in self._by_key.items() if c.id not in ids}
+        self._touched.difference_update(ids)
 
     def mapping(self) -> dict[str, dict]:
         """{ "S1": {url, title, snippet, kind}, ... } in registration order."""

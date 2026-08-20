@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from heynyc.core.grounding import _cited_claims
 from heynyc.core.pydantic_runtime.projection import (
     GroundedAnswer,
@@ -6,24 +9,57 @@ from heynyc.core.pydantic_runtime.projection import (
 )
 
 
-def test_framing_uses_evidence_without_claiming_inline_ownership() -> None:
-    answer = GroundedAnswer(grounded_blocks=[
+def test_pure_framing_does_not_require_a_source() -> None:
+    block = GroundedBlock(kind="framing", text="I’m sorry you’re dealing with this.")
+
+    assert block.citation_ids == []
+
+
+def test_privacy_safe_follow_up_does_not_require_a_source() -> None:
+    block = GroundedBlock(
+        kind="question",
+        text="Which neighborhood or nearby landmark works for you? Do not share a case number.",
+    )
+
+    assert block.citation_ids == []
+
+
+def test_output_schema_prioritizes_urgent_help_and_keeps_empathy_factual_free() -> None:
+    schema = GroundedAnswer.model_json_schema()
+
+    assert "urgent" in schema["properties"]["grounded_blocks"]["description"].lower()
+    assert "assistant follow-up" in schema["properties"]["grounded_blocks"][
+        "description"
+    ].lower()
+    assert "kind=question" in schema["properties"]["grounded_blocks"][
+        "description"
+    ].lower()
+    assert "must not restate" in schema["$defs"]["GroundedBlock"]["properties"]["kind"][
+        "description"
+    ].lower()
+
+
+def test_claim_still_requires_a_source() -> None:
+    with pytest.raises(ValidationError):
+        GroundedBlock(kind="claim", text="The office is open today.")
+
+
+def test_question_cannot_declare_a_source() -> None:
+    with pytest.raises(ValidationError):
         GroundedBlock(
-            kind="claim",
-            text="The bounded search returned 10 nearby rodent complaints.",
+            kind="question",
+            text="Which neighborhood works for you?",
             citation_ids=["S1"],
-        ),
+        )
+
+
+def test_framing_cannot_hide_a_resident_visible_source() -> None:
+    with pytest.raises(ValidationError):
         GroundedBlock(
             kind="framing",
             text="That nearby search may not include every report from the building.",
             citation_ids=["S1"],
-        ),
-    ])
-
-    assert _render_grounded_answer(answer) == (
-        "The bounded search returned 10 nearby rodent complaints. {cite:S1} "
-        "That nearby search may not include every report from the building."
-    )
+        )
 
 
 def test_same_paragraph_claims_keep_their_own_citations() -> None:
@@ -75,7 +111,6 @@ def test_omitted_paragraph_metadata_preserves_list_items() -> None:
         GroundedBlock(
             kind="framing",
             text="Here are two options:",
-            citation_ids=["S1"],
         ),
         GroundedBlock(
             kind="claim",

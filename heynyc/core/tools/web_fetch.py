@@ -20,7 +20,7 @@ from .. import config
 from ..citations import canonical_source_url
 from ..index.corpus import chunk_text, clean_html
 from .base import Tool, ToolContext
-from .web_search import archive_warning
+from .web_search import archive_warning, web_search_tools
 
 _STOPWORDS = {
     "and", "are", "can", "current", "for", "from", "how", "new", "nyc", "official",
@@ -487,11 +487,41 @@ def web_fetch_tools() -> list[Tool]:
         except _UnsafePublicUrl:
             return "The page could not be fetched."
         except Exception:
-            return (
+            cite = ctx.citations.register(
+                url,
+                snippet="No page content was retrieved.",
+                title="Unavailable source",
+                kind="WEB",
+                provenance={"evidence_grade": "unavailable"},
+            )
+            failure = (
                 f"The page could not be fetched: {url}\n"
                 "No page content was retrieved. Any claim attributed only to this source is "
-                "unverified; preserve the URL so the resident can check it."
+                f"unverified; preserve the URL so the resident can check it. {{cite:{cite}}}\n"
             )
+            fallback_query = evidence_scope or query
+            if not fallback_query:
+                return failure
+            host = urlsplit(url).hostname or ""
+            try:
+                search = web_search_tools(
+                    ctx.registry.allowlist(),
+                    ctx.registry.source_tiers(),
+                    ctx.registry.news_tier(),
+                )[0]
+                fallback = await search.handler(
+                    {
+                        "query": fallback_query,
+                        "prefer": [host],
+                        "count": 5,
+                    },
+                    ctx,
+                )
+            except Exception:
+                return failure
+            if not fallback or fallback.startswith("No results from the live web"):
+                return failure
+            return f"{failure}\nFocused search fallback:\n{fallback}"
         final_url, title, text = fetched.final_url, fetched.title, fetched.text
         chunks = _evidence_chunks(text, query, force_focus=bool(evidence_scope))
         if not chunks:
@@ -517,14 +547,6 @@ def web_fetch_tools() -> list[Tool]:
         if warning:
             evidence = f"{warning}\n\n{evidence}"
         citation_evidence = evidence
-        if chunks == [text] and query:
-            focused = _relevant_chunks(text, query)
-            if focused:
-                citation_evidence = "\n\n".join(focused)
-                if tier != "authoritative":
-                    citation_evidence = f"SOURCE TRUST: {label}\n\n{citation_evidence}"
-                if warning:
-                    citation_evidence = f"{warning}\n\n{citation_evidence}"
         provenance = {
             "evidence_grade": (
                 "discovery" if warning else "authoritative" if authoritative else "fetched"

@@ -65,6 +65,60 @@ async def test_web_search_returns_evidence_without_answer_policy():
     assert "details beyond an excerpt" not in out
 
 
+async def test_web_search_prefers_a_canonical_page_without_merging_variant_evidence():
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
+        return [
+            {
+                "title": "Request Hearing",
+                "url": "https://otda.ny.gov/hearings/request/",
+                "snippet": "You may request a Fair Hearing online.",
+            },
+            {
+                "title": "Fair Hearing portal",
+                "url": "https://otda.ny.gov/hearings/request/?vertical=SSDI",
+                "snippet": "A Fair Hearing lets you challenge a local agency decision.",
+            },
+        ]
+
+    tool = web_search_tools(["otda.ny.gov"], search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    out = await tool.handler({"query": "request a Fair Hearing"}, ctx)
+
+    assert len(ctx.citations) == 1
+    citation = ctx.citations.mapping()["S1"]
+    assert citation["url"] == "https://otda.ny.gov/hearings/request/"
+    assert "request a Fair Hearing online" in citation["snippet"]
+    assert "challenge a local agency decision" not in citation["snippet"]
+    assert "vertical=SSDI" not in out
+
+
+async def test_web_search_keeps_distinct_query_specific_pages_separate():
+    async def fake_search(query, domains, published_after=None, published_before=None, count=5):
+        return [
+            {
+                "title": "Program details",
+                "url": "https://example.org/program?id=one",
+                "snippet": "Details for program one.",
+            },
+            {
+                "title": "Program details",
+                "url": "https://example.org/program?id=two",
+                "snippet": "Details for program two.",
+            },
+        ]
+
+    tool = web_search_tools(["example.org"], search_fn=fake_search)[0]
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    await tool.handler({"query": "program details"}, ctx)
+
+    assert {citation["url"] for citation in ctx.citations.mapping().values()} == {
+        "https://example.org/program?id=one",
+        "https://example.org/program?id=two",
+    }
+
+
 async def test_web_search_marks_an_official_excerpt_as_bounded_answer_evidence():
     async def fake_search(query, domains, published_after=None, published_before=None, count=5):
         return [

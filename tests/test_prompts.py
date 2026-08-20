@@ -132,6 +132,17 @@ def test_system_prompt_sets_plain_language_reading_level():
     assert "6th" in low and "8th" in low
 
 
+def test_system_prompt_orders_urgent_help_and_makes_handoffs_actionable():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "immediate need first" in low
+    assert "time-sensitive appeal or challenge step next" in low
+    assert "usable contact method or link" in low
+    assert "action page is unavailable" in low
+    assert "one focused search for that action" in low
+    assert "spell out an acronym the first time" in low
+
+
 def test_contested_legal_matter_protocol_lives_in_global_policy():
     from heynyc.core.tools.web_search import web_search_tools
 

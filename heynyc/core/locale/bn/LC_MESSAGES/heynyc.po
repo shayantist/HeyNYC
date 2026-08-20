@@ -9,8 +9,8 @@ msgstr "উৎসসমূহ"
 msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
 msgstr "নিচের প্রতিটি তথ্য আমি যাচাই করতে পারিনি। এর ওপর নির্ভর করার আগে দেওয়া উৎসগুলো দেখুন:"
 
-msgid "I couldn't complete every requested part below. Here is the partial result I have:"
-msgstr "অনুরোধ করা প্রতিটি অংশ সম্পূর্ণ করতে পারিনি। আমার কাছে থাকা আংশিক ফলটি নিচে দেওয়া হলো:"
+msgid "This answer is incomplete because I couldn't finish every requested part."
+msgstr "এই উত্তরটি অসম্পূর্ণ, কারণ অনুরোধ করা প্রতিটি অংশ আমি শেষ করতে পারিনি।"
 
 msgid "I couldn't complete this request, and no source or partial result was available from this attempt. Please try again."
 msgstr "আমি এই অনুরোধটি সম্পূর্ণ করতে পারিনি এবং এই চেষ্টায় কোনো উৎস বা আংশিক ফল পাওয়া যায়নি। আবার চেষ্টা করুন।"

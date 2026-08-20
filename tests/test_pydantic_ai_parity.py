@@ -224,9 +224,7 @@ def test_benefits_situations_are_separate_on_demand_capabilities() -> None:
         not in benefits_instructions
     )
     assert "Only legal name and home address are required" not in benefits_instructions
-    assert (
-        "https://www.nyc.gov/html/hra/html/contact/faq_general_en.shtml" in instructions
-    )
+    assert "https://portal.311.nyc.gov/article/?kanumber=KA-02943" in instructions
     assert "https://otda.ny.gov/oah/" not in instructions
     assert "Include a fair-hearing path only when" in instructions
     assert (
@@ -4790,7 +4788,9 @@ async def test_runtime_preserves_typed_action_links_for_channel_rendering() -> N
         "sms_twilio",
     )[0]
     assert "Directions: https://www.google.com/maps/dir/" in rendered
-    assert "Source note - These are regular hours." in rendered
+    assert "These are regular hours." in rendered
+    assert "Source note -" not in rendered
+    assert "Sources:" not in rendered
 
     followup = await conversation.send("Send me that clinic again")
 
@@ -5588,7 +5588,7 @@ def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
     assert "google.com" in text
 
 
-def test_failure_text_localizes_the_sources_heading() -> None:
+def test_failure_text_localizes_the_source_label_without_a_heading() -> None:
     citations = CitationRegistry()
     citations.register(
         "https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page",
@@ -5604,7 +5604,7 @@ def test_failure_text_localizes_the_sources_heading() -> None:
         language="es",
     )
 
-    assert "Fuentes:" in text
+    assert "Fuentes:" not in text
     assert "Fuente verificada" in text
 
 
@@ -5620,7 +5620,7 @@ def test_failure_text_surfaces_an_unverified_source_for_resident_review() -> Non
 
     text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
 
-    assert "Sources:" in text
+    assert "Sources:" not in text
     assert "https://example.org/whatever" in text
 
 

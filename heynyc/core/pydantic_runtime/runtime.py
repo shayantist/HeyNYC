@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -278,7 +279,7 @@ UNVERIFIED_DRAFT_NOTICE = (
     "I couldn't verify every detail below. Check the linked sources before relying on it:"
 )
 INCOMPLETE_DRAFT_NOTICE = (
-    "I couldn't complete every requested part below. Here is the partial result I have:"
+    "This answer is incomplete because I couldn't finish every requested part."
 )
 OUTPUT_REVIEW_UNAVAILABLE_NOTICE = (
     "I couldn't complete the safety review of the generated wording, so I am not showing that "
@@ -301,20 +302,39 @@ def _degraded_failure_text(
     after twelve successful retrieval steps, and the runtime discarded every source it was
     holding. Source strength remains visible in the citation metadata and channel formatter.
     """
+    mapping = citations.mapping()
+    represented = set(used_citations(text, mapping))
     reached = [
         citation
         for citation_id, citation in citations.mapping().items()
         if (citation_ids is None or citation_id in citation_ids)
+        if citation_id not in represented
         if citation.get("url")
+        if citation["url"] not in text
     ]
     if not reached:
         return text
+    collapsed: list[dict] = []
+    unavailable_sites: dict[str, int] = {}
+    for citation in reached:
+        provenance = citation.get("provenance") or {}
+        url = str(citation["url"])
+        if provenance.get("evidence_grade") != "unavailable":
+            collapsed.append(citation)
+            continue
+        site = urlsplit(url).netloc.casefold()
+        if site in unavailable_sites:
+            collapsed[unavailable_sites[site]] = citation
+        else:
+            unavailable_sites[site] = len(collapsed)
+            collapsed.append(citation)
+    reached = collapsed
     seen: dict[str, tuple[str, list[str]]] = {}
     for citation in reached:
         provenance = citation.get("provenance") or {}
         grade = provenance.get("evidence_grade")
         label = localize((
-            "Structured data record"
+            "Verified source"
             if citation.get("kind") == "DATA"
             else "Verified source"
             if grade == "authoritative"
@@ -348,12 +368,30 @@ def _degraded_failure_text(
         source_label = f"{label}: {detail}" if detail else label
         if source_label not in labels:
             labels.append(source_label)
-    lines = [text, "", f"{localize('Sources', language)}:"]
-    lines += [
-        f"- {' '.join(labels)} ({title}): {url}"
-        for url, (title, labels) in seen.items()
+    source_lines = [
+        f"- {' '.join(labels)} ([Source](<{url}>))"
+        for url, (_title, labels) in seen.items()
     ]
-    return "\n".join(lines)
+    notice = localize(UNVERIFIED_DRAFT_NOTICE, language)
+    if text.strip() == notice:
+        return "\n".join([*source_lines, "", notice])
+    return "\n".join([text, "", *source_lines])
+
+
+def _unverified_source_links(
+    citation_ids: Sequence[str],
+    citations: dict[str, dict],
+    language: str | None,
+) -> str:
+    label = localize("Unverified source", language)
+    urls = list(
+        dict.fromkeys(
+            str(citations[citation_id].get("url") or "")
+            for citation_id in citation_ids
+            if citation_id in citations and citations[citation_id].get("url")
+        )
+    )
+    return "\n".join(f"[{label}](<{url}>)" for url in urls)
 
 
 def _validation_warning_text(
@@ -449,7 +487,7 @@ def _validation_warning_text(
             ),
             language,
         )
-        return f"{notice}\n\n{answer}" if answer else notice
+        return f"{answer}\n\n{notice}" if answer else notice
     mapping = citations.mapping()
     latest = rejections[-1]
     sources = [
@@ -472,6 +510,7 @@ def _validation_warning_text(
 def _validation_citation_ids(
     rejections: Sequence[dict[str, Any]],
     citations: CitationRegistry,
+    current_citation_ids: set[str] | None = None,
 ) -> set[str]:
     if not rejections:
         return set()
@@ -481,7 +520,19 @@ def _validation_citation_ids(
         for item in latest.get("items", ())
         for citation_id in item.get("citation_ids", ())
     ]
-    return set(candidates).intersection(citations.mapping())
+    mapping = citations.mapping()
+    unavailable = {
+        citation_id
+        for citation_id, citation in mapping.items()
+        if current_citation_ids is None or citation_id in current_citation_ids
+        if (citation.get("provenance") or {}).get("evidence_grade") == "unavailable"
+    }
+    return set(candidates).intersection(mapping) | unavailable
+
+
+def _current_turn_citation_ids(citations: CitationRegistry) -> set[str]:
+    """Return sources registered by trusted tool code during the active turn."""
+    return citations.touched_ids()
 
 
 class NonfactualOutcome(BaseModel):
@@ -1780,11 +1831,22 @@ class PydanticRuntimeAdapter:
                     return output.model_copy(update={
                         "grounded_blocks": [
                             block.model_copy(update={
+                                "kind": "claim",
                                 "text": (
-                                    f"{localize('Unverified', ctx.deps.language)}: "
-                                    f"{block.text}"
-                                    if block.kind == "claim"
-                                    else block.text
+                                    "\n\n".join(filter(None, (
+                                        f"{localize('Unverified', ctx.deps.language)}: "
+                                        f"{block.text}",
+                                        (
+                                            _unverified_source_links(
+                                                block.citation_ids,
+                                                mapping,
+                                                ctx.deps.language,
+                                            )
+                                            if rejected_labels[f"block-{index}"]
+                                            != "partial"
+                                            else ""
+                                        ),
+                                    )))
                                 ),
                                 "citation_ids": (
                                     block.citation_ids
@@ -1820,6 +1882,14 @@ class PydanticRuntimeAdapter:
                                 labeled = labeled.replace(f" {marker}", "").replace(
                                     marker, ""
                                 )
+                            labeled = "\n\n".join(filter(None, (
+                                labeled,
+                                _unverified_source_links(
+                                    citation_ids,
+                                    mapping,
+                                    ctx.deps.language,
+                                ),
+                            )))
                         block = block.replace(
                             target,
                             f"{localize('Unverified', ctx.deps.language)}: {labeled}",
@@ -1880,17 +1950,16 @@ class PydanticRuntimeAdapter:
             not in {"semantic_grounding", "semantic_verifier_unavailable"}
         ):
             return
-        citation_ids = _validation_citation_ids(
-            deps.validation_rejections,
-            deps.citations,
-        ) | set(used_citations(result.text, deps.citations.mapping()))
-        result.text = _degraded_failure_text(
-            f"{localize(UNVERIFIED_DRAFT_NOTICE, language)}\n\n{result.text}",
-            deps.citations,
-            language,
-            citation_ids or set(deps.citations.mapping()),
-        )
         if deps.validation_rejections[-1].get("stage") == "semantic_verifier_unavailable":
+            result.text = "\n\n".join(
+                (
+                    f"{localize('Unverified', language)}: {block}"
+                    if block
+                    and not block.startswith(f"{localize('Unverified', language)}:")
+                    else block
+                )
+                for block in result.text.split("\n\n")
+            )
             result.status = "error"
 
     @staticmethod
@@ -2223,7 +2292,7 @@ class PydanticRuntimeAdapter:
         GeoPoint | None,
     ]:
         citations = citations if citations is not None else CitationRegistry()
-        prior_citation_ids = set(citations.mapping())
+        citations.begin_turn()
         safe_user_message = redact_sensitive_identifiers(user_message)
         pii_redacted = safe_user_message != user_message
         user_turns = (*prior_user_turns, safe_user_message)
@@ -2459,6 +2528,7 @@ class PydanticRuntimeAdapter:
                 default=len(message_history),
             )
             new_messages = captured[current_index:]
+            current_citation_ids = _current_turn_citation_ids(citations)
             validation_warning = (
                 _validation_warning_text(
                     new_messages,
@@ -2469,11 +2539,12 @@ class PydanticRuntimeAdapter:
                 if isinstance(exc, UnexpectedModelBehavior)
                 else None
             )
-            citation_ids = set(citations.mapping()) - prior_citation_ids
+            citation_ids = current_citation_ids
             if validation_warning:
                 citation_ids = _validation_citation_ids(
                     deps.validation_rejections,
                     citations,
+                    current_citation_ids,
                 ) | set(
                     used_citations(validation_warning, citations.mapping())
                 ) or citation_ids
@@ -3114,7 +3185,7 @@ class PydanticAgentSession:
             )
         query = self.state.user_turns[-1] if self.state.user_turns else ""
         citations = self.state.citations
-        prior_citation_ids = set(citations.mapping())
+        citations.begin_turn()
         deps = ToolContext(
             citations=citations,
             registry=self.runtime.registry,
@@ -3175,6 +3246,7 @@ class PydanticAgentSession:
                     )
         except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
             new_messages = captured[len(self.state.messages):]
+            current_citation_ids = _current_turn_citation_ids(citations)
             validation_warning = (
                 _validation_warning_text(
                     new_messages,
@@ -3185,11 +3257,12 @@ class PydanticAgentSession:
                 if isinstance(exc, UnexpectedModelBehavior)
                 else None
             )
-            citation_ids = set(citations.mapping()) - prior_citation_ids
+            citation_ids = current_citation_ids
             if validation_warning:
                 citation_ids = _validation_citation_ids(
                     deps.validation_rejections,
                     citations,
+                    current_citation_ids,
                 ) | set(
                     used_citations(validation_warning, citations.mapping())
                 ) or citation_ids

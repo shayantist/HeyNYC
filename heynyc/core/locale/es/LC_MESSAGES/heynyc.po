@@ -12,8 +12,8 @@ msgstr "Fuentes"
 msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
 msgstr "No pude verificar todos los detalles que aparecen a continuación. Revisa las fuentes enlazadas antes de confiar en ellos:"
 
-msgid "I couldn't complete every requested part below. Here is the partial result I have:"
-msgstr "No pude completar cada parte solicitada. Este es el resultado parcial que tengo:"
+msgid "This answer is incomplete because I couldn't finish every requested part."
+msgstr "Esta respuesta está incompleta porque no pude terminar cada parte solicitada."
 
 msgid "I couldn't complete this request, and no source or partial result was available from this attempt. Please try again."
 msgstr "No pude completar esta solicitud y este intento no devolvió ninguna fuente ni resultado parcial. Inténtalo de nuevo."

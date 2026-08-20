@@ -294,6 +294,30 @@ def _make_handler(
                 for result in [*preferred, *results]
                 if result.get("url") and not (result["url"] in seen or seen.add(result["url"]))
             ]
+        def page_key(result: dict) -> tuple[str, str]:
+            parsed = urlparse(result["url"])
+            return (
+                (parsed.hostname or "").casefold(),
+                parsed.path.rstrip("/").casefold(),
+            )
+
+        canonical_pages = {
+            page_key(result)
+            for result in results
+            if urlparse(result["url"]).query == ""
+        }
+        merged: dict[tuple[str, ...], dict] = {}
+        for result in results:
+            parsed = urlparse(result["url"])
+            base_key = page_key(result)
+            key = base_key if base_key in canonical_pages else (*base_key, parsed.query)
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = dict(result)
+                continue
+            if parsed.query == "":
+                merged[key] = dict(result)
+        results = list(merged.values())
         results = results[:max(1, min(count, 10))]
         if not results:
             return abstain_msg

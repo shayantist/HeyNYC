@@ -35,9 +35,10 @@ def test_f213_failure_links_only_include_sources_reached_this_turn() -> None:
         citation_ids={current_id},
     )
 
-    assert "Health help" in text
+    assert "Source" in text
+    assert "https://www.nyc.gov/site/doh/health/health-topics.page" in text
     assert old_id not in text
-    assert "Immigration help" not in text
+    assert "https://www.nyc.gov/site/immigrants/index.page" not in text
 
 
 def test_failure_source_list_does_not_dump_truncated_web_excerpts() -> None:
@@ -56,7 +57,7 @@ def test_failure_source_list_does_not_dump_truncated_web_excerpts() -> None:
 
     text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
 
-    assert "Tenant help" in text
+    assert "Source" in text
     assert "https://www.nyc.gov/help" in text
     assert "Call 311 and ask for the Tenant Helpline." in text
     assert "Tenant Bill of Rights" not in text

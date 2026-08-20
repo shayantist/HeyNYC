@@ -2245,7 +2245,10 @@ def _action_url(citation: dict) -> str:
 
 
 def _normalize_url(url: str) -> str:
-    return url.rstrip(".,;:!?").split("#", 1)[0].rstrip("/")
+    normalized = url.rstrip(".,;:!?")
+    if normalized.endswith("**"):
+        normalized = normalized[:-2]
+    return normalized.split("#", 1)[0].rstrip("/")
 
 
 def _urls_in(text: str) -> set[str]:

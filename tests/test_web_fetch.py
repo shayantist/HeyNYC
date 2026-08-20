@@ -12,7 +12,7 @@ from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.web_fetch import (
     _evidence_chunks,
     _extract_response,
@@ -101,7 +101,22 @@ def _stub_public_url_validation(monkeypatch):
     async def validate(url: str) -> None:
         return None
 
+    async def empty_search(_args, _ctx):
+        return "No results from the live web search."
+
     monkeypatch.setattr(web_fetch_module, "_validate_public_url", validate)
+    monkeypatch.setattr(
+        web_fetch_module,
+        "web_search_tools",
+        lambda *_args, **_kwargs: [
+            Tool(
+                name="web_search",
+                description="Search",
+                parameters={"type": "object", "properties": {}},
+                handler=empty_search,
+            )
+        ],
+    )
 
 
 def test_relevant_chunks_put_strongest_evidence_first():
@@ -286,13 +301,14 @@ async def test_web_fetch_uses_the_resident_turn_when_query_is_omitted(monkeypatc
     assert "help complete an online or paper application" in out
 
 
-async def test_web_fetch_registers_query_focused_semantic_evidence_for_full_pages(
+async def test_web_fetch_registers_the_same_full_page_evidence_shown_to_the_model(
     monkeypatch,
 ):
     url = "https://www.nyc.gov/example"
     text = (
         "Official program overview. " * 180
-        + "Tenants have the right to organize and may call the Tenant Helpline."
+        + "Tenants have the right to organize and may call the Tenant Helpline at "
+        "(800) 342-3334."
     )
     monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 2_000)
     ctx = ToolContext(
@@ -313,7 +329,8 @@ async def test_web_fetch_registers_query_focused_semantic_evidence_for_full_page
     assert "Official program overview" in out
     snippet = ctx.citations.mapping()["S1"]["snippet"]
     assert "right to organize" in snippet
-    assert len(snippet) < len(text)
+    assert "(800) 342-3334" in snippet
+    assert f"{snippet} {{cite:S1}}" in out
 
 
 def test_web_fetch_schema_accepts_one_public_url():
@@ -879,7 +896,9 @@ async def test_web_fetch_rejects_access_wall_content():
     )
 
     assert "could not be fetched" in out
-    assert ctx.citations.mapping() == {}
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "unavailable"
+    }
 
 
 async def test_web_fetch_uses_browser_after_an_access_wall(monkeypatch):

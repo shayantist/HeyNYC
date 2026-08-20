@@ -4,9 +4,9 @@ import pytest
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from heynyc.channels.format import render
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
-from heynyc.core.pydantic_runtime.runtime import UNVERIFIED_DRAFT_NOTICE
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
 
@@ -103,11 +103,12 @@ async def test_misowned_compound_claim_is_preserved_and_labeled_unverified() -> 
 
     assert calls == 2
     assert result.text.startswith(
-        f"{UNVERIFIED_DRAFT_NOTICE}\n\n"
         "Unverified: HRA can review the closure, and Food Help NYC can help now."
     )
     assert "{cite:S1}" in result.text
-    assert "https://finder.nyc.gov/foodhelp" in result.text
+    rendered = "\n".join(render(result, "sms_twilio"))
+    assert "https://finder.nyc.gov/foodhelp" in rendered
+    assert "Sources:" not in rendered
     assert "https://foodhelp.nyc.gov" not in result.text
     assert result.status == "success"
     assert len(verifier.inputs) == 1
@@ -148,7 +149,9 @@ async def test_partial_grounded_block_keeps_text_and_source_lead() -> None:
 
     assert "Call 311 for Food Help NYC." in result.text
     assert "{cite:S1}" in result.text
-    assert "https://finder.nyc.gov/foodhelp" in result.text
+    rendered = "\n".join(render(result, "sms_twilio"))
+    assert "https://finder.nyc.gov/foodhelp" in rendered
+    assert "Sources:" not in rendered
 
 
 @pytest.mark.parametrize(

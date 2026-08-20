@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.messages import (
     LoadCapabilityCallPart,
     LoadCapabilityReturnPart,
@@ -58,14 +58,17 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\s)]+\)")
 class GroundedBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["claim", "framing"] = Field(
+    kind: Literal["claim", "framing", "question"] = Field(
         default="claim",
         description=(
             "Use claim for facts and procedures that the cited evidence must support. Use "
             "framing for exactly one of: empathy, signposting, or an honest limitation on what "
-            "retrieval established. Never combine those purposes in one framing block. Framing "
+            "retrieval established. Never combine those purposes in one framing block. Empathy "
+            "must stay source-free and must not restate the resident's factual situation. Framing "
             "that adds a fact, prediction, product-capability statement, or instruction still "
-            "fails semantic verification."
+            "fails semantic verification. Use question for a neutral follow-up question and an "
+            "optional narrow reminder not to share sensitive identifiers. A question must not "
+            "embed an unsupported premise or other factual or procedural advice."
         ),
     )
     text: str = Field(
@@ -78,12 +81,12 @@ class GroundedBlock(BaseModel):
         ),
     )
     citation_ids: list[str] = Field(
-        min_length=1,
+        default_factory=list,
         max_length=8,
         description=(
-            "For claims, all sources needed to support every factual detail in this block. For "
-            "framing, the sources the verifier should inspect; framing source markers are not "
-            "shown to residents. If details use different sources, use separate blocks."
+            "For claims, all sources needed to support every factual detail in this block. "
+            "Framing and questions must not declare sources. Put sourced text in a claim block so its source "
+            "is shown inline to residents. If details use different sources, use separate blocks."
         ),
     )
     starts_new_paragraph: bool = Field(
@@ -95,6 +98,16 @@ class GroundedBlock(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def claim_has_a_source(self) -> "GroundedBlock":
+        if self.kind == "claim" and not self.citation_ids:
+            raise ValueError("claim blocks require at least one citation")
+        if self.kind in {"framing", "question"} and self.citation_ids:
+            raise ValueError(
+                "framing and question blocks cannot declare citations; use a claim block"
+            )
+        return self
+
 
 class GroundedAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -102,7 +115,13 @@ class GroundedAnswer(BaseModel):
     grounded_blocks: list[GroundedBlock] = Field(
         min_length=1,
         max_length=12,
-        description="Ordered resident-facing answer blocks with supporting source IDs",
+        description=(
+            "Ordered resident-facing answer blocks with supporting source IDs. Put an urgent "
+            "need or immediately usable action before eligibility details, appeals, and background. "
+            "Keep empathy, an evidence-backed action, and an assistant follow-up in separate blocks "
+            "so verification can label only the unsupported block. Use kind=question for every "
+            "neutral assistant follow-up or request for privacy-minimized resident context."
+        ),
     )
 
 
@@ -154,11 +173,7 @@ def _render_grounded_answer(answer: GroundedAnswer) -> str:
                 _grounded_block_text(block),
                 " ".join(
                     f"{{cite:{citation_id}}}"
-                    for citation_id in (
-                        dict.fromkeys(block.citation_ids)
-                        if block.kind == "claim"
-                        else ()
-                    )
+                    for citation_id in dict.fromkeys(block.citation_ids)
                 ),
             )
         ).rstrip()

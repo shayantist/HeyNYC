@@ -17,6 +17,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import ToolDefinition
 from pytest import MonkeyPatch
 
+from heynyc.channels.format import render
 from heynyc.core.citations import CitationRegistry, data_provenance
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
@@ -1379,8 +1380,12 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
     assert result.error is None
     assert "Unverified: Benefits may change." in result.text
     assert ("{cite:S1}" in result.text) is keeps_marker
-    assert "https://www.nyc.gov/example" in result.text
-    assert "couldn't verify every detail" in result.text
+    rendered = "\n".join(render(result, "sms_twilio"))
+    assert "https://www.nyc.gov/example" in rendered
+    assert "Sources:" not in rendered
+    assert "Structured data record" not in rendered
+    assert not result.text.startswith("I couldn't verify every detail")
+    assert ("Unverified source" in result.text) is (not keeps_marker)
     assert result.usage.get("retry_kinds", []) == []
     assert model_calls == 2
     assert result.diagnostics["validation_rejections"] == [
@@ -1404,6 +1409,160 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
     assert "Benefits may change." not in str(result.diagnostics)
     assert "private diagnostic reason" not in str(result.usage)
     assert "private diagnostic reason" not in str(result.diagnostics)
+
+
+async def test_cited_factual_framing_is_retried_as_a_claim() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official guidance",
+            kind="WEB",
+            snippet="HRA can review documented exemptions.",
+        )
+        return f"HRA can review documented exemptions. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        return ModelResponse([ToolCallPart(
+            "grounded_answer",
+            {
+                "grounded_blocks": [{
+                    "text": "Challenge the decision and ask HRA to document an exemption.",
+                    "citation_ids": ["S1"],
+                    "kind": "framing" if calls == 2 else "claim",
+                }]
+            },
+            f"final-{calls}",
+        )])
+
+    class SupportedVerifier:
+        async def arun_many(self, inputs):
+            return NLIBatchRun(verdicts=[
+                NLIVerdict(True, 1.0, "fake", label="supported") for _ in inputs
+            ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+        semantic_verifier=SupportedVerifier(),
+    ).run("What should I do?")
+
+    assert calls == 3
+    assert result.text.startswith("Challenge the decision")
+    assert "Unverified:" not in result.text
+    assert "{cite:S1}" in result.text
+
+
+async def test_supported_source_free_framing_stays_clean_after_verification() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official guidance",
+            kind="WEB",
+            snippet="HRA can review the notice.",
+        )
+        return f"HRA can review the notice. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        return ModelResponse([ToolCallPart(
+            "grounded_answer",
+            {
+                "grounded_blocks": [
+                    {
+                        "text": "I’m sorry you’re dealing with this.",
+                        "citation_ids": [],
+                        "kind": "framing",
+                    },
+                    {
+                        "text": "HRA can review the notice.",
+                        "citation_ids": ["S1"],
+                        "kind": "claim",
+                    },
+                ]
+            },
+            "final-1",
+        )])
+
+    class RecordingVerifier:
+        def __init__(self) -> None:
+            self.inputs = []
+
+        async def arun_many(self, inputs):
+            self.inputs.append(inputs)
+            return NLIBatchRun(verdicts=[
+                NLIVerdict(True, 1.0, "fake", label="supported") for _ in inputs
+            ])
+
+    verifier = RecordingVerifier()
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get official guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+        semantic_verifier=verifier,
+    ).run("What should I do?")
+
+    assert [item.kind for item in verifier.inputs[0]] == ["framing", "claim"]
+    assert result.text.startswith("I’m sorry you’re dealing with this.")
+    assert "Unverified: I’m sorry" not in result.text
+
+
+async def test_procedural_advice_cannot_bypass_verification_as_framing() -> None:
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse([ToolCallPart(
+            "grounded_answer",
+            {
+                "grounded_blocks": [{
+                    "text": "Submit every document before the deadline.",
+                    "citation_ids": [],
+                    "kind": "framing",
+                }]
+            },
+            "final-1",
+        )])
+
+    class RejectingVerifier:
+        async def arun_many(self, inputs):
+            return NLIBatchRun(verdicts=[
+                NLIVerdict(False, 0.0, "fake", label="unsupported") for _ in inputs
+            ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+        semantic_verifier=RejectingVerifier(),
+    ).run("What should I submit?")
+
+    assert result.text == "Unverified: Submit every document before the deadline."
 
 
 async def legacy_pydantic_semantic_validator_regenerates_instead_of_pruning_blocks() -> None:
@@ -1590,7 +1749,7 @@ async def legacy_semantic_validator_distinguishes_epistemic_framing_from_claims(
                     },
                     {
                         "text": "I could not confirm whether a later appointment changed that status.",
-                        "citation_ids": ["S1"],
+                        "citation_ids": [],
                         "kind": "framing",
                     },
                 ]
@@ -1788,11 +1947,63 @@ async def test_pydantic_semantic_validator_preserves_sources_when_provider_is_do
     result = await runtime.run("Will my benefits end?")
 
     assert result.status == "error"
-    assert "couldn't verify every detail below" in result.text
-    assert "The retrieved record suggests benefits are available." in result.text
-    assert "Benefits are available." in result.text
-    assert "https://www.nyc.gov/example" in result.text
+    assert result.text == (
+        "Unverified: The retrieved record suggests benefits are available. {cite:S1}"
+    )
+    rendered = "\n".join(render(result, "sms_twilio"))
+    assert "https://www.nyc.gov/example" in rendered
+    assert "Sources:" not in rendered
+    assert "Structured data record" not in rendered
     assert result.usage["semantic_verifier_error"] == "RuntimeError"
+
+
+async def test_semantic_verifier_outage_labels_cited_and_uncited_paragraphs() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://www.nyc.gov/example",
+            title="Official guidance",
+            kind="WEB",
+            snippet="The retrieved record suggests benefits are available.",
+        )
+        return f"Retrieved guidance {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
+        return ModelResponse([ToolCallPart(
+            "final_answer",
+            {
+                "answer": (
+                    "The retrieved record suggests benefits are available. {cite:S1}\n\n"
+                    "Apply again tomorrow."
+                )
+            },
+            "answer-1",
+        )])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "guidance": Tool(
+                name="guidance",
+                description="Get guidance",
+                parameters={"type": "object", "properties": {}},
+                handler=source,
+            )
+        },
+        structured_grounding=True,
+        semantic_verifier=_FailingVerifier(),
+    ).run("Will my benefits end?")
+
+    assert result.text == (
+        "Unverified: The retrieved record suggests benefits are available. {cite:S1}\n\n"
+        "Unverified: Apply again tomorrow."
+    )
 
 
 async def test_semantic_verifier_outage_does_not_bypass_output_moderation() -> None:
