@@ -84,7 +84,7 @@ def test_channel_preview_uses_the_live_result_and_saves_exact_parts(tmp_path):
     payload = json.loads((tmp_path / "channel-previews.json").read_text())
     sms = payload["clinic-preview"]["sms_twilio"]
     assert sms["parts"] == [
-        "Example clinic (Source: https://data.cityofnewyork.us/resource/abcd-1234/row.json; "
+        "Example clinic (https://data.cityofnewyork.us/resource/abcd-1234/row.json; "
         "Directions: https://www.google.com/maps/dir/?api=1&destination=40.7,-73.9)."
     ]
     assert sms["character_counts"] == [len(sms["parts"][0])]

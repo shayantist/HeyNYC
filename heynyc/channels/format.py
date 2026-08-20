@@ -18,6 +18,12 @@ TWILIO_TEXT_LIMIT = 1600
 TWILIO_PAGE_PREFIX_RESERVE = 16
 _INLINE_CITE = re.compile(r"\s*\{cite:(S\d+)\}")
 _MARKDOWN_CITE_LINK = re.compile(r"\[([^\]\n]+)\]\(\s*\{cite:(S\d+)\}\s*\)")
+_REDUNDANT_LINK_LABEL = re.compile(
+    r"\s*\[(?:Details|Tickets|Source)\](?!\s*[\[(:])", re.IGNORECASE,
+)
+_REDUNDANT_URL_LABEL = re.compile(
+    r"(?<!\w)(?:Details|Tickets|Source):\s*(?=https?://)", re.IGNORECASE,
+)
 _CODE = re.compile(r"(`+|~{3,})(.*?)\1", re.DOTALL)
 _ATTACH = re.compile(r"\s*\[attached:[^\]]*\]")   # delivered out-of-band; never shown in text
 _MARKDOWN = MarkdownIt(
@@ -52,7 +58,10 @@ def _inline_text(tokens: list[Token], *, whatsapp: bool) -> str:
         elif token.type == "link_close" and links:
             url, start = links.pop()
             label = "".join(output[start:]).strip()
-            if url and _canonical_url(label) != _canonical_url(url):
+            if label.casefold() in {"details", "tickets", "source"}:
+                del output[start:]
+                output.append(_delivery_url(url))
+            elif url and _canonical_url(label) != _canonical_url(url):
                 output.append(f": {_delivery_url(url)}")
         elif token.type == "image":
             label = token.content or token.attrGet("alt") or "Image"
@@ -246,6 +255,8 @@ def _inline_citation_links(
 
     linked = _MARKDOWN_CITE_LINK.sub(replace_markdown_link, _without_code_citations(text))
     linked = _INLINE_CITE.sub(replace, linked)
+    linked = _REDUNDANT_LINK_LABEL.sub("", linked)
+    linked = _REDUNDANT_URL_LABEL.sub("", linked)
     return _ATTACH.sub("", linked).replace("\N{EM DASH}", "-").strip()
 
 

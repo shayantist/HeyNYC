@@ -22,8 +22,8 @@ def test_sms_places_every_cited_source_inline_with_its_claim():
     out = render(r, "sms_twilio")
     assert len(out) == 1
     body = out[0]
-    assert "Cooling centers are open (Source: https://nyc.gov/cool)." in body
-    assert "Bring ID (Source: https://nyc.gov/id)." in body
+    assert "Cooling centers are open (https://nyc.gov/cool)." in body
+    assert "Bring ID (https://nyc.gov/id)." in body
     assert "Sources:" not in body
 
 
@@ -70,7 +70,7 @@ def test_commonmark_parser_handles_balanced_parentheses_and_reference_links():
 
     assert render(FakeResult(text), "sms_twilio") == [
         "Map: https://example.com/a_(b) and "
-        "Details: https://example.com/path_(one)"
+        "https://example.com/path_(one)"
     ]
 
 
@@ -156,7 +156,7 @@ def test_whatsapp_inline_source_uses_canonical_page_for_web_citation():
     )
 
     rendered = render(r)[0]
-    assert "Source: https://nyc.gov/help" in rendered
+    assert "(https://nyc.gov/help)" in rendered
     assert "#:~:text=" not in rendered
 
 
@@ -175,7 +175,7 @@ def test_sms_deduplicates_an_existing_source_and_inlines_the_missing_one():
     rendered = render(r, "sms_twilio")[0]
 
     assert rendered.count("https://nyc.gov/event") == 1
-    assert "Air quality warning (Source: https://nyc.gov/air)" in rendered
+    assert "Air quality warning (https://nyc.gov/air)" in rendered
     assert "Sources:" not in rendered
 
 
@@ -223,7 +223,7 @@ def test_text_channels_keep_discovery_warning_inline_without_an_endnote():
 
     rendered = render(result, "sms_twilio")[0]
 
-    assert "Source: https://nyc.gov/search-result" in rendered
+    assert "https://nyc.gov/search-result" in rendered
     assert "search-result excerpt" in rendered
     assert "evil.example" not in rendered
     assert "Sources:" not in rendered
@@ -241,7 +241,7 @@ def test_text_channels_percent_encode_source_urls_for_clickability():
 
     rendered = render(result, "sms_twilio")[0]
 
-    assert " " not in rendered.split("Source: ", 1)[1].split(")", 1)[0]
+    assert " " not in rendered.split("https://", 1)[1].split(")", 1)[0]
     assert "%27" in rendered
     assert "Sources:" not in rendered
 
@@ -344,7 +344,7 @@ def test_splits_long_text_with_inline_source_on_paragraph_boundaries():
     out = render(r, "sms_twilio")
     assert len(out) >= 2
     assert all(len(c) <= WA_LIMIT for c in out)
-    assert "Source: https://nyc.gov" in out[-1]
+    assert "(https://nyc.gov)" in out[-1]
 
 
 def test_large_sources_footer_finishes_and_respects_the_limit():
@@ -454,9 +454,9 @@ def test_whatsapp_places_every_cited_source_inline_with_its_claim():
 
     rendered = render(result, "whatsapp_meta")[0]
 
-    assert "- Art in the Park (Source: https://nyc.gov/art)" in rendered
+    assert "- Art in the Park (https://nyc.gov/art)" in rendered
     assert (
-        "- The Dancing Men (Source: https://nyc.gov/dancing; "
+        "- The Dancing Men (https://nyc.gov/dancing; "
         "Directions: https://maps.google.com/dancing)"
     ) in rendered
     assert "Sources:" not in rendered
@@ -471,7 +471,7 @@ def test_whatsapp_does_not_confuse_a_longer_lookalike_url_for_the_cited_source()
     rendered = render(result, "whatsapp_meta")[0]
 
     assert "https://nyc.gov/event-extra" in rendered
-    assert "Source: https://nyc.gov/event" in rendered
+    assert "(https://nyc.gov/event)" in rendered
 
 
 def test_text_channels_replace_a_citation_used_as_a_markdown_link_target():
@@ -482,8 +482,35 @@ def test_text_channels_replace_a_citation_used_as_a_markdown_link_target():
 
     for channel in ("sms_twilio", "whatsapp_meta"):
         rendered = render(result, channel)[0]
-        assert "Details: https://nyc.gov/event" in rendered
+        assert rendered == "Event: https://nyc.gov/event"
         assert "Sources:" not in rendered
+
+
+def test_text_channels_drop_redundant_standalone_link_words():
+    result = FakeResult(
+        "Piano {cite:S1} [Details]. Latin Night {cite:S2} [Tickets]",
+        {
+            "S1": {"id": "S1", "url": "https://nyc.gov/piano", "title": "Piano"},
+            "S2": {"id": "S2", "url": "https://nyc.gov/latin", "title": "Latin"},
+        },
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered == (
+        "Piano (https://nyc.gov/piano). Latin Night (https://nyc.gov/latin)"
+    )
+
+
+def test_text_channels_drop_redundant_plain_url_labels():
+    result = FakeResult(
+        "Event: Details: https://example.com/e "
+        "Tickets: https://example.com/t Source: https://example.com/s"
+    )
+
+    assert render(result, "sms_twilio") == [
+        "Event: https://example.com/e https://example.com/t https://example.com/s"
+    ]
 
 
 def test_text_channels_recognize_an_existing_url_with_balanced_parentheses():
@@ -567,7 +594,8 @@ def test_body_does_not_repair_malformed_brace_wrapped_link():
     )
 
     answer = render(r, "sms_twilio")[0].split("Sources:")[0]
-    assert "Details: %7Bhttps://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json%7D" in answer
+    assert "%7Bhttps://data.cityofnewyork.us/resource/tvpp-9vvx/abc.json%7D" in answer
+    assert "Details" not in answer
 
 
 def test_body_does_not_invent_links_from_malformed_markdown():
@@ -588,11 +616,11 @@ def test_body_does_not_invent_links_from_malformed_markdown():
 
     for channel in ("sms_twilio", "whatsapp_twilio"):
         answer = "\n".join(render(r, channel)).split("Sources:")[0]
-        assert f"Details: {event_url}" in answer
+        assert event_url in answer
         assert f"Directions: {map_url}" in answer
-        assert f"Details: {source_url}" in answer
+        assert source_url in answer
+        assert "Details:" not in answer
         assert "{cite:" not in answer
-        assert "[Details](" in answer
         assert "[Map](" in answer
 
     console = "\n".join(render(r, "console"))
@@ -614,7 +642,8 @@ def test_body_does_not_repair_unknown_or_mismatched_citation_target_links():
 
     answer = "\n".join(render(r, "sms_twilio")).split("Sources:")[0]
 
-    assert "Details: https://attacker.example/phish" in answer
+    assert "https://attacker.example/phish" in answer
+    assert "Details:" not in answer
     assert "[Details](" in answer
     assert "[Map](" in answer
 

@@ -4698,10 +4698,10 @@ async def test_runtime_result_uses_existing_sms_and_whatsapp_renderers() -> None
     result = await runtime.run("Help me")
 
     assert render(result, "sms_twilio") == [
-        "Help is available (Source: https://nyc.gov/help)."
+        "Help is available (https://nyc.gov/help)."
     ]
     assert render(result, "whatsapp_twilio") == [
-        "*Help* is available (Source: https://nyc.gov/help)."
+        "*Help* is available (https://nyc.gov/help)."
     ]
     assert render(result, "console") == [
         "**Help** is available [\\[S1\\]](<https://nyc.gov/help>).\n\n"
