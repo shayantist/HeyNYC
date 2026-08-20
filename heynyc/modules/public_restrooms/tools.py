@@ -7,6 +7,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import dataset_url, normalize, query_dataset, row_url
@@ -38,41 +39,19 @@ def _nyc_now() -> datetime:
     return datetime.now(_NYC_TZ)
 
 
-def _minutes(value: object) -> int | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.strptime(text, "%I:%M %p")
-    except ValueError:
-        return None
-    return parsed.hour * 60 + parsed.minute
-
-
 def _open_now(record: dict, now: datetime) -> bool | None:
-    day = _DAYS[now.weekday()]
-    previous_day = _DAYS[(now.weekday() - 1) % 7]
-    current = now.hour * 60 + now.minute
-    known = False
-    for interval in (1, 2):
-        opened = _minutes(record.get(f"cc_{day}_open{interval}"))
-        closed = _minutes(record.get(f"cc_{day}_close{interval}"))
-        if opened is None or closed is None:
-            continue
-        known = True
-        if (closed > opened and opened <= current < closed) or (
-            closed <= opened and current >= opened
-        ):
-            return True
-    for interval in (1, 2):
-        opened = _minutes(record.get(f"cc_{previous_day}_open{interval}"))
-        closed = _minutes(record.get(f"cc_{previous_day}_close{interval}"))
-        if opened is None or closed is None or closed > opened:
-            continue
-        known = True
-        if current < closed:
-            return True
-    return False if known else None
+    schedule = {
+        weekday: [
+            (opened, closed)
+            for interval in (1, 2)
+            if (opened := parse_clock_minutes(record.get(f"cc_{day}_open{interval}")))
+            is not None
+            and (closed := parse_clock_minutes(record.get(f"cc_{day}_close{interval}")))
+            is not None
+        ]
+        for weekday, day in enumerate(_DAYS)
+    }
+    return weekly_open_status(schedule, now)
 
 
 def _scheduled_on(record: dict, requested: date) -> bool | None:
@@ -80,8 +59,8 @@ def _scheduled_on(record: dict, requested: date) -> bool | None:
     known = False
     for weekday in _DAYS:
         for interval in (1, 2):
-            opened = _minutes(record.get(f"cc_{weekday}_open{interval}"))
-            closed = _minutes(record.get(f"cc_{weekday}_close{interval}"))
+            opened = parse_clock_minutes(record.get(f"cc_{weekday}_open{interval}"))
+            closed = parse_clock_minutes(record.get(f"cc_{weekday}_close{interval}"))
             if opened is None or closed is None:
                 continue
             known = True

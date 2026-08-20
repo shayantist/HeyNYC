@@ -25,6 +25,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service_page
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
@@ -370,38 +371,11 @@ def _source_origin(
 
 # --- hours / open-now ------------------------------------------------------
 
-_TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*$")
 _MONTHLY_OCCURRENCE_RE = re.compile(r"\b([1-5])(?:st|nd|rd|th)?\b", re.IGNORECASE)
 
 
 def _parse_time(value) -> int | None:
-    """A source time string → minutes since midnight, or None if blank/unparseable.
-
-    Defensive across the formats the finder might emit: '9:00 AM', '5:30 PM', 24h '17:30',
-    and military '0900'. NOTE: the exact live format is not verified offline, if the pull shows
-    a different encoding, extend this parser (the open-now display fails safe to 'hours not listed').
-    """
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or text.upper() == "NULL":
-        return None
-    if text.isdigit() and len(text) in (3, 4):          # military 'HMM' / 'HHMM'
-        hour, minute = divmod(int(text), 100)
-        return hour * 60 + minute if 0 <= hour <= 23 and 0 <= minute <= 59 else None
-    match = _TIME_RE.match(text)
-    if not match:
-        return None
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    meridiem = (match.group(3) or "").lower()
-    if meridiem:
-        hour = 0 if hour == 12 else hour
-        if meridiem == "pm":
-            hour += 12
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return None
-    return hour * 60 + minute
+    return parse_clock_minutes(value)
 
 
 def _prefix(record: dict) -> str:
@@ -436,21 +410,11 @@ def _open_now(record: dict, now: datetime) -> bool | None:
     if _monthly_occurrence_allows(record, now.date()) is False:
         return False
     prefix = _prefix(record)
-    today_slots = _day_slots(record, prefix, _DAYS[now.weekday()])
-    previous_slots = _day_slots(record, prefix, _DAYS[(now.weekday() - 1) % 7])
-    minutes = now.hour * 60 + now.minute
-    if today_slots:
-        if any(
-            (open_m < close_m and open_m <= minutes < close_m)
-            or (open_m > close_m and minutes >= open_m)
-            for open_m, close_m in today_slots
-        ):
-            return True
-    if any(open_m > close_m and minutes < close_m for open_m, close_m in previous_slots):
-        return True
-    if any(_day_slots(record, prefix, day) for day in _DAYS):
-        return False
-    return None
+    schedule = {
+        weekday: _day_slots(record, prefix, day)
+        for weekday, day in enumerate(_DAYS)
+    }
+    return weekly_open_status(schedule, now)
 
 
 def _scheduled_on(record: dict, requested: date) -> bool | None:

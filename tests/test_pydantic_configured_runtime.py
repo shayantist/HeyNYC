@@ -34,9 +34,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
     monkeypatch.setattr(
         "heynyc.core.pydantic_runtime.build_crisis_screen",
         lambda _model, *, model_name: (
-            safety_screen
-            if model_name == "TestModel"
-            else AssertionError(model_name)
+            safety_screen if model_name == "TestModel" else AssertionError(model_name)
         ),
     )
     monkeypatch.setattr(
@@ -243,9 +241,7 @@ def test_configured_luna_disables_rejected_native_tool_search(monkeypatch) -> No
 
     model = configured_model("openai/gpt-5.6-luna")
 
-    native_names = {
-        tool.__name__ for tool in model.profile["supported_native_tools"]
-    }
+    native_names = {tool.__name__ for tool in model.profile["supported_native_tools"]}
     assert "ToolSearchTool" not in native_names
 
 
@@ -263,9 +259,9 @@ async def test_configured_luna_prepared_request_hides_undiscovered_tools(
     async def capture(_messages, info):
         captured["parameters"] = info.model_request_parameters
         captured["settings"] = info.model_settings
-        return ModelResponse([
-            ToolCallPart("final_answer", {"answer": "No factual claim."}, "final-1")
-        ])
+        return ModelResponse(
+            [ToolCallPart("final_answer", {"answer": "No factual claim."}, "final-1")]
+        )
 
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
     index = Index() if with_index else None
@@ -287,9 +283,7 @@ async def test_configured_luna_prepared_request_hides_undiscovered_tools(
         lambda _model: True,
     )
     model = configured_model("openai/gpt-5.6-luna", reasoning_effort="low")
-    _, prepared = model.prepare_request(
-        captured["settings"], captured["parameters"]
-    )
+    _, prepared = model.prepare_request(captured["settings"], captured["parameters"])
     names = {tool.name for tool in prepared.function_tools}
 
     expected = {
@@ -297,6 +291,7 @@ async def test_configured_luna_prepared_request_hides_undiscovered_tools(
         "geocode",
         "nearest",
         "distance",
+        "evaluate_event_time",
         "web_search",
         "web_fetch",
         "about_heynyc",

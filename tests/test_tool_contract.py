@@ -28,6 +28,7 @@ from heynyc.modules.benefits.tools import screen_access_nyc_eligibility_tool
 EAGER_TOOL_NAMES = {
     "about_heynyc",
     "distance",
+    "evaluate_event_time",
     "geocode",
     "nearest",
     "web_fetch",
