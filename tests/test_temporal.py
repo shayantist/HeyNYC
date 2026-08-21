@@ -117,7 +117,8 @@ async def test_temporal_tool_returns_raw_interval_and_computed_literal():
     assert result.start_at.isoformat() == "2026-08-20T05:15:00-04:00"
     assert result.end_at.isoformat() == "2026-08-20T09:30:00-04:00"
     assert result.evaluated_at.isoformat() == "2026-08-20T14:24:00-04:00"
-    assert result.citation_id == "S1"
+    assert result.source_citation_id == "S1"
+    assert result.status_citation_id is None
 
     tool = temporal_tools()[0]
     assert tool.name == "evaluate_event_time"
@@ -141,6 +142,8 @@ async def test_temporal_tool_rejects_a_citation_not_retrieved_this_turn():
 
     assert result.outcome == "citation_not_found"
     assert result.status == "unknown"
+    assert result.source_citation_id == "S99"
+    assert result.status_citation_id is None
 
 
 async def test_temporal_tool_accepts_natural_source_times_and_rejects_mismatched_values():
@@ -234,8 +237,9 @@ async def test_temporal_tool_accepts_natural_source_times_and_rejects_mismatched
     assert accepted.outcome == "success"
     assert accepted.start_at.hour == 5
     assert accepted.end_at.hour == 9
-    assert accepted.citation_id != cite
-    derived = citations.mapping()[accepted.citation_id]
+    assert accepted.source_citation_id == cite
+    assert accepted.status_citation_id != cite
+    derived = citations.mapping()[accepted.status_citation_id]
     assert derived["kind"] == "DATA"
     assert derived["provenance"]["derivation"]["source_citation_id"] == cite
     assert f"Computed event status: {accepted.status}" in derived["snippet"]

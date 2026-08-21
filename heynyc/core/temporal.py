@@ -98,7 +98,8 @@ class EventIntervalEvaluation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     outcome: Literal["success", "citation_not_found", "source_mismatch"] = "success"
-    citation_id: str
+    source_citation_id: str
+    status_citation_id: str | None = None
     start_at: datetime | None
     end_at: datetime | None
     evaluated_at: datetime
@@ -207,7 +208,7 @@ def evaluate_event_interval(
         end_at = nyc_datetime(resolved_end_date, query.end_time)
     evaluated_at = observed_at.astimezone(NYC_TZ)
     return EventIntervalEvaluation(
-        citation_id=query.citation_id,
+        source_citation_id=query.citation_id,
         start_at=start_at,
         end_at=end_at,
         evaluated_at=evaluated_at,
@@ -222,7 +223,7 @@ def temporal_tools() -> list[Tool]:
         if citation is None:
             return EventIntervalEvaluation(
                 outcome="citation_not_found",
-                citation_id=query.citation_id,
+                source_citation_id=query.citation_id,
                 start_at=None,
                 end_at=None,
                 evaluated_at=datetime.now(NYC_TZ),
@@ -231,7 +232,7 @@ def temporal_tools() -> list[Tool]:
         if not _source_supports(query, citation):
             return EventIntervalEvaluation(
                 outcome="source_mismatch",
-                citation_id=query.citation_id,
+                source_citation_id=query.citation_id,
                 start_at=None,
                 end_at=None,
                 evaluated_at=datetime.now(NYC_TZ),
@@ -269,7 +270,7 @@ def temporal_tools() -> list[Tool]:
                 },
             ),
         )
-        return result.model_copy(update={"citation_id": computed_citation_id})
+        return result.model_copy(update={"status_citation_id": computed_citation_id})
 
     return [Tool(
         name="evaluate_event_time",
@@ -278,8 +279,9 @@ def temporal_tools() -> list[Tool]:
             "or unknown. Use this for every web event retained in an answer. Copy its exact event "
             "name, date, available start or end times, and source citation ID. The "
             "tool rejects date or time values absent from that citation. The result returns the "
-            "raw New York timestamps, evaluation time, computed status, and a citation_id for "
-            "that derived result. Cite the returned citation_id for the status."
+            "raw New York timestamps, evaluation time, computed status, the input "
+            "source_citation_id, and a status_citation_id for that derived result. Cite the "
+            "returned status_citation_id for the computed status."
         ),
         parameters=EventIntervalQuery.model_json_schema(),
         handler=evaluate,
