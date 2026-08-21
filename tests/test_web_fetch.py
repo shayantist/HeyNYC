@@ -341,6 +341,10 @@ def test_web_fetch_schema_accepts_one_public_url():
     assert tool.parameters["required"] == ["url"]
 
 
+def test_rendered_fetch_uses_the_browser_native_user_agent():
+    assert "user_agent" not in web_fetch_module._browser_context_options()
+
+
 async def test_web_fetch_accepts_an_unlisted_public_url_as_unverified():
     url = "https://example.com/current-event"
     client = _Client({url: "Current event details and schedule."})

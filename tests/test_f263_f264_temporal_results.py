@@ -243,7 +243,7 @@ async def test_f264_agent_extracted_max_results_controls_the_shortlist(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_f264_web_leads_are_context_not_extra_choices(monkeypatch) -> None:
+async def test_f264_web_and_catalog_choices_share_the_same_limit(monkeypatch) -> None:
     async def fake_ticketmaster(**kwargs):
         return TicketmasterSearchResult(
             status="complete",
@@ -261,7 +261,12 @@ async def test_f264_web_leads_are_context_not_extra_choices(monkeypatch) -> None
         return []
 
     async def web_handler(args, ctx):
-        return "[S99] One current seasonal lead"
+        citation_id = ctx.citations.register(
+            "https://example.org/seasonal-event",
+            title="One current seasonal lead",
+            snippet="One current seasonal event on August 15.",
+        )
+        return f"[{citation_id}] One current seasonal lead"
 
     monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
     monkeypatch.setattr(events, "query_dataset", empty_dataset)
@@ -279,5 +284,6 @@ async def test_f264_web_leads_are_context_not_extra_choices(monkeypatch) -> None
         {"window_start": "2099-08-15", "window_end": "2099-08-15"}, ctx,
     )
 
-    assert output.count("(Ticketmaster Discovery)") == 2
-    assert "Candidate event choices" in output
+    assert output.count("(Ticketmaster Discovery)") == 4
+    assert output.count("(Web discovery;") == 1
+    assert output.count("\n- ") == 5

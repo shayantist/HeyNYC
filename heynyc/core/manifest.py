@@ -82,6 +82,7 @@ class ServiceModule(BaseModel):
     datasets: list[DatasetBinding] = Field(default_factory=list)
     official_link: str = ""  # public service link, independent from RAG index seeds
     seeds: list[str] = Field(default_factory=list)
+    event_calendar_templates: list[str] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)
     prompt: str = ""  # capability blurb injected into the system prompt
     # Shared tools kept visible after this module capability loads. Empty means no narrowing.

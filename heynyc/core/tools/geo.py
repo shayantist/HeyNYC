@@ -347,6 +347,12 @@ def _neighborhood_point(text: str) -> Optional["GeoPoint"]:
     )
 
 
+def nyc_neighborhood_borough(text: str) -> str | None:
+    """Return the borough for an exact locality in the bundled NYC neighborhood gazetteer."""
+    point = _neighborhood_point(text)
+    return point.label.rsplit(", ", 1)[-1] if point is not None else None
+
+
 def _in_nyc(lat: float, lon: float) -> bool:
     """True if (lat, lon) falls inside `config.NYC_BBOX` (w,s,e,n)."""
     w, s, e, n = (float(x) for x in config.NYC_BBOX.split(","))

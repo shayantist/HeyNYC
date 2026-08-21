@@ -11,6 +11,7 @@ from heynyc.modules.events.tools import (
     EventQuery,
     _event_temporal_status,
     _from_parks,
+    _future_only,
     _temporal_filter,
     _temporal_instruction,
 )
@@ -91,6 +92,14 @@ def test_temporal_filters_compose_without_dropping_unknown_leads():
     assert _temporal_filter(rows, has_started=None, has_ended=True, now=now) == [ended]
 
 
+def test_active_multi_day_event_survives_the_current_day_window():
+    event = _event("10:00 AM", "6:00 PM")
+    event.start_date = "2026-05-23"
+    event.end_date = "2026-09-06"
+
+    assert _future_only([event], "2026-08-21") == [event]
+
+
 def test_temporal_filters_control_candidate_instructions_too():
     assert "exclude events known to have ended" in _temporal_instruction(None, False)
     assert "in progress" in _temporal_instruction(True, False)
@@ -129,7 +138,7 @@ async def test_generic_event_calendar_gets_one_focused_direct_page_followup(monk
                 provenance={"evidence_grade": "discovery"},
             )
         else:
-            url, title, snippet = direct_url, "RAYE Live on TODAY", "Direct event page"
+            url, title, snippet = direct_url, "RAYE music concert on TODAY", "Direct event page"
             unrelated = ""
             cite = ctx.citations.register(
                 url,
@@ -180,7 +189,7 @@ async def test_initial_direct_event_page_is_fetched_without_a_redundant_search(m
     async def web_search(args, ctx):
         calls.append(("search", args))
         direct = ctx.citations.register(
-            direct_url, title="Direct concert", snippet="August 20, 7:00 PM",
+            direct_url, title="Direct music concert", snippet="August 20, 7:00 PM",
             provenance={"evidence_grade": "discovery"},
         )
         generic = ctx.citations.register(
@@ -230,9 +239,14 @@ async def test_top_editorial_event_page_is_fetched_without_a_trust_whitelist(mon
         )
         return f"[{cite}] Music in NYC ({url})"
 
-    async def web_fetch(args, _ctx):
+    async def web_fetch(args, ctx):
         calls.append(args["url"])
-        return "Full editorial event page"
+        cite = ctx.citations.register(
+            args["url"], title="Full editorial music event page",
+            snippet="Full editorial music event page",
+            provenance={"evidence_grade": "fetched", "source_tier": "editorial"},
+        )
+        return f"SOURCE {cite}: Full editorial music event page"
 
     monkeypatch.setattr(events.tools, "ticketmaster_events", no_ticketmaster)
     monkeypatch.setattr(events.tools, "query_dataset", no_city_rows)
@@ -250,4 +264,4 @@ async def test_top_editorial_event_page_is_fetched_without_a_trust_whitelist(mon
     )
 
     assert calls == [url]
-    assert "Full editorial event page" in output
+    assert "Full editorial music event page" in output

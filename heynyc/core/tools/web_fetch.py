@@ -5,13 +5,15 @@ import ipaddress
 import re
 import unicodedata
 from datetime import datetime
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai._ssrf import safe_download, validate_and_resolve_url
 from pypdf import PdfReader
 from trafilatura import extract, html2txt
@@ -73,6 +75,145 @@ class _FetchedPage(BaseModel):
     title: str
     text: str
     acquisition: WebFetchAcquisition
+    structured_events: list[dict] = Field(default_factory=list)
+
+
+class _EventMicrodataParser(HTMLParser):
+    _VOID_ELEMENTS = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+        "param", "source", "track", "wbr",
+    }
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.depth = 0
+        self.event_depth: int | None = None
+        self.place_depth: int | None = None
+        self.blocked_scope_depth: int | None = None
+        self.event: dict[str, str] = {}
+        self.capture: tuple[int, str, list[str]] | None = None
+        self.events: list[dict[str, str]] = []
+
+    @staticmethod
+    def _attrs(attrs) -> dict[str, str]:
+        return {key: value or "" for key, value in attrs}
+
+    def _read(self, attrs: dict[str, str], *, allow_capture: bool) -> None:
+        itemtype = attrs.get("itemtype", "").rstrip("/").casefold()
+        itemprop = attrs.get("itemprop", "")
+        if self.event_depth is None and itemtype.endswith("schema.org/event"):
+            self.event_depth = self.depth
+            categories = [
+                token.partition("category-")[2].replace("-", " ")
+                for token in attrs.get("class", "").split()
+                if "category-" in token
+            ]
+            self.event = {"category": " ".join(categories)}
+        if self.event_depth is None:
+            return
+        if self.blocked_scope_depth is not None:
+            return
+        if "itemscope" in attrs and self.depth > self.event_depth and not (
+            itemtype.endswith("schema.org/place")
+            or itemtype.endswith("schema.org/postaladdress")
+        ):
+            self.blocked_scope_depth = self.depth
+            return
+        if itemprop == "location" and itemtype.endswith("schema.org/place"):
+            self.place_depth = self.depth
+        field = {
+            "startDate": "start",
+            "endDate": "end",
+            "addressLocality": "borough",
+            "keywords": "category",
+            "eventType": "category",
+        }.get(itemprop)
+        if field:
+            value = attrs.get("content") or attrs.get("datetime")
+            if value:
+                self.event[field] = value.strip()
+        elif itemprop == "url":
+            value = attrs.get("href") or attrs.get("content")
+            if value and (self.place_depth is None or self.depth <= self.place_depth):
+                self.event.setdefault("url", urljoin(self.base_url, value.strip()))
+        elif itemprop == "name":
+            field = "venue" if self.place_depth is not None else "name"
+            value = attrs.get("content")
+            if value:
+                self.event[field] = value.strip()
+            elif allow_capture:
+                self.capture = (self.depth, field, [])
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        self._read(self._attrs(attrs), allow_capture=True)
+        if tag not in self._VOID_ELEMENTS:
+            self.depth += 1
+
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        self._read(self._attrs(attrs), allow_capture=False)
+
+    def handle_data(self, data: str) -> None:
+        if self.capture is not None:
+            self.capture[2].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        self.depth = max(0, self.depth - 1)
+        if self.blocked_scope_depth == self.depth:
+            self.blocked_scope_depth = None
+            return
+        if self.capture is not None and self.capture[0] == self.depth:
+            _depth, field, chunks = self.capture
+            value = " ".join("".join(chunks).split())
+            if value:
+                self.event[field] = value
+            self.capture = None
+        if self.place_depth == self.depth:
+            self.place_depth = None
+        if self.event_depth == self.depth:
+            if self.event.get("name") and self.event.get("start"):
+                self.events.append(dict(self.event))
+            self.event_depth = None
+            self.place_depth = None
+            self.event = {}
+            self.capture = None
+
+
+def _schema_datetime(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw, ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return "", ""
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo("America/New_York"))
+    return parsed.date().isoformat(), parsed.strftime("%H:%M")
+
+
+def _schema_events(html: str, base_url: str) -> list[dict[str, str]]:
+    """Extract standard Schema.org Event microdata without provider-specific selectors."""
+    parser = _EventMicrodataParser(base_url)
+    parser.feed(html)
+    normalized = []
+    for event in parser.events:
+        start_date, start_time = _schema_datetime(event.get("start", ""))
+        if not start_date:
+            continue
+        end_date, end_time = _schema_datetime(event.get("end", ""))
+        normalized.append({
+            "name": event["name"],
+            "url": event.get("url", base_url),
+            "venue": event.get("venue", ""),
+            "borough": event.get("borough", ""),
+            "category": event.get("category", ""),
+            "start_date": start_date,
+            "start_time": start_time,
+            "end_date": end_date,
+            "end_time": end_time,
+        })
+    return normalized
 
 
 def _acquisition(
@@ -116,7 +257,6 @@ def _browser_context_options() -> dict:
     return {
         "java_script_enabled": True,
         "timezone_id": "America/New_York",
-        "user_agent": "Mozilla/5.0 (compatible; HeyNYC/0.1; +https://reach4help.org)",
     }
 
 
@@ -319,6 +459,7 @@ async def _fetch_rendered_page(
         final_url=final_url,
         title=title,
         text=text,
+        structured_events=_schema_events(html, final_url),
         acquisition=_acquisition(
             url,
             final_url,
@@ -369,6 +510,11 @@ async def _fetch_page(
             final_url=final_url,
             title=title,
             text=text,
+            structured_events=(
+                _schema_events(response.text, final_url)
+                if "html" in response.headers.get("content-type", "").lower()
+                else []
+            ),
             acquisition=_acquisition(
                 url,
                 final_url,
@@ -409,6 +555,11 @@ async def _fetch_page(
             final_url=final_url,
             title=title,
             text=text,
+            structured_events=(
+                _schema_events(response.text, final_url)
+                if "html" in response.headers.get("content-type", "").lower()
+                else []
+            ),
             acquisition=_acquisition(
                 requested_url,
                 final_url,
@@ -553,6 +704,7 @@ def web_fetch_tools() -> list[Tool]:
             ),
             "source_tier": tier,
             "acquisition": fetched.acquisition.model_dump(mode="json"),
+            **({"events": fetched.structured_events} if fetched.structured_events else {}),
         }
         cite = ctx.citations.register(
             final_url,

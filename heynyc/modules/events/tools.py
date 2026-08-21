@@ -31,6 +31,8 @@ from heynyc.core.tools.datasets import (
     query_dataset_pages,
     row_url,
 )
+from heynyc.core.tools.geo import nyc_neighborhood_borough
+from heynyc.core.tools.web_search import _TIER_LABELS
 
 PARKS_DATASET_ID = "w3wp-dpdi"  # NYC Parks Public Events (clean, upcoming, free/park-focused)
 PARKS_SOURCE_URL = "https://www.nycgovparks.org/events"
@@ -53,9 +55,18 @@ _PARK_BOROUGHS = {
     "R": "Staten Island",
     "X": "Bronx",
 }
-_TICKETMASTER_NYC_CITIES = {
+_NYC_LOCALITIES = {
     "bronx", "brooklyn", "new york", "new york city", "queens", "staten island",
 }
+
+
+def _nyc_locality_borough(value: object) -> str | None:
+    locality = str(value or "").strip()
+    if not locality:
+        return None
+    if locality.casefold() in _NYC_LOCALITIES:
+        return locality
+    return nyc_neighborhood_borough(locality)
 
 
 class EventQuery(BaseModel):
@@ -198,6 +209,11 @@ class Event:
     provider_record: dict = field(default_factory=dict)
     retrieved_at: str = ""
     registration_info: str = ""
+    evidence_excerpt: str = ""
+    citation_id: str = ""
+    retrieval_rank: int | None = None
+    structured_source: bool = False
+    category: str = ""
 
 
 def _iso_date(value: object) -> str:
@@ -234,7 +250,7 @@ def _from_ticketmaster(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     venues = (raw.get("_embedded") or {}).get("venues") or []
     venue = venues[0].get("name", "") if venues else ""
     borough = (venues[0].get("city") or {}).get("name", "") if venues else ""
-    if borough and borough.strip().casefold() not in _TICKETMASTER_NYC_CITIES:
+    if borough and borough.strip().casefold() not in _NYC_LOCALITIES:
         return None
     public_sale = (raw.get("sales") or {}).get("public") or {}
     start_tbd = public_sale.get("startTBD")
@@ -256,6 +272,10 @@ def _from_ticketmaster(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         provider_id=str(raw.get("id") or raw.get("url") or ""),
         provider_record=raw,
         retrieved_at=retrieved_at,
+        category=" ".join(
+            str((classification.get("segment") or {}).get("name") or "")
+            for classification in raw.get("classifications") or ()
+        ).strip(),
     )
 
 
@@ -299,6 +319,7 @@ def _from_parks(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         provider_id=str(raw.get(":id") or url or title),
         provider_record=raw,
         retrieved_at=retrieved_at,
+        category=categories,
     )
 
 
@@ -329,9 +350,67 @@ def _from_permitted(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
     )
 
 
+def _from_web_citation(citation_id: str, citation: dict, *, rank: int) -> Event:
+    """Normalize one already-registered web discovery into the shared Event shape."""
+    provenance = citation.get("provenance") or {}
+    event_fields = provenance.get("event") or {}
+    url = str(event_fields.get("url") or citation.get("url") or "")
+    host = (urlsplit(url).hostname or "").removeprefix("www.")
+    evidence_excerpt = str(citation.get("snippet") or "")
+    if event_fields:
+        evidence_excerpt = "; ".join(
+            str(value)
+            for value in (
+                event_fields.get("name"), event_fields.get("start_date"),
+                event_fields.get("start_time"), event_fields.get("venue"),
+                event_fields.get("category"),
+            )
+            if value
+        )
+    return Event(
+        name=str(event_fields.get("name") or citation.get("title") or host or "Web event lead"),
+        start_date=_iso_date(event_fields.get("start_date")),
+        start_time=str(event_fields.get("start_time") or ""),
+        end_date=_iso_date(event_fields.get("end_date")),
+        end_time=str(event_fields.get("end_time") or ""),
+        venue=str(event_fields.get("venue") or ""),
+        borough=_nyc_locality_borough(event_fields.get("borough")) or "",
+        url=url,
+        source="Web discovery",
+        tier=str(provenance.get("source_tier") or "unverified"),
+        publishing_source=host,
+        provider_id=url,
+        provider_record=event_fields or citation,
+        retrieved_at=str((provenance.get("acquisition") or {}).get("fetched_at") or ""),
+        evidence_excerpt=evidence_excerpt,
+        citation_id=citation_id,
+        retrieval_rank=rank,
+        structured_source=bool(event_fields),
+        category=str(event_fields.get("category") or ""),
+    )
+
+
+def _from_web_citation_events(citation_id: str, citation: dict, *, rank: int) -> list[Event]:
+    structured = (citation.get("provenance") or {}).get("events") or []
+    if not structured:
+        return [_from_web_citation(citation_id, citation, rank=rank)]
+    return [
+        _from_web_citation(
+            citation_id,
+            {
+                **citation,
+                "provenance": {**(citation.get("provenance") or {}), "event": event},
+            },
+            rank=rank + offset,
+        )
+        for offset, event in enumerate(structured)
+        if _nyc_locality_borough(event.get("borough")) is not None
+    ]
+
+
 def _future_only(events: list[Event], today: str) -> list[Event]:
-    """Keep only events on/after `today` (ISO YYYY-MM-DD string compare is correct here)."""
-    return [e for e in events if e.start_date >= today]
+    """Keep events whose source interval overlaps or follows `today`."""
+    return [e for e in events if max(e.start_date, e.end_date or "") >= today]
 
 
 def _not_ended_today(events: list[Event], now: datetime) -> list[Event]:
@@ -374,14 +453,14 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
         unique.append(event)
     seen: dict[tuple[str, str], int] = {}
     ranked: list[tuple[int, str, Event]] = []
-    for event in sorted(unique, key=lambda e: e.start_date):
+    for event in sorted(unique, key=lambda e: e.start_date or "9999-12-31"):
         group = (event.source, event.start_date)
-        rank = seen.get(group, 0)
+        rank = event.retrieval_rank if event.retrieval_rank is not None else seen.get(group, 0)
         seen[group] = rank + 1
         ranked.append((rank, event.start_date, event))
     ranked.sort(key=lambda item: (
         item[0],
-        item[1],
+        item[1] or "9999-12-31",
         _parse_start_time(item[2].start_time) or datetime.max.time(),
     ))
     return [event for _, _, event in ranked[:limit]]
@@ -407,6 +486,8 @@ def _parse_start_time(text: str):
 
 def _event_temporal_status(ev: Event, now: datetime) -> EventStatus:
     """Normalize one event's raw local fields and classify it against the NYC clock."""
+    if not ev.start_date:
+        return "unknown"
     event_day = date.fromisoformat(ev.start_date)
     start_time = _parse_start_time(ev.start_time)
     if start_time is None:
@@ -460,6 +541,8 @@ def _temporal_instruction(has_started: bool | None, has_ended: bool | None) -> s
 def _today_timing_note(ev: Event, now: datetime) -> str:
     """Expose the deterministic status while retaining the source's raw times."""
     status = _event_temporal_status(ev, now)
+    if not ev.start_date:
+        return "; date and timing not confirmed"
     if ev.start_date != now.date().isoformat():
         return "; ended" if status == "ended" else ""
     start = _parse_start_time(ev.start_time)
@@ -476,8 +559,11 @@ def _today_timing_note(ev: Event, now: datetime) -> str:
 
 
 def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
-    weekday = date.fromisoformat(ev.start_date).strftime("%A")
-    when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
+    if ev.start_date:
+        weekday = date.fromisoformat(ev.start_date).strftime("%A")
+        when = f"{weekday}, {ev.start_date}" + (f" {ev.start_time}" if ev.start_time else "")
+    else:
+        when = "date and time not normalized from this source"
     where = f" @ {ev.venue}" if ev.venue else ""
     timing = _today_timing_note(ev, now) if now else ""
     end_when = ev.end_time
@@ -494,10 +580,18 @@ def _event_block(ev: Event, cite: str, now: Optional[datetime] = None) -> str:
         else ""
     )
     details = f"\n  Details: {ev.url}" if ev.url else ""
+    evidence = f"\n  Source excerpt: {ev.evidence_excerpt}" if ev.evidence_excerpt else ""
+    source = ev.source
+    match_warning = ""
+    if ev.source == "Web discovery":
+        source = f"{source}; {_TIER_LABELS.get(ev.tier, ev.tier)}"
+        if not ev.structured_source:
+            match_warning = "; unconfirmed lead, not a matching option until its constraints are checked"
     return (
         f"- {ev.name}{where}, {when}{timing}{end}{free}{audience}{registration}{status}"
+        f"{match_warning}"
         f"{accessibility} "
-        f"({ev.source}) {{cite:{cite}}}{details}"
+        f"({source}) {{cite:{cite}}}{evidence}{details}"
     )
 
 
@@ -532,7 +626,17 @@ def _keyword_terms(keyword: str) -> set[str]:
 
 def _matches_keyword(event: Event, keyword: str) -> bool:
     terms = _keyword_terms(keyword)
-    blob = " ".join((event.name, event.venue, event.audience, event.free_evidence)).lower()
+    blob = " ".join(
+        (event.name, event.venue, event.audience, event.free_evidence, event.evidence_excerpt)
+    ).lower()
+    return not terms or any(term in blob for term in terms)
+
+
+def _matches_classification(event: Event, classification: str) -> bool:
+    terms = _keyword_terms(classification)
+    blob = " ".join(
+        (event.name, event.category or event.evidence_excerpt)
+    ).casefold()
     return not terms or any(term in blob for term in terms)
 
 
@@ -574,7 +678,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     elif arg_end:
         window_start, window_end = today, arg_end
     else:
-        window_start, window_end = today, None
+        window_start = window_end = today
     has_ended = query.has_ended
     if has_ended is None:
         has_ended = bool(window_end and window_end < today)
@@ -667,10 +771,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         and "web_search" in ctx.toolbox
     )
     search_query = ""
+    calendar_urls: list[str] = []
     web_citations_before = set(ctx.citations.mapping())
+    web_citation_cursor = ctx.citations.touch_cursor()
     if broad_web:
         query_terms = [
-            term for term in (keyword or classification, borough, audience, setting) if term
+            term
+            for term in (keyword or classification, borough, audience, setting, query.cost)
+            if term
         ]
         start_day = date.fromisoformat(window_start)
         search_parts = [
@@ -684,9 +792,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             search_parts.append(
                 f"to {end_day.strftime('%B')} {end_day.day}, {end_day.year}"
             )
-        search_query = web_query or (
-            " ".join(search_parts) if query_terms else ctx.query.strip()
-        )
+        search_query = " ".join(search_parts) if query_terms else web_query or ctx.query.strip()
         web_args = {"query": search_query, "count": 10}
         if preferred_domains := _event_discovery_domains(ctx):
             web_args["prefer"] = preferred_domains
@@ -694,8 +800,34 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             "broad_web",
             ctx.toolbox["web_search"].handler(web_args, ctx),
         ))
+        # ponytail: direct calendars currently cover single-day lookups. Range searches keep
+        # using the bounded web lane until a real recall failure justifies several page fetches.
+        if window_end == window_start and "web_fetch" in ctx.toolbox:
+            calendar_urls = list(dict.fromkeys(
+                template.format(date=start_day)
+                for module in ctx.registry.modules
+                if module.name == "events"
+                for template in module.event_calendar_templates
+            ))
+            sources.extend(
+                (
+                    f"event_calendar_{index}",
+                    ctx.toolbox["web_fetch"].handler(
+                        {"url": url, "query": search_query}, ctx,
+                    ),
+                )
+                for index, url in enumerate(calendar_urls)
+            )
     gathered = await asyncio.gather(*(
-        asyncio.wait_for(call, timeout=_SOURCE_TIMEOUT_S) for _, call in sources
+        asyncio.wait_for(
+            call,
+            timeout=(
+                _PAGE_FETCH_TIMEOUT_S
+                if name.startswith("event_calendar_")
+                else _SOURCE_TIMEOUT_S
+            ),
+        )
+        for name, call in sources
     ), return_exceptions=True)
     results = dict(zip((name for name, _ in sources), gathered))
     failed_catalog = [
@@ -713,10 +845,17 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     unavailable_catalog = [
         name for name in catalog_sources if isinstance(results[name], BaseException)
     ]
-    web_context = results.get("broad_web")
-    web_failed = isinstance(web_context, BaseException)
-    if web_failed:
-        web_context = None
+    web_results = [
+        result for name, result in results.items()
+        if name == "broad_web" or name.startswith("event_calendar_")
+    ]
+    web_failed = bool(web_results) and all(
+        isinstance(result, BaseException) for result in web_results
+    )
+    web_context = "\n\n".join(
+        str(result) for result in web_results
+        if result and not isinstance(result, BaseException)
+    ) or None
     added = ctx.citations.mapping()
     new_citations = [
         citation
@@ -787,23 +926,49 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 )
     if (
         web_context
-        and (keyword or classification)
         and ctx.toolbox is not None
         and "web_fetch" in ctx.toolbox
     ):
         added = ctx.citations.mapping()
-        primary = resolved_primary or next(
-            (
-                citation
-                for citation_id, citation in added.items()
-                if citation_id not in web_citations_before
-                and not _is_generic_event_page(citation["url"])
-            ),
-            None,
-        )
-        if primary is not None:
+        direct_candidates = [
+            citation
+            for citation_id, citation in added.items()
+            if citation_id not in web_citations_before
+            and not _is_generic_event_page(citation["url"])
+        ]
+        if resolved_primary is not None:
+            direct_candidates.insert(0, resolved_primary)
+        requested_dates = {
+            value
+            for day in (start_day, end_day)
+            if day is not None
+            for value in (
+                day.isoformat(),
+                f"{day.strftime('%B')} {day.day}",
+            )
+        }
+        requested_topics = _keyword_terms(keyword or classification or "")
+
+        def fetch_priority(citation: dict) -> tuple[bool, bool]:
+            blob = " ".join(
+                str(citation.get(field) or "") for field in ("title", "snippet", "url")
+            ).casefold()
+            return (
+                any(value.casefold() in blob for value in requested_dates),
+                any(topic in blob for topic in requested_topics),
+            )
+
+        if generic is not None and resolved_primary is not None:
+            primaries = [resolved_primary]
+        else:
+            direct_candidates.sort(key=fetch_priority, reverse=True)
+            primaries = list(
+                {citation["url"]: citation for citation in direct_candidates}.values()
+            )[:2]
+
+        async def fetch_primary(primary: dict) -> str:
             try:
-                fetched = await asyncio.wait_for(
+                return await asyncio.wait_for(
                     ctx.toolbox["web_fetch"].handler(
                         {"url": primary["url"], "query": search_query},
                         ctx,
@@ -811,13 +976,98 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                     timeout=_PAGE_FETCH_TIMEOUT_S,
                 )
             except Exception:
-                fetched = ""
+                return ""
+
+        fetched_pages = await asyncio.gather(*(fetch_primary(primary) for primary in primaries))
+        for fetched in fetched_pages:
             if fetched:
                 web_context = f"{web_context}\n\nSelected event page:\n{fetched}"
-    web_candidates = f"Web-discovered candidates:\n{web_context}" if web_context else ""
-    ctx.event_discovery_citation_ids.update(
-        set(ctx.citations.mapping()) - web_citations_before
-    )
+
+        current_fetch_citation_ids = ctx.citations.touched_since(web_citation_cursor)
+        attempted_urls = {
+            citation["url"]
+            for citation_id, citation in ctx.citations.mapping().items()
+            if citation_id in current_fetch_citation_ids
+            if (citation.get("provenance") or {}).get("acquisition")
+            or (citation.get("provenance") or {}).get("evidence_grade") == "unavailable"
+        }
+        child_pages: list[dict[str, str]] = []
+        for citation_id, citation in ctx.citations.mapping().items():
+            if citation_id not in current_fetch_citation_ids:
+                continue
+            for event_fields in (citation.get("provenance") or {}).get("events") or ():
+                event_url = str(event_fields.get("url") or "")
+                if not event_url or event_url in attempted_urls or event_fields.get("borough"):
+                    continue
+                event_end = str(event_fields.get("end_date") or event_fields.get("start_date") or "")
+                event_start = str(event_fields.get("start_date") or "")
+                if not event_start or event_end < window_start or (
+                    window_end and event_start > window_end
+                ):
+                    continue
+                candidate = _from_web_citation(
+                    citation_id,
+                    {
+                        **citation,
+                        "provenance": {
+                            **(citation.get("provenance") or {}), "event": event_fields,
+                        },
+                    },
+                    rank=0,
+                )
+                if (keyword or classification) and not _matches_keyword(
+                    candidate, keyword or classification or "",
+                ):
+                    continue
+                attempted_urls.add(event_url)
+                child_pages.append({"url": event_url})
+                if len(child_pages) == 2:
+                    break
+            if len(child_pages) == 2:
+                break
+        fetched_children = await asyncio.gather(
+            *(fetch_primary(primary) for primary in child_pages)
+        )
+        for fetched in fetched_children:
+            if fetched:
+                web_context = f"{web_context}\n\nVerified direct event page:\n{fetched}"
+    current_web_citation_ids = ctx.citations.touched_since(web_citation_cursor)
+    raw_web_citation_items = [
+        (citation_id, citation)
+        for citation_id, citation in ctx.citations.mapping().items()
+        if citation_id in current_web_citation_ids
+    ]
+    web_citation_ids = {citation_id for citation_id, _citation in raw_web_citation_items}
+    citation_by_url: dict[str, tuple[str, dict]] = {}
+    url_order: list[str] = []
+    evidence_priority = {
+        "unavailable": 0, "discovery": 1, "search_excerpt": 2,
+        "authoritative_excerpt": 3, "fetched": 4, "authoritative": 5,
+    }
+    for citation_id, citation in raw_web_citation_items:
+        url = citation["url"]
+        existing = citation_by_url.get(url)
+        if existing is None:
+            url_order.append(url)
+        if existing is None or evidence_priority.get(
+            (citation.get("provenance") or {}).get("evidence_grade", ""), 0,
+        ) > evidence_priority.get(
+            (existing[1].get("provenance") or {}).get("evidence_grade", ""), 0,
+        ):
+            citation_by_url[url] = (citation_id, citation)
+    web_citation_items = [citation_by_url[url] for url in url_order]
+    direct_web_items = [
+        item for item in web_citation_items if not _is_generic_event_page(item[1]["url"])
+    ]
+    if direct_web_items:
+        web_citation_items = direct_web_items
+    calendar_event_ranks = {
+        str(event.get("url") or ""): rank
+        for _citation_id, citation in web_citation_items
+        if citation["url"] in calendar_urls
+        for rank, event in enumerate((citation.get("provenance") or {}).get("events") or ())
+        if event.get("url")
+    }
     web_limitation = (
         "Current web event leads were unavailable. Results are partial."
         if web_failed
@@ -850,15 +1100,35 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     events += [
         e for e in (_from_permitted(r, retrieved_at=retrieved_at) for r in raw_permitted) if e
     ]
+    events += [
+        event
+        for rank, (citation_id, citation) in enumerate(web_citation_items)
+        for event in _from_web_citation_events(
+            citation_id,
+            citation,
+            rank=(
+                0
+                if citation["url"] in calendar_urls
+                else calendar_event_ranks.get(citation["url"], rank)
+            ),
+        )
+    ]
     if keyword:
         events = [
             event for event in events
             if event.source == "Ticketmaster Discovery"
             or _matches_keyword(event, keyword)
         ]
+    elif classification:
+        events = [
+            event for event in events
+            if event.source == "Ticketmaster Discovery"
+            or _matches_classification(event, classification)
+        ]
 
     def _window_filter(rows: list[Event]) -> list[Event]:
-        kept = _future_only(rows, window_start)
+        incomplete = [event for event in rows if not event.start_date]
+        kept = _future_only([event for event in rows if event.start_date], window_start)
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
         if ctx.event_turn != "preparation" or query.has_started is not None or query.has_ended is not None:
@@ -877,19 +1147,15 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             kept = [e for e in kept if borough in e.borough.lower()]
         if audience == "kids":
             kept = [e for e in kept if "kids" in e.audience.lower()]
-        if broad_web and not resident_requested_count:
-            marketplace_count = 0
-            diverse = []
-            for event in kept:
-                if event.source == "Ticketmaster Discovery":
-                    marketplace_count += 1
-                    if marketplace_count > 2:
-                        continue
-                diverse.append(event)
-            kept = diverse
+        kept += incomplete
         return _shortlist(kept, max_results)
 
     events = _window_filter(events)
+    selected_web_citation_ids = {event.citation_id for event in events if event.citation_id}
+    ctx.citations.discard(
+        (web_citation_ids - web_citations_before) - selected_web_citation_ids
+    )
+    ctx.event_discovery_citation_ids.update(selected_web_citation_ids)
     limited_catalog = set(unavailable_catalog)
     coverage_note = ""
     if limited_catalog:
@@ -1004,32 +1270,15 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"{{cite:{permitted_cite}}}."
         )
     if not events:
-        if not web_candidates:
-            return "\n\n".join(
-                part for part in (setting_note + no_results, web_limitation) if part
-            )
-        candidate_pool = "\n\n".join(
-            part for part in (web_candidates, setting_note + no_results, web_limitation) if part
-        )
-        return (
-            "Candidate event choices from current web and structured catalogs. Rank every candidate "
-            "together. Choose by exact date and topic match first, then apply NYC location and "
-            f"this temporal rule: {temporal_instruction}, before relevance and variety. "
-            "Source tier describes evidence confidence, not how "
-            "interesting an event is. Before keeping any web candidate, call evaluate_event_time "
-            "with its exact name, date, and available times and cite its derived result. Omit "
-            "unavailable values so the result stays unknown instead of guessing. Resolve a general calendar URL to the "
-            "direct event page with one focused web search. Preserve a useful link as an "
-            "unconfirmed lead when its excerpt does not establish every hard constraint. An "
-            "exact-date editorial listing excerpt remains usable evidence for only the event "
-            "names, dates, venues, and times it explicitly states when its page cannot be fetched. "
-            "For general discovery, include a matching non-marketplace candidate when available "
-            "instead of returning only marketplace candidates:\n"
-            + candidate_pool
+        return "\n\n".join(
+            part for part in (setting_note + no_results, web_limitation) if part
         )
 
     blocks = []
     for ev in events:
+        if ev.citation_id and not ev.structured_source:
+            blocks.append(_event_block(ev, ev.citation_id, now))
+            continue
         weekday = date.fromisoformat(ev.start_date).strftime("%A")
         # The snapshot carries the FULL row the model will describe, time and source included,
         # so cited prose stays supported by its own evidence.
@@ -1066,20 +1315,23 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             ),
             f"Source: {ev.source}",
         ]
+        derivation = {
+            "temporal": {
+                "start_date": ev.start_date,
+                "start_time": ev.start_time,
+                "end_date": ev.end_date,
+                "end_time": ev.end_time,
+                "evaluated_at": now.isoformat(),
+                "status": temporal_status,
+            },
+        }
+        if ev.structured_source:
+            derivation["source_citation_id"] = ev.citation_id
         provenance = data_provenance(
             ev.provider_record,
             record_id=ev.provider_id,
             field_pointer="/",
-            derivation={
-                "temporal": {
-                    "start_date": ev.start_date,
-                    "start_time": ev.start_time,
-                    "end_date": ev.end_date,
-                    "end_time": ev.end_time,
-                    "evaluated_at": now.isoformat(),
-                    "status": temporal_status,
-                },
-            },
+            derivation=derivation,
         )
         provenance["acquisition"] = {"retrieved_at": ev.retrieved_at}
         if ev.source == "Ticketmaster Discovery":
@@ -1100,9 +1352,9 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     free_scope = " whose official source evidence says free" if query.cost == "free" else ""
     header = (
         f"{setting_note}{coverage_note}"
-        f"NYC events{window}{free_scope} from live sources (Ticketmaster + NYC Parks + "
-        "NYC Permitted Events, the Street Activity Permit Office feed of street fairs, farmers "
-        "markets, block parties, parades, and plaza events):\n"
+        f"NYC event candidates{window}{free_scope} from live catalog and web sources. "
+        "A web lead with unknown fields stays explicitly incomplete until its source establishes "
+        "them:\n"
     )
     catalog = header + "\n".join(blocks) if blocks else no_results
     followup = (
@@ -1110,30 +1362,23 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if not resident_requested_count
         else ""
     )
-    candidate_pool = "\n\n".join(
-        part
-        for part in (
-            web_candidates,
-            f"Structured catalog candidates:\n{catalog}",
-            web_limitation,
-        )
-        if part
-    )
     return (
-        "Candidate event choices from current web and structured catalogs. Rank every candidate "
-        "together. Choose by exact date and topic match first, then apply NYC location and this "
+        "These candidates already passed one shared bounded shortlist. Choose by exact date and "
+        "topic match first, then apply NYC location and this "
         f"temporal rule: {temporal_instruction}, before relevance and variety. "
         "Source tier describes evidence confidence, not how "
-        "interesting an event is. Before keeping any web candidate, call evaluate_event_time with "
-        "its exact name, date, and available times and cite its derived result. Omit unavailable "
-        "values so the result stays unknown instead of guessing. Resolve a general calendar URL to the direct event page with "
+        "interesting an event is. A normalized web record already includes its deterministic "
+        "status and per-event citation. Before making a time-status claim from an excerpt-only "
+        "web lead, call evaluate_event_time with its exact name, date, and available times and "
+        "cite its derived result. Omit unavailable values so the result stays unknown instead of "
+        "guessing. Resolve a general calendar URL to the direct event page with "
         "one focused web search. Preserve a useful link as an unconfirmed lead when its excerpt "
         "does not establish every hard constraint. An exact-date editorial listing excerpt "
         "remains usable evidence for only the event names, dates, venues, and times it explicitly "
         "states when its page cannot be fetched. For general discovery, include a matching "
         "non-marketplace candidate when available instead of returning only marketplace "
         "candidates:\n"
-        + candidate_pool
+        + "\n\n".join(part for part in (catalog, web_limitation) if part)
         + followup
     )
 

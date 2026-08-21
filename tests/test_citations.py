@@ -52,6 +52,16 @@ def test_reused_source_is_marked_as_touched_in_the_current_turn() -> None:
     assert reg.touched_ids() == {citation_id}
 
 
+def test_touch_cursor_includes_a_reused_citation() -> None:
+    reg = CitationRegistry()
+    citation_id = reg.register("https://a.gov", snippet="same", kind="WEB")
+    cursor = reg.touch_cursor()
+
+    reg.register("https://a.gov", snippet="same", kind="WEB")
+
+    assert reg.touched_since(cursor) == {citation_id}
+
+
 def test_same_url_with_different_evidence_does_not_reuse_stale_citation():
     reg = CitationRegistry()
     prefix = "same opening " * 12

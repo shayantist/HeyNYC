@@ -32,6 +32,15 @@ def test_events_does_not_present_partial_constraint_matches_as_options() -> None
     assert "official live-listing page" in prompt
 
 
+def test_events_does_not_silently_correct_source_fields() -> None:
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    events = next(module for module in registry.modules if module.name == "events")
+    prompt = " ".join(events.prompt.lower().split())
+
+    assert "titles and addresses exactly as retrieved" in prompt
+    assert "omit a questionable fragment" in prompt
+
+
 def test_event_shortlist_preserves_each_requested_date() -> None:
     events = [
         Event(
@@ -74,6 +83,27 @@ def test_event_shortlist_uses_event_time_not_source_as_the_tiebreaker() -> None:
         "NYC Permitted Events",
         "NYC Parks",
     ]
+
+
+def test_music_classification_does_not_match_an_art_event_that_mentions_music() -> None:
+    event = Event(
+        "Photography exhibit", "2026-08-21", "9:00 AM", "Central Park", "Manhattan",
+        "https://example.com/art", "NYC Parks", "authoritative",
+        evidence_excerpt="A photographer documented live music performances.",
+        category="Art",
+    )
+
+    assert not event_tools._matches_classification(event, "Music")
+
+
+def test_music_classification_uses_an_excerpt_when_no_category_was_extracted() -> None:
+    event = Event(
+        "Independent concert", "2026-08-21", "7:00 PM", "Venue", "Brooklyn",
+        "https://example.com/concert", "Web discovery", "editorial",
+        evidence_excerpt="A music event in New York on August 21.",
+    )
+
+    assert event_tools._matches_classification(event, "Music")
 
 
 def test_list_guidance_discloses_default_shortlists_and_offers_a_next_step() -> None:
@@ -123,7 +153,12 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
 
     async def web_search(args, ctx):
         web_calls.append(args)
-        return "Organizer event page"
+        citation_id = ctx.citations.register(
+            "https://organizer.example/events/music-night",
+            title="Organizer event page",
+            snippet="Music event on August 16, 2099.",
+        )
+        return f"[{citation_id}] Organizer event page"
 
     monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
     monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
@@ -142,7 +177,6 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
             )
         },
     )
-
     result = await event_tools.get_tools()[0].handler(
         {
             "keyword": "music",
@@ -160,7 +194,7 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
         "donyc.com", "eventbrite.com", "luma.com", "ma.to", "partiful.com",
     } <= set(web_calls[0]["prefer"])
     assert "123 Main" not in str(web_calls)
-    assert "Candidate event choices" in result
+    assert "one shared bounded shortlist" in result
     assert "Choose by exact date and topic match first" in result
 
 
@@ -188,7 +222,14 @@ async def test_topical_event_lookup_fetches_the_first_authoritative_search_page(
     async def web_fetch(args, ctx):
         await asyncio.sleep(0.01)
         fetched.append(args)
-        return "SOURCE: Official named concert on the requested date"
+        cite = ctx.citations.register(
+            args["url"],
+            title="Official named music concert on the requested date",
+            snippet="Official named music concert on the requested date",
+            kind="WEB",
+            provenance={"evidence_grade": "fetched", "source_tier": "authoritative"},
+        )
+        return f"SOURCE {cite}: Official named music concert on the requested date"
 
     monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
     monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
@@ -218,7 +259,289 @@ async def test_topical_event_lookup_fetches_the_first_authoritative_search_page(
         "url": "https://venue.example/calendar",
         "query": "NYC Music events August 16, 2099",
     }]
-    assert "Official named concert on the requested date" in result
+    assert "Official named music concert on the requested date" in result
+
+
+async def test_topical_event_lookup_fetches_two_ranked_pages_for_structured_events(
+    monkeypatch,
+) -> None:
+    fetched: list[str] = []
+
+    async def no_ticketmaster(**_kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*_args, **_kwargs):
+        return []
+
+    async def web_search(_args, ctx):
+        first = ctx.citations.register(
+            "https://timeout.example/music",
+            title="Editorial music guide",
+            snippet="General NYC event coverage",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        second = ctx.citations.register(
+            "https://secretnyc.example/calendar",
+            title="NYC events",
+            snippet="General city calendar",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        third = ctx.citations.register(
+            "https://donyc.example/music",
+            title="Music on August 16, 2099",
+            snippet="Independent concert at 7 PM on August 16, 2099",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        return f"[{first}] guide\n[{second}] calendar\n[{third}] dated music"
+
+    async def web_fetch(args, ctx):
+        fetched.append(args["url"])
+        provenance = {"evidence_grade": "fetched", "source_tier": "editorial"}
+        if "donyc" in args["url"]:
+            provenance["events"] = [{
+                "name": "Independent concert",
+                "url": "https://donyc.example/events/independent-concert",
+                "venue": "Public Records",
+                "borough": "Brooklyn",
+                "category": "music",
+                "start_date": "2099-08-16",
+                "start_time": "19:00",
+                "end_date": "",
+                "end_time": "",
+            }]
+        cite = ctx.citations.register(
+            args["url"], title="Fetched music page", snippet="Fetched music page",
+            provenance=provenance,
+        )
+        return f"SOURCE {cite}: Fetched music page"
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="music today",
+        event_turn="discovery",
+        toolbox={
+            "web_search": Tool("web_search", "Search", {}, web_search),
+            "web_fetch": Tool("web_fetch", "Fetch", {}, web_fetch),
+        },
+    )
+
+    result = await event_tools.get_tools()[0].handler(
+        {"classification": "Music", "window_start": "2099-08-16"}, ctx,
+    )
+
+    assert fetched == [
+        "https://donyc.example/music",
+        "https://timeout.example/music",
+    ]
+    assert "Independent concert" in result
+    event_line = next(line for line in result.splitlines() if "Independent concert" in line)
+    assert "unconfirmed lead" not in event_line
+    event_citation = next(
+        citation
+        for citation in ctx.citations.mapping().values()
+        if citation["url"] == "https://donyc.example/events/independent-concert"
+    )
+    assert event_citation["kind"] == "DATA"
+    assert event_citation["provenance"]["snapshot"]["venue"] == "Public Records"
+    assert event_citation["provenance"]["derivation"]["source_citation_id"]
+
+
+async def test_event_lookup_fetches_declared_daily_calendar_when_search_omits_it(
+    monkeypatch,
+) -> None:
+    fetched: list[str] = []
+
+    async def no_ticketmaster(**_kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*_args, **_kwargs):
+        return []
+
+    async def web_search(_args, ctx):
+        citations = []
+        for index in range(10):
+            cite = ctx.citations.register(
+                f"https://guide{index}.example/music",
+                title=f"Music listing {index}",
+                snippet=f"Music listing {index}",
+                provenance={
+                    "evidence_grade": "search_excerpt",
+                    "source_tier": "editorial",
+                    "event": {
+                        "name": f"Search concert {index}",
+                        "url": f"https://guide{index}.example/music",
+                        "venue": "Brooklyn venue",
+                        "borough": "Brooklyn",
+                        "category": "music",
+                        "start_date": "2099-08-16",
+                        "start_time": "20:00",
+                    },
+                },
+            )
+            citations.append(f"[{cite}] Music listing {index}")
+        return "\n".join(citations)
+
+    async def web_fetch(args, ctx):
+        fetched.append(args["url"])
+        events = []
+        if args["url"] == "https://donyc.com/events/2099/08/16":
+            await asyncio.sleep(0.01)
+            events = [{
+                "name": "Independent concert",
+                "url": "https://donyc.com/events/2099/8/16/independent-concert",
+                "venue": "Public Records",
+                "borough": "Brooklyn",
+                "category": "music",
+                "start_date": "2099-08-16",
+                "start_time": "19:00",
+                "end_date": "",
+                "end_time": "",
+            }]
+        cite = ctx.citations.register(
+            args["url"], title="Fetched page", snippet="Fetched page",
+            provenance={
+                "evidence_grade": "fetched", "source_tier": "editorial", "events": events,
+                "acquisition": {"fetched_at": "2099-08-16T12:00:00Z"},
+            },
+        )
+        return f"SOURCE {cite}: Fetched page"
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    monkeypatch.setattr(event_tools, "_SOURCE_TIMEOUT_S", 0.001)
+    monkeypatch.setattr(event_tools, "_PAGE_FETCH_TIMEOUT_S", 0.5)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST),
+        query="music today",
+        event_turn="discovery",
+        toolbox={
+            "web_search": Tool("web_search", "Search", {}, web_search),
+            "web_fetch": Tool("web_fetch", "Fetch", {}, web_fetch),
+        },
+    )
+    first_result = await event_tools.get_tools()[0].handler(
+        {"window_start": "2099-08-16"}, ctx,
+    )
+    result = await event_tools.get_tools()[0].handler(
+        {"classification": "Music", "window_start": "2099-08-16"}, ctx,
+    )
+
+    assert "https://donyc.com/events/2099/08/16" in fetched
+    assert "Independent concert" in first_result
+    assert "Independent concert" in result
+
+
+async def test_calendar_event_with_unknown_locality_is_verified_from_its_direct_page(
+    monkeypatch,
+) -> None:
+    fetched: list[str] = []
+    calendar_url = "https://guide.example/music"
+    other_url = "https://venue.example/music"
+    event_url = "https://guide.example/events/queens-concert"
+
+    async def no_ticketmaster(**_kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*_args, **_kwargs):
+        return []
+
+    async def web_search(_args, ctx):
+        cite = ctx.citations.register(
+            calendar_url, title="Music today", snippet="Current music listings",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        other = ctx.citations.register(
+            other_url, title="Another music page", snippet="Current music listings",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        child = ctx.citations.register(
+            event_url, title="Queens concert", snippet="Music today at 7 PM",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        return f"[{cite}] Music today\n[{other}] Another page\n[{child}] Queens concert"
+
+    async def web_fetch(args, ctx):
+        fetched.append(args["url"])
+        direct = args["url"] == event_url
+        calendar = args["url"] == calendar_url
+        event = {
+            "name": "Queens concert",
+            "url": event_url,
+            "venue": "Forest Hills Stadium",
+            "borough": "Forest Hills" if direct else "",
+            "category": "music",
+            "start_date": "2099-08-16",
+            "start_time": "19:00",
+            "end_date": "",
+            "end_time": "",
+        }
+        cite = ctx.citations.register(
+            args["url"], title="Queens concert", snippet="Queens concert",
+            provenance={
+                "evidence_grade": "fetched", "source_tier": "editorial",
+                **({"events": [event]} if direct or calendar else {}),
+            },
+        )
+        return f"SOURCE {cite}: Queens concert"
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="music today",
+        event_turn="discovery",
+        toolbox={
+            "web_search": Tool("web_search", "Search", {}, web_search),
+            "web_fetch": Tool("web_fetch", "Fetch", {}, web_fetch),
+        },
+    )
+
+    result = await event_tools.get_tools()[0].handler(
+        {"classification": "Music", "window_start": "2099-08-16"}, ctx,
+    )
+
+    assert fetched == [calendar_url, other_url, event_url]
+    assert "Queens concert" in result
+    assert "Forest Hills" in result
+
+
+async def test_general_event_discovery_fetches_an_exact_date_calendar(monkeypatch) -> None:
+    fetched: list[str] = []
+
+    async def no_ticketmaster(**_kwargs):
+        return event_tools.TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*_args, **_kwargs):
+        return []
+
+    async def web_search(_args, ctx):
+        cite = ctx.citations.register(
+            "https://events.example/2099/08/16",
+            title="NYC events on August 16, 2099",
+            snippet="Events happening on August 16, 2099",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+        )
+        return f"[{cite}] dated calendar"
+
+    async def web_fetch(args, _ctx):
+        fetched.append(args["url"])
+        return "Fetched calendar"
+
+    monkeypatch.setattr(event_tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), query="what to do today",
+        event_turn="discovery",
+        toolbox={
+            "web_search": Tool("web_search", "Search", {}, web_search),
+            "web_fetch": Tool("web_fetch", "Fetch", {}, web_fetch),
+        },
+    )
+
+    await event_tools.get_tools()[0].handler({"window_start": "2099-08-16"}, ctx)
+
+    assert fetched == ["https://events.example/2099/08/16"]
 
 
 async def test_music_category_uses_ticketmaster_classification_and_exact_window(monkeypatch) -> None:
@@ -432,7 +755,13 @@ async def test_web_and_catalog_events_share_one_ranked_candidate_pool(monkeypatc
         return []
 
     async def web_search(args, ctx):
-        return "[S1] (community-posted, confirm before you go) Web concert"
+        cite = ctx.citations.register(
+            "https://community.example/web-concert",
+            title="Web music concert",
+            snippet="Community-posted music concert on August 16.",
+            provenance={"evidence_grade": "search_excerpt", "source_tier": "community"},
+        )
+        return f"[{cite}] (community-posted, confirm before you go) Web music concert"
 
     monkeypatch.setattr(event_tools, "ticketmaster_events", one_ticketmaster_event)
     monkeypatch.setattr(event_tools, "query_dataset", no_city_rows)
@@ -461,5 +790,6 @@ async def test_web_and_catalog_events_share_one_ranked_candidate_pool(monkeypatc
     )
 
     assert "Current web event leads" not in output
-    assert "Rank every candidate together" in output
-    assert output.index("Web concert") < output.index("Catalog concert")
+    assert "one shared bounded shortlist" in output
+    assert "Web music concert" in output
+    assert "Catalog concert" in output

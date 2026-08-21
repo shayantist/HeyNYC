@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -152,6 +153,15 @@ async def test_event_discovery_accepts_a_derived_temporal_citation() -> None:
                 },
                 "evaluate-1",
             )])
+        evaluation = next(
+            part.content
+            for message in _messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+            and part.tool_name == "evaluate_event_time"
+        )
+        assert evaluation.source_citation_id == "S1"
+        assert evaluation.status_citation_id == "S2"
         return ModelResponse([_cited_answer("Latin Night is upcoming. {cite:S2}")])
 
     result = await PydanticRuntimeAdapter(

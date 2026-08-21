@@ -9,6 +9,8 @@ examples:
 seeds:
   - https://www.nyctourism.com/events/
   - https://www.nyc.gov/events
+event_calendar_templates:
+  - https://donyc.com/events/{date:%Y/%m/%d}
 # RULED 2026-07-18: events is lifestyle discovery, so it carries a governed editorial pool
 # (the sources that actually answer "where do French fans watch") alongside official listings.
 # Official modules keep the default official_only: true and cannot declare these tiers.
@@ -85,11 +87,14 @@ prompt: |
   names, dates, venues, and times it explicitly states when its page cannot be fetched. For general
   discovery, include a matching non-marketplace candidate when available instead of returning only
   marketplace candidates.
+  Keep event titles and addresses exactly as retrieved. Do not silently correct or embellish a
+  source field; omit a questionable fragment instead.
   Set `max_results` only when the resident explicitly requests a number of choices. Otherwise omit
   it so the server applies the default five-choice shortlist.
   Among equally matching choices, prefer an organizer, venue, or city event page over a ticket marketplace.
-  Before keeping any web-discovered event, call `evaluate_event_time` with its exact source-backed
-  name, date, available times, and source citation ID, then cite its derived result. Omit unavailable
+  A normalized web record already carries a deterministic status and per-event citation. For an
+  excerpt-only web lead, call `evaluate_event_time` with its exact source-backed name, date,
+  available times, and source citation ID before making a time-status claim. Omit unavailable
   values so the result stays unknown instead of guessing.
   It returns the raw New York timestamps and deterministic status. Do not present an ended event as attendable or
   happening now. Keep an unknown-time lead only with an explicit timing limitation. If a result URL

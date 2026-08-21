@@ -122,12 +122,21 @@ class CitationRegistry:
         # can never silently point at a different, later-registered source.
         self._counter = 0
         self._touched: set[str] = set()
+        self._touch_log: list[str] = []
 
     def begin_turn(self) -> None:
         self._touched.clear()
+        self._touch_log.clear()
 
     def touched_ids(self) -> set[str]:
         return set(self._touched)
+
+    def touch_cursor(self) -> int:
+        return len(self._touch_log)
+
+    def touched_since(self, cursor: int) -> set[str]:
+        current = self.mapping()
+        return {citation_id for citation_id in self._touch_log[cursor:] if citation_id in current}
 
     def register(
         self,
@@ -154,6 +163,7 @@ class CitationRegistry:
         existing = self._by_key.get(key)
         if existing is not None:
             self._touched.add(existing.id)
+            self._touch_log.append(existing.id)
             return existing.id
         self._counter += 1
         cite_id = f"S{self._counter}"
@@ -164,6 +174,7 @@ class CitationRegistry:
         self._by_key[key] = citation
         self._ordered.append(citation)
         self._touched.add(cite_id)
+        self._touch_log.append(cite_id)
         return cite_id
 
     def discard(self, ids: set[str]) -> None:

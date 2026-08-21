@@ -542,8 +542,8 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
     output = await get_tools()[0].handler({}, ctx)
 
     assert calls == [{"query": "what to do in nyc today", "count": 10}]
-    assert "Web-discovered candidates" in output
-    assert "Rank every candidate together" in output
+    assert "one shared bounded shortlist" in output
+    assert "Web discovery" in output
     assert "Three things happening today" in output
     assert "exact-date editorial listing excerpt" in output
     assert "include a matching non-marketplace candidate" in output
@@ -561,7 +561,12 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
 
     async def web_handler(args, ctx):
         calls.append(args)
-        return "[S1] Official constrained event lead"
+        citation_id = ctx.citations.register(
+            "https://example.com/constrained-event",
+            title="Official constrained event lead",
+            snippet="Free indoor toddler event in Flushing on August 15.",
+        )
+        return f"[{citation_id}] Official constrained event lead"
 
     monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
     monkeypatch.setattr(events, "query_dataset", no_city_rows)
@@ -583,6 +588,7 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
         {
             "audience": "kids",
             "setting": "indoor",
+            "cost": "free",
             "borough": "Queens",
             "window_start": "2099-08-15",
             "window_end": "2099-08-15",
@@ -591,7 +597,10 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
         ctx,
     )
 
-    assert calls == [{"query": "free indoor toddler events Flushing 2099-08-15", "count": 10}]
+    assert calls == [{
+        "query": "NYC queens kids indoor free events August 15, 2099",
+        "count": 10,
+    }]
     assert "Official constrained event lead" in output
     assert "Requested setting: indoor" in output
     assert "do not infer indoor or outdoor" in output
@@ -831,7 +840,9 @@ async def test_find_nyc_events_merges_grounds_and_filters_future():
     citations = CitationRegistry()
     async with _routed_client() as client:
         ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-        out = await tool.handler({}, ctx)
+        out = await tool.handler(
+            {"window_start": "2099-07-19", "window_end": "2099-08-01"}, ctx,
+        )
 
     assert "Concert in the Park" in out
     assert "Future Fair" in out
@@ -1067,7 +1078,9 @@ async def test_find_nyc_events_includes_permitted_street_events():
         ctx = ToolContext(
             citations=citations, registry=Registry([]), http=client, query="any street fairs",
         )
-        out = await get_tools()[0].handler({}, ctx)
+        out = await get_tools()[0].handler(
+            {"window_start": "2099-07-18", "window_end": "2099-07-18"}, ctx,
+        )
 
     assert "Inwood Greenmarket" in out
     assert "NYC Permitted Events" in out
