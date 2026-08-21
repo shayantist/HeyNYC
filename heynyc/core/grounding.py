@@ -68,6 +68,7 @@ _FULL_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_RE = re.compile(r"https?://[^\s)>]+")
+_MARKDOWN_LINK_ONLY_RE = re.compile(r"(?:\[[^\]\n]+\]\([^\n]+\)\s*)+")
 _COORDINATE_PAIR_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 _MONTHLY_WEEKDAY_CLAIM_RE = re.compile(
     r"\b(?P<month>[A-Za-z]+)\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
@@ -111,6 +112,11 @@ _ADDRESS_RE = re.compile(
     r"(?i:(street|st|avenue|ave|av|boulevard|blvd|road|rd|place|pl|drive|dr|lane|ln|court|ct|"
     r"parkway|pkwy|plaza|terrace|ter|way|concourse|broadway|expressway|turnpike|highway|hwy))"
     r"\b"
+)
+_STREET_ORDINAL_RE = re.compile(
+    r"\b\d+(?:st|nd|rd|th)(?=\s+"
+    r"(?:and\s+(?:[NSEW]\.\s+)?\d+(?:st|nd|rd|th)\s+)?"
+    r"(?i:street|st|avenue|ave|av|road|rd))"
 )
 _CAP = r"[A-Z][A-Za-z&.'’\-]*"
 _CONNECTOR = r"(?:of|the|and|at|for|to|on|de|la|el|&)"
@@ -234,10 +240,9 @@ def citation_evidence(c: dict) -> Optional[str]:
 
 
 def _split_claims(text: str) -> list[str]:
-    """Sentence/line/list-item segments. Over-splitting is SAFE here: a segment with no {cite:Sn}
-    marker is never inspected, and fewer tokens per claim means fewer chances to false-fail."""
+    """Sentence, line, and list-item segments without splitting common abbreviations."""
     parts = re.split(
-        r"[\n\r]+|(?i:(?<!a\.m\.)(?<!p\.m\.)(?<!a\. m\.)(?<!p\. m\.))"
+        r"[\n\r]+|(?<!\b[A-Z]\.)(?i:(?<!a\.m\.)(?<!p\.m\.)(?<!a\. m\.)(?<!p\. m\.))"
         r"(?<=[.!?])(?!\s*m\.)\s+",
         text,
     )
@@ -263,6 +268,7 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
     )
     out: list[tuple[str, str, list[str]]] = []
     for block in re.split(r"\n\s*\n", text):
+        block_start = len(out)
         block_cited = _CITE_REF_RE.findall(block)
         if not block_cited:
             bare = _WS_RE.sub(" ", block).strip()
@@ -295,7 +301,19 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
         for seg in _split_claims(block):
             cited = _CITE_REF_RE.findall(seg)
             bare = _without_citations(seg)
-            if cited and not bare and out:
+            if (
+                cited
+                and _MARKDOWN_LINK_ONLY_RE.fullmatch(bare)
+                and len(out) > block_start
+                and not out[-1][2]
+            ):
+                original, prev_bare, prev_cited = out[-1]
+                out[-1] = (
+                    f"{original} {seg}",
+                    prev_bare,
+                    prev_cited + [cid for cid in cited if cid not in prev_cited],
+                )
+            elif cited and not bare and out:
                 original, prev_bare, prev_cited = out[-1]
                 out[-1] = (
                     original,
@@ -374,6 +392,8 @@ def _salient_tokens(claim: str) -> list[dict]:
         words = [w.lower() for w in raw
                  if len(w) >= 3 and w.lower() not in _STREET_TYPES and w.lower() not in _DIRECTIONS]
         tokens.append({"kind": "address", "text": full, "nums": nums, "words": words, "phrase": _norm(full)})
+    for m in _STREET_ORDINAL_RE.finditer(prose):
+        tokens.append({"kind": "street_ordinal", "text": m.group(), "phrase": _norm(m.group())})
     for m in _PROPER_NOUN_RE.finditer(prose):
         phrase = m.group().strip()
         sig = [w for w in _norm(phrase).split()
@@ -539,6 +559,16 @@ def _token_matches(
         if any(nd not in blob_digits for nd in tok["nums"]):
             return False
         return bool(tok["phrase"] and tok["phrase"] in blob_norm) or _mostly_present(tok["words"], blob_norm)
+    if kind == "street_ordinal":
+        number = _digits(tok["text"])
+        source_ordinals = [
+            _norm(match.group())
+            for match in _STREET_ORDINAL_RE.finditer(blob)
+            if _digits(match.group()) == number
+        ]
+        if source_ordinals:
+            return tok["phrase"] in source_ordinals
+        return bool(re.search(rf"\b{re.escape(number)}\b", blob))
     if kind == "proper_noun":
         return bool(tok["phrase"] and tok["phrase"] in blob_norm) or _mostly_present(tok["words"], blob_norm)
     return True

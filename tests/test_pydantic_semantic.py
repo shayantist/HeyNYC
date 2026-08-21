@@ -503,6 +503,58 @@ async def test_structured_data_mismatch_fails_closed_before_semantic_verificatio
     ]
 
 
+async def test_structured_street_ordinal_mismatch_retries_before_shipping() -> None:
+    async def source(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://data.cityofnewyork.us/example",
+            title="City event",
+            kind="DATA",
+            snippet="Broadway between W. 32rd Street and W. 33rd Street",
+            provenance=data_provenance(
+                {"address": "Broadway between W. 32rd Street and W. 33rd Street"},
+                record_id="event-1",
+                field_pointer="/address",
+            ),
+        )
+        return f"City event. {{cite:{citation_id}}}"
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("source", {}, "source-1")])
+        return ModelResponse([
+            _cited_answer(
+                "Broadway between W. 32nd Street and W. 33rd Street. "
+                "[City listing](https://data.cityofnewyork.us/example) {cite:S1}",
+                f"answer-{calls}",
+            )
+        ])
+
+    with pytest.raises(PydanticRunFailure) as raised:
+        await PydanticRuntimeAdapter(
+            FunctionModel(model),
+            registry=Registry([]),
+            tools={
+                "source": Tool(
+                    name="source",
+                    description="Return one structured city record",
+                    parameters={"type": "object", "properties": {}},
+                    handler=source,
+                )
+            },
+            structured_grounding=True,
+        ).run("Where is the event?")
+
+    assert "32nd" not in raised.value.partial_result.text
+    rejections = raised.value.partial_result.diagnostics["validation_rejections"]
+    assert len(rejections) == 3
+    assert all(item["stage"] == "structured_grounding" for item in rejections)
+    assert all(item["items"][0]["kind"] == "street_ordinal" for item in rejections)
+
+
 def legacy_semantic_evidence_never_falls_back_to_full_provenance() -> None:
     assert _semantic_citation_evidence({
         "provenance": {

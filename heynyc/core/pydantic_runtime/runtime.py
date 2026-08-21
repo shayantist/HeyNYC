@@ -1718,6 +1718,7 @@ class PydanticRuntimeAdapter:
                         "date",
                         "money",
                         "phone",
+                        "street_ordinal",
                         "unit_number",
                     }
                 ]

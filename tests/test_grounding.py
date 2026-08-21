@@ -123,6 +123,75 @@ def test_sentence_splitter_still_splits_normal_sentences():
     ]
 
 
+def test_sentence_splitter_keeps_compass_abbreviation_inside_an_address():
+    text = "Greeley Square Plaza, Broadway between W. 32nd Street and W. 33rd Street."
+
+    assert _split_claims(text) == [text]
+
+
+def test_numbered_street_suffix_cannot_change_from_the_source():
+    citation = _data_cite({"address": "Broadway between W. 32rd Street and W. 33rd Street"})
+
+    result = check_grounding(
+        "Broadway between W. 32nd Street and W. 33rd Street. {cite:S1}",
+        {"S1": citation},
+    )
+
+    assert result is not None
+    assert result.blocking
+    assert result.hard_failures[0].kind == "street_ordinal"
+
+
+def test_coordinated_numbered_street_suffix_cannot_change_from_the_source():
+    citation = _data_cite({"address": "Broadway between W. 32rd Street and W. 33rd Street"})
+
+    result = check_grounding(
+        "Broadway between W. 32nd and W. 33rd Streets. {cite:S1}",
+        {"S1": citation},
+    )
+
+    assert result is not None
+    assert result.blocking
+    assert result.hard_failures[0].kind == "street_ordinal"
+
+
+def test_markdown_source_link_keeps_the_trailing_citation_on_the_previous_claim():
+    citations = {
+        "S1": _data_cite({"address": "Broadway between W. 32rd Street and W. 33rd Street"}),
+        "S2": _data_cite({"address": "Broadway between W. 34th Street and W. 35th Street"}),
+    }
+
+    result = check_grounding(
+        "- Broadway between W. 32nd and W. 33rd Streets. "
+        "[City listing](https://data.example/row-1) {cite:S1}\n"
+        "- Broadway between W. 34th and W. 35th Streets. "
+        "[City listing](https://data.example/row-2) {cite:S2}",
+        citations,
+    )
+
+    assert result is not None
+    assert result.blocking
+    assert result.hard_failures[0].kind == "street_ordinal"
+
+
+def test_markdown_source_link_keeps_a_matching_previous_claim_grounded():
+    citations = {
+        "S1": _data_cite({"address": "Broadway between W. 32nd Street and W. 33rd Street"}),
+        "S2": _data_cite({"address": "Broadway between W. 34th Street and W. 35th Street"}),
+    }
+
+    result = check_grounding(
+        "- Broadway between W. 32nd and W. 33rd Streets. "
+        "[City listing](https://data.example/row-1) {cite:S1}\n"
+        "- Broadway between W. 34th and W. 35th Streets. "
+        "[City listing](https://data.example/row-2) {cite:S2}",
+        citations,
+    )
+
+    assert result is not None
+    assert not result.blocking
+
+
 def test_translated_full_date_matches_english_source_by_numeric_components():
     citation = _data_cite(
         {},
