@@ -21,6 +21,9 @@ _MARKDOWN_CITE_LINK = re.compile(r"\[([^\]\n]+)\]\(\s*\{cite:(S\d+)\}\s*\)")
 _REDUNDANT_LINK_LABEL = re.compile(
     r"\s*\[(?:Details|Tickets|Source)\](?!\s*[\[(:])", re.IGNORECASE,
 )
+_DESCRIPTIVE_URL_LABEL = re.compile(
+    r"(?<!\w)(?:[A-Z][A-Za-z&'’-]*\s+){1,3}(?:[Dd]etails|[Ll]isting):\s*(?=https?://)",
+)
 _REDUNDANT_URL_LABEL = re.compile(
     r"(?<!\w)(?:Details|Tickets|Source):\s*(?=https?://)", re.IGNORECASE,
 )
@@ -58,7 +61,10 @@ def _inline_text(tokens: list[Token], *, whatsapp: bool) -> str:
         elif token.type == "link_close" and links:
             url, start = links.pop()
             label = "".join(output[start:]).strip()
-            if label.casefold() in {"details", "tickets", "source"}:
+            if any(
+                label.casefold().endswith(word)
+                for word in ("details", "listing", "source", "tickets")
+            ):
                 del output[start:]
                 output.append(_delivery_url(url))
             elif url and _canonical_url(label) != _canonical_url(url):
@@ -256,6 +262,7 @@ def _inline_citation_links(
     linked = _MARKDOWN_CITE_LINK.sub(replace_markdown_link, _without_code_citations(text))
     linked = _INLINE_CITE.sub(replace, linked)
     linked = _REDUNDANT_LINK_LABEL.sub("", linked)
+    linked = _DESCRIPTIVE_URL_LABEL.sub("", linked)
     linked = _REDUNDANT_URL_LABEL.sub("", linked)
     return _ATTACH.sub("", linked).replace("\N{EM DASH}", "-").strip()
 

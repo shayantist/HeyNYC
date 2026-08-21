@@ -513,6 +513,29 @@ def test_text_channels_drop_redundant_plain_url_labels():
     ]
 
 
+def test_text_channels_drop_descriptive_source_labels_before_plain_urls():
+    result = FakeResult(
+        "Event details: https://example.com/e "
+        "Event listing: https://example.com/l "
+        "NYC Parks details: https://example.com/p"
+    )
+
+    assert render(result, "sms_twilio") == [
+        "https://example.com/e https://example.com/l https://example.com/p"
+    ]
+
+
+def test_text_channels_drop_descriptive_markdown_link_labels():
+    result = FakeResult(
+        "[Event details](https://example.com/e) "
+        "[NYC Parks details](https://example.com/p)"
+    )
+
+    assert render(result, "sms_twilio") == [
+        "https://example.com/e https://example.com/p"
+    ]
+
+
 def test_text_channels_recognize_an_existing_url_with_balanced_parentheses():
     url = "https://example.gov/a_(b)"
     result = FakeResult(
