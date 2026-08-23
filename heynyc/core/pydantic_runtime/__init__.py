@@ -22,6 +22,7 @@ from .approvals import PydanticApprovalFlow, _approval_copy, approval_review_tex
 from .projection import (
     GroundedAnswer,
     GroundedBlock,
+    _claim_support_evidence,
     _complete_cost,
     _dynamic_instructions,
     _measurement_messages,
@@ -29,7 +30,6 @@ from .projection import (
     _native_cost,
     _native_orchestration_history,
     _resident_history,
-    _semantic_citation_evidence,
 )
 from .runtime import PydanticRunFailure, PydanticRuntimeAdapter
 from .safety import build_crisis_screen, build_output_moderator, build_scope_screen
@@ -55,7 +55,7 @@ __all__ = (
     "_native_orchestration_history",
     "_resident_fact_errors",
     "_resident_history",
-    "_semantic_citation_evidence",
+    "_claim_support_evidence",
     "adapt_tool",
     "approval_review_text",
     "build_configured_runtime",
@@ -84,7 +84,7 @@ def build_runtime(
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
     structured_grounding: bool = True,
-    semantic_verifier: Any = None,
+    claim_support_checker: Any = None,
     fact_review_model: Any = None,
     fact_review_model_name: str = "",
     stream_model_requests: bool = False,
@@ -125,7 +125,7 @@ def build_runtime(
         ),
         answer_model_route=answer_model_route,
         structured_grounding=structured_grounding,
-        semantic_verifier=semantic_verifier,
+        claim_support_checker=claim_support_checker,
         fact_review_model=fact_review_model,
         fact_review_model_name=fact_review_model_name,
         stream_model_requests=stream_model_requests,
@@ -210,7 +210,7 @@ def build_configured_runtime(
         current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
         structured_grounding=True,
-        semantic_verifier=(
+        claim_support_checker=(
             PromptedNLI(config.HEYNYC_CITATION_CHECK_MODEL)
             if isinstance(model, str)
             else None

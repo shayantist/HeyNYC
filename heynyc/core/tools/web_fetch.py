@@ -39,7 +39,6 @@ _BROWSER_EXECUTABLE_CANDIDATES = (
     Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
 )
 _MAX_RESPONSE_BYTES = 5_000_000
-_MAX_FULL_PAGE_TOKENS = 2_000
 _MIN_STATIC_TEXT_CHARS = 200
 
 
@@ -308,7 +307,7 @@ def _terms(text: str) -> set[str]:
     } - _STOPWORDS
 
 
-def _relevant_chunks(text: str, query: str, limit: int = 2) -> list[str]:
+def _relevant_chunks(text: str, query: str, limit: int | None = 2) -> list[str]:
     wanted = _terms(query)
     chunks = []
     for index, chunk in enumerate(chunk_text(text, max_chars=1800, overlap=180)):
@@ -337,24 +336,53 @@ def _relevant_chunks(text: str, query: str, limit: int = 2) -> list[str]:
         (item for item in scored if item[2] > 0),
         key=lambda item: (item[2], -item[0]),
         reverse=True,
-    )[:limit]
+    )
+    if limit is not None:
+        ranked = ranked[:limit]
     return [chunk for _, chunk, _score in ranked]
 
 
-def _text_tokens(text: str) -> int:
+def _text_tokens(text: str, model: str | None = None) -> int:
     import litellm
 
-    return int(litellm.token_counter(model=config.HEYNYC_MODEL, text=text))
+    return int(litellm.token_counter(model=model or config.HEYNYC_MODEL, text=text))
 
 
 def _evidence_chunks(
-    text: str, query: str, *, force_focus: bool = False,
+    text: str,
+    query: str,
+    *,
+    force_focus: bool = False,
+    token_budget: int | None = None,
+    model: str | None = None,
 ) -> list[str]:
+    count_tokens = (
+        _text_tokens
+        if model is None
+        else lambda value: _text_tokens(value, model)
+    )
+    if token_budget is not None and token_budget <= 0:
+        return []
     if force_focus and query:
-        return _relevant_chunks(text, query)
-    if _text_tokens(text) <= _MAX_FULL_PAGE_TOKENS:
+        candidates = _relevant_chunks(text, query, limit=None)
+        if token_budget is None:
+            return candidates
+    elif token_budget is None:
         return [text]
-    return _relevant_chunks(text, query) if query else chunk_text(text)[:2]
+    elif count_tokens(text) <= token_budget:
+        return [text]
+    else:
+        candidates = (
+            _relevant_chunks(text, query, limit=None)
+            if query
+            else chunk_text(text)
+        )
+    selected: list[str] = []
+    for chunk in candidates:
+        candidate = "\n\n".join([*selected, chunk])
+        if count_tokens(candidate) <= token_budget:
+            selected.append(chunk)
+    return selected
 
 
 def _approval_key(url: str) -> str:
@@ -674,13 +702,31 @@ def web_fetch_tools() -> list[Tool]:
                 return failure
             return f"{failure}\nFocused search fallback:\n{fallback}"
         final_url, title, text = fetched.final_url, fetched.title, fetched.text
-        chunks = _evidence_chunks(text, query, force_focus=bool(evidence_scope))
-        if not chunks:
-            return "The page was fetched but did not contain text relevant to the requested query."
-        content_scope = (
-            "full extracted page" if chunks == [text] else "query-selected excerpts"
+        model = ctx.evidence_model or config.HEYNYC_MODEL
+        available = ctx.evidence_token_budget
+        if available is None:
+            from ..memory import context_capacity
+
+            available = context_capacity(model, None, True) or 0
+        chunks = _evidence_chunks(
+            text,
+            query,
+            force_focus=bool(evidence_scope),
+            token_budget=available,
+            model=model,
         )
-        evidence = "\n\n".join(chunks)
+        if not chunks:
+            cite = ctx.citations.register(
+                final_url,
+                snippet="The page was fetched, but no page text fit in the model context.",
+                title=title or "Fetched page",
+                kind="WEB",
+                provenance={
+                    "evidence_grade": "unavailable",
+                    "acquisition": fetched.acquisition.model_dump(mode="json"),
+                },
+            )
+            return f"The page was fetched, but its text did not fit. {final_url} {{cite:{cite}}}"
         warning = archive_warning(final_url, title)
         from .web_search import _TIER_LABELS, _tier_of
 
@@ -688,15 +734,42 @@ def web_fetch_tools() -> list[Tool]:
             final_url, ctx.registry.source_tiers(), ctx.registry.news_tier(),
         )
         authoritative = tier == "authoritative" and not warning
-        if tier != "authoritative":
-            label = (
-                "unverified source, check before relying on it"
-                if tier == "unverified"
-                else _TIER_LABELS.get(tier, tier)
+        def rendered_evidence() -> str:
+            evidence = "\n\n".join(chunks)
+            if tier != "authoritative":
+                label = (
+                    "unverified source, check before relying on it"
+                    if tier == "unverified"
+                    else _TIER_LABELS.get(tier, tier)
+                )
+                evidence = f"SOURCE TRUST: {label}\n\n{evidence}"
+            return f"{warning}\n\n{evidence}" if warning else evidence
+
+        scope_prefix = f"EVIDENCE SCOPE: {evidence_scope}\n" if evidence_scope else ""
+        while chunks:
+            evidence = rendered_evidence()
+            content_scope = (
+                "full extracted page" if chunks == [text] else "query-selected excerpts"
             )
-            evidence = f"SOURCE TRUST: {label}\n\n{evidence}"
-        if warning:
-            evidence = f"{warning}\n\n{evidence}"
+            projected = (
+                f"{scope_prefix}SOURCE S0: {title or 'Fetched page'} ({final_url})\n"
+                f"CONTENT SCOPE: {content_scope}\n{evidence} {{cite:S0}}"
+            )
+            if _text_tokens(projected, model) <= available:
+                break
+            chunks.pop()
+        if not chunks:
+            cite = ctx.citations.register(
+                final_url,
+                snippet="The page was fetched, but no page text fit in the model context.",
+                title=title or "Fetched page",
+                kind="WEB",
+                provenance={
+                    "evidence_grade": "unavailable",
+                    "acquisition": fetched.acquisition.model_dump(mode="json"),
+                },
+            )
+            return f"The page was fetched, but its text did not fit. {final_url} {{cite:{cite}}}"
         citation_evidence = evidence
         provenance = {
             "evidence_grade": (
@@ -713,12 +786,13 @@ def web_fetch_tools() -> list[Tool]:
             kind="WEB",
             provenance=provenance,
         )
-        scope_prefix = f"EVIDENCE SCOPE: {evidence_scope}\n" if evidence_scope else ""
-        return (
+        result = (
             f"{scope_prefix}SOURCE {cite}: {title or 'Fetched page'} ({final_url})\n"
             f"CONTENT SCOPE: {content_scope}\n"
             f"{evidence} {{cite:{cite}}}"
         )
+        ctx.evidence_token_budget = max(0, available - _text_tokens(result, model))
+        return result
 
     return [
         Tool(

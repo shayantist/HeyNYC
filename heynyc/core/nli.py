@@ -39,6 +39,9 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .index.corpus import chunk_text
+from .memory import context_capacity, request_tokens
+
 _WS_RE = re.compile(r"\s+")
 # The default support threshold: below this, the caller records an NLI failure. Conservative /
 # high-recall-of-unsupported per the spec; the real calibration on a labeled set is a follow-on.
@@ -244,7 +247,72 @@ class PromptedNLI:
     def model(self) -> str:
         return self._model
 
+    @staticmethod
+    def _relevant_source_chunks(item: NLIInput) -> list[str]:
+        terms = set(re.findall(r"\w+", item.claim.casefold()))
+        return sorted(
+            chunk_text(item.source),
+            key=lambda chunk: len(terms & set(re.findall(r"\w+", chunk.casefold()))),
+            reverse=True,
+        )
+
+    def _fit_items(self, items: Sequence[NLIInput]) -> Sequence[NLIInput]:
+        capacity = context_capacity(self._model, None, True)
+        if capacity is None:
+            if self._completion_fn is not None or self._async_completion_fn is not None:
+                return items
+            raise ValueError("claim-source checker model context capacity is unknown")
+
+        def messages_for(values: Sequence[NLIInput]) -> list[dict]:
+            user = json.dumps(
+                [
+                    {
+                        "id": item.id,
+                        "source": item.source,
+                        "claim": item.claim,
+                        "kind": item.kind,
+                    }
+                    for item in values
+                ],
+                ensure_ascii=False,
+            )
+            return [{"role": "system", "content": _PROMPT}, {"role": "user", "content": user}]
+
+        if request_tokens(self._model, messages_for(items), []) <= capacity:
+            return items
+        selected: list[list[str]] = [[] for _item in items]
+        candidates = [self._relevant_source_chunks(item) for item in items]
+        for depth in range(max((len(chunks) for chunks in candidates), default=0)):
+            for index, chunks in enumerate(candidates):
+                if depth >= len(chunks):
+                    continue
+                proposed = [*selected[index], chunks[depth]]
+                fitted = [
+                    NLIInput(
+                        id=item.id,
+                        claim=item.claim,
+                        source="\n\n".join(proposed if position == index else selected[position]),
+                        kind=item.kind,
+                    )
+                    for position, item in enumerate(items)
+                ]
+                if request_tokens(self._model, messages_for(fitted), []) <= capacity:
+                    selected[index] = proposed
+        fitted = [
+            NLIInput(
+                id=item.id,
+                claim=item.claim,
+                source="\n\n".join(selected[index]),
+                kind=item.kind,
+            )
+            for index, item in enumerate(items)
+        ]
+        if request_tokens(self._model, messages_for(fitted), []) > capacity:
+            raise ValueError("claim-source checker request exceeds model context capacity")
+        return fitted
+
     def _build_messages(self, items: Sequence[NLIInput]) -> list[dict]:
+        items = self._fit_items(items)
         user = json.dumps(
             [
                 {
@@ -316,7 +384,7 @@ class PromptedNLI:
                     False,
                     0.0,
                     self.backend,
-                    "semantic verifier unavailable",
+                    "claim-source checker unavailable",
                     "unsupported",
                 )
                 for _ in items
@@ -346,7 +414,7 @@ class PromptedNLI:
                         False,
                         0.0,
                         self.backend,
-                        "semantic verifier unavailable",
+                        "claim-source checker unavailable",
                         "unsupported",
                     )
                     for _ in items

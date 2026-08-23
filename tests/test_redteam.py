@@ -210,7 +210,7 @@ async def test_judge_uses_resident_outcome_criterion_for_designated_case():
     assert "short actionable list" in seen["prompt"]
 
 
-async def test_resident_outcome_still_requires_semantic_grounding():
+async def test_resident_outcome_still_requires_claim_support():
     case = EvalCase(id="U2", module="events", query="What is happening this weekend?")
     case.utility_criterion = "Give current actionable events."
     seen = {}

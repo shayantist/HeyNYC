@@ -199,6 +199,35 @@ def test_prompted_nli_requires_evidence_for_current_status() -> None:
     assert "current status" in system
 
 
+def test_prompted_nli_keeps_claim_relevant_evidence_within_model_capacity(
+    monkeypatch,
+) -> None:
+    capture: dict = {}
+    monkeypatch.setattr(nli, "context_capacity", lambda *_args: 800)
+    monkeypatch.setattr(
+        nli,
+        "request_tokens",
+        lambda _model, messages, _schemas: len(str(messages)) // 4,
+    )
+    checker = PromptedNLI(
+        model="test/model",
+        completion_fn=_fake_completion(
+            '{"verdicts":[{"id":"claim-0","label":"supported",'
+            '"reason":"the ending time is present"}]}',
+            capture,
+        ),
+    )
+
+    checker.check(
+        "The final event ends at 5 PM.",
+        ("Unrelated background. " * 500) + "The final event ends at 5 PM.",
+    )
+
+    user = capture["messages"][1]["content"]
+    assert "The final event ends at 5 PM." in user
+    assert len(str(capture["messages"])) // 4 <= 800
+
+
 def test_prompted_nli_marks_clarifying_questions_as_questions() -> None:
     capture: dict = {}
     checker = PromptedNLI(
@@ -374,7 +403,7 @@ def test_prompted_nli_fails_closed_on_provider_error():
     )
 
     assert verdict.supported is False
-    assert verdict.reason == "semantic verifier unavailable"
+    assert verdict.reason == "claim-source checker unavailable"
 
 
 async def test_prompted_nli_async_batch_returns_usage_and_one_request():

@@ -192,7 +192,7 @@ async def run_arms(
     arm_order: tuple[str, ...] | None = None,
     parallel: bool = False,
     structured_grounding: bool = True,
-    semantic_verifier_model: str | None = None,
+    claim_support_model: str | None = None,
 ) -> dict[str, Any]:
     order = arm_order or tuple(factories)
     receipt = {
@@ -200,7 +200,7 @@ async def run_arms(
         "arm_order": list(order),
         "parallel": parallel,
         "structured_grounding": structured_grounding,
-        "semantic_verifier_model": semantic_verifier_model,
+        "claim_support_model": claim_support_model,
         "performance_comparison_valid": not parallel and len(order) == 2,
         "arms": [],
     }
@@ -229,7 +229,7 @@ def build_factories(
     model: str,
     *,
     structured_grounding: bool = True,
-    semantic_verifier: Any = None,
+    claim_support_checker: Any = None,
 ) -> dict[str, Any]:
     candidate_kwargs = {
         "model": _comparison_model(model),
@@ -241,8 +241,8 @@ def build_factories(
         "fact_review_model_name": config.HEYNYC_FACT_REVIEW_MODEL,
         "structured_grounding": structured_grounding,
     }
-    if semantic_verifier is not None:
-        candidate_kwargs["semantic_verifier"] = semantic_verifier
+    if claim_support_checker is not None:
+        candidate_kwargs["claim_support_checker"] = claim_support_checker
     return {
         "production": lambda: Agent(
             registry,
@@ -289,15 +289,15 @@ def _parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--semantic-verifier-model",
-        help="Candidate-only claim verifier model",
+        "--claim-support-model",
+        help="Candidate-only model that checks whether citations support claims",
     )
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.semantic_verifier_model and not args.structured_grounding:
-        print("--semantic-verifier-model cannot run with --unstructured-parity-probe.")
+    if args.claim_support_model and not args.structured_grounding:
+        print("--claim-support-model cannot run with --unstructured-parity-probe.")
         return 2
     registry = Registry.discover(
         config.MODULES_DIR,
@@ -331,9 +331,9 @@ async def _run(args: argparse.Namespace) -> int:
 
     retriever = _load_retriever(required=False)
     model = config.HEYNYC_MODEL
-    semantic_verifier = (
-        PromptedNLI(model=args.semantic_verifier_model)
-        if args.semantic_verifier_model
+    claim_support_checker = (
+        PromptedNLI(model=args.claim_support_model)
+        if args.claim_support_model
         else None
     )
     factories = build_factories(
@@ -341,7 +341,7 @@ async def _run(args: argparse.Namespace) -> int:
         retriever,
         model,
         structured_grounding=args.structured_grounding,
-        semantic_verifier=semantic_verifier,
+        claim_support_checker=claim_support_checker,
     )
     if args.arm:
         factories = {args.arm: factories[args.arm]}
@@ -367,7 +367,7 @@ async def _run(args: argparse.Namespace) -> int:
         ),
         parallel=args.parallel,
         structured_grounding=args.structured_grounding,
-        semantic_verifier_model=args.semantic_verifier_model,
+        claim_support_model=args.claim_support_model,
     )
     print(json.dumps(receipt, indent=2))
     print(f"Comparison written to {out_dir}")

@@ -131,6 +131,71 @@ def test_relevant_chunks_put_strongest_evidence_first():
     assert "full minimum wage" in chunks[0]
 
 
+def test_evidence_chunks_use_the_token_budget_instead_of_a_fixed_count(monkeypatch):
+    text = "\n\n".join(
+        f"Target section {index}. " + ("context " * 210)
+        for index in range(6)
+    )
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value) // 4)
+    budget = 2_000
+
+    chunks = _evidence_chunks(text, "target section", token_budget=budget)
+
+    assert len(chunks) > 2
+    assert len("\n\n".join(chunks)) // 4 <= budget
+
+
+def test_evidence_chunks_expand_with_available_context(monkeypatch):
+    text = "\n\n".join(
+        f"Target section {index}. " + ("context " * 210)
+        for index in range(6)
+    )
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value) // 4)
+
+    smaller = _evidence_chunks(text, "target section", token_budget=900)
+    larger = _evidence_chunks(text, "target section", token_budget=2_000)
+
+    assert len(larger) > len(smaller)
+
+
+def test_evidence_chunks_emit_nothing_when_no_context_remains(monkeypatch):
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value))
+
+    assert _evidence_chunks("Target evidence.", "target", token_budget=0) == []
+
+
+async def test_web_fetch_preserves_the_source_when_no_page_text_fits(
+    monkeypatch,
+) -> None:
+    url = "https://www.nyc.gov/example"
+
+    async def fetched(*_args, **_kwargs):
+        return _rendered_result(
+            url,
+            "Official page",
+            "The requested detail is present on this page.",
+        )
+
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value))
+    monkeypatch.setattr(
+        web_fetch_module,
+        "_fetch_page_with_browser",
+        fetched,
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([ServiceModule(name="benefits", seeds=[url])]),
+        evidence_token_budget=1,
+        evidence_model="test/model",
+    )
+
+    out = await web_fetch_tools()[0].handler({"url": url}, ctx)
+
+    assert url in out
+    assert "did not fit" in out
+    assert ctx.citations.mapping()["S1"]["provenance"]["evidence_grade"] == "unavailable"
+
+
 async def test_browser_blocks_private_subresources(monkeypatch):
     async def validate(url: str) -> None:
         if url == "http://127.0.0.1/private":
@@ -257,14 +322,14 @@ def test_short_page_returns_full_extracted_text_without_keyword_filtering(
     monkeypatch,
 ):
     text = "SNAP applications and case management are available through ACCESS HRA."
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 400)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 400)
 
     assert _evidence_chunks(text, "como solicito ayuda para comprar comida") == [text]
 
 
 def test_medium_page_keeps_its_lead_instead_of_dropping_context(monkeypatch):
     text = "Service is available at every location.\n" + ("Instructions and details. " * 250)
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 1_577)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 1_577)
 
     assert _evidence_chunks(text, "instructions details") == [text]
 
@@ -274,7 +339,7 @@ def test_long_page_keeps_query_focused_selection(monkeypatch):
         "Navigation and unrelated material. " * 120
         + "Food service workers must receive the full minimum wage."
     )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 3_001)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 3_001)
 
     chunks = _evidence_chunks(text, "food service full minimum wage")
 
@@ -288,7 +353,7 @@ async def test_web_fetch_uses_the_resident_turn_when_query_is_omitted(monkeypatc
         "Navigation and unrelated program information. " * 120
         + "At a SNAP walk-in center, staff can help complete an online or paper application."
     )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 3_001)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 3_001)
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([ServiceModule(name="benefits", seeds=[url])]),
@@ -310,7 +375,7 @@ async def test_web_fetch_registers_the_same_full_page_evidence_shown_to_the_mode
         + "Tenants have the right to organize and may call the Tenant Helpline at "
         "(800) 342-3334."
     )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 2_000)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 2_000)
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([
@@ -406,7 +471,7 @@ async def test_web_fetch_evidence_scope_limits_full_page_output(monkeypatch):
         "Unrelated program history and partner directory. " * 80
         + "For other questions, call 311 and ask for the Tenant Helpline."
     )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 2_000)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 2_000)
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([]),

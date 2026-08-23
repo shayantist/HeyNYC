@@ -100,6 +100,61 @@ def test_failure_source_list_labels_official_search_excerpts_transparently() -> 
     assert "Unverified search result" not in text
 
 
+def test_failure_source_list_does_not_downgrade_better_evidence_for_same_url() -> None:
+    citations = CitationRegistry()
+    url = "https://www.nyc.gov/html/dot/html/pedestrians/summerstreets.shtml"
+    citations.register(
+        url,
+        title="Unavailable source",
+        kind="WEB",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+    excerpt_id = citations.register(
+        url,
+        title="NYC DOT Summer Streets",
+        kind="WEB",
+        snippet="Brooklyn and The Bronx on August 22 from 9 a.m. to 5 p.m.",
+        provenance={
+            "evidence_grade": "authoritative_excerpt",
+            "source_tier": "authoritative",
+        },
+    )
+
+    text = _degraded_failure_text(
+        f"The final events run from 9 a.m. to 5 p.m. {{cite:{excerpt_id}}}",
+        citations,
+    )
+
+    assert "Unverified source" not in text
+    assert text.count(url) == 0
+
+
+def test_failure_source_list_keeps_an_unavailable_different_source() -> None:
+    citations = CitationRegistry()
+    cited_id = citations.register(
+        "https://www.nyc.gov/working",
+        title="Working source",
+        kind="WEB",
+        snippet="Current guidance.",
+        provenance={"evidence_grade": "authoritative_excerpt"},
+    )
+    citations.register(
+        "https://www.nyc.gov/unavailable",
+        title="Unavailable source",
+        kind="WEB",
+        snippet="No page content was retrieved.",
+        provenance={"evidence_grade": "unavailable"},
+    )
+
+    text = _degraded_failure_text(
+        f"Current guidance. {{cite:{cited_id}}}",
+        citations,
+    )
+
+    assert "https://www.nyc.gov/unavailable" in text
+
+
 @pytest.mark.asyncio
 async def test_f213_approval_resume_failure_excludes_preexisting_sources(
     monkeypatch,

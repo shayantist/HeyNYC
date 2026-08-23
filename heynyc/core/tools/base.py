@@ -51,6 +51,8 @@ class ToolContext:
     http: Optional[Any] = None  # httpx.AsyncClient; None → tools create their own
     embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse the production default
     retrieval_cache_path: Optional[Any] = None  # persistent Lance cache for live structured catalogs
+    evidence_token_budget: int | None = None  # model-specific input capacity left for one retrieval
+    evidence_model: str | None = None
     output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
     event_turn: Optional[str] = None  # semantic scope-preflight tri-state: none|discovery|preparation (None → tool falls back to its regexes)
@@ -60,13 +62,12 @@ class ToolContext:
     delivered_notify_titles: frozenset = frozenset()  # F080: normalized Notify titles already cited earlier in THIS conversation; a repeat advisories call answers with a marker, not a re-brief
     resident_facts: dict[str, ResidentFact] = field(default_factory=dict)
     fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
-    semantic_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
+    claim_support_runs: list[dict[str, Any]] = field(default_factory=list)
     language_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
     tool_result_urls: set[str] = field(default_factory=set)
     response_priority_citation_ids: set[str] = field(default_factory=set)
     required_response_citation_ids: set[str] = field(default_factory=set)
-    event_discovery_citation_ids: set[str] = field(default_factory=set)
     rendered_fetch_urls: set[str] = field(default_factory=set)
     language: str | None = None
     verify_output_language: bool = False

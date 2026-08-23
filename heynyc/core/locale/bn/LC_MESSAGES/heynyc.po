@@ -6,8 +6,8 @@ msgstr ""
 msgid "Sources"
 msgstr "উৎসসমূহ"
 
-msgid "I couldn't verify every detail below. Check the linked sources before relying on it:"
-msgstr "নিচের প্রতিটি তথ্য আমি যাচাই করতে পারিনি। এর ওপর নির্ভর করার আগে দেওয়া উৎসগুলো দেখুন:"
+msgid "I couldn't verify every detail in that answer. Check the linked sources before relying on it."
+msgstr "আমি ওই উত্তরের প্রতিটি তথ্য যাচাই করতে পারিনি। এর ওপর নির্ভর করার আগে লিঙ্ক করা উৎসগুলো দেখুন।"
 
 msgid "This answer is incomplete because I couldn't finish every requested part."
 msgstr "এই উত্তরটি অসম্পূর্ণ, কারণ অনুরোধ করা প্রতিটি অংশ আমি শেষ করতে পারিনি।"

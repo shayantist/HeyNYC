@@ -13,7 +13,7 @@ from heynyc.eval.runner import CaseResult
 
 async def test_pydantic_plain_output_rejects_unknown_citation_id():
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(
         deps=ToolContext(citations=CitationRegistry(), registry=None)
     )
@@ -34,7 +34,7 @@ async def test_pydantic_plain_output_accepts_registered_citation_id():
         kind="DOC",
     )
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(
         deps=ToolContext(citations=citations, registry=None)
     )
@@ -54,7 +54,7 @@ async def test_pydantic_plain_output_rejects_discovery_citation_id():
         provenance={"evidence_grade": "discovery"},
     )
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(
         deps=ToolContext(citations=citations, registry=None)
     )
@@ -76,7 +76,7 @@ async def test_pydantic_plain_output_accepts_authoritative_excerpt_citation_id()
         provenance={"evidence_grade": "authoritative_excerpt"},
     )
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(
         deps=ToolContext(citations=citations, registry=None)
     )
@@ -96,7 +96,7 @@ async def test_pydantic_plain_output_accepts_curated_search_excerpt_citation_id(
         provenance={"evidence_grade": "search_excerpt", "source_tier": "news"},
     )
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(deps=ToolContext(citations=citations, registry=None))
 
     output = f"Jalen Brunson is the Knicks captain. {{cite:{citation_id}}}"
@@ -118,7 +118,7 @@ async def test_pydantic_plain_output_rejects_mismatched_structured_fact():
         ),
     )
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(
         deps=ToolContext(
             citations=citations,
@@ -148,7 +148,7 @@ async def test_pydantic_plain_output_accepts_matching_structured_fact():
         ),
     )
     runtime = object.__new__(PydanticRuntimeAdapter)
-    runtime._semantic_verifier = None
+    runtime._claim_support_checker = None
     context = SimpleNamespace(
         deps=ToolContext(
             citations=citations,

@@ -110,7 +110,7 @@ async def test_f200_priority_block_is_moved_ahead_without_a_model_retry() -> Non
     assert deps.validation_rejections == []
 
 
-def test_f194_priority_metadata_is_not_semantic_grounding_evidence() -> None:
+def test_f194_priority_metadata_is_not_claim_support_evidence() -> None:
     citations = {
         "S1": {
             "title": "Immediate food help",

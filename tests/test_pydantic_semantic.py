@@ -20,12 +20,12 @@ from pytest import MonkeyPatch
 
 from heynyc.channels.format import render
 from heynyc.core.citations import CitationRegistry, data_provenance
-from heynyc.core.manifest import ServiceModule
+from heynyc.core.manifest import ServiceModule, SituationHint
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
 from heynyc.core.pydantic_runtime import (
     GroundedBlock,
     PydanticRuntimeAdapter,
-    _semantic_citation_evidence,
+    _claim_support_evidence,
 )
 from heynyc.core.pydantic_runtime.runtime import (
     PydanticRunFailure,
@@ -41,6 +41,32 @@ from heynyc.eval.runner import run_case
 from scripts import pydantic_ai_ab
 from scripts.pydantic_ai_ab import _parser, build_factories
 
+_HIGH_STAKES_REGISTRY = Registry([
+    ServiceModule(
+        name="benefits",
+        situations=[SituationHint(
+            name="benefits_guidance",
+            definition="Guidance that can affect a resident's benefits.",
+            high_stakes=True,
+        )],
+    )
+])
+
+
+async def _high_stakes_scope(_turns: tuple[str, ...]) -> SimpleNamespace:
+    return SimpleNamespace(
+        model="test",
+        input_tokens=0,
+        output_tokens=0,
+        cached_input_tokens=0,
+        requests=0,
+        cost_usd=0.0,
+        latency_ms=0.0,
+        modules=("benefits",),
+        situations=("benefits_guidance",),
+        event_turn=None,
+    )
+
 
 def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
     return ToolCallPart(
@@ -55,12 +81,21 @@ def test_final_answer_schema_keeps_completion_guidance_concise() -> None:
     annotation = get_type_hints(_final_answer, include_extras=True)["answer"]
     description = annotation.__metadata__[0].description.lower()
 
-    assert "resident-facing prose with inline citation markers" in description
-    assert "every requested outcome that the evidence supports" in description
-    assert "state any unresolved outcome plainly" in description
+    assert "resident-facing prose with inline citations" in description
+    assert "self-contained sentences" in description
+    assert "every supported requested outcome" in description
+    assert "never standalone yes or no" in description
+    assert "state unresolved outcomes plainly" in description
     assert "never choose transport from medical facts" in description
     assert "do not write urls" in description
     assert len(description.split()) <= 35
+
+
+def test_runtime_names_the_check_for_what_it_does() -> None:
+    parameters = inspect.signature(PydanticRuntimeAdapter).parameters
+
+    assert "claim_support_checker" in parameters
+    assert "semantic_verifier" not in parameters
 
 
 def test_unverified_source_link_is_not_repeated_when_the_claim_already_has_the_url() -> None:
@@ -72,6 +107,19 @@ def test_unverified_source_link_is_not_repeated_when_the_claim_already_has_the_u
         "en",
         existing_text=f"Check the listing: {url}",
     ) == ""
+
+
+def test_unverified_claim_retains_source_without_downgrading_it() -> None:
+    url = "https://www.nyc.gov/html/dot/html/pedestrians/summerstreets.shtml"
+
+    rendered = _unverified_source_links(
+        ["S1"],
+        {"S1": {"url": url}},
+        "en",
+    )
+
+    assert url in rendered
+    assert "Unverified source" not in rendered
 
 
 async def test_event_discovery_does_not_retry_a_supported_catalog_answer_for_source_mix() -> None:
@@ -92,7 +140,6 @@ async def test_event_discovery_does_not_retry_a_supported_catalog_answer_for_sou
                 {"name": "Catalog event"}, record_id="catalog-event", field_pointer="/"
             ),
         )
-        ctx.event_discovery_citation_ids.add(web_id)
         return f"Web {{cite:{web_id}}}; catalog {{cite:{catalog_id}}}"
 
     calls = 0
@@ -132,7 +179,6 @@ async def test_event_discovery_accepts_a_derived_temporal_citation() -> None:
             kind="WEB",
             provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
         )
-        ctx.event_discovery_citation_ids.add(citation_id)
         return f"Latin Night at 6:00 PM. {{cite:{citation_id}}}"
 
     calls = 0
@@ -184,7 +230,7 @@ async def test_event_discovery_accepts_a_derived_temporal_citation() -> None:
     assert result.diagnostics["validation_rejections"] == []
 
 
-async def test_unevaluated_web_event_is_labeled_without_retrying_the_answer() -> None:
+async def test_editorial_event_excerpt_is_answer_grade_without_a_warning() -> None:
     async def event_search(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://example.com/editorial-events",
@@ -193,7 +239,6 @@ async def test_unevaluated_web_event_is_labeled_without_retrying_the_answer() ->
             kind="WEB",
             provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
         )
-        ctx.event_discovery_citation_ids.add(citation_id)
         return f"Latin Night at 6:00 PM. {{cite:{citation_id}}}"
 
     calls = 0
@@ -220,11 +265,11 @@ async def test_unevaluated_web_event_is_labeled_without_retrying_the_answer() ->
     ).run("What music is happening today?")
 
     assert calls == 2
-    assert result.text == "Unverified: Latin Night starts at 6:00 PM. {cite:S1}"
+    assert result.text == "Latin Night starts at 6:00 PM. {cite:S1}"
     assert result.diagnostics["validation_rejections"] == []
 
 
-async def test_multiple_unevaluated_events_on_one_line_get_one_label() -> None:
+async def test_low_stakes_editorial_claim_skips_claim_source_check() -> None:
     async def event_search(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://example.com/editorial-events",
@@ -233,7 +278,6 @@ async def test_multiple_unevaluated_events_on_one_line_get_one_label() -> None:
             kind="WEB",
             provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
         )
-        ctx.event_discovery_citation_ids.add(citation_id)
         return f"Music listings. {{cite:{citation_id}}}"
 
     calls = 0
@@ -250,7 +294,10 @@ async def test_multiple_unevaluated_events_on_one_line_get_one_label() -> None:
             )])
 
     class PartialVerifier:
+        calls = 0
+
         async def arun_many(self, inputs):
+            self.calls += 1
             return NLIBatchRun(
                 verdicts=[
                     NLIVerdict(
@@ -269,6 +316,7 @@ async def test_multiple_unevaluated_events_on_one_line_get_one_label() -> None:
                 latency_ms=1.0,
             )
 
+    verifier = PartialVerifier()
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
         registry=Registry([]),
@@ -281,14 +329,16 @@ async def test_multiple_unevaluated_events_on_one_line_get_one_label() -> None:
             )
         },
         structured_grounding=True,
-        semantic_verifier=PartialVerifier(),
+        claim_support_checker=verifier,
     ).run("What music is happening today?")
 
     assert calls == 2
-    assert result.text.count("Unverified:") == 1
+    assert verifier.calls == 0
+    assert "Unverified:" not in result.text
+    assert "I couldn't verify every detail in that answer." not in result.text
 
 
-async def test_labeled_event_block_does_not_hide_a_later_unsupported_block() -> None:
+async def test_low_stakes_event_answer_skips_claim_support_check() -> None:
     async def event_search(_args: dict, ctx: ToolContext) -> str:
         web_id = ctx.citations.register(
             "https://example.com/event",
@@ -297,7 +347,6 @@ async def test_labeled_event_block_does_not_hide_a_later_unsupported_block() -> 
             kind="WEB",
             provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
         )
-        ctx.event_discovery_citation_ids.add(web_id)
         data_id = ctx.citations.register(
             "https://example.com/data",
             title="Data record",
@@ -322,7 +371,10 @@ async def test_labeled_event_block_does_not_hide_a_later_unsupported_block() -> 
         return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
 
     class RejectingVerifier:
+        calls = 0
+
         async def arun_many(self, inputs):
+            self.calls += 1
             return NLIBatchRun(
                 verdicts=[
                     NLIVerdict(
@@ -341,6 +393,7 @@ async def test_labeled_event_block_does_not_hide_a_later_unsupported_block() -> 
                 latency_ms=1.0,
             )
 
+    checker = RejectingVerifier()
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
         registry=Registry([]),
@@ -353,11 +406,13 @@ async def test_labeled_event_block_does_not_hide_a_later_unsupported_block() -> 
             )
         },
         structured_grounding=True,
-        semantic_verifier=RejectingVerifier(),
+        claim_support_checker=checker,
     ).run("What music is happening today?")
 
-    assert result.text.count("Unverified:") == 2
-    assert "Unverified: Unsupported data claim." in result.text
+    assert "Unverified:" not in result.text
+    assert "Unsupported data claim." in result.text
+    assert "I couldn't verify every detail in that answer." not in result.text
+    assert checker.calls == 0
 
 
 class _Verifier:
@@ -425,7 +480,7 @@ class _FailingVerifier:
         )
 
 
-async def test_structured_data_mismatch_fails_closed_before_semantic_verification() -> None:
+async def test_structured_data_mismatch_fails_before_claim_source_check() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://data.cityofnewyork.us/example",
@@ -555,16 +610,16 @@ async def test_structured_street_ordinal_mismatch_retries_before_shipping() -> N
     assert all(item["items"][0]["kind"] == "street_ordinal" for item in rejections)
 
 
-def legacy_semantic_evidence_never_falls_back_to_full_provenance() -> None:
-    assert _semantic_citation_evidence({
+def legacy_claim_support_evidence_never_falls_back_to_full_provenance() -> None:
+    assert _claim_support_evidence({
         "provenance": {
             "snapshot": {"private_irrelevant_field": "must stay local"}
         }
     }) == ""
 
 
-def legacy_semantic_evidence_preserves_the_bounded_retrieval_chunk() -> None:
-    evidence = _semantic_citation_evidence({
+def legacy_claim_support_evidence_preserves_the_retrieved_evidence() -> None:
+    evidence = _claim_support_evidence({
         "snippet": (
             f"{'x' * 1_500} appeal-deadline {'y' * 1_500} "
             "anonymous-complaint-scope"
@@ -574,7 +629,6 @@ def legacy_semantic_evidence_preserves_the_bounded_retrieval_chunk() -> None:
 
     assert "appeal-deadline" in evidence
     assert "anonymous-complaint-scope" in evidence
-    assert len(evidence) <= 4_000
 
 
 async def test_structured_grounding_uses_native_cited_prose() -> None:
@@ -1290,7 +1344,7 @@ async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
 # Historical block-verifier contract kept for comparison and intentionally not collected
 
 
-async def legacy_pydantic_semantic_validator_retries_complete_answer_and_accounts_for_verifier() -> None:
+async def legacy_claim_support_check_retries_complete_answer_and_accounts_for_cost() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -1347,7 +1401,7 @@ async def legacy_pydantic_semantic_validator_retries_complete_answer_and_account
         registry=Registry([]),
         tools={source.name: source},
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
 
     result = await runtime.run("Do businesses have to accept cash?")
@@ -1361,12 +1415,12 @@ async def legacy_pydantic_semantic_validator_retries_complete_answer_and_account
     assert result.text == (
         "NYC businesses must accept cash unless a stated exception applies. {cite:S1}"
     )
-    assert result.usage["semantic_verifier_requests"] == 2
-    assert result.usage["semantic_verifier_input_tokens"] == 200
-    assert result.usage["semantic_verifier_output_tokens"] == 40
-    assert result.usage["semantic_verifier_cost_usd"] == 0.002
-    assert result.usage["semantic_verifier_time_ms"] == 20
-    assert result.usage["semantic_verifier_labels"] == {
+    assert result.usage["claim_support_requests"] == 2
+    assert result.usage["claim_support_input_tokens"] == 200
+    assert result.usage["claim_support_output_tokens"] == 40
+    assert result.usage["claim_support_cost_usd"] == 0.002
+    assert result.usage["claim_support_time_ms"] == 20
+    assert result.usage["claim_support_labels"] == {
         "partial": 1,
         "supported": 1,
     }
@@ -1376,7 +1430,7 @@ async def legacy_pydantic_semantic_validator_retries_complete_answer_and_account
     assert result.diagnostics["validation_rejections"] == [
         {
             "attempt": 1,
-            "stage": "semantic_grounding",
+            "stage": "claim_support",
             "items": [{"id": "block-0", "label": "partial"}],
         }
     ]
@@ -1388,7 +1442,7 @@ def legacy_grounded_block_forbids_claim_then_disclaimer() -> None:
     assert "Do not assert an unsupported fact and then disclaim it" in description
 
 
-async def legacy_pydantic_semantic_validator_uses_bounded_citation_chunks() -> None:
+async def legacy_claim_support_check_uses_bounded_citation_chunks() -> None:
     async def handler(args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -1440,7 +1494,7 @@ async def legacy_pydantic_semantic_validator_uses_bounded_citation_chunks() -> N
         registry=Registry([]),
         tools={source.name: source},
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
 
     await runtime.run("Will my benefits stop?")
@@ -1584,7 +1638,7 @@ async def legacy_structured_output_hides_answer_when_citation_items_shape_change
     assert prepared == []
 
 
-async def legacy_semantic_verifier_bounds_total_evidence_per_claim() -> None:
+async def legacy_claim_support_checker_bounds_total_evidence_per_claim() -> None:
     async def handler(_args: dict, ctx: ToolContext) -> str:
         citation_ids = [
             ctx.citations.register(
@@ -1635,23 +1689,22 @@ async def legacy_semantic_verifier_bounds_total_evidence_per_claim() -> None:
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
 
     await runtime.run("Will my benefits change?")
 
     grounded = next(item for item in verifier.inputs[0] if item.kind == "claim")
-    assert len(grounded.source) <= 4_000
     assert "[S1]" in grounded.source
 
 
 @pytest.mark.parametrize(
-    ("verdict_label", "keeps_marker"),
+    ("verdict_label", "_keeps_marker"),
     [("partial", True), ("unsupported", False)],
 )
-async def test_failed_eval_labels_semantically_unsupported_claims(
+async def test_failed_claim_support_check_gets_natural_correction(
     verdict_label: str,
-    keeps_marker: bool,
+    _keeps_marker: bool,
 ) -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
@@ -1659,6 +1712,7 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
             title="Official guidance",
             kind="WEB",
             snippet="Benefits may change.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"Benefits may change. {{cite:{citation_id}}}"
 
@@ -1675,14 +1729,19 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
         output_name = next(
             tool.name for tool in info.output_tools if tool.name == "grounded_answer"
         )
+        text = (
+            "The source says benefits may change, but it does not say whether yours will."
+            if model_calls == 3
+            else "Benefits may change."
+        )
         return ModelResponse([
             ToolCallPart(
                 output_name,
                 {
                     "grounded_blocks": [
-                        {
-                            "text": "Benefits may change.",
-                            "citation_ids": ["S1"],
+                            {
+                                "text": text,
+                                "citation_ids": ["S1"],
                         }
                     ],
                 },
@@ -1691,15 +1750,18 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
         ])
 
     class RejectingVerifier:
+        calls = 0
+
         async def arun_many(self, inputs):
+            self.calls += 1
             return NLIBatchRun(
                 verdicts=[
                     NLIVerdict(
-                        False,
-                        0.0,
+                        self.calls > 1,
+                        1.0 if self.calls > 1 else 0.0,
                         "fake",
                         "private diagnostic reason",
-                        verdict_label,
+                        "supported" if self.calls > 1 else verdict_label,
                     )
                     for _ in inputs
                 ]
@@ -1707,7 +1769,7 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "guidance": Tool(
                 name="guidance",
@@ -1717,7 +1779,8 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
             )
         },
         structured_grounding=True,
-        semantic_verifier=RejectingVerifier(),
+        claim_support_checker=RejectingVerifier(),
+        scope_screen=_high_stakes_scope,
     )
 
     result = await run_case(
@@ -1730,20 +1793,24 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
     )
 
     assert result.error is None
-    assert "Unverified: Benefits may change." in result.text
-    assert ("{cite:S1}" in result.text) is keeps_marker
+    assert (
+        "The source says benefits may change, but it does not say whether yours will."
+        in result.text
+    )
+    assert "Unverified:" not in result.text
+    assert "{cite:S1}" in result.text
     rendered = "\n".join(render(result, "sms_twilio"))
     assert "https://www.nyc.gov/example" in rendered
     assert "Sources:" not in rendered
     assert "Structured data record" not in rendered
     assert not result.text.startswith("I couldn't verify every detail")
-    assert ("Unverified source" in result.text) is (not keeps_marker)
-    assert result.usage.get("retry_kinds", []) == []
-    assert model_calls == 2
+    assert "Unverified source" not in result.text
+    assert "https://www.nyc.gov/example" not in result.text
+    assert model_calls == 3
     assert result.diagnostics["validation_rejections"] == [
         {
             "attempt": 1,
-            "stage": "semantic_grounding",
+            "stage": "claim_support",
             "items": [{
                 "id": "block-0",
                 "label": verdict_label,
@@ -1752,7 +1819,7 @@ async def test_failed_eval_labels_semantically_unsupported_claims(
             "citation_ids": ["S1"],
         }
     ]
-    item = result.diagnostics["semantic_verifier_runs"][0]["items"][0]
+    item = result.diagnostics["claim_support_runs"][0]["items"][0]
     assert item == {
         "position": 0,
         "kind": "claim",
@@ -1770,6 +1837,7 @@ async def test_cited_factual_framing_is_retried_as_a_claim() -> None:
             title="Official guidance",
             kind="WEB",
             snippet="HRA can review documented exemptions.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"HRA can review documented exemptions. {{cite:{citation_id}}}"
 
@@ -1800,7 +1868,7 @@ async def test_cited_factual_framing_is_retried_as_a_claim() -> None:
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "guidance": Tool(
                 name="guidance",
@@ -1810,7 +1878,8 @@ async def test_cited_factual_framing_is_retried_as_a_claim() -> None:
             )
         },
         structured_grounding=True,
-        semantic_verifier=SupportedVerifier(),
+        claim_support_checker=SupportedVerifier(),
+        scope_screen=_high_stakes_scope,
     ).run("What should I do?")
 
     assert calls == 3
@@ -1819,13 +1888,14 @@ async def test_cited_factual_framing_is_retried_as_a_claim() -> None:
     assert "{cite:S1}" in result.text
 
 
-async def test_supported_source_free_framing_stays_clean_after_verification() -> None:
+async def test_supported_source_free_framing_stays_clean_after_claim_check() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
             title="Official guidance",
             kind="WEB",
             snippet="HRA can review the notice.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"HRA can review the notice. {{cite:{citation_id}}}"
 
@@ -1868,7 +1938,7 @@ async def test_supported_source_free_framing_stays_clean_after_verification() ->
     verifier = RecordingVerifier()
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "guidance": Tool(
                 name="guidance",
@@ -1878,7 +1948,8 @@ async def test_supported_source_free_framing_stays_clean_after_verification() ->
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
+        scope_screen=_high_stakes_scope,
     ).run("What should I do?")
 
     assert [item.kind for item in verifier.inputs[0]] == ["framing", "claim"]
@@ -1886,7 +1957,7 @@ async def test_supported_source_free_framing_stays_clean_after_verification() ->
     assert "Unverified: I’m sorry" not in result.text
 
 
-async def test_procedural_advice_cannot_bypass_verification_as_framing() -> None:
+async def test_procedural_advice_cannot_bypass_claim_check_as_framing() -> None:
     async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
         return ModelResponse([ToolCallPart(
             "grounded_answer",
@@ -1908,16 +1979,21 @@ async def test_procedural_advice_cannot_bypass_verification_as_framing() -> None
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={},
         structured_grounding=True,
-        semantic_verifier=RejectingVerifier(),
+        claim_support_checker=RejectingVerifier(),
+        scope_screen=_high_stakes_scope,
     ).run("What should I submit?")
 
-    assert result.text == "Unverified: Submit every document before the deadline."
+    assert result.text == (
+        "Submit every document before the deadline.\n\n"
+        "I couldn't verify every detail in that answer. "
+        "Check the linked sources before relying on it."
+    )
 
 
-async def legacy_pydantic_semantic_validator_regenerates_instead_of_pruning_blocks() -> None:
+async def legacy_claim_support_check_regenerates_instead_of_pruning_blocks() -> None:
     model_calls = 0
 
     async def source(_args: dict, ctx: ToolContext) -> str:
@@ -1969,7 +2045,7 @@ async def legacy_pydantic_semantic_validator_regenerates_instead_of_pruning_bloc
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
 
     result = await runtime.run("I need help with my benefits.")
@@ -1987,12 +2063,12 @@ async def legacy_pydantic_semantic_validator_regenerates_instead_of_pruning_bloc
     )
     assert result.diagnostics["validation_rejections"] == [{
         "attempt": 1,
-        "stage": "semantic_grounding",
+            "stage": "claim_support",
         "items": [{"id": "block-1", "label": "unsupported"}],
     }]
 
 
-async def legacy_pydantic_semantic_validator_preserves_an_all_supported_answer() -> None:
+async def legacy_claim_support_check_preserves_an_all_supported_answer() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/example",
@@ -2044,7 +2120,7 @@ async def legacy_pydantic_semantic_validator_preserves_an_all_supported_answer()
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
 
     result = await runtime.run("I need help with my benefits.")
@@ -2057,7 +2133,7 @@ async def legacy_pydantic_semantic_validator_preserves_an_all_supported_answer()
     assert result.diagnostics.get("validation_rejections", []) == []
 
 
-async def legacy_semantic_validator_distinguishes_epistemic_framing_from_claims() -> None:
+async def legacy_claim_support_check_distinguishes_framing_from_claims() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://www.nyc.gov/appointments/example",
@@ -2122,7 +2198,7 @@ async def legacy_semantic_validator_distinguishes_epistemic_framing_from_claims(
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     ).run("Who leads the agency now?")
 
     assert calls == 2
@@ -2130,7 +2206,7 @@ async def legacy_semantic_validator_distinguishes_epistemic_framing_from_claims(
     assert result.status == "success"
 
 
-async def legacy_semantic_validator_checks_link_labels_not_markdown_destinations() -> None:
+async def legacy_claim_support_check_ignores_markdown_destinations() -> None:
     url = "https://www.nycgovparks.org/events/tai-chi"
 
     async def source(_args: dict, ctx: ToolContext) -> str:
@@ -2178,7 +2254,7 @@ async def legacy_semantic_validator_checks_link_labels_not_markdown_destinations
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     ).run("What can I do today?")
 
     assert result.status == "success"
@@ -2188,7 +2264,7 @@ async def legacy_semantic_validator_checks_link_labels_not_markdown_destinations
     assert url in result.text
 
 
-async def legacy_semantic_validator_checks_prose_backed_by_structured_data() -> None:
+async def legacy_claim_support_check_handles_structured_data() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         cid = ctx.citations.register(
             "https://data.cityofnewyork.us/event/1",
@@ -2230,7 +2306,7 @@ async def legacy_semantic_validator_checks_prose_backed_by_structured_data() -> 
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     ).run("What can I do today?")
 
     assert result.status == "success"
@@ -2240,10 +2316,10 @@ async def legacy_semantic_validator_checks_prose_backed_by_structured_data() -> 
     assert "Sunrise Tai Chi at Fort Tryon Park at 6:30 AM" in (
         verifier.inputs[0][0].source
     )
-    assert result.usage["semantic_verifier_requests"] == 1
+    assert result.usage["claim_support_requests"] == 1
 
 
-async def test_pydantic_semantic_validator_preserves_sources_when_provider_is_down() -> None:
+async def test_claim_support_check_preserves_sources_when_provider_is_down() -> None:
     model_calls = 0
 
     async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -2278,12 +2354,13 @@ async def test_pydantic_semantic_validator_preserves_sources_when_provider_is_do
             title="Official guidance",
             kind="WEB",
             snippet="Benefits are available.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"Benefits are available. {{cite:{cid}}}"
 
     runtime = PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "official_guidance": Tool(
                 name="official_guidance",
@@ -2293,29 +2370,33 @@ async def test_pydantic_semantic_validator_preserves_sources_when_provider_is_do
             )
         },
         structured_grounding=True,
-        semantic_verifier=_FailingVerifier(),
+        claim_support_checker=_FailingVerifier(),
+        scope_screen=_high_stakes_scope,
     )
 
     result = await runtime.run("Will my benefits end?")
 
     assert result.status == "error"
     assert result.text == (
-        "Unverified: The retrieved record suggests benefits are available. {cite:S1}"
+        "The retrieved record suggests benefits are available. {cite:S1}\n\n"
+        "I couldn't verify every detail in that answer. "
+        "Check the linked sources before relying on it."
     )
     rendered = "\n".join(render(result, "sms_twilio"))
     assert "https://www.nyc.gov/example" in rendered
     assert "Sources:" not in rendered
     assert "Structured data record" not in rendered
-    assert result.usage["semantic_verifier_error"] == "RuntimeError"
+    assert result.usage["claim_support_error"] == "RuntimeError"
 
 
-async def test_semantic_verifier_outage_labels_cited_and_uncited_paragraphs() -> None:
+async def legacy_claim_support_outage_labels_cited_and_uncited_paragraphs() -> None:
     async def source(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/example",
             title="Official guidance",
             kind="WEB",
             snippet="The retrieved record suggests benefits are available.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"Retrieved guidance {{cite:{citation_id}}}"
 
@@ -2339,7 +2420,7 @@ async def test_semantic_verifier_outage_labels_cited_and_uncited_paragraphs() ->
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "guidance": Tool(
                 name="guidance",
@@ -2349,16 +2430,19 @@ async def test_semantic_verifier_outage_labels_cited_and_uncited_paragraphs() ->
             )
         },
         structured_grounding=True,
-        semantic_verifier=_FailingVerifier(),
+        claim_support_checker=_FailingVerifier(),
+        scope_screen=_high_stakes_scope,
     ).run("Will my benefits end?")
 
     assert result.text == (
-        "Unverified: The retrieved record suggests benefits are available. {cite:S1}\n\n"
-        "Unverified: Apply again tomorrow."
+        "The retrieved record suggests benefits are available. {cite:S1}\n\n"
+        "Apply again tomorrow.\n\n"
+        "I couldn't verify every detail in that answer. "
+        "Check the linked sources before relying on it."
     )
 
 
-async def test_semantic_verifier_outage_does_not_bypass_output_moderation() -> None:
+async def test_claim_support_outage_does_not_bypass_output_moderation() -> None:
     model_calls = 0
 
     async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -2391,12 +2475,13 @@ async def test_semantic_verifier_outage_does_not_bypass_output_moderation() -> N
             title="Official guidance",
             kind="WEB",
             snippet="Source material remains available.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"Source material remains available. {{cite:{citation_id}}}"
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "retrieve": Tool(
                 name="retrieve",
@@ -2406,7 +2491,8 @@ async def test_semantic_verifier_outage_does_not_bypass_output_moderation() -> N
             )
         },
         structured_grounding=True,
-        semantic_verifier=_FailingVerifier(),
+        claim_support_checker=_FailingVerifier(),
+        scope_screen=_high_stakes_scope,
         output_guard=blocked,
     ).run("Help")
 
@@ -2416,7 +2502,7 @@ async def test_semantic_verifier_outage_does_not_bypass_output_moderation() -> N
     assert "https://www.nyc.gov/example" in result.text
 
 
-async def legacy_semantic_diagnostics_sanitize_untrusted_error_and_labels() -> None:
+async def legacy_claim_support_diagnostics_sanitize_errors_and_labels() -> None:
     class UnsafeVerifier:
         async def arun_many(self, inputs):
             return NLIBatchRun(
@@ -2473,16 +2559,16 @@ async def legacy_semantic_diagnostics_sanitize_untrusted_error_and_labels() -> N
             )
         },
         structured_grounding=True,
-        semantic_verifier=UnsafeVerifier(),
+        claim_support_checker=UnsafeVerifier(),
     ).run("Can I get benefits?")
 
-    assert result.usage["semantic_verifier_error"] == "SemanticVerifierError"
-    assert result.usage["semantic_verifier_labels"] == {"unsupported": 1}
+    assert result.usage["claim_support_error"] == "SemanticVerifierError"
+    assert result.usage["claim_support_labels"] == {"unsupported": 1}
     assert "resident-secret" not in str(result.diagnostics)
     assert "private provider payload" not in str(result.diagnostics)
 
 
-def legacy_ab_cli_passes_semantic_verifier_only_to_candidate(
+def legacy_ab_cli_passes_claim_support_checker_only_to_candidate(
     monkeypatch: MonkeyPatch,
 ) -> None:
     args = _parser().parse_args([
@@ -2491,10 +2577,10 @@ def legacy_ab_cli_passes_semantic_verifier_only_to_candidate(
         "--case",
         "example",
         "--structured-grounding",
-        "--semantic-verifier-model",
+        "--claim-support-model",
         "openai/gpt-5.4-nano",
     ])
-    assert args.semantic_verifier_model == "openai/gpt-5.4-nano"
+    assert args.claim_support_model == "openai/gpt-5.4-nano"
 
     verifier = _Verifier()
     monkeypatch.setattr(pydantic_ai_ab, "_comparison_model", lambda _model: TestModel())
@@ -2503,7 +2589,7 @@ def legacy_ab_cli_passes_semantic_verifier_only_to_candidate(
         None,
         "openai/gpt-5.4-mini",
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
     candidate = factories["pydantic_ai"]()
-    assert candidate.runtime._semantic_verifier is verifier
+    assert candidate.runtime._claim_support_checker is verifier

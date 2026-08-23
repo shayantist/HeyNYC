@@ -787,7 +787,8 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
     assert "Verified source" in raised.value.partial_result.text
     assert "City data record" not in raised.value.partial_result.text
     assert raised.value.partial_result.text.rstrip().endswith(
-        "I couldn't verify every detail below. Check the linked sources before relying on it:"
+        "I couldn't verify every detail in that answer. "
+        "Check the linked sources before relying on it."
     )
     assert "https://data.cityofnewyork.us/example" in raised.value.partial_result.text
     assert "311" not in raised.value.partial_result.text
@@ -1034,11 +1035,12 @@ def test_discovery_validation_notice_is_localized(
 
 def test_unverified_draft_notice_is_localized() -> None:
     assert localize(
-        "I couldn't verify every detail below. Check the linked sources before relying on it:",
+        "I couldn't verify every detail in that answer. "
+        "Check the linked sources before relying on it.",
         "es",
     ) == (
-        "No pude verificar todos los detalles que aparecen a continuación. "
-        "Revisa las fuentes enlazadas antes de confiar en ellos:"
+        "No pude verificar todos los detalles de esa respuesta. "
+        "Revisa las fuentes enlazadas antes de confiar en ella."
     )
 
 

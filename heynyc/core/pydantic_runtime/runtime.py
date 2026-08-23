@@ -122,7 +122,10 @@ from .projection import (
     NONFACTUAL_OUTCOME_TEXT,
     ClarificationRequest,
     GroundedAnswer,
+    GroundedBlock,
     _captured_usage,
+    _claim_support_evidence,
+    _claim_support_text,
     _complete_cost,
     _conversation_history,
     _dynamic_instructions,
@@ -138,8 +141,6 @@ from .projection import (
     _render_grounded_answer,
     _resident_history,
     _retry_kinds,
-    _semantic_citation_evidence,
-    _semantic_claim_text,
 )
 from .tools import (
     ResidentFactReviewCapability,
@@ -154,7 +155,6 @@ _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
 _CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 _INTERNAL_TEMPLATE_TOKEN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 _RESIDUAL_CITATION_MARKUP = re.compile(r"[{}]|\bS\d+\b", re.IGNORECASE)
-_SEMANTIC_EVIDENCE_CHARS = 4_000
 _SEMANTIC_RETRY_ITEMS = 8
 _SEMANTIC_LABELS = {"supported", "partial", "unsupported", "contradicted"}
 _GROUNDED_HANDOFF_REQUIREMENT = "requires a grounded handoff"
@@ -247,10 +247,9 @@ def _final_answer(
         str,
         Field(
             description=(
-                "Resident-facing prose with inline citation markers. Answer every requested "
-                "outcome that the evidence supports and state any unresolved outcome plainly. "
-                "Never choose transport from medical facts. Do not write URLs; the runtime "
-                "attaches cited links."
+                "Resident-facing prose with inline citations. Answer every supported requested "
+                "outcome in self-contained sentences, never standalone yes or no. State unresolved "
+                "outcomes plainly. Never choose transport from medical facts. Do not write URLs."
             )
         ),
     ],
@@ -276,7 +275,7 @@ VERIFICATION_ABSTAIN_FALLBACK = (
     "want to guess. Try asking with a little more detail and I'll check again."
 )
 UNVERIFIED_DRAFT_NOTICE = (
-    "I couldn't verify every detail below. Check the linked sources before relying on it:"
+    "I couldn't verify every detail in that answer. Check the linked sources before relying on it."
 )
 INCOMPLETE_DRAFT_NOTICE = (
     "This answer is incomplete because I couldn't finish every requested part."
@@ -304,6 +303,10 @@ def _degraded_failure_text(
     """
     mapping = citations.mapping()
     represented = set(used_citations(text, mapping))
+    represented_urls = {
+        str(mapping[citation_id].get("url") or "")
+        for citation_id in represented
+    }
     reached = [
         citation
         for citation_id, citation in citations.mapping().items()
@@ -311,6 +314,10 @@ def _degraded_failure_text(
         if citation_id not in represented
         if citation.get("url")
         if citation["url"] not in text
+        if not (
+            (citation.get("provenance") or {}).get("evidence_grade") == "unavailable"
+            and citation["url"] in represented_urls
+        )
     ]
     if not reached:
         return text
@@ -385,7 +392,6 @@ def _unverified_source_links(
     *,
     existing_text: str = "",
 ) -> str:
-    label = localize("Unverified source", language)
     existing_urls = _urls_in(existing_text)
     urls = list(
         dict.fromkeys(
@@ -395,7 +401,7 @@ def _unverified_source_links(
             and citations[citation_id].get("url") not in existing_urls
         )
     )
-    return "\n".join(f"[{label}](<{url}>)" for url in urls)
+    return "\n".join(f"[{url}](<{url}>)" for url in urls)
 
 
 def _validation_warning_text(
@@ -435,7 +441,7 @@ def _validation_warning_text(
         rejected_blocks = {
             int(item["id"].removeprefix("block-"))
             for item in latest.get("items", ())
-            if latest.get("stage") == "semantic_grounding"
+            if latest.get("stage") == "claim_support"
             if isinstance(item.get("id"), str)
             and item["id"].removeprefix("block-").isdigit()
         }
@@ -636,11 +642,11 @@ def _loaded_capability_requires_grounded_handoff(ctx: RunContext[ToolContext]) -
     return False
 
 
-def _safe_semantic_label(label: str) -> str:
+def _safe_claim_support_label(label: str) -> str:
     return label if label in _SEMANTIC_LABELS else "unsupported"
 
 
-def _safe_semantic_error(error: str | None) -> str | None:
+def _safe_claim_support_error(error: str | None) -> str | None:
     if error is None:
         return None
     if len(error) <= 64 and error.isidentifier() and error.endswith("Error"):
@@ -912,10 +918,25 @@ class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
         ctx: RunContext[ToolContext],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
-        return await self.conversation._prepare_model_request(
+        request = await self.conversation._prepare_model_request(
             request_context,
             self,
         )
+        return request
+
+    async def after_model_request(
+        self,
+        ctx: RunContext[ToolContext],
+        *,
+        request_context: ModelRequestContext,
+        response: ModelResponse,
+    ) -> ModelResponse:
+        ctx.deps.evidence_token_budget = self.conversation._evidence_budget(
+            request_context,
+            response,
+        )
+        ctx.deps.evidence_model = self.conversation.runtime._answer_model_route
+        return response
 
 
 # F150: one hung request burned the whole run wall
@@ -1253,7 +1274,7 @@ class PydanticRuntimeAdapter:
         compact_context: CompactFn | None = None,
         answer_model_route: str | None = None,
         structured_grounding: bool = False,
-        semantic_verifier: Any = None,
+        claim_support_checker: Any = None,
         fact_review_model: Any = None,
         fact_review_model_name: str = "",
         stream_model_requests: bool = False,
@@ -1281,7 +1302,7 @@ class PydanticRuntimeAdapter:
             request_limit=8,
         )
         self._answer_model_route = answer_model_route
-        self._semantic_verifier = semantic_verifier
+        self._claim_support_checker = claim_support_checker
         self._stream_model_requests = stream_model_requests
         self._run_timeout_s = run_timeout_s
         self._crisis_screen = crisis_screen
@@ -1594,41 +1615,6 @@ class PydanticRuntimeAdapter:
                 "unknown_citation",
                 "Use only citation IDs returned by tools in this run.",
             )
-        answer_citations = used_citations(rendered, mapping)
-        evaluated_event_sources = {
-            str((citation.get("provenance") or {}).get("derivation", {}).get(
-                "source_citation_id"
-            ))
-            for citation in answer_citations.values()
-            if citation.get("kind") == "DATA"
-        }
-        unevaluated_event_sources = sorted(
-            (set(answer_citations) & ctx.deps.event_discovery_citation_ids)
-            - evaluated_event_sources
-        )
-        if unevaluated_event_sources:
-            label = f"{localize('Unverified', ctx.deps.language)}:"
-            if isinstance(output, GroundedAnswer):
-                output = output.model_copy(update={
-                    "grounded_blocks": [
-                        block.model_copy(update={"text": f"{label} {block.text}"})
-                        if set(block.citation_ids) & set(unevaluated_event_sources)
-                        and not block.text.startswith(label)
-                        else block
-                        for block in output.grounded_blocks
-                    ]
-                })
-                rendered = _render_grounded_answer(output)
-            else:
-                unevaluated = set(unevaluated_event_sources)
-                rendered = "\n".join(
-                    f"{label} {line}"
-                    if set(used_citations(line, mapping)) & unevaluated
-                    and not line.lstrip().startswith(label)
-                    else line
-                    for line in rendered.split("\n")
-                )
-                output = rendered
         missing_response_citations = sorted(
             ctx.deps.required_response_citation_ids
             - set(used_citations(rendered, mapping))
@@ -1743,13 +1729,17 @@ class PydanticRuntimeAdapter:
                     "from multiple sources, cite each supporting source or split the sentence.",
                     items=rejected,
                 )
-        if isinstance(output, (str, GroundedAnswer)) and self._semantic_verifier is not None:
+        if (
+            high_stakes
+            and isinstance(output, (str, GroundedAnswer))
+            and self._claim_support_checker is not None
+        ):
             mapping = ctx.deps.citations.mapping()
             claims = (
                 [
                     (
                         f"block-{index}",
-                        _semantic_claim_text(block),
+                        _claim_support_text(block),
                         block.kind,
                         block.citation_ids,
                         None,
@@ -1772,46 +1762,50 @@ class PydanticRuntimeAdapter:
                     kind=kind,
                     source="\n\n".join(
                         f"[{citation_id}] "
-                        f"{_semantic_citation_evidence(mapping[citation_id])}"
+                        f"{_claim_support_evidence(mapping[citation_id])}"
                         for citation_id in citation_ids
-                    )[:_SEMANTIC_EVIDENCE_CHARS],
+                    ),
                 )
                 for item_id, claim, kind, citation_ids, _original in claims
             ]
             if not inputs:
                 return output
-            semantic = await self._semantic_verifier.arun_many(inputs)
-            semantic_error = _safe_semantic_error(semantic.error)
-            ctx.deps.semantic_verifier_runs.append({
-                "input_tokens": semantic.input_tokens,
-                "output_tokens": semantic.output_tokens,
-                "cached_input_tokens": semantic.cached_input_tokens,
-                "cost_usd": semantic.cost_usd,
-                "latency_ms": semantic.latency_ms,
-                "error": semantic_error,
+            support = await self._claim_support_checker.arun_many(inputs)
+            support_error = _safe_claim_support_error(support.error)
+            ctx.deps.claim_support_runs.append({
+                "input_tokens": support.input_tokens,
+                "output_tokens": support.output_tokens,
+                "cached_input_tokens": support.cached_input_tokens,
+                "cost_usd": support.cost_usd,
+                "latency_ms": support.latency_ms,
+                "error": support_error,
                 "labels": [
-                    _safe_semantic_label(verdict.label)
-                    for verdict in semantic.verdicts
+                    _safe_claim_support_label(verdict.label)
+                    for verdict in support.verdicts
                 ],
                 "items": [
                     {
                         "position": position,
                         "kind": item.kind,
-                        "label": _safe_semantic_label(verdict.label),
+                        "label": _safe_claim_support_label(verdict.label),
                     }
                     for position, (item, verdict) in enumerate(
-                        zip(inputs, semantic.verdicts, strict=True)
+                        zip(inputs, support.verdicts, strict=True)
                     )
                 ][:_SEMANTIC_RETRY_ITEMS],
             })
-            if semantic_error is not None:
+            if support_error is not None:
                 ctx.deps.validation_rejections.append({
                     "attempt": len(ctx.deps.validation_rejections) + 1,
-                    "stage": "semantic_verifier_unavailable",
-                    "error": semantic_error,
+                    "stage": "claim_support_unavailable",
+                    "error": support_error,
                 })
                 return output
-            if any(not verdict.supported for verdict in semantic.verdicts):
+            if any(not verdict.supported for verdict in support.verdicts):
+                had_prior_support_failure = any(
+                    rejection.get("stage") == "claim_support"
+                    for rejection in ctx.deps.validation_rejections
+                )
                 rejected_all = [
                     {
                         "id": item.id,
@@ -1827,13 +1821,13 @@ class PydanticRuntimeAdapter:
                             if item_id == item.id
                         ),
                     }
-                    for item, verdict in zip(inputs, semantic.verdicts, strict=True)
+                    for item, verdict in zip(inputs, support.verdicts, strict=True)
                     if not verdict.supported
                 ]
                 rejected = rejected_all[:_SEMANTIC_RETRY_ITEMS]
                 ctx.deps.validation_rejections.append({
                     "attempt": len(ctx.deps.validation_rejections) + 1,
-                    "stage": "semantic_grounding",
+                    "stage": "claim_support",
                     "items": rejected,
                     "citation_ids": sorted({
                         citation_id
@@ -1841,95 +1835,28 @@ class PydanticRuntimeAdapter:
                         for citation_id in item["citation_ids"]
                     }),
                 })
-                rejected_ids = {item["id"] for item in rejected_all}
-                rejected_labels = {
-                    item["id"]: item["label"] for item in rejected_all
-                }
-                if isinstance(output, GroundedAnswer):
-                    return output.model_copy(update={
-                        "grounded_blocks": [
-                            block.model_copy(update={
-                                "kind": "claim",
-                                "text": (
-                                    "\n\n".join(filter(None, (
-                                        (
-                                            block.text
-                                            if block.text.startswith(
-                                                f"{localize('Unverified', ctx.deps.language)}:"
-                                            )
-                                            else f"{localize('Unverified', ctx.deps.language)}: "
-                                            f"{block.text}"
-                                        ),
-                                        (
-                                            _unverified_source_links(
-                                                block.citation_ids,
-                                                mapping,
-                                                ctx.deps.language,
-                                                existing_text=block.text,
-                                            )
-                                            if rejected_labels[f"block-{index}"]
-                                            != "partial"
-                                            else ""
-                                        ),
-                                    )))
+                if had_prior_support_failure:
+                    notice = localize(UNVERIFIED_DRAFT_NOTICE, ctx.deps.language)
+                    if isinstance(output, GroundedAnswer):
+                        return output.model_copy(update={
+                            "grounded_blocks": [
+                                *output.grounded_blocks,
+                                GroundedBlock(
+                                    kind="framing",
+                                    text=notice,
+                                    starts_new_paragraph=True,
                                 ),
-                                "citation_ids": (
-                                    block.citation_ids
-                                    if rejected_labels[f"block-{index}"] == "partial"
-                                    else []
-                                ),
-                            })
-                            if f"block-{index}" in rejected_ids
-                            else block
-                            for index, block in enumerate(output.grounded_blocks)
-                        ]
-                    })
-                blocks = output.split("\n\n")
-                for item_id, claim, _kind, citation_ids, original in claims:
-                    if item_id not in rejected_ids or original is None:
-                        continue
-                    for index, block in enumerate(blocks):
-                        if block.lstrip().startswith(
-                            f"{localize('Unverified', ctx.deps.language)}:"
-                        ):
-                            if original in block or claim in block:
-                                break
-                            continue
-                        trailing = re.search(
-                            re.escape(claim) + r"(?:[ \t]*\{cite:S\d+\})+",
-                            block,
-                        )
-                        target = (
-                            original
-                            if original in block
-                            else trailing.group() if trailing else claim
-                        )
-                        if target not in block:
-                            continue
-                        labeled = target
-                        if rejected_labels[item_id] != "partial":
-                            for citation_id in citation_ids:
-                                marker = f"{{cite:{citation_id}}}"
-                                labeled = labeled.replace(f" {marker}", "").replace(
-                                    marker, ""
-                                )
-                            labeled = "\n\n".join(filter(None, (
-                                labeled,
-                                _unverified_source_links(
-                                    citation_ids,
-                                    mapping,
-                                    ctx.deps.language,
-                                    existing_text=labeled,
-                                ),
-                            )))
-                        block = block.replace(
-                            target,
-                            f"{localize('Unverified', ctx.deps.language)}: {labeled}",
-                            1,
-                        )
-                        blocks[index] = block.rstrip()
-                        break
-                return "\n\n".join(blocks)
+                            ]
+                        })
+                    return f"{rendered}\n\n{notice}"
+                raise ModelRetry(
+                    "Return a complete replacement answer. Keep every supported outcome and "
+                    "write in the resident's language. The cited evidence did not support every "
+                    f"detail in these claims: {json.dumps(rejected, separators=(',', ':'))}. "
+                    "For each rejected claim, either state only what its source supports or explain "
+                    "naturally what the source did not establish. Preserve the relevant source "
+                    "citation. Do not use an 'Unverified:' label or a standalone yes or no."
+                )
         return output
 
     async def _apply_output_guard(
@@ -1979,19 +1906,14 @@ class PydanticRuntimeAdapter:
     ) -> None:
         if not deps.validation_rejections or (
             deps.validation_rejections[-1].get("stage")
-            not in {"semantic_grounding", "semantic_verifier_unavailable"}
+            not in {"claim_support", "claim_support_unavailable"}
         ):
             return
-        if deps.validation_rejections[-1].get("stage") == "semantic_verifier_unavailable":
-            result.text = "\n\n".join(
-                (
-                    f"{localize('Unverified', language)}: {block}"
-                    if block
-                    and not block.startswith(f"{localize('Unverified', language)}:")
-                    else block
-                )
-                for block in result.text.split("\n\n")
-            )
+        if deps.validation_rejections[-1].get("stage") == "claim_support_unavailable":
+            result.text = "\n\n".join((
+                result.text,
+                localize(UNVERIFIED_DRAFT_NOTICE, language),
+            ))
             result.status = "error"
 
     @staticmethod
@@ -2059,37 +1981,40 @@ class PydanticRuntimeAdapter:
         )
 
     @staticmethod
-    def _merge_semantic_usage(result: AgentResult, runs: list[dict[str, Any]]) -> None:
+    def _merge_claim_support_usage(
+        result: AgentResult,
+        runs: list[dict[str, Any]],
+    ) -> None:
         if not runs:
             return
         input_tokens = sum(int(run["input_tokens"]) for run in runs)
         output_tokens = sum(int(run["output_tokens"]) for run in runs)
         cached_tokens = sum(int(run["cached_input_tokens"]) for run in runs)
         costs = [run.get("cost_usd") for run in runs]
-        semantic_cost = (
+        support_cost = (
             sum(float(cost) for cost in costs)
             if all(isinstance(cost, (int, float)) for cost in costs)
             else None
         )
         result.usage.update({
-            "semantic_verifier_requests": len(runs),
-            "semantic_verifier_input_tokens": input_tokens,
-            "semantic_verifier_output_tokens": output_tokens,
-            "semantic_verifier_cached_input_tokens": cached_tokens,
-            "semantic_verifier_cost_usd": semantic_cost,
-            "semantic_verifier_time_ms": sum(float(run["latency_ms"]) for run in runs),
+            "claim_support_requests": len(runs),
+            "claim_support_input_tokens": input_tokens,
+            "claim_support_output_tokens": output_tokens,
+            "claim_support_cached_input_tokens": cached_tokens,
+            "claim_support_cost_usd": support_cost,
+            "claim_support_time_ms": sum(float(run["latency_ms"]) for run in runs),
         })
         result.usage["model_time_ms"] = (
             float(result.usage.get("model_time_ms", 0.0))
-            + result.usage["semantic_verifier_time_ms"]
+            + result.usage["claim_support_time_ms"]
         )
         if errors := [run["error"] for run in runs if run.get("error")]:
-            result.usage["semantic_verifier_error"] = errors[-1]
+            result.usage["claim_support_error"] = errors[-1]
         labels: dict[str, int] = {}
         for run in runs:
             for label in run["labels"]:
                 labels[label] = labels.get(label, 0) + 1
-        result.usage["semantic_verifier_labels"] = labels
+        result.usage["claim_support_labels"] = labels
         result.usage["input_tokens"] += input_tokens
         result.usage["output_tokens"] += output_tokens
         result.usage["cached_input_tokens"] += cached_tokens
@@ -2097,8 +2022,8 @@ class PydanticRuntimeAdapter:
         result.usage["n_model_calls"] += len(runs)
         answer_cost = result.usage.get("cost_usd")
         result.usage["cost_usd"] = (
-            float(answer_cost) + semantic_cost
-            if isinstance(answer_cost, (int, float)) and semantic_cost is not None
+            float(answer_cost) + support_cost
+            if isinstance(answer_cost, (int, float)) and support_cost is not None
             else None
         )
         result.usage["cost_status"] = (
@@ -2204,7 +2129,7 @@ class PydanticRuntimeAdapter:
         started: float,
         timing_capability: _ModelTimingCapability,
         fact_review_runs: list[dict[str, Any]],
-        semantic_verifier_runs: list[dict[str, Any]],
+        claim_support_runs: list[dict[str, Any]],
         validation_rejections: list[dict[str, Any]],
         status: str,
         text: str = TEMPORARY_FAILURE_FALLBACK,
@@ -2232,10 +2157,10 @@ class PydanticRuntimeAdapter:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         result.usage["retry_kinds"] = _retry_kinds(messages)
         self._merge_fact_review_usage(result, fact_review_runs)
-        self._merge_semantic_usage(result, semantic_verifier_runs)
+        self._merge_claim_support_usage(result, claim_support_runs)
         result.diagnostics = {
             **({"fact_review_runs": fact_review_runs} if fact_review_runs else {}),
-            "semantic_verifier_runs": semantic_verifier_runs,
+            "claim_support_runs": claim_support_runs,
             "validation_rejections": validation_rejections,
             **({"failure_type": failure_type} if failure_type else {}),
         }
@@ -2343,7 +2268,7 @@ class PydanticRuntimeAdapter:
         safety_error = None
         language = None
         # F146: screen runs on ALL traffic; the regex no longer short-circuits it
-        # Owner ruling: the backstop is a last-resort catch UNDER the semantic layer
+        # Owner ruling: the backstop is a last-resort catch under the claim-source check
         # Negligible cost, the regex fires on ~2% of turns
         if self._crisis_screen is not None:
             try:
@@ -2586,7 +2511,7 @@ class PydanticRuntimeAdapter:
                 started=started,
                 timing_capability=timing_capability,
                 fact_review_runs=deps.fact_review_runs,
-                semantic_verifier_runs=deps.semantic_verifier_runs,
+                claim_support_runs=deps.claim_support_runs,
                 validation_rejections=deps.validation_rejections,
                 status=(
                     "max_turns"
@@ -2665,7 +2590,7 @@ class PydanticRuntimeAdapter:
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self._merge_fact_review_usage(result, deps.fact_review_runs)
-        self._merge_semantic_usage(result, deps.semantic_verifier_runs)
+        self._merge_claim_support_usage(result, deps.claim_support_runs)
         self._merge_language_verifier_usage(result, deps.language_verifier_runs)
         self._merge_safety_usage(result, safety_run)
         self._merge_scope_usage(result, scope_run)
@@ -2675,7 +2600,7 @@ class PydanticRuntimeAdapter:
                 if deps.fact_review_runs
                 else {}
             ),
-            "semantic_verifier_runs": deps.semantic_verifier_runs,
+            "claim_support_runs": deps.claim_support_runs,
             **(
                 {"language_verifier_runs": deps.language_verifier_runs}
                 if deps.language_verifier_runs
@@ -3304,7 +3229,7 @@ class PydanticAgentSession:
                 started=started,
                 timing_capability=timing_capability,
                 fact_review_runs=deps.fact_review_runs,
-                semantic_verifier_runs=deps.semantic_verifier_runs,
+                claim_support_runs=deps.claim_support_runs,
                 validation_rejections=deps.validation_rejections,
                 status=(
                     "max_turns"
@@ -3371,14 +3296,14 @@ class PydanticAgentSession:
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self.runtime._merge_fact_review_usage(result, deps.fact_review_runs)
-        self.runtime._merge_semantic_usage(result, deps.semantic_verifier_runs)
+        self.runtime._merge_claim_support_usage(result, deps.claim_support_runs)
         result.diagnostics = {
             **(
                 {"fact_review_runs": deps.fact_review_runs}
                 if deps.fact_review_runs
                 else {}
             ),
-            "semantic_verifier_runs": deps.semantic_verifier_runs,
+            "claim_support_runs": deps.claim_support_runs,
             "validation_rejections": deps.validation_rejections,
             **(
                 {"safety_language": self.state.safety_language}
@@ -3399,3 +3324,38 @@ class PydanticAgentSession:
         if self.state.pending is None:
             self.state.response_priority_citation_ids.clear()
         return result
+
+    def _evidence_budget(
+        self,
+        request_context: ModelRequestContext,
+        response: ModelResponse,
+    ) -> int:
+        capacity = self.runtime._context_budget
+        if capacity is None:
+            return 0
+        empty_returns = ModelRequest(parts=[
+            ToolReturnPart(part.tool_name, "", part.tool_call_id)
+            for part in response.parts
+            if isinstance(part, ToolCallPart)
+            and part.tool_name not in {
+                _GROUNDED_OUTPUT_TOOL,
+                _FINAL_OUTPUT_TOOL,
+                _NONFACTUAL_OUTPUT_TOOL,
+                _CLARIFICATION_OUTPUT_TOOL,
+            }
+        ])
+        projected = [*request_context.messages, response]
+        if empty_returns.parts:
+            projected.append(empty_returns)
+        measured = _measurement_messages(projected)
+        if self.runtime._measure_context is not None:
+            used = self.runtime._measure_context(measured, self.state.continuity)
+        else:
+            if self.runtime._answer_model_route is None:
+                return 0
+            used = request_tokens(
+                self.runtime._answer_model_route,
+                measured,
+                _function_tool_schemas(request_context),
+            )
+        return max(0, capacity - used)

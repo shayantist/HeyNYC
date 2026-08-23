@@ -393,13 +393,13 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
                 "properties": {
                     "keyword": {"type": "string"},
                     "borough": {"type": "string"},
-                    "window_start": {"type": "string"},
+                    "visit_date": {"type": "string"},
                     "window_end": {"type": "string"},
                 },
                 "required": [
                     "keyword",
                     "borough",
-                    "window_start",
+                    "visit_date",
                     "window_end",
                 ],
             },
@@ -417,7 +417,7 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
                         "type": "string",
                         "enum": ["all", "indoor", "cooling_center"],
                     },
-                    "on_date": {"type": "string"},
+                    "visit_date": {"type": "string"},
                 },
                 "required": ["near"],
             },
@@ -482,7 +482,7 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
                         {
                             "keyword": "free events for kids",
                             "borough": "Queens",
-                            "window_start": "2026-07-25",
+                            "visit_date": "2026-07-25",
                             "window_end": "2026-07-25",
                         },
                         "events-call",
@@ -492,7 +492,7 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
                         {
                             "near": "Flushing",
                             "kind": "indoor",
-                            "on_date": "2026-07-25",
+                            "visit_date": "2026-07-25",
                         },
                         "cooling-call",
                     ),
@@ -520,7 +520,7 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
             {
                 "keyword": "free events for kids",
                 "borough": "Queens",
-                "window_start": "2026-07-25",
+                "visit_date": "2026-07-25",
                 "window_end": "2026-07-25",
             },
         ),
@@ -529,7 +529,7 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
             {
                 "near": "Flushing",
                 "kind": "indoor",
-                "on_date": "2026-07-25",
+                "visit_date": "2026-07-25",
             },
         ),
     ]
@@ -729,7 +729,7 @@ async def test_cooling_followup_uses_the_models_exact_typed_site(
     async def fake_query(url, **kwargs):
         return _cooling_rows()
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     model_calls = 0
 
@@ -2940,7 +2940,7 @@ async def test_mechanical_validator_does_not_parse_phone_meaning() -> None:
     assert result.diagnostics["validation_rejections"] == []
 
 
-async def legacy_explicit_semantic_verifier_owns_semantic_acceptance() -> None:
+async def legacy_explicit_claim_support_checker_owns_acceptance() -> None:
     async def handler(_args: dict, ctx: ToolContext) -> str:
         hotline = ctx.citations.register(
             "https://www.nyc.gov/help",
@@ -3045,7 +3045,7 @@ async def legacy_explicit_semantic_verifier_owns_semantic_acceptance() -> None:
         registry=Registry([]),
         tools={source.name: source},
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
     )
 
     result = await runtime.run("What changed and where can I get help?")
@@ -3473,7 +3473,7 @@ async def test_approval_resume_honors_runtime_request_limit() -> None:
     assert result.usage["requests"] == 1
     assert "{cite:S999}" not in result.text
     assert result.diagnostics == {
-        "semantic_verifier_runs": [],
+        "claim_support_runs": [],
         "validation_rejections": [
             {"attempt": 1, "stage": "unknown_citation"},
         ],
@@ -3530,7 +3530,7 @@ async def test_successful_approval_resume_keeps_retry_diagnostics() -> None:
 
     assert result.status == "success"
     assert result.diagnostics == {
-        "semantic_verifier_runs": [],
+        "claim_support_runs": [],
         "validation_rejections": [
             {"attempt": 1, "stage": "unknown_citation"},
         ],
@@ -3865,7 +3865,7 @@ async def test_eval_retains_usage_after_output_retry_failure() -> None:
     assert "{cite:S999}" not in result.text
     assert "resident-secret" not in json.dumps(result.usage)
     assert result.diagnostics == {
-        "semantic_verifier_runs": [],
+        "claim_support_runs": [],
         "validation_rejections": [
             {"attempt": 1, "stage": "unknown_citation"},
             {"attempt": 2, "stage": "unknown_citation"},
@@ -5288,7 +5288,7 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
     await runtime.run("Help")
 
     assert "lookup" not in measured[0]
-    assert "lookup" in measured[1]
+    assert any("lookup" in names for names in measured[1:])
 
 
 async def test_default_memory_usage_is_merged_and_isolated_per_conversation(

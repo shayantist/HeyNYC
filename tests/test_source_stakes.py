@@ -425,11 +425,11 @@ async def test_pydantic_scope_checklist_sets_current_source_policy() -> None:
     assert result.text.endswith("{cite:S1}")
     assert result.usage["scope_model"] == "test/scope"
     message = "\n".join(render(result, "sms"))
-    assert "search-result excerpt" in message.lower()
-    assert "could not confirm it from the full page" in message.lower()
+    assert "https://unknown.example/event" in message
+    assert "verification note" not in message.lower()
 
 
-def test_unverified_excerpt_warning_reaches_the_resident() -> None:
+def test_source_backed_excerpt_does_not_get_a_blanket_warning() -> None:
     result = AgentResult(
         text="The free outdoor movie starts at 7 p.m. {cite:S1}",
         status="success",
@@ -449,8 +449,8 @@ def test_unverified_excerpt_warning_reaches_the_resident() -> None:
 
     message = "\n".join(render(result, "sms"))
 
-    assert "search-result excerpt" in message.lower()
-    assert "could not confirm it from the full page" in message.lower()
+    assert "https://new-local-site.example/weekend" in message
+    assert "verification note" not in message.lower()
 
 
 def test_authoritative_excerpt_does_not_get_unverified_warning() -> None:

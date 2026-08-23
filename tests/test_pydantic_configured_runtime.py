@@ -15,7 +15,7 @@ from heynyc.core.tools import build_toolbox
 from heynyc.core.tools.base import Tool, ToolContext
 
 
-def test_configured_runtime_uses_structured_grounding_without_uncalibrated_semantic_filter(
+def test_configured_runtime_uses_structured_grounding_without_claim_support_checker(
     monkeypatch,
 ):
     captured = {}
@@ -52,7 +52,7 @@ def test_configured_runtime_uses_structured_grounding_without_uncalibrated_seman
 
     assert captured["structured_grounding"] is True
     assert captured["use_module_capabilities"] is True
-    assert captured.get("semantic_verifier") is None
+    assert captured.get("claim_support_checker") is None
     assert captured["model"] is model
     assert captured["fact_review_model"] is model
     assert captured["crisis_screen"] is safety_screen
@@ -155,7 +155,7 @@ def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatc
     assert captured["stream_model_requests"] is False
 
 
-def test_configured_runtime_uses_configured_semantic_checker_in_public_path(
+def test_configured_runtime_uses_configured_claim_support_checker_in_public_path(
     monkeypatch,
 ):
     captured = {}
@@ -185,7 +185,7 @@ def test_configured_runtime_uses_configured_semantic_checker_in_public_path(
 
     build_configured_runtime(Registry([]), model="openai/gpt-5.6-luna")
 
-    assert captured["semantic_verifier"] is not None
+    assert captured["claim_support_checker"] is not None
     assert verifier_models == [config.HEYNYC_CITATION_CHECK_MODEL]
     assert "openai/gpt-5.6-luna" in configured
 

@@ -1,8 +1,8 @@
-from heynyc.core.pydantic_runtime.projection import _semantic_citation_evidence
+from heynyc.core.pydantic_runtime.projection import _claim_support_evidence
 
 
-def test_data_semantic_evidence_uses_public_snapshot_and_derivation() -> None:
-    evidence = _semantic_citation_evidence({
+def test_data_claim_support_evidence_uses_public_snapshot_and_derivation() -> None:
+    evidence = _claim_support_evidence({
         "kind": "DATA",
         "snippet": "Queens SNAP Center, Queens",
         "valid_as_of": "2026-07-01T17:24:46.099Z",
@@ -23,8 +23,8 @@ def test_data_semantic_evidence_uses_public_snapshot_and_derivation() -> None:
     assert len(evidence) <= 1_200
 
 
-def test_web_semantic_evidence_does_not_expose_provenance() -> None:
-    evidence = _semantic_citation_evidence({
+def test_web_claim_support_evidence_does_not_expose_provenance() -> None:
+    evidence = _claim_support_evidence({
         "kind": "WEB",
         "snippet": "Official guidance",
         "provenance": {"private_irrelevant_field": "must stay local"},

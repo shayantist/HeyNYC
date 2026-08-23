@@ -43,7 +43,6 @@ _OUTPUT_TOOLS = {
     _NONFACTUAL_OUTPUT_TOOL,
     _CLARIFICATION_OUTPUT_TOOL,
 }
-_SEMANTIC_CITATION_CHARS = 4_000
 _LEGACY_CITATION_RE = re.compile(
     r"\{\s*cite\s*:\s*(S\d+)(?:\s*\}|(?=\s|$))",
     re.IGNORECASE,
@@ -66,7 +65,7 @@ class GroundedBlock(BaseModel):
             "retrieval established. Never combine those purposes in one framing block. Empathy "
             "must stay source-free and must not restate the resident's factual situation. Framing "
             "that adds a fact, prediction, product-capability statement, or instruction still "
-            "fails semantic verification. Use question for a neutral follow-up question and an "
+            "fails the claim-source check. Use question for a neutral follow-up question and an "
             "optional narrow reminder not to share sensitive identifiers. A question must not "
             "embed an unsupported premise or other factual or procedural advice."
         ),
@@ -143,7 +142,7 @@ def _grounded_block_text(block: GroundedBlock) -> str:
     ).strip()
 
 
-def _semantic_claim_text(block: GroundedBlock) -> str:
+def _claim_support_text(block: GroundedBlock) -> str:
     return _MARKDOWN_LINK_RE.sub(r"\1", _grounded_block_text(block))
 
 
@@ -151,8 +150,8 @@ def _legacy_citation_ids(text: str) -> list[str]:
     return [match.group(1).upper() for match in _LEGACY_CITATION_RE.finditer(text)]
 
 
-def _semantic_citation_evidence(citation: dict) -> str:
-    """Project bounded public evidence without exposing private provenance."""
+def _claim_support_evidence(citation: dict) -> str:
+    """Project public evidence without exposing private provenance."""
     parts = [citation.get("snippet"), citation.get("title")]
     provenance = citation.get("provenance") or {}
     if citation.get("kind") == "DATA" and provenance.get("record_id"):
@@ -161,9 +160,7 @@ def _semantic_citation_evidence(citation: dict) -> str:
             json.dumps(provenance.get("derivation") or {}, ensure_ascii=False),
             citation.get("valid_as_of"),
         ]
-    return " ".join(str(part).strip() for part in parts if part).strip()[
-        :_SEMANTIC_CITATION_CHARS
-    ]
+    return " ".join(str(part).strip() for part in parts if part).strip()
 
 
 def _render_grounded_answer(answer: GroundedAnswer) -> str:
@@ -437,7 +434,7 @@ def _retry_kinds(messages: Sequence[ModelMessage]) -> list[str]:
         "Return a complete replacement answer to the resident's full request": (
             "deterministic_grounding"
         ),
-        "Return a complete replacement answer. Keep every supported outcome": "semantic_grounding",
+        "Return a complete replacement answer. Keep every supported outcome": "claim_support",
         "The resident wrote primarily": "reply_script",
     }
     return [

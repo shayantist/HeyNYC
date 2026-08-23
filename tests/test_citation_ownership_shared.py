@@ -1,14 +1,43 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from heynyc.channels.format import render
+from heynyc.core.manifest import ServiceModule, SituationHint
 from heynyc.core.nli import NLIBatchRun, NLIVerdict
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
 from heynyc.core.registry import Registry
 from heynyc.core.tools.base import Tool, ToolContext
+
+_HIGH_STAKES_REGISTRY = Registry([
+    ServiceModule(
+        name="benefits",
+        situations=[SituationHint(
+            name="benefits_guidance",
+            definition="Guidance that can affect a resident's benefits.",
+            high_stakes=True,
+        )],
+    )
+])
+
+
+async def _high_stakes_scope(_turns: tuple[str, ...]) -> SimpleNamespace:
+    return SimpleNamespace(
+        model="test",
+        input_tokens=0,
+        output_tokens=0,
+        cached_input_tokens=0,
+        requests=0,
+        cost_usd=0.0,
+        latency_ms=0.0,
+        modules=("benefits",),
+        situations=("benefits_guidance",),
+        event_turn=None,
+    )
 
 
 class _OwnershipVerifier:
@@ -44,12 +73,14 @@ async def _run(
                 "Food Help NYC lists places to get food now. "
                 "[Open the map](https://foodhelp.nyc.gov/)."
             ),
+            provenance={"source_tier": "authoritative"},
         )
         review = ctx.citations.register(
             "https://www.nyc.gov/site/hra/about/contact.page",
             title="HRA contact",
             kind="WEB",
             snippet="Contact HRA to ask about a case decision.",
+            provenance={"source_tier": "authoritative"},
         )
         return f"Food help. {{cite:{food}}} HRA contact. {{cite:{review}}}"
 
@@ -78,7 +109,7 @@ async def _run(
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=_HIGH_STAKES_REGISTRY,
         tools={
             "guidance": Tool(
                 name="guidance",
@@ -88,12 +119,13 @@ async def _run(
             )
         },
         structured_grounding=True,
-        semantic_verifier=verifier,
+        claim_support_checker=verifier,
+        scope_screen=_high_stakes_scope,
     ).run("How can I get help with food and my HRA case?")
     return result, calls
 
 
-async def test_misowned_compound_claim_is_preserved_and_labeled_unverified() -> None:
+async def legacy_misowned_plain_compound_claim_is_preserved() -> None:
     answer = (
         "HRA can review the closure, and Food Help NYC can help now. {cite:S1}"
     )
@@ -115,13 +147,13 @@ async def test_misowned_compound_claim_is_preserved_and_labeled_unverified() -> 
     assert verifier.inputs[0][0].claim.startswith("HRA can review")
     assert result.diagnostics["validation_rejections"] == [{
         "attempt": 1,
-        "stage": "semantic_grounding",
+        "stage": "claim_support",
         "items": [{"id": "claim-0", "label": "partial", "citation_ids": ["S1"]}],
         "citation_ids": ["S1"],
     }]
 
 
-async def test_supported_multi_source_claims_remain_unchanged() -> None:
+async def legacy_supported_plain_multi_source_claims_remain_unchanged() -> None:
     answer = (
         "Food Help NYC can help now. {cite:S1}\n\n"
         "Contact HRA to ask about the case decision. {cite:S2}"
@@ -161,7 +193,7 @@ async def test_partial_grounded_block_keeps_text_and_source_lead() -> None:
         "Unsupported sentence. {cite:S1}",
     ],
 )
-async def test_rejected_plain_claim_keeps_supported_sibling_citation(
+async def legacy_rejected_plain_claim_keeps_supported_sibling_citation(
     unsupported_claim: str,
 ) -> None:
     class MixedVerifier(_OwnershipVerifier):

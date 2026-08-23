@@ -376,7 +376,7 @@ def test_final_answer_tool_is_one_concise_terminal_prose_contract():
     answer_description = final_answer.parameters_json_schema["properties"]["answer"][
         "description"
     ].lower()
-    assert "resident-facing prose with inline citation markers" in answer_description
+    assert "resident-facing prose with inline citations" in answer_description
     assert len(answer_description.split()) <= 35
 
 

@@ -20,7 +20,7 @@ async def test_web_fetch_labels_full_page_evidence(monkeypatch):
         )
 
     monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fetched)
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text: 20)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, _model=None: 20)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
 
     result = await web_fetch_tools()[0].handler(
