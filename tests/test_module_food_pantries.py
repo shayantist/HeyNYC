@@ -186,7 +186,7 @@ async def test_foodhelp_tool_returns_typed_source_records_with_explicit_unknowns
     )
 
     tool = get_tools()[0]
-    result = await tool.handler({"near": "Union Square", "k": 1}, ctx)
+    result = await tool.handler({"near": "Union Square", "max_results": 1}, ctx)
     await client.aclose()
 
     assert tool.return_type is fp.FoodHelpResult
@@ -316,7 +316,7 @@ async def test_find_foodhelp_locations_rejects_model_invented_origin(monkeypatch
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("invented location reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]),
         query="My SNAP stopped and I need food today.",
@@ -335,7 +335,7 @@ async def test_urgent_food_requires_the_residents_service_window(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("incomplete urgent request reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([]),
@@ -366,7 +366,7 @@ async def test_find_foodhelp_locations_rejects_partial_or_stale_origins(
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("unsupported location reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query=query, user_history=history,
         user_turns=tuple(history.splitlines()),
@@ -388,7 +388,7 @@ async def test_find_foodhelp_locations_uses_a_location_the_resident_gave_in_a_pr
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query="Which one is open now?",
         user_history="I am near Jackson Heights.\nWhich one is open now?",
@@ -404,7 +404,7 @@ async def test_find_foodhelp_locations_rejects_past_location_in_current_turn(mon
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("stale location reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     query = "I used to live in Brooklyn, but I am now in Queens."
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query=query, user_turns=(query,),
@@ -419,7 +419,7 @@ async def test_find_foodhelp_locations_rejects_negated_current_origin(monkeypatc
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("negated location reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query="I am not in Brooklyn.",
         user_turns=("I am not in Brooklyn.",),
@@ -439,7 +439,7 @@ async def test_find_foodhelp_locations_rejects_extended_negation(monkeypatch, qu
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("negated location reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query=query, user_turns=(query,),
     )
@@ -456,7 +456,7 @@ async def test_find_foodhelp_locations_preserves_resident_address_abbreviation(m
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     query = "I am near 123 Main St, Brooklyn."
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]), query=query, user_turns=(query,),
@@ -474,7 +474,7 @@ async def test_find_foodhelp_locations_accepts_city_qualifiers_added_to_resident
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry([]),
         query="Is there a food pantry open right now near Union Square?",
@@ -495,7 +495,7 @@ async def test_find_foodhelp_locations_accepts_city_qualifiers_added_to_one_word
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([]),
@@ -528,7 +528,7 @@ async def test_find_foodhelp_locations_accepts_only_exact_authoritative_source_l
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     citations = CitationRegistry()
     source_id = citations.register(
         "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
@@ -575,7 +575,7 @@ async def test_find_foodhelp_locations_does_not_treat_place_name_as_resident_sup
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("unverified expanded address reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     citations = CitationRegistry()
     source_id = citations.register(
         "https://www.nyc.gov/path",
@@ -623,7 +623,7 @@ async def test_find_foodhelp_locations_recovers_source_location_without_repeated
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     citations = CitationRegistry()
     source_id = citations.register(
         "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
@@ -680,7 +680,7 @@ async def test_find_foodhelp_locations_accepts_source_address_with_different_pun
         seen.append(text)
         return None
 
-    monkeypatch.setattr(fp, "geocode", geocode_then_stop)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode_then_stop)
     citations = CitationRegistry()
     source_id = citations.register(
         "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
@@ -715,7 +715,7 @@ async def test_find_foodhelp_locations_rejects_an_unrelated_address_from_the_sam
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("unrelated source address reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     citations = CitationRegistry()
     source_id = citations.register(
         "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
@@ -754,7 +754,7 @@ async def test_find_foodhelp_locations_rejects_an_unrelated_address_in_the_same_
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("unrelated same-sentence address reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     citations = CitationRegistry()
     source_id = citations.register(
         "https://www.nyc.gov/site/dhs/shelter/families/families-with-children-applying.page",
@@ -804,7 +804,7 @@ async def test_find_foodhelp_locations_ranks_grounds_and_links(monkeypatch):
     citations = CitationRegistry()
     client = _routed_client(features)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
     assert out.outcome == "success"
@@ -853,13 +853,13 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
         _pantry_feature(
             -73.9400,
             40.8000,
-            program="Farther Open Pantry",
+            program="Evening Pantry",
             type_fp="FP",
             program_type="FP",
             GlobalID="urgent-far",
             **{
-                f"fp_{now_day}_open1": "9:00 AM",
-                f"fp_{now_day}_close1": "5:00 PM",
+                f"fp_{now_day}_open1": "5:00 PM",
+                f"fp_{now_day}_close1": "8:00 PM",
             },
         ),
     ]
@@ -869,11 +869,20 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     out = await get_tools()[0].handler(
         {
             "near": "Union Square",
-            "k": 1,
+            "max_results": 1,
             "urgent": True,
             "service_window": {"start": "12:00", "end": "12:01"},
         },
         ctx,
+    )
+    point_in_time = await get_tools()[0].handler(
+        {
+            "near": "Union Square",
+            "max_results": 3,
+            "urgent": True,
+            "visit_time": "18:00",
+        },
+        ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client),
     )
     await client.aclose()
 
@@ -881,6 +890,8 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
     assert out.urgent is True
     assert out.immediate_route is not None
     assert out.immediate_route.phone == "311"
+    assert [record.service.name for record in point_in_time.records] == ["Evening Pantry"]
+    assert point_in_time.records[0].schedule.requested_window_start == "18:00"
     assert out.immediate_route.url == fp.FOOD_ROUTE_URL
     assert out.availability_citation_id is not None
     assert out.origin is not None
@@ -908,7 +919,7 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
 
     schema = get_tools()[0].parameters
     assert schema["properties"]["urgent"]["type"] == "boolean"
-    assert schema["properties"]["on"]["format"] == "date"
+    assert {"format": "date", "type": "string"} in schema["properties"]["visit_date"]["anyOf"]
     assert "urgent" not in schema["required"]
     description = get_tools()[0].description
     assert "Whenever `urgent=true`, also pass `service_window`" in description
@@ -1001,7 +1012,7 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     out = await get_tools()[0].handler(
         {
             "near": "Union Square",
-            "k": 3,
+            "max_results": 3,
             "urgent": True,
             "service_window": {"start": "17:00", "end": "23:59"},
         },
@@ -1121,7 +1132,7 @@ async def test_find_foodhelp_locations_returns_farther_open_lead_after_immediate
     out = await get_tools()[0].handler(
         {
             "near": "Union Square",
-            "k": 1,
+            "max_results": 1,
             "urgent": True,
             "service_window": {"start": "12:00", "end": "12:01"},
         },
@@ -1157,7 +1168,7 @@ async def test_find_foodhelp_locations_leads_with_open_site_for_nonurgent_reques
     client = _routed_client(features)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 2}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 2}, ctx)
     await client.aclose()
 
     assert [record.service.name for record in out.records] == [
@@ -1200,7 +1211,7 @@ async def test_find_foodhelp_locations_uses_the_residents_requested_date(monkeyp
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
     out = await get_tools()[0].handler(
-        {"near": "Union Square", "k": 1, "on": "2026-07-18"},
+        {"near": "Union Square", "max_results": 1, "visit_date": "2026-07-18"},
         ctx,
     )
     await client.aclose()
@@ -1230,7 +1241,7 @@ async def test_f185_future_date_respects_monthly_occurrence_notes(monkeypatch):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
     out = await get_tools()[0].handler(
-        {"near": "Union Square", "k": 1, "on": "2026-08-13"},
+        {"near": "Union Square", "max_results": 1, "visit_date": "2026-08-13"},
         ctx,
     )
     await client.aclose()
@@ -1377,7 +1388,7 @@ async def test_f199_rejects_a_non_foodhelp_site_reference(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("invalid site reference reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     citations = CitationRegistry()
     unrelated_id = citations.register(
         "https://example.org/not-foodhelp",
@@ -1448,7 +1459,7 @@ async def test_future_same_weekday_is_not_labeled_today(monkeypatch):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
     out = await get_tools()[0].handler(
-        {"near": "Union Square", "service_type": "pantry", "on": "2026-07-24"},
+        {"near": "Union Square", "service_type": "pantry", "visit_date": "2026-07-24"},
         ctx,
     )
     await client.aclose()
@@ -1502,11 +1513,11 @@ async def test_find_foodhelp_locations_rejects_past_service_date_before_lookup(m
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("past date reached geocoder")
 
-    monkeypatch.setattr(fp, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
 
     out = await get_tools()[0].handler(
-        {"near": "Union Square", "on": "2026-07-16"},
+        {"near": "Union Square", "visit_date": "2026-07-16"},
         ctx,
     )
 
@@ -1537,7 +1548,7 @@ async def test_find_foodhelp_locations_flags_conflicting_schedule_fields(monkeyp
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
 
     out = await get_tools()[0].handler(
-        {"near": "Union Square", "k": 1, "on": "2026-07-18"},
+        {"near": "Union Square", "max_results": 1, "visit_date": "2026-07-18"},
         ctx,
     )
     await client.aclose()
@@ -1575,7 +1586,7 @@ async def test_find_foodhelp_locations_cites_an_empty_official_feed():
 async def test_find_foodhelp_locations_abstains_when_geocode_fails(monkeypatch):
     async def fail(text, **kwargs):
         return None
-    monkeypatch.setattr(fp, "geocode", fail)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fail)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"features": []})))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
@@ -1590,7 +1601,7 @@ async def test_find_foodhelp_locations_abstains_when_geocode_fails(monkeypatch):
 async def test_find_foodhelp_locations_clarifies_on_low_confidence(monkeypatch):
     async def ambiguous(text, **kwargs):
         return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
-    monkeypatch.setattr(fp, "geocode", ambiguous)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", ambiguous)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)

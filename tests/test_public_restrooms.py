@@ -26,11 +26,14 @@ def test_public_restrooms_module_loads_custom_lookup():
 def test_public_restrooms_scope_accessibility_and_311_claims():
     registry = Registry.discover(config.MODULES_DIR)
     module = next(item for item in registry.modules if item.name == "public_restrooms")
-    parameter = restrooms.get_tools()[0].parameters["properties"]["fully_accessible"]
+    properties = restrooms.get_tools()[0].parameters["properties"]
+    parameter = properties["fully_accessible"]
     prompt = " ".join(module.prompt.split())
 
     assert "site accessibility field" in parameter["description"]
     assert "does not prove restroom fixture accessibility" in parameter["description"]
+    assert "open_now_only" not in properties
+    assert "schedule evidence is context" in prompt
     assert "Only route an explicitly reported closure or maintenance problem" in prompt
     assert "include every closer partial match" in prompt
     assert "call web_fetch once" in prompt
@@ -39,7 +42,7 @@ def test_public_restrooms_scope_accessibility_and_311_claims():
 
 
 @pytest.mark.asyncio
-async def test_lookup_prefers_open_official_corroboration_and_respects_limit(monkeypatch):
+async def test_lookup_keeps_distance_order_when_farther_schedule_is_known(monkeypatch):
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.7580, -73.9780, text)
 
@@ -84,7 +87,7 @@ async def test_lookup_prefers_open_official_corroboration_and_respects_limit(mon
             }
         ]
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     monkeypatch.setattr(
@@ -96,23 +99,76 @@ async def test_lookup_prefers_open_official_corroboration_and_respects_limit(mon
     ctx = ToolContext(citations=CitationRegistry(), registry=registry)
 
     output = await restrooms.get_tools()[0].handler(
-        {"near": "Rockefeller Center", "limit": 1}, ctx
+        {"near": "Rockefeller Center", "max_results": 1}, ctx
     )
 
-    assert "1. 645 Fifth Avenue POPS" in output
-    assert "Unverified Lobby" not in output
-    assert "scheduled open now" in output
-    assert "does not confirm the restroom's condition" in output
-    assert "Wednesday: 8a-10p" in output
-    assert "Wheelchair accessible: Yes" in output
+    assert "1. Unverified Lobby" in output
+    assert "645 Fifth Avenue POPS" not in output
+    assert "not independently confirmed open now" in output
     assert "NYC restroom record date: 2025-11-05" in output
     assert "{cite:S1}" in output
-    assert "{cite:S2}" in output
-    assert len(ctx.citations.mapping()) == 2
+    assert len(ctx.citations.mapping()) == 1
     assert all(
         citation["provenance"]["derivation"]["origin_label"] == "Rockefeller Center"
         for citation in ctx.citations.mapping().values()
     )
+
+
+@pytest.mark.asyncio
+async def test_nearest_restroom_does_not_let_farther_schedule_evidence_beat_distance(
+    monkeypatch,
+):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.57328, -73.97033, text)
+
+    async def fake_city(*args, **kwargs):
+        return [
+            {
+                ":id": "coney",
+                "facility_name": "Coney Island Beach Zone 4b",
+                "latitude": "40.57341",
+                "longitude": "-73.97590",
+                "status": "Operational",
+                "hours_of_operation": "8am-4pm, open later seasonally",
+            },
+            {
+                ":id": "maiden",
+                "facility_name": "180 Maiden Lane POPS",
+                "latitude": "40.70528",
+                "longitude": "-74.00552",
+                "status": "Operational",
+            },
+        ]
+
+    async def fake_cool_options(*args, **kwargs):
+        return [{
+            "OBJECTID": 17445,
+            "Facility_name": "180 Maiden Lane POPS",
+            "lat": 40.70525,
+            "lon": -74.00547,
+            "Finder_status": "OPEN",
+            "cc_fri_open1": "08:00 AM",
+            "cc_fri_close1": "10:00 PM",
+        }]
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    monkeypatch.setattr(restrooms, "query_dataset", fake_city)
+    monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
+    monkeypatch.setattr(
+        restrooms,
+        "_nyc_now",
+        lambda: datetime(2026, 8, 21, 17, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await restrooms.get_tools()[0].handler(
+        {"near": "Coney Island Beach", "max_results": 1}, ctx
+    )
+
+    assert "1. Coney Island Beach Zone 4b" in output
+    assert "180 Maiden Lane POPS" not in output
 
 
 @pytest.mark.asyncio
@@ -135,13 +191,13 @@ async def test_lookup_keeps_unverified_nearby_options_and_caps_requested_limit(m
     async def fake_cool_options(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     registry = Registry.discover(config.MODULES_DIR)
     ctx = ToolContext(citations=CitationRegistry(), registry=registry)
 
-    output = await restrooms.get_tools()[0].handler({"near": "here", "limit": 99}, ctx)
+    output = await restrooms.get_tools()[0].handler({"near": "here", "max_results": 10}, ctx)
 
     assert "10. Restroom 9" in output
     assert "Restroom 10" not in output
@@ -172,7 +228,7 @@ async def test_lookup_surfaces_city_access_and_family_details_without_corroborat
     async def fake_cool_options(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     ctx = ToolContext(
@@ -233,7 +289,7 @@ async def test_lookup_honors_requested_access_and_changing_station_filters(monke
     async def fake_cool_options(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     ctx = ToolContext(
@@ -243,7 +299,7 @@ async def test_lookup_honors_requested_access_and_changing_station_filters(monke
     filtered = await restrooms.get_tools()[0].handler(
         {"near": "here", "fully_accessible": True, "changing_station": True}, ctx
     )
-    unfiltered = await restrooms.get_tools()[0].handler({"near": "here", "limit": 1}, ctx)
+    unfiltered = await restrooms.get_tools()[0].handler({"near": "here", "max_results": 1}, ctx)
 
     assert "Usable Restroom" in filtered
     assert "Nearest Restroom" not in filtered
@@ -300,7 +356,7 @@ async def test_lookup_uses_named_city_record_and_keeps_closer_partial_match(monk
         fetched.append(args)
         return "SOURCE S99: Official page\nWheelchair accessible\n{cite:S99}"
 
-    monkeypatch.setattr(restrooms, "geocode", missing_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", missing_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     ctx = ToolContext(
@@ -383,7 +439,7 @@ async def test_lookup_uses_the_residents_requested_date(monkeypatch):
             },
         ]
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     monkeypatch.setattr(
@@ -396,7 +452,7 @@ async def test_lookup_uses_the_residents_requested_date(monkeypatch):
     )
 
     output = await restrooms.get_tools()[0].handler(
-        {"near": "here", "limit": 1, "on": "2026-07-18"},
+        {"near": "here", "max_results": 1, "visit_date": "2026-07-18"},
         ctx,
     )
 
@@ -420,6 +476,74 @@ async def test_lookup_uses_the_residents_requested_date(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lookup_applies_an_explicit_visit_time_before_distance(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.0, -73.0, text)
+
+    async def fake_city(*args, **kwargs):
+        return [
+            {
+                ":id": "near",
+                "facility_name": "Morning Plaza Restroom",
+                "latitude": "40.0001",
+                "longitude": "-73.0",
+                "status": "Operational",
+            },
+            {
+                ":id": "far",
+                "facility_name": "Afternoon Plaza Restroom",
+                "latitude": "40.001",
+                "longitude": "-73.0",
+                "status": "Operational",
+            },
+        ]
+
+    async def fake_cool_options(*args, **kwargs):
+        return [
+            {
+                "Facility_name": "Morning Plaza Restroom",
+                "lat": 40.0001,
+                "lon": -73.0,
+                "cc_fri_open1": "08:00 AM",
+                "cc_fri_close1": "10:00 AM",
+            },
+            {
+                "Facility_name": "Afternoon Plaza Restroom",
+                "lat": 40.001,
+                "lon": -73.0,
+                "cc_fri_open1": "11:00 AM",
+                "cc_fri_close1": "04:00 PM",
+            },
+        ]
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    monkeypatch.setattr(restrooms, "query_dataset", fake_city)
+    monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
+    monkeypatch.setattr(
+        restrooms,
+        "_nyc_now",
+        lambda: datetime(2026, 8, 21, 9, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await restrooms.get_tools()[0].handler(
+        {
+            "near": "here",
+            "max_results": 1,
+            "visit_date": "2026-08-21",
+            "visit_time": "12:00",
+        },
+        ctx,
+    )
+
+    assert "1. Afternoon Plaza Restroom" in output
+    assert "Morning Plaza Restroom" not in output
+    assert "scheduled open at 12:00 PM" in output
+
+
+@pytest.mark.asyncio
 async def test_future_lookup_does_not_describe_uncorroborated_result_as_open_now(monkeypatch):
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.0, -73.0, text)
@@ -437,7 +561,7 @@ async def test_future_lookup_does_not_describe_uncorroborated_result_as_open_now
     async def fake_cool_options(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", fake_cool_options)
     monkeypatch.setattr(
@@ -450,7 +574,7 @@ async def test_future_lookup_does_not_describe_uncorroborated_result_as_open_now
     )
 
     output = await restrooms.get_tools()[0].handler(
-        {"near": "here", "on": "2026-07-18"},
+        {"near": "here", "visit_date": "2026-07-18"},
         ctx,
     )
 
@@ -469,13 +593,13 @@ async def test_lookup_rejects_past_date_before_external_calls(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("past date reached geocoder")
 
-    monkeypatch.setattr(restrooms, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
     )
 
     output = await restrooms.get_tools()[0].handler(
-        {"near": "here", "on": "2026-07-16"},
+        {"near": "here", "visit_date": "2026-07-16"},
         ctx,
     )
 
@@ -487,7 +611,7 @@ async def test_lookup_asks_for_a_better_location_when_geocoding_fails(monkeypatc
     async def fake_geocode(text, **kwargs):
         return None
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     registry = Registry.discover(config.MODULES_DIR)
     ctx = ToolContext(citations=CitationRegistry(), registry=registry)
 
@@ -510,7 +634,7 @@ async def test_lookup_keeps_city_results_when_cool_options_is_unavailable(monkey
     async def failed_cool_options(*args, **kwargs):
         raise RuntimeError("source unavailable")
 
-    monkeypatch.setattr(restrooms, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(restrooms, "query_dataset", fake_city)
     monkeypatch.setattr(restrooms, "query_feature_service", failed_cool_options)
     ctx = ToolContext(

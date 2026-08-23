@@ -32,8 +32,10 @@ prompt: |
   Never substitute "New York City", a borough, or a location inferred from the service request.
   Pass service_type=pantry when the resident asks for a food pantry, soup_kitchen when they ask
   for a soup kitchen, or any for general food help.
-  When the resident asks about a future day or date, pass on=YYYY-MM-DD and describe returned
+  When the resident asks about a future day or date, pass visit_date=YYYY-MM-DD and describe returned
   hours as scheduled weekly hours for that date, not confirmed or guaranteed availability.
+  When the resident gives a specific visit time, pass `visit_time` as 24-hour New York local time.
+  The tool applies that time to the source's structured weekly schedule.
   Pass urgent=true whenever the resident needs food now, today, or tonight. This is a typed
   urgency signal for the existing pantry tool, not a separate workflow or capability. Whenever
   urgent=true, also pass service_window with start and end as 24-hour NYC-local HH:MM values: now

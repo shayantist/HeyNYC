@@ -52,7 +52,7 @@ allowlist:
   - services6.arcgis.com
 prompt: |
   For drinking-water or bottle-refill questions, call nearest with
-  category="drinking_fountain" and the user's location. Pass k when the user requests a count;
+  category="drinking_fountain" and the user's location. Pass max_results when the user requests a count;
   otherwise use the default. These are outdoor fountains in NYC Parks, not a complete inventory
   of indoor, private, transit, temporary, or every public water source. Preserve the distance,
   directions, citation, and park name. An "Active" inventory record is not a live guarantee that

@@ -33,16 +33,16 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service_page
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
-    current_resolved_location,
-    geocode,
     maps_link,
     miles,
     origin_precision,
     rank_nearby,
+    resolve_location,
     resolved_location_citation,
 )
 
@@ -73,6 +73,13 @@ CLASS_NYC_CARE = "NYC_CARE"
 # `snippet` is a subset of `body`'s wording (keeps the eval faithfulness overlap high). Re-verify
 # the live pages before editing any fact.
 VERIFIED_ON = "2026-07-04"
+
+
+class ClinicQuery(LocationRequest):
+    near: str = Field(description="NYC address, neighborhood, or ZIP to search near.")
+    max_results: int | None = Field(
+        default=None, ge=1, le=10, description="Maximum clinics requested; omit for the default 5."
+    )
 
 
 class HrsaClinicSource(BaseModel):
@@ -612,13 +619,12 @@ def _source_date(value: str) -> date | None:
 
 
 async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
-    near = (args.get("near") or "").strip()
+    query = ClinicQuery.model_validate(args)
+    near = query.near.strip()
     if not near:
         return ClinicResult(outcome="missing_origin", sources=_not_called_sources())
 
-    origin = current_resolved_location(near, ctx)
-    if origin is None:
-        origin = await geocode(near, client=ctx.http)
+    origin = await resolve_location(near, ctx)
     if origin is None:
         return ClinicResult(
             outcome="location_not_found",
@@ -684,7 +690,7 @@ async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
             fallback_routes=_fallback_routes(ctx),
         )
 
-    k = max(1, min(int(args.get("k") or 5), 10))
+    max_results = query.max_results or 5
     ranked = rank_nearby(
         origin,
         clinics,
@@ -693,7 +699,7 @@ async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
             round(clinic.lat, 5),
             round(clinic.lon, 5),
         ),
-        limit=k,
+        limit=max_results,
     )
 
     typed_clinics: list[ClinicRecord] = []
@@ -758,7 +764,7 @@ async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
         clinics=typed_clinics,
         program_guarantees=guarantees,
         fallback_routes=_fallback_routes(ctx) if hrsa_source.status != "ok" else [],
-        requested_count=k,
+        requested_count=max_results,
     )
 
 
@@ -932,7 +938,7 @@ def get_tools() -> list[Tool]:
                 "insurance or immigration status, grounded + cited. Merges two sources: live HRSA "
                 "Federally Qualified Health Centers (community health centers, sliding fee scale) and "
                 "NYC Health + Hospitals / NYC Care sites (low/no-cost, doesn't ask immigration "
-                "status). Pass `near` = the user's NYC address, neighborhood, or ZIP; optional `k` "
+                "status). Pass `near` = the user's NYC address, neighborhood, or ZIP; optional `max_results` "
                 "(default 5). Returns each site's name, address, borough, phone, distance, and CLASS, "
                 "plus a grounded eligibility guarantee cited to the program's official page. Use for "
                 "'doctor without insurance', 'free clinic', 'I'm undocumented and sick'. NEVER guess a "
@@ -940,16 +946,7 @@ def get_tools() -> list[Tool]:
                 "646-NYC-CARE. The eligibility/immigration-safety text comes only from the program "
                 "citation, never invented per-site."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {"type": "string",
-                             "description": "The NYC address, neighborhood, or ZIP to search near."},
-                    "k": {"type": "integer",
-                          "description": "How many clinics to return (default 5).", "default": 5},
-                },
-                "required": ["near"],
-            },
+            parameters=ClinicQuery.model_json_schema(),
             handler=_handler,
             return_type=ClinicResult,
             open_world=True,  # hits the live HRSA ArcGIS service + geocoder (NYC Care seed is bundled)

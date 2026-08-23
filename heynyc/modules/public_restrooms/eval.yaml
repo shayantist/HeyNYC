@@ -19,6 +19,18 @@
   perturbation: paraphrase
   expect_same_outcome_as_base: true
 
+- id: restroom_f280_nearest_coney_beach
+  tags: [F280, must-win]
+  query: "Where's the nearest restroom in Coney Island Beach?"
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Return a nearby Coney Island Beach restroom from the City dataset. A farther location with
+    corroborated hours must not outrank a closer restroom when the resident did not ask what is
+    open now. Preserve any uncertainty about current entry or condition.
+  notes: Nearest means distance for this query.
+
 - id: restroom_open_now
   query: "Which public bathroom near Bryant Park is definitely open and unlocked right now?"
   capability: abstention

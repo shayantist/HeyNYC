@@ -52,7 +52,7 @@ def _patch_cooling_lookup(monkeypatch, rows: list[dict]) -> None:
     async def fake_query(url, **kwargs):
         return rows
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,

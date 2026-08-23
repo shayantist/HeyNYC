@@ -26,10 +26,13 @@ from datetime import date, datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+from pydantic import Field, ValidationError
+
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import dataset_url, query_dataset
-from heynyc.core.tools.geo import geocode, maps_link
+from heynyc.core.tools.geo import maps_link, resolve_location
 
 # ponytail: single source for the dataset id; the manifest declares the matching
 # binding (category street_closure) only so the capability table / grounding label read it.
@@ -43,6 +46,16 @@ _ROUTE = (
     "parade, or a police closure. For live traffic and incidents check 511NY (511ny.org) or "
     "nyc.gov/dot, and dial 511."
 )
+
+
+class StreetClosureQuery(LocationRequest):
+    near: str = Field(description="NYC address or landmark to check closures around.")
+    visit_date: date | None = Field(
+        default=None, description="Date to check; omit to use today's New York date."
+    )
+    max_results: int | None = Field(
+        default=None, ge=1, le=10, description="Maximum closures requested; omit for the default 5."
+    )
 
 
 def _nyc_today() -> date:
@@ -77,20 +90,6 @@ def _representative_point(record: dict) -> tuple[float, float] | None:
         lon, lat = geom["coordinates"][0][0][:2]
         return float(lat), float(lon)
     except (KeyError, IndexError, TypeError, ValueError):
-        return None
-
-
-def _parse_on_date(raw: str, today: date) -> str | None:
-    """Parse an exact ISO date, defaulting to today only when the value is omitted.
-
-    An invalid value, including any SoQL-injection attempt, returns None and never reaches
-    the query. A valid returned value is always digits-and-dashes."""
-    raw = (raw or "").strip()
-    if not raw:
-        return today.isoformat()
-    try:
-        return date.fromisoformat(raw).isoformat()
-    except ValueError:
         return None
 
 
@@ -132,19 +131,24 @@ def _closure_line(index: int, record: dict, cite: str) -> str:
 
 
 async def _street_closures(args: dict, ctx: ToolContext) -> str:
-    near = str(args.get("near", "") or "").strip()
-    if not near:
+    if not str(args.get("near", "") or "").strip():
         return (
             "Tell me an NYC address or landmark and I'll check for scheduled street closures near "
             "it (optionally for a specific date, like a game day)."
         )
+    try:
+        query = StreetClosureQuery.model_validate(args)
+    except ValidationError:
+        return (
+            "The requested date or result count is invalid. Ask for a date in YYYY-MM-DD format "
+            "and a count from 1 to 10."
+        )
+    near = query.near.strip()
 
-    on = _parse_on_date(str(args.get("on", "") or ""), _nyc_today())
-    if on is None:
-        return "The requested date is invalid. Ask for a date in YYYY-MM-DD format."
+    on = (query.visit_date or _nyc_today()).isoformat()
 
     # PII: geocode the location only to bound the query; the resolved address is never logged.
-    origin = await geocode(near, client=ctx.http)
+    origin = await resolve_location(near, ctx)
     if origin is None:
         return f"I could not locate '{near}'. Give me a specific NYC address or landmark."
     if origin.low_confidence:
@@ -168,17 +172,13 @@ async def _street_closures(args: dict, ctx: ToolContext) -> str:
             f"on {on}. {_ROUTE}"
         )
 
-    try:
-        limit = int(args.get("limit", 5))
-    except (TypeError, ValueError):
-        limit = 5
-    limit = min(max(limit, 1), 10)
+    max_results = query.max_results or 5
 
     lines = [
         f"Scheduled DOT street closures within about half a mile of {origin.label} on {on} "
         f"({len(rows)} found):",
     ]
-    for index, record in enumerate(rows[:limit], 1):
+    for index, record in enumerate(rows[:max_results], 1):
         lines.append(_closure_line(index, record, _closure_citation(ctx, record)))
     lines.append(_ROUTE)
     return "\n".join(lines)
@@ -192,34 +192,13 @@ def get_tools() -> list[Tool]:
                 "Check scheduled NYC street closures near a place, grounded in DOT's construction "
                 "street-closure schedule (NYC Open Data). Use it for game-day and travel planning: "
                 "'are streets closed near <place>?', 'is <street> closed for construction?'. Pass "
-                "near (one NYC address or landmark) and optional on (a date, YYYY-MM-DD; defaults "
-                "to today) to see closures active that day, each with its closed segment, the work "
+                "`near` (one NYC address or landmark) and optional `visit_date` (defaults to today) "
+                "to see closures active that day, each with its closed segment, the work "
                 "purpose, the scheduled window, and a citation. This is PLANNED construction only: "
                 "it does not cover a crash, a parade, a police closure, alternate-side-parking "
                 "suspensions, or live traffic. Read-only."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {
-                        "type": "string",
-                        "description": "One NYC address or landmark to check closures around.",
-                    },
-                    "on": {
-                        "type": "string",
-                        "format": "date",
-                        "description": "Date to check (YYYY-MM-DD), e.g. a game day. Defaults to today.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "default": 5,
-                        "description": "Max closures to list.",
-                    },
-                },
-                "required": ["near"],
-            },
+            parameters=StreetClosureQuery.model_json_schema(),
             handler=_street_closures,
             open_world=True,  # hits live Socrata
             title="Check NYC street closures",

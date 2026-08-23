@@ -5,9 +5,10 @@ from datetime import UTC, date, datetime, time
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from heynyc.core.citations import content_hash, data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
@@ -16,10 +17,10 @@ from heynyc.core.tools.geo import (
     current_resolved_location,
     directions_link,
     format_distance,
-    geocode,
     haversine_m,
     miles,
     resident_supplied_location,
+    resolve_location,
 )
 
 COOL_OPTIONS_URL = (
@@ -45,12 +46,15 @@ _SELECTED_INDOOR_UNAVAILABLE = (
 )
 
 
-class CoolingQuery(BaseModel):
+class CoolingQuery(LocationRequest):
     """Validated resident constraints for one Cool Options lookup."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    near: str = Field(description="NYC address or landmark.")
+    near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
+    max_results: int | None = Field(
+        default=None, ge=1, le=10, description="Maximum Cool Options requested; omit for the default 3."
+    )
+    visit_date: date | None = Field(default=None, description="Requested New York visit date.")
+    visit_time: time | None = Field(default=None, description="Requested New York visit time.")
     site: str | None = Field(
         default=None,
         description="Exact facility name already selected in the conversation.",
@@ -67,23 +71,6 @@ class CoolingQuery(BaseModel):
     audience: Literal["any", "not_age_restricted"] = Field(
         default="any",
         description="Whether to exclude City rows marked as age-restricted.",
-    )
-    max_results: int | None = Field(
-        default=None,
-        ge=1,
-        le=10,
-        description=(
-            "Maximum locations requested by the resident. Set only when the resident explicitly "
-            "asks for a number; otherwise omit it and the server returns three."
-        ),
-    )
-    visit_date: date | None = Field(
-        default=None,
-        description="Visit date extracted from the resident's request.",
-    )
-    visit_time: time | None = Field(
-        default=None,
-        description="Visit time in America/New_York extracted from the resident's request.",
     )
     open_now_only: bool = Field(
         default=False,
@@ -188,6 +175,9 @@ def _citation(ctx: ToolContext, item: dict, origin: GeoPoint) -> str:
             derivation={
                 "origin": [origin.lat, origin.lon],
                 "origin_label": origin.label,
+                "point": [item["lat"], item["lon"]],
+                "distance_m": item["distance_m"],
+                "distance_mi": miles(item["distance_m"]),
                 **{
                     key: item[key]
                     for key in ("open_now", "target_at", "target_status")
@@ -380,9 +370,9 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
             )
         if stored_origin is None:
             ctx.current_location = None
-        origin = stored_origin or await geocode(near, client=ctx.http)
+        origin = await resolve_location(near, ctx)
     else:
-        origin = await geocode(near, client=ctx.http)
+        origin = await resolve_location(near, ctx)
     if origin is None:
         return f"Could not locate '{near}'. Ask for a specific NYC address or landmark."
     if origin.low_confidence:

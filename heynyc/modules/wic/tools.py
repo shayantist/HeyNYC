@@ -25,14 +25,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core import config
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
-    current_resolved_location,
-    geocode,
     miles,
     origin_precision,
     rank_nearby,
+    resolve_location,
     resolved_location_citation,
 )
 
@@ -51,6 +51,13 @@ WIC_QUERY_URL = f"{WIC_URL}?" + urlencode({
     "$order": ":id",
     "$$exclude_system_fields": "false",
 })
+
+
+class WicQuery(LocationRequest):
+    near: str = Field(description="NYC address or neighborhood to search near.")
+    max_results: int | None = Field(
+        default=None, ge=1, le=10, description="Maximum WIC sites requested; omit for the default 5."
+    )
 
 
 class WicSource(BaseModel):
@@ -452,12 +459,12 @@ def _site_citation(ctx: ToolContext, site: WicSite, *,
 
 
 async def _handler(args: dict, ctx: ToolContext) -> WicResult:
-    near = (args.get("near") or "").strip()
+    query = WicQuery.model_validate(args)
+    near = query.near.strip()
     if not near:
         return _result("missing_origin")
 
-    stored_origin = current_resolved_location(near, ctx)
-    origin = stored_origin or await geocode(near, client=ctx.http)
+    origin = await resolve_location(near, ctx)
     if origin is None:
         return _result(
             "location_not_found",
@@ -527,7 +534,7 @@ async def _handler(args: dict, ctx: ToolContext) -> WicResult:
             application_route=_application_route(ctx),
         )
 
-    k = max(1, min(int(args.get("k") or 5), 10))
+    max_results = query.max_results or 5
     ranked = rank_nearby(
         origin,
         sites,
@@ -536,7 +543,7 @@ async def _handler(args: dict, ctx: ToolContext) -> WicResult:
             round(site.lat, 5),
             round(site.lon, 5),
         ),
-        limit=k,
+        limit=max_results,
     )
     application_route = _application_route(ctx)
     typed_records = []
@@ -595,7 +602,7 @@ async def _handler(args: dict, ctx: ToolContext) -> WicResult:
         ),
         records=typed_records,
         application_route=application_route,
-        requested_count=k,
+        requested_count=max_results,
     )
 
 
@@ -606,22 +613,13 @@ def get_tools() -> list[Tool]:
             description=(
                 "Find the nearest NYC WIC (Women, Infants, and Children) sites to an address, "
                 "grounded in the NY State WIC Program Site Information directory (Health Data NY). "
-                "Pass `near` = the user's NYC address or neighborhood; optional `k` (default 5). "
+                "Pass `near` = the user's NYC address or neighborhood; optional `max_results` (default 5). "
                 "Returns each site's agency name, full address, phone, website if listed, and site "
                 "type (Permanent vs. Temporary) - every site cited. NEVER guess a site: if geocoding "
                 "fails or none are near, say so and point to the state WIC info / 311. The source has "
                 "NO hours and NO eligibility detail - tell the user to call; don't invent either."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {"type": "string",
-                             "description": "The NYC address or neighborhood to search near."},
-                    "k": {"type": "integer",
-                          "description": "How many WIC sites to return (default 5).", "default": 5},
-                },
-                "required": ["near"],
-            },
+            parameters=WicQuery.model_json_schema(),
             handler=_handler,
             return_type=WicResult,
             open_world=True,  # hits the live Health Data NY Socrata dataset + geocoder

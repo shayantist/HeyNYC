@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from .. import config
 from ..citations import data_provenance
 from ..config import GEOSEARCH_BASE, OSRM_BASE
+from ..location import LocationRequest
 from .arcgis import feature_query_url, query_feature_service
 from .base import Tool, ToolContext
 from .datasets import dataset_url, normalize, query_dataset, row_url
@@ -98,10 +99,8 @@ def _intersection_identity_matches(query: str, label: str) -> bool:
     return not query_directions or query_directions.issubset(label_directions)
 
 
-class NearestQuery(BaseModel):
+class NearestQuery(LocationRequest):
     """Validated constraints for the shared nearest-location lookup."""
-
-    model_config = ConfigDict(extra="forbid")
 
     category: str = Field(description="A known dataset category, such as cooling_center.")
     near: str = Field(description="The NYC address or place to search near.")
@@ -840,6 +839,12 @@ async def geocode(
             await client.aclose()
 
 
+async def resolve_location(near: str, ctx: ToolContext) -> Optional[GeoPoint]:
+    """Reuse a matching conversation location, or geocode a new spatial anchor."""
+    current = current_resolved_location(near, ctx)
+    return current or await geocode(near, client=ctx.http)
+
+
 async def travel_distance(
     origin: GeoPoint,
     dest: GeoPoint,
@@ -983,7 +988,7 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
     if query.near.strip().casefold() in {"new york", "new york city", "nyc", "the city"}:
         return "Ask the user for a NYC neighborhood, address, or landmark before ranking nearby sites."
 
-    origin = await geocode(query.near, client=ctx.http)
+    origin = await resolve_location(query.near, ctx)
     if origin is None:
         return f"Could not locate '{query.near}'. Ask the user for a specific NYC address."
     if origin.low_confidence:

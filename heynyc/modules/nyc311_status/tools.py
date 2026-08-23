@@ -16,13 +16,17 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
+from pydantic import Field
+
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import dataset_url, query_dataset
-from heynyc.core.tools.geo import GeoPoint, geocode, maps_link
+from heynyc.core.tools.geo import GeoPoint, maps_link, resolve_location
 
 # ponytail: single source for the dataset id; the manifest declares the matching binding
 # (category service_request_311) only so the capability table / grounding label read it.
@@ -42,6 +46,43 @@ _REFILE_GUIDANCE = (
     "If a closed service request is still unresolved, refile the service request. "
     "NYC311 feedback does not address an individual service request."
 )
+
+
+class ComplaintSearchQuery(LocationRequest):
+    complaint_terms: list[
+        Annotated[
+            str,
+            Field(
+                min_length=4,
+                max_length=40,
+                description="One short complaint-type or descriptor term",
+            ),
+        ]
+    ] = Field(
+        min_length=1,
+        max_length=3,
+        description=(
+            "One to three short, dataset-facing alternative terms matched independently against "
+            "complaint type and descriptor. Prefer a stable category word, such as ['rodent'] for "
+            "rats. Do not pass a sentence, combine alternatives into one string, or use a 2-3 "
+            "letter fragment."
+        ),
+    )
+    max_results: int = Field(
+        default=5, ge=1, le=10, description="Maximum recent complaints to list"
+    )
+    within_days: int = Field(
+        default=_DEFAULT_WITHIN_DAYS,
+        ge=_MIN_WITHIN_DAYS,
+        le=_MAX_WITHIN_DAYS,
+        description="Lookback window in elapsed days; omit to use 30 days",
+    )
+    radius_meters: int = Field(
+        default=_DEFAULT_RADIUS_METERS,
+        ge=_MIN_RADIUS_METERS,
+        le=_MAX_RADIUS_METERS,
+        description="Search radius around near, in meters; omit to use 800 meters",
+    )
 
 
 def _nyc_now() -> datetime:
@@ -274,7 +315,7 @@ async def _lookup_area(
     origin = None
     if near:
         # PII: geocode the location to bound the query. The resolved address is NEVER logged.
-        origin = await geocode(near, client=ctx.http)
+        origin = await resolve_location(near, ctx)
         if origin is None:
             return f"I could not locate '{near}'. Give me a specific NYC address or landmark."
         if origin.low_confidence:
@@ -454,54 +495,7 @@ def get_tools() -> list[Tool]:
                 "Search recent NYC 311 complaints by problem and optional NYC location. Use for "
                 "area activity, not for checking one known service request. Read-only."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "complaint_terms": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 3,
-                        "items": {
-                            "type": "string",
-                            "minLength": 4,
-                            "maxLength": 40,
-                            "description": "One short complaint-type or descriptor term",
-                        },
-                        "description": (
-                            "One to three short, dataset-facing alternative terms matched "
-                            "independently against complaint type and descriptor. Prefer a stable "
-                            "category word, such as ['rodent'] for rats. Do not pass a sentence, "
-                            "combine alternatives into one string, or use a 2-3 letter fragment."
-                        ),
-                    },
-                    "near": {
-                        "type": "string",
-                        "description": "Optional NYC address or landmark to bound the search",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "default": 5,
-                        "description": "Maximum recent complaints to list",
-                    },
-                    "within_days": {
-                        "type": "integer",
-                        "minimum": _MIN_WITHIN_DAYS,
-                        "maximum": _MAX_WITHIN_DAYS,
-                        "default": _DEFAULT_WITHIN_DAYS,
-                        "description": "Lookback window in elapsed days; omit to use 30 days",
-                    },
-                    "radius_meters": {
-                        "type": "integer",
-                        "minimum": _MIN_RADIUS_METERS,
-                        "maximum": _MAX_RADIUS_METERS,
-                        "default": _DEFAULT_RADIUS_METERS,
-                        "description": "Search radius around near, in meters; omit to use 800 meters",
-                    },
-                },
-                "required": ["complaint_terms"],
-            },
+            parameters=ComplaintSearchQuery.model_json_schema(),
             handler=_search_311_complaints,
             open_world=True,
             title="Search recent 311 complaints",

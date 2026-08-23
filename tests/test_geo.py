@@ -27,6 +27,7 @@ from heynyc.core.tools.geo import (
     haversine_m,
     miles,
     origin_precision,
+    resolve_location,
     resolved_location_citation,
     travel_distance,
 )
@@ -691,6 +692,36 @@ async def test_geocode_tool_does_not_replace_origin_with_a_destination(monkeypat
 
     assert result is destination
     assert ctx.current_location is origin
+
+
+async def test_location_resolver_reuses_matching_context_and_geocodes_a_new_anchor(monkeypatch):
+    current = GeoPoint(
+        40.75926,
+        -73.97996,
+        "Rockefeller Center",
+        resident_query="Rockefeller Center",
+    )
+    other = GeoPoint(40.7359, -73.9911, "Union Square", resident_query="Union Square")
+    calls = []
+
+    async def fake_geocode(text, **_kwargs):
+        calls.append(text)
+        return other
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=_registry_with_cooling(),
+        query="Find something near Rockefeller Center",
+        current_location=current,
+    )
+
+    assert await resolve_location("Rockefeller Center", ctx) is current
+    assert calls == []
+
+    ctx.query = "Find something near Union Square"
+    assert await resolve_location("Union Square", ctx) is other
+    assert calls == ["Union Square"]
 
 
 def test_resolved_location_citation_owns_the_origin_and_provider_result():

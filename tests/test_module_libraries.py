@@ -72,13 +72,13 @@ async def test_find_bpl_branches_ranks_the_official_feed_by_resident_location(mo
         assert str(request.url) == "https://www.bklynlibrary.org/api/locations/v1/map"
         return httpx.Response(200, json=rows)
 
-    monkeypatch.setattr(library_tools, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     citations = CitationRegistry()
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
 
     output = await library_tools.get_tools()[0].handler(
-        {"near": "Sunset Park", "limit": 2},
+        {"near": "Sunset Park", "max_results": 2},
         ctx,
     )
     await client.aclose()

@@ -131,7 +131,7 @@ async def test_nearest_wic_site_ranks_grounds_and_links():
     citations = CitationRegistry()
     client = _routed_client(records)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
     assert [record.organization.name for record in out.records] == [
@@ -176,7 +176,7 @@ async def test_wic_tool_returns_typed_source_records_with_explicit_unknowns():
     )
 
     tool = get_tools()[0]
-    result = await tool.handler({"near": "Union Square", "k": 1}, ctx)
+    result = await tool.handler({"near": "Union Square", "max_results": 1}, ctx)
     await client.aclose()
 
     assert tool.return_type is wic.WicResult
@@ -200,7 +200,7 @@ async def test_wic_tool_reuses_current_location_without_geocoding(monkeypatch):
     async def should_not_geocode(*args, **kwargs):
         raise AssertionError("stored origin reached geocoder")
 
-    monkeypatch.setattr(wic, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     client = _routed_client([_record()])
     current = GeoPoint(
         40.7500,
@@ -215,7 +215,7 @@ async def test_wic_tool_reuses_current_location_without_geocoding(monkeypatch):
         current_location=current,
     )
 
-    result = await get_tools()[0].handler({"near": "Union Square", "k": 1}, ctx)
+    result = await get_tools()[0].handler({"near": "Union Square", "max_results": 1}, ctx)
     await client.aclose()
 
     assert result.outcome == "success"
@@ -383,7 +383,7 @@ async def test_nearest_wic_site_does_not_fake_missing_source_date():
 async def test_nearest_wic_site_abstains_when_geocode_fails(monkeypatch):
     async def fail(text, **kwargs):
         return None
-    monkeypatch.setattr(wic, "geocode", fail)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fail)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
@@ -398,7 +398,7 @@ async def test_nearest_wic_site_abstains_when_geocode_fails(monkeypatch):
 async def test_nearest_wic_site_clarifies_on_low_confidence(monkeypatch):
     async def ambiguous(text, **kwargs):
         return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
-    monkeypatch.setattr(wic, "geocode", ambiguous)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", ambiguous)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)

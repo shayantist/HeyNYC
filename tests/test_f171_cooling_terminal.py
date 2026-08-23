@@ -49,7 +49,7 @@ def _patch_cooling(monkeypatch, rows: list[dict]) -> None:
     async def query(_url: str, **_kwargs):
         return rows
 
-    monkeypatch.setattr(cooling, "geocode", geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", geocode)
     monkeypatch.setattr(cooling, "query_feature_service", query)
     monkeypatch.setattr(
         cooling,

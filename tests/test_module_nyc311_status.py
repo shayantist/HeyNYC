@@ -54,6 +54,10 @@ def test_module_loads_custom_tool():
 def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
     tool = nyc311.get_tools()[1]
 
+    from heynyc.core.location import LocationRequest
+
+    assert issubclass(nyc311.ComplaintSearchQuery, LocationRequest)
+
     assert set(tool.parameters["properties"]) == {
         "complaint_terms",
         "near",
@@ -75,6 +79,7 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
         "maximum": 365,
         "default": 30,
         "description": "Lookback window in elapsed days; omit to use 30 days",
+        "title": "Within Days",
     }
     assert tool.parameters["properties"]["radius_meters"] == {
         "type": "integer",
@@ -82,6 +87,7 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
         "maximum": 50_000,
         "default": 800,
         "description": "Search radius around near, in meters; omit to use 800 meters",
+        "title": "Radius Meters",
     }
 
 
@@ -123,7 +129,7 @@ async def test_sr_lookup_reports_status_resolution_and_cites_full_row(monkeypatc
         raise AssertionError("an SR-number lookup must never geocode a resident's address")
 
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
-    monkeypatch.setattr(nyc311, "geocode", boom_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", boom_geocode)
 
     ctx = _ctx()
     out = await nyc311.get_tools()[0].handler({"sr_number": "69741503"}, ctx)
@@ -181,7 +187,7 @@ async def test_status_tool_never_geocodes(monkeypatch):
         raise AssertionError("SR number present: must not geocode")
 
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
-    monkeypatch.setattr(nyc311, "geocode", boom_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", boom_geocode)
 
     await nyc311.get_tools()[0].handler(
         {"sr_number": "69741503"}, _ctx()
@@ -233,7 +239,7 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
             },
         ]
 
-    monkeypatch.setattr(nyc311, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
     monkeypatch.setattr(
         nyc311,
@@ -319,7 +325,7 @@ async def test_area_lookup_honors_explicit_time_window_and_radius(monkeypatch):
         captured.append(kwargs)
         return []
 
-    monkeypatch.setattr(nyc311, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
     monkeypatch.setattr(
         nyc311,
@@ -384,7 +390,7 @@ async def test_area_lookup_escapes_topic_quotes(monkeypatch):
         captured.append(kwargs)
         return []
 
-    monkeypatch.setattr(nyc311, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
 
     await nyc311.get_tools()[1].handler(
@@ -400,7 +406,7 @@ async def test_area_lookup_rejects_short_fragments_before_querying(monkeypatch):
     async def boom(*args, **kwargs):
         raise AssertionError("invalid complaint terms must not reach a data service")
 
-    monkeypatch.setattr(nyc311, "geocode", boom)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", boom)
     monkeypatch.setattr(nyc311, "query_dataset", boom)
 
     out = await nyc311.get_tools()[1].handler(
@@ -415,7 +421,7 @@ async def test_area_lookup_low_confidence_location_asks_to_clarify(monkeypatch):
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.0, -73.0, "somewhere", low_confidence=True)
 
-    monkeypatch.setattr(nyc311, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
 
     out = await nyc311.get_tools()[1].handler(
         {"complaint_terms": ["noise"], "near": "the park"}, _ctx()
@@ -432,7 +438,7 @@ async def test_area_lookup_no_matches_is_honest_and_routes_to_311(monkeypatch):
     async def fake_qd(dataset_id, **kwargs):
         return []
 
-    monkeypatch.setattr(nyc311, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
 
     ctx = _ctx()

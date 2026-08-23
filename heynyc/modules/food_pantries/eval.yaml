@@ -73,6 +73,18 @@
     concrete verification route.
   notes: A future-day request must not be answered from the current weekday or open-now state.
 
+- id: food_explicit_visit_time
+  tags: [typed-constraints, must-win]
+  query: "Which food pantry near Union Square is scheduled at 1 PM today?"
+  capability: dataset_grounding
+  test_type: MFT
+  expect_tools: [find_foodhelp_locations]
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Pass today's New York date and `visit_time="13:00"` to `find_foodhelp_locations`. Return only
+    source records whose structured weekly schedule overlaps that time, describe the result as
+    scheduled rather than confirmed service, and preserve the call-before-travel limitation.
+
 - id: food_source_origin_clarifies
   tags: [F143, must-win]
   query: "I will be at the Bronx PATH area this Friday morning with a stroller. Find a food site scheduled open Friday morning and reachable nearby, and tell me what is not confirmed in real time."

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Literal
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -25,18 +25,19 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service_page
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
     current_resolved_location,
-    geocode,
     haversine_m,
     miles,
     origin_precision,
     rank_nearby,
     resident_supplied_location,
+    resolve_location,
     resolved_location_citation,
 )
 
@@ -63,6 +64,62 @@ FOOD_ROUTE_FACT = (
     "Use the Food Help NYC map or call 311 and ask for food locations near you"
 )
 _NYC_TZ = ZoneInfo("America/New_York")
+
+
+class FoodHelpWindow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: str = Field(pattern=r"^\d{2}:\d{2}$", description="Window start in 24-hour HH:MM time.")
+    end: str = Field(pattern=r"^\d{2}:\d{2}$", description="Window end in 24-hour HH:MM time.")
+
+
+class FoodHelpQuery(LocationRequest):
+    near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
+    max_results: int | None = Field(
+        default=None, ge=1, le=10, description="Maximum food-help sites requested; omit for the default 5."
+    )
+    visit_date: date | None = Field(default=None, description="Requested New York visit date.")
+    visit_time: time | None = Field(default=None, description="Requested New York visit time.")
+    near_source_citation: str | None = Field(
+        default=None,
+        pattern=r"^S\d+$",
+        description=(
+            "Authoritative citation containing the exact near address when an official source "
+            "resolved a resident-named place that could not itself be geocoded."
+        ),
+    )
+    near_source_place: str | None = Field(
+        default=None,
+        description="Resident-named place resolved by near_source_citation.",
+    )
+    site_citation: str | None = Field(
+        default=None,
+        pattern=r"^S\d+$",
+        description="Prior FoodHelp DATA citation for the exact site named in a follow-up.",
+    )
+    urgent: bool = Field(
+        default=False,
+        description="True when the resident needs food immediately, today, or tonight.",
+    )
+    service_window: FoodHelpWindow | None = Field(
+        default=None,
+        description=(
+            "Optional resident-requested service window in New York local time. For `tonight`, "
+            "pass 17:00-23:59 unless the resident gives a narrower window."
+        ),
+    )
+    service_type: Literal["pantry", "soup_kitchen", "any"] = Field(
+        default="any",
+        description="Source service type requested by the resident.",
+    )
+
+
+def _food_help_query_schema() -> dict:
+    schema = FoodHelpQuery.model_json_schema()
+    window = schema.pop("$defs")["FoodHelpWindow"]
+    window["description"] = FoodHelpQuery.model_fields["service_window"].description
+    schema["properties"]["service_window"] = window
+    return schema
 
 
 class FoodHelpSource(BaseModel):
@@ -853,10 +910,16 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
     if service_type not in {"pantry", "soup_kitchen", "any"}:
         return _result("invalid_service_type", urgent=args.get("urgent") is True)
     now = datetime.now(_NYC_TZ)
-    on = str(args.get("on") or "").strip()
+    visit_date = args.get("visit_date")
     try:
-        requested = date.fromisoformat(on) if on else None
-    except ValueError:
+        requested = (
+            visit_date
+            if isinstance(visit_date, date)
+            else date.fromisoformat(str(visit_date))
+            if visit_date
+            else None
+        )
+    except (TypeError, ValueError):
         return _result(
             "invalid_date",
             service_type=service_type,
@@ -882,6 +945,22 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
                 urgent=args.get("urgent") is True,
             )
         service_window = (start, end)
+    elif args.get("visit_time"):
+        visit_time = args["visit_time"]
+        try:
+            requested_time = (
+                visit_time
+                if isinstance(visit_time, time)
+                else time.fromisoformat(str(visit_time))
+            )
+        except (TypeError, ValueError):
+            return _result(
+                "invalid_service_window",
+                service_type=service_type,
+                urgent=args.get("urgent") is True,
+            )
+        minute = requested_time.hour * 60 + requested_time.minute
+        service_window = (minute, minute + 1)
     future_schedule = requested is not None and requested > now.date()
     requested_day = requested or now.date()
     urgent = args.get("urgent") is True and not future_schedule
@@ -933,7 +1012,7 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
 
     if stored_origin is None:
         ctx.current_location = None
-    origin = stored_origin or await geocode(near, client=ctx.http)
+    origin = await resolve_location(near, ctx)
     if origin is None:
         return _result(
             "location_not_found",
@@ -1031,7 +1110,7 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
             nearby_checked_count=0,
             citywide_scheduled_open_count=0,
         )
-    k = int(args.get("k") or 5)
+    k = int(args.get("max_results") or 5)
     unique = [
         pantry
         for pantry, _distance_m in rank_nearby(
@@ -1205,8 +1284,8 @@ def get_tools() -> list[Tool]:
                 "user's NYC address or neighborhood. If they have not supplied one, ask before "
                 "calling and never invent a broad origin. Pass `service_type=pantry` for a pantry "
                 "request, `soup_kitchen` for a soup-kitchen request, or `any` for general food "
-                "help. Pass `on=YYYY-MM-DD` for a future date and label its results as scheduled "
-                "weekly hours, not guaranteed availability; optional `k` defaults to 5. Returns "
+                "help. Pass `visit_date` for a requested date and `visit_time` for a specific "
+                "New York local time; `max_results` defaults to 5. Returns "
                 "each site's name, full address, requested-date weekly hours or current-day "
                 "scheduled-open status, phone, dietary/access type "
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
@@ -1221,84 +1300,7 @@ def get_tools() -> list[Tool]:
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
                 "The source has no language or eligibility data, so do not infer either."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {"type": "string",
-                             "description": "The NYC address or neighborhood to search near."},
-                    "near_source_citation": {
-                        "type": "string",
-                        "pattern": r"^S\d+$",
-                        "description": (
-                            "An authoritative citation ID whose text contains the exact `near` "
-                            "address. Use only when an official source resolved a resident-named "
-                            "place that could not itself be geocoded."
-                        ),
-                    },
-                    "near_source_place": {
-                        "type": "string",
-                        "description": (
-                            "The resident's exact named place resolved by near_source_citation. "
-                            "The place and `near` address must occur together in that source."
-                        ),
-                    },
-                    "site_citation": {
-                        "type": "string",
-                        "pattern": r"^S\d+$",
-                        "description": (
-                            "The prior NYC FoodHelp DATA citation for the exact site a follow-up "
-                            "refers to. Omit for a new nearby search."
-                        ),
-                    },
-                    "k": {"type": "integer",
-                          "description": "How many food-help sites to return (default 5).",
-                          "default": 5},
-                    "urgent": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": (
-                            "True when the resident needs food immediately, today, or tonight"
-                        ),
-                    },
-                    "on": {
-                        "type": "string",
-                        "format": "date",
-                        "description": (
-                            "Requested service date in YYYY-MM-DD. Pass when the resident names "
-                            "a specific future date or day."
-                        ),
-                    },
-                    "service_window": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "description": (
-                            "Resident's requested same-day service window in NYC local time. "
-                            "For `tonight`, pass 17:00-23:59 unless the resident gives a narrower "
-                            "window"
-                        ),
-                        "properties": {
-                            "start": {
-                                "type": "string",
-                                "pattern": r"^\d{2}:\d{2}$",
-                                "description": "Window start in 24-hour HH:MM time",
-                            },
-                            "end": {
-                                "type": "string",
-                                "pattern": r"^\d{2}:\d{2}$",
-                                "description": "Window end in 24-hour HH:MM time",
-                            },
-                        },
-                        "required": ["start", "end"],
-                    },
-                    "service_type": {
-                        "type": "string",
-                        "enum": ["pantry", "soup_kitchen", "any"],
-                        "default": "any",
-                        "description": "The source service type requested by the resident.",
-                    },
-                },
-                "required": ["near"],
-            },
+            parameters=_food_help_query_schema(),
             handler=_handler,
             open_world=True,  # hits the live ArcGIS FoodHelp service + geocoder
             return_type=FoodHelpResult,

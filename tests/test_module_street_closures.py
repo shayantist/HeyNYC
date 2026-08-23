@@ -10,8 +10,6 @@ geocoder call.
 """
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 
 from heynyc.core import config
@@ -55,7 +53,10 @@ def test_module_loads_custom_tool():
 
 
 def test_street_closure_date_is_typed_in_the_tool_schema():
-    assert closures.get_tools()[0].parameters["properties"]["on"]["format"] == "date"
+    properties = closures.get_tools()[0].parameters["properties"]
+    assert {"format": "date", "type": "string"} in properties["visit_date"]["anyOf"]
+    assert "on" not in properties
+    assert "limit" not in properties
 
 
 def test_module_declares_the_closures_dataset_binding():
@@ -88,24 +89,16 @@ def test_representative_point_reads_the_line_geometry():
     assert closures._representative_point({"the_geom": None}) is None
 
 
-def test_parse_on_date_defaults_only_when_omitted():
-    today = date(2026, 7, 18)
-    assert closures._parse_on_date("", today) == "2026-07-18"
-    assert closures._parse_on_date("2026-08-15", today) == "2026-08-15"
-    assert closures._parse_on_date("2026'; DROP TABLE--", today) is None
-    assert closures._parse_on_date("not-a-date", today) is None
-
-
 @pytest.mark.asyncio
 async def test_invalid_explicit_date_requests_correction_before_lookup(monkeypatch):
     async def should_not_run(*args, **kwargs):
         raise AssertionError("invalid date reached a location or dataset lookup")
 
-    monkeypatch.setattr(closures, "geocode", should_not_run)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_run)
     monkeypatch.setattr(closures, "query_dataset", should_not_run)
 
     out = await closures.get_tools()[0].handler(
-        {"near": "Union Square", "on": "2026-02-30"},
+        {"near": "Union Square", "visit_date": "2026-02-30"},
         _ctx(),
     )
 
@@ -125,12 +118,12 @@ async def test_closures_near_filters_by_geo_and_date_and_cites_each(monkeypatch)
         captured.append({"dataset_id": dataset_id, **kwargs})
         return [_closure_row()]
 
-    monkeypatch.setattr(closures, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(closures, "query_dataset", fake_qd)
 
     ctx = _ctx()
     out = await closures.get_tools()[0].handler(
-        {"near": "Sunnyside", "on": "2026-08-15"}, ctx
+        {"near": "Sunnyside", "visit_date": "2026-08-15"}, ctx
     )
 
     where = captured[0]["where"]
@@ -170,7 +163,7 @@ async def test_low_confidence_location_asks_to_clarify(monkeypatch):
     async def fake_geocode(text, **kwargs):
         return GeoPoint(40.0, -73.0, "somewhere", low_confidence=True)
 
-    monkeypatch.setattr(closures, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
 
     out = await closures.get_tools()[0].handler({"near": "the bridge"}, _ctx())
     assert "specific NYC address" in out
@@ -184,7 +177,7 @@ async def test_no_closures_is_honest_and_routes_without_fabricating(monkeypatch)
     async def fake_qd(dataset_id, **kwargs):
         return []
 
-    monkeypatch.setattr(closures, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(closures, "query_dataset", fake_qd)
 
     out = await closures.get_tools()[0].handler({"near": "Sunnyside"}, _ctx())

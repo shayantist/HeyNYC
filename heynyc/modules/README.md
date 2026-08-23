@@ -161,12 +161,13 @@ Only when the generic tools do not fit, such as a live API, a source-specific re
 
 ```python
 # modules/<name>/tools.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
 
-class Query(BaseModel):
-    near: str = Field(description="NYC address, neighborhood, or landmark supplied by the resident")
+class Query(LocationRequest):
+    pass
 
 class Result(BaseModel):
     name: str
@@ -188,6 +189,8 @@ def get_tools() -> list[Tool]:
     )]
 ```
 Set `tools: tools.py` in the manifest. Never present a location, distance, hour, price, deadline, eligibility rule, or organization name as verified unless the operation retrieved supporting evidence. Preserve useful partial records and source links while marking unsupported fields as missing or unverified.
+
+Location-aware tools should inherit [`LocationRequest`](../core/location.py), which provides the common `near` and `max_results` names. `near` may be the resident's current conversation location or another NYC place they name. A tool may add only the constraints it actually uses, such as `visit_date`, `visit_time`, radius, accessibility, or service type. Resolve the origin through the shared [geographic tools](../core/tools/geo.py), apply hard source-backed filters first, and use their distance ranking rather than adding a module-specific nearest algorithm. Cited coordinates let the answer layer add a Google Maps link consistently. When a source lacks coordinates or schedules, keep that field unknown instead of manufacturing it.
 
 ---
 

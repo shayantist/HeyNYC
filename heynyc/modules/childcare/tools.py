@@ -31,15 +31,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import dataset_url, query_dataset, row_url
 from heynyc.core.tools.geo import (
     GeoPoint,
-    current_resolved_location,
-    geocode,
     miles,
     origin_precision,
     rank_nearby,
+    resolve_location,
     resolved_location_citation,
 )
 
@@ -55,6 +55,13 @@ CHILDCARE_PAGE_SIZE = 1000
 # can ground in the source code; an unknown code yields no label rather than an invented one.
 _FACILITY_LABELS = {"GCC": "group child care", "SBCC": "school-based child care"}
 _PROGRAM_LABELS = {"PRESCHOOL": "preschool", "INFANT TODDLER": "infant/toddler"}
+
+
+class ChildCareQuery(LocationRequest):
+    near: str = Field(description="NYC address or neighborhood to search near.")
+    max_results: int | None = Field(
+        default=None, ge=1, le=10, description="Maximum programs requested; omit for the default 5."
+    )
 
 
 class ChildCareSource(BaseModel):
@@ -465,13 +472,12 @@ def _source_date(value: str) -> date | None:
 
 
 async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
-    near = (args.get("near") or "").strip()
+    query = ChildCareQuery.model_validate(args)
+    near = query.near.strip()
     if not near:
         return _result("missing_origin")
 
-    origin = current_resolved_location(near, ctx)
-    if origin is None:
-        origin = await geocode(near, client=ctx.http)
+    origin = await resolve_location(near, ctx)
     if origin is None:
         return _result(
             "location_not_found",
@@ -541,7 +547,7 @@ async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
             directory_route=_directory_route(ctx),
         )
 
-    k = max(1, min(int(args.get("k") or 5), 10))
+    max_results = query.max_results or 5
     ranked = rank_nearby(
         origin,
         sites,
@@ -550,7 +556,7 @@ async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
             round(site.lat, 5),
             round(site.lon, 5),
         ),
-        limit=k,
+        limit=max_results,
     )
 
     programs: list[ChildCareProgram] = []
@@ -606,7 +612,7 @@ async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
         ),
         programs=programs,
         directory_route=_directory_route(ctx),
-        requested_count=k,
+        requested_count=max_results,
     )
 
 
@@ -618,23 +624,14 @@ def get_tools() -> list[Tool]:
                 "Find the nearest NYC regulated child care programs (day care / preschool) to an "
                 "address, grounded in the DOHMH 'Active NYC Health Code Regulated Child Care "
                 "Programs' list (the data behind NYC Child Care Connect). Pass `near` = the user's "
-                "NYC address or neighborhood; optional `k` (default 5). Returns each program's name, "
+                "NYC address or neighborhood; optional `max_results` (default 5). Returns each program's name, "
                 "full address, phone, the age range served, the maximum licensed capacity, and the "
                 "facility/program type - every program cited. NEVER guess a program: if geocoding "
                 "fails or none are near, say so and point to NYC Child Care Connect / 311. Capacity "
                 "is a MAX, not open spots; the source has NO hours, cost, or availability - tell the "
                 "user to call. It does NOT cover home/family child care or free 3-K/Pre-K seats."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {"type": "string",
-                             "description": "The NYC address or neighborhood to search near."},
-                    "k": {"type": "integer",
-                          "description": "How many programs to return (default 5).", "default": 5},
-                },
-                "required": ["near"],
-            },
+            parameters=ChildCareQuery.model_json_schema(),
             handler=_handler,
             return_type=ChildCareResult,
             open_world=True,  # hits the live NYC Open Data Socrata dataset + geocoder

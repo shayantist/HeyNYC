@@ -146,7 +146,7 @@ async def test_find_child_care_connect_programs_ranks_grounds_and_links():
     citations = CitationRegistry()
     client = _routed_client(records)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Clinton Hill Brooklyn", "max_results": 5}, ctx)
     await client.aclose()
 
     assert isinstance(out, BaseModel)
@@ -304,7 +304,7 @@ async def test_find_child_care_connect_programs_reuses_current_location(monkeypa
     async def should_not_geocode(*_args, **_kwargs):
         raise AssertionError("current location should be reused")
 
-    monkeypatch.setattr(childcare, "geocode", should_not_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", should_not_geocode)
     client = _routed_client([_record(latitude="40.6901", longitude="-73.9601")])
     current = GeoPoint(
         40.69,
@@ -362,7 +362,7 @@ async def test_find_child_care_connect_programs_gives_official_fallback_when_pho
 async def test_find_child_care_connect_programs_abstains_when_geocode_fails(monkeypatch):
     async def fail(text, **kwargs):
         return None
-    monkeypatch.setattr(childcare, "geocode", fail)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fail)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
@@ -377,7 +377,7 @@ async def test_find_child_care_connect_programs_abstains_when_geocode_fails(monk
 async def test_find_child_care_connect_programs_clarifies_on_low_confidence(monkeypatch):
     async def ambiguous(text, **kwargs):
         return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
-    monkeypatch.setattr(childcare, "geocode", ambiguous)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", ambiguous)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)

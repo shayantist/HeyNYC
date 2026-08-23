@@ -25,8 +25,8 @@ tools: tools.py
 prompt: |
   For "are streets closed near <place>?", "is <street> closed for construction?", or planning
   travel/parking around a game or event, call find_street_closures. Pass near=<one NYC address or
-  landmark> and, when the resident names a day (a game day, "this Saturday"), on=<that date as
-  YYYY-MM-DD>; it defaults to today. Report ONLY the closures the tool returns, keep each one's
+  landmark> and, when the resident names a day (a game day, "this Saturday"),
+  visit_date=<that date as YYYY-MM-DD>; it defaults to today. Report ONLY the closures the tool returns, keep each one's
   closed segment, purpose, scheduled window, and citation, and cite every closure {cite:Sn}. Do not
   invent a closure, a street, a purpose, or a date.
   HONEST LIMITS, state them, never paper over them:

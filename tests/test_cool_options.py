@@ -64,7 +64,7 @@ def _patch_lookup(monkeypatch, rows: list[dict]):
     async def fake_query(url, **kwargs):
         return rows
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -93,7 +93,7 @@ async def test_ambiguous_origin_does_not_query_or_rank_locations(monkeypatch):
     async def should_not_query(*args, **kwargs):
         raise AssertionError("ambiguous origin reached the location dataset")
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", should_not_query)
 
     output = await cooling.get_tools()[0].handler(
@@ -112,7 +112,7 @@ async def test_citywide_policy_query_cannot_invent_a_ranking_origin(monkeypatch)
         geocode_calls.append(text)
         return GeoPoint(40.7066, -74.0090, "New York Mercantile Exchange")
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     ctx = _context("what's a cooling center and can my dog come")
     ctx.query = ctx.user_turns[-1]
 
@@ -252,7 +252,7 @@ async def test_origin_change_replaces_offered_and_selected_state(monkeypatch):
         calls += 1
         return _site_rows() if calls == 1 else [_site_row("brooklyn", "Brooklyn Center")]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     ctx = _context("Raices")
     await cooling.get_tools()[0].handler(
@@ -289,7 +289,7 @@ async def test_selected_site_followup_keeps_the_residents_prior_origin(monkeypat
             "cc_thu_close1": "05:00 PM",
         }]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     ctx = _context("Show me options near Main Street, Flushing")
     ctx.query = ctx.user_turns[-1]
@@ -501,7 +501,7 @@ async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypat
             }
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -537,6 +537,11 @@ async def test_f182_lookup_returns_directions_from_the_resolved_origin(monkeypat
         citation["provenance"]["derivation"]["origin_label"] == "Rockefeller Center"
         for citation in ctx.citations.mapping().values()
     )
+    assert all(
+        citation["provenance"]["derivation"]["distance_m"] > 0
+        and citation["provenance"]["derivation"]["distance_mi"] > 0
+        for citation in ctx.citations.mapping().values()
+    )
     assert calls == [(cooling.COOL_OPTIONS_URL, "Finder_status='OPEN'")]
 
 
@@ -566,7 +571,7 @@ async def test_lookup_can_return_only_activated_cooling_centers(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -593,7 +598,7 @@ async def test_lookup_reports_when_no_cooling_centers_are_activated(monkeypatch)
     async def fake_query(url, **kwargs):
         return []
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
@@ -628,7 +633,7 @@ async def test_current_cooling_lookup_fails_closed_when_all_rows_are_closed(monk
             }
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -752,7 +757,7 @@ async def test_cooling_lookup_keeps_precise_address_distance_unqualified(monkeyp
         "cc_wed_close1": "05:00 PM",
     }
     handler = _patch_lookup(monkeypatch, [row])
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
 
     output = await handler(
         {"near": "123 Main Street, Queens", "kind": "indoor"},
@@ -824,7 +829,7 @@ async def test_current_cooling_lookup_keeps_a_confirmed_open_row(monkeypatch):
             },
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -1020,7 +1025,7 @@ async def test_lookup_reports_when_finder_is_unavailable(monkeypatch):
     async def fake_query(url, **kwargs):
         raise RuntimeError("source unavailable")
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     ctx = ToolContext(
         citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
@@ -1104,7 +1109,7 @@ async def test_lookup_flags_closer_centers_closed_now_with_reopening(monkeypatch
             },
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -1189,7 +1194,7 @@ async def test_older_adult_centers_annotated_and_all_ages_note(monkeypatch):
              "cc_wed_open1": "09:00 AM", "cc_wed_close1": "08:00 PM"},
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -1241,7 +1246,7 @@ async def test_all_ages_results_get_no_restriction_note(monkeypatch):
              "cc_wed_open1": "09:00 AM", "cc_wed_close1": "08:00 PM"},
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,
@@ -1316,7 +1321,7 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
             },
         ]
 
-    monkeypatch.setattr(cooling, "geocode", fake_geocode)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(cooling, "query_feature_service", fake_query)
     monkeypatch.setattr(
         cooling,

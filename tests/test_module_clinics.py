@@ -134,7 +134,7 @@ async def test_find_clinic_merges_ranks_and_attaches_per_class_citations(monkeyp
     citations = CitationRegistry()
     client = _routed_client(features)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
     assert isinstance(out, BaseModel)
@@ -184,7 +184,7 @@ async def test_eligibility_text_is_grounded_not_from_a_row_field(monkeypatch):
     citations = CitationRegistry()
     client = _routed_client(features)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
     serialized = out.model_dump_json()
@@ -197,7 +197,7 @@ async def test_eligibility_text_is_grounded_not_from_a_row_field(monkeypatch):
 async def test_find_clinic_abstains_when_geocode_fails(monkeypatch):
     async def fail(text, **kwargs):
         return None
-    monkeypatch.setattr(clinics, "geocode", fail)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fail)
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"features": []})))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Springfield, Illinois"}, ctx)
@@ -214,7 +214,7 @@ async def test_find_clinic_abstains_when_geocode_fails(monkeypatch):
 async def test_find_clinic_clarifies_on_low_confidence(monkeypatch):
     async def ambiguous(text, **kwargs):
         return GeoPoint(40.7, -73.9, "ambiguous", low_confidence=True)
-    monkeypatch.setattr(clinics, "geocode", ambiguous)
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", ambiguous)
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
     out = await get_tools()[0].handler({"near": "Broadway and 100th"}, ctx)
@@ -236,7 +236,7 @@ async def test_find_clinic_degrades_to_seed_when_hrsa_down(monkeypatch):
         return httpx.Response(503)                        # HRSA down
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
     assert out.outcome == "degraded"
@@ -312,7 +312,7 @@ async def test_find_clinic_does_not_rank_incomplete_hrsa_rows(monkeypatch):
     monkeypatch.setattr(clinics, "_query_hrsa", partial)
     client = _routed_client([])
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
-    out = await get_tools()[0].handler({"near": "Union Square", "k": 5}, ctx)
+    out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
     assert out.outcome == "degraded"

@@ -4,13 +4,22 @@ from __future__ import annotations
 from html import unescape
 
 import httpx
+from pydantic import Field
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.datasets import Place
-from heynyc.core.tools.geo import geocode, miles, rank_nearby
+from heynyc.core.tools.geo import miles, rank_nearby, resolve_location
 
 _BPL_LOCATIONS_URL = "https://www.bklynlibrary.org/api/locations/v1/map"
+
+
+class LibraryQuery(LocationRequest):
+    near: str = Field(description="NYC place to search near.")
+    max_results: int | None = Field(
+        default=None, ge=1, le=8, description="Maximum branches requested; omit for the default 5."
+    )
 
 
 def _position(row: dict) -> tuple[float, float] | None:
@@ -44,9 +53,10 @@ def _branch(row: dict) -> Place | None:
 
 
 async def _find_bpl_branches(args: dict, ctx: ToolContext) -> str:
-    origin = await geocode(args["near"], client=ctx.http)
+    query = LibraryQuery.model_validate(args)
+    origin = await resolve_location(query.near, ctx)
     if origin is None or origin.low_confidence:
-        return f"Could not confidently locate '{args['near']}' in NYC. Ask for a nearby address or cross street."
+        return f"Could not confidently locate '{query.near}' in NYC. Ask for a nearby address or cross street."
 
     own_client = ctx.http is None
     client = ctx.http or httpx.AsyncClient(timeout=20.0)
@@ -62,13 +72,13 @@ async def _find_bpl_branches(args: dict, ctx: ToolContext) -> str:
         if own_client:
             await client.aclose()
 
-    limit = min(max(int(args.get("limit", 5)), 1), 8)
+    max_results = query.max_results or 5
     branches = [branch for row in payload if (branch := _branch(row)) is not None]
     ranked = rank_nearby(
         origin,
         branches,
         key=lambda branch: branch.record_id or branch.name.casefold(),
-        limit=limit,
+        limit=max_results,
     )
     lines = [f"Nearest BPL branches to {origin.label} from the current official branch feed:"]
     for branch, distance_m in ranked:
@@ -119,23 +129,7 @@ def get_tools() -> list[Tool]:
                 "unconfirmed whenever the same row also has a notice. The feed does not prove that an unlisted service is "
                 "unavailable; use the official branch page or web search for extra details."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {
-                        "type": "string",
-                        "description": "NYC address, cross street, neighborhood, or place to search near",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 8,
-                        "default": 5,
-                        "description": "Maximum nearby branches to return",
-                    },
-                },
-                "required": ["near"],
-            },
+            parameters=LibraryQuery.model_json_schema(),
             handler=_find_bpl_branches,
             open_world=True,
             title="Find BPL branches",
