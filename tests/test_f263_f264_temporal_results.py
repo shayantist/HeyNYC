@@ -194,7 +194,7 @@ async def test_f264_event_tool_defaults_to_five_and_exposes_max_results(monkeypa
     monkeypatch.setattr(events, "query_dataset", empty_dataset)
 
     output = await events.get_tools()[0].handler(
-        {"window_start": "2099-08-15", "window_end": "2099-08-15"},
+        {"visit_date": "2099-08-15", "window_end": "2099-08-15"},
         _context("events on August 15"),
     )
 
@@ -202,7 +202,7 @@ async def test_f264_event_tool_defaults_to_five_and_exposes_max_results(monkeypa
     schema = events.get_tools()[0].parameters["properties"]["max_results"]
     assert schema["default"] is None
     integer_schema = next(item for item in schema["anyOf"] if item.get("type") == "integer")
-    assert integer_schema["maximum"] == 20
+    assert integer_schema["maximum"] == 10
 
 
 @pytest.mark.asyncio
@@ -232,7 +232,7 @@ async def test_f264_agent_extracted_max_results_controls_the_shortlist(monkeypat
 
     output = await events.get_tools()[0].handler(
         {
-            "window_start": "2099-08-15",
+            "visit_date": "2099-08-15",
             "window_end": "2099-08-15",
             "max_results": 10,
         },
@@ -281,7 +281,7 @@ async def test_f264_web_and_catalog_choices_share_the_same_limit(monkeypatch) ->
     }
 
     output = await events.get_tools()[0].handler(
-        {"window_start": "2099-08-15", "window_end": "2099-08-15"}, ctx,
+        {"visit_date": "2099-08-15", "window_end": "2099-08-15"}, ctx,
     )
 
     assert output.count("(Ticketmaster Discovery)") == 4

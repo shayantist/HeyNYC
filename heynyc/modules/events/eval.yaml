@@ -52,7 +52,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    The event tool call uses `window_start="2026-08-21"` and `cost="free"`. Every presented
+    The event tool call uses `visit_date="2026-08-21"` and `cost="free"`. Every presented
     choice is on tomorrow's NYC calendar date and has retrieved evidence that it is free. Unknown
     prices may be retained only as clearly labeled unverified leads, not presented as free choices.
 
@@ -64,7 +64,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    The event tool call uses `window_start="2026-08-20"`, `window_end="2026-08-23"`, and a music classification or keyword.
+    The event tool call uses `visit_date="2026-08-20"`, `window_end="2026-08-23"`, and a music classification or keyword.
     Presented choices stay between today and Sunday in NYC local time.
 
 - id: events_typed_single_absolute_date
@@ -75,7 +75,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    The event tool call passes `window_start="2026-08-20"`; `window_end` may match it or be omitted
+    The event tool call passes `visit_date="2026-08-20"`; `window_end` may match it or be omitted
     because the server treats one absolute start date as one day. Every presented choice is dated
     August 20, 2026, not a later date.
 
@@ -159,6 +159,19 @@
     Pins the live SMS that recommended RAYE after the official page's 9:30 AM conclusion and linked
     only Rockefeller Center's general events calendar.
 
+- id: events_nearby_shared_location
+  query: "What events are happening today near Union Square?"
+  expect_tools: [find_nyc_events]
+  abstain: false
+  capability: grounding
+  invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
+  tags: [typed-constraints, events]
+  utility_criterion: >-
+    Pass `near="Union Square"` and today's New York date to `find_nyc_events`. Rank candidates
+    whose sources provide coordinates by computed distance from the resolved landmark. Preserve
+    useful candidates without coordinates only as explicitly not-distance-ranked leads, and do not
+    invent a distance or silently describe an unlocated lead as nearby.
+
 - id: events_historical_yesterday
   query: "What music events happened in NYC yesterday?"
   expect_tools: [find_nyc_events]
@@ -167,7 +180,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    The event tool call uses `window_start="2026-08-19"` and `has_ended=true`. Include
+    The event tool call uses `visit_date="2026-08-19"` and `has_ended=true`. Include
     source-backed events from yesterday even though they ended, describe them in the past tense,
     and keep direct source links. Do not present them as currently attendable.
 
@@ -193,7 +206,7 @@
   invariants: {must_ground: true, must_not_fabricate: true, unique_choices: true}
   tags: [typed-constraints, events]
   utility_criterion: >-
-    Call `find_nyc_events` twice with `window_start="2026-08-20"`: once with `has_ended=true`
+    Call `find_nyc_events` twice with `visit_date="2026-08-20"`: once with `has_ended=true`
     and once with `has_ended=false`. Clearly separate ended events from events still in progress
     or upcoming, retain direct links, and do not describe an ended event as attendable.
 
@@ -303,3 +316,18 @@
     the generic sweep's absence fails.
   notes: F085, owner's live catch 2026-07-22, the premise-denial genre (kin to F046/F053/F058).
     The scoped web_search finds this series on the first query; the failure was never calling it.
+
+- id: events_f281_official_search_excerpt_schedule
+  query: "Do you know about Summer Streets? When does it end?"
+  expect_tools: [web_search]
+  abstain: false
+  capability: grounding
+  tags: [F281, general-chat, events]
+  utility_criterion: >-
+    Use current NYC DOT web evidence to answer with the final 2026 date and local end time. If the
+    official page cannot be fetched but an official search excerpt directly supports the schedule,
+    use that excerpt transparently instead of withholding the answer or calling the official source
+    unverified. Use an absolute date, state whether the series has ended relative to the current New
+    York date, and show the official URL once in SMS and WhatsApp.
+  notes: Pins the shared web-fallback and text-channel presentation failure observed live on
+    2026-08-22. It does not hard-code Summer Streets into the runtime.

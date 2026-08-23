@@ -1,3 +1,5 @@
+import asyncio
+
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.ticketmaster import TicketmasterSearchResult
@@ -8,6 +10,7 @@ from heynyc.modules.events.tools import (
     Event,
     _event_block,
     _from_web_citation,
+    _matches_keyword,
     _shortlist,
 )
 
@@ -50,6 +53,31 @@ def test_web_citation_normalizes_into_the_existing_event_record() -> None:
         evidence_excerpt="Friday night at Public Records in Brooklyn.",
         citation_id="S4",
         retrieval_rank=2,
+    )
+
+
+def test_multiword_event_keyword_requires_the_whole_topic() -> None:
+    assert _matches_keyword(
+        Event(
+            name="Summer Streets", start_date="", start_time="", venue="", borough="",
+            url="", source="Web discovery", tier="authoritative",
+        ),
+        "Summer Streets",
+        match_all=True,
+    )
+    assert not _matches_keyword(
+        Event(
+            name="Summer Sports Experience",
+            start_date="",
+            start_time="",
+            venue="Blood Root Valley",
+            borough="Staten Island",
+            url="",
+            source="NYC Parks",
+            tier="authoritative",
+        ),
+        "Summer Streets",
+        match_all=True,
     )
 
 
@@ -105,6 +133,11 @@ def test_structured_editorial_event_is_not_labeled_an_unconfirmed_lead() -> None
 async def test_event_handler_sends_one_bounded_mixed_candidate_list_to_the_model(
     monkeypatch,
 ) -> None:
+    class FixedDateTime(events.tools.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 21, 12, 0, tzinfo=tz)
+
     async def ticketmaster(**_kwargs):
         return TicketmasterSearchResult(
             status="complete",
@@ -137,6 +170,7 @@ async def test_event_handler_sends_one_bounded_mixed_candidate_list_to_the_model
 
     monkeypatch.setattr(events.tools, "ticketmaster_events", ticketmaster)
     monkeypatch.setattr(events.tools, "query_dataset", no_city_rows)
+    monkeypatch.setattr(events.tools, "datetime", FixedDateTime)
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([]),
@@ -148,7 +182,7 @@ async def test_event_handler_sends_one_bounded_mixed_candidate_list_to_the_model
     )
 
     output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2026-08-21"},
+        {"classification": "Music", "visit_date": "2026-08-21"},
         ctx,
     )
 
@@ -157,6 +191,52 @@ async def test_event_handler_sends_one_bounded_mixed_candidate_list_to_the_model
     assert "Independent concert 7" not in output
     assert "Web-discovered candidates:" not in output
     assert output.count("\n- ") <= 5
+
+
+async def test_event_handler_does_not_discard_a_sibling_tool_citation(monkeypatch) -> None:
+    search_started = asyncio.Event()
+    release_search = asyncio.Event()
+
+    async def no_ticketmaster(**_kwargs):
+        return TicketmasterSearchResult(status="complete")
+
+    async def no_city_rows(*_args, **_kwargs):
+        return []
+
+    async def web_search(_args, ctx):
+        citation_id = ctx.citations.register(
+            "https://nyc.gov/summer-streets",
+            title="Summer Streets",
+            snippet="Summer Streets schedule",
+        )
+        search_started.set()
+        await release_search.wait()
+        return f"[{citation_id}] Summer Streets"
+
+    monkeypatch.setattr(events.tools, "ticketmaster_events", no_ticketmaster)
+    monkeypatch.setattr(events.tools, "query_dataset", no_city_rows)
+    citations = CitationRegistry()
+    ctx = ToolContext(
+        citations=citations,
+        registry=Registry([]),
+        query="When does Summer Streets end?",
+        event_turn="discovery",
+        toolbox={"web_search": Tool("web_search", "search", {"type": "object"}, web_search)},
+    )
+
+    task = asyncio.create_task(events.tools.get_tools()[0].handler(
+        {"keyword": "Summer Streets", "web_query": "NYC Summer Streets end date"}, ctx,
+    ))
+    await search_started.wait()
+    sibling_id = citations.register(
+        "https://nyc.gov/sibling-result",
+        title="Sibling search result",
+        snippet="Evidence returned by a parallel tool call",
+    )
+    release_search.set()
+    await task
+
+    assert sibling_id in citations.mapping()
 
 
 async def test_classification_filters_every_candidate_source_before_ranking(
@@ -203,7 +283,7 @@ async def test_classification_filters_every_candidate_source_before_ranking(
     )
 
     output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2099-08-21"}, ctx,
+        {"classification": "Music", "visit_date": "2099-08-21"}, ctx,
     )
 
     assert "Evening music concert" in output

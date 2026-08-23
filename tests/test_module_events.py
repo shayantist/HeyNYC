@@ -41,6 +41,34 @@ def test_events_does_not_silently_correct_source_fields() -> None:
     assert "omit a questionable fragment" in prompt
 
 
+def test_named_event_fact_questions_use_web_search_without_the_shortlist() -> None:
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    events = next(module for module in registry.modules if module.name == "events")
+    prompt = " ".join(events.prompt.lower().split())
+
+    assert "not a request for event choices" in prompt
+    assert "call web_search without find_nyc_events" in prompt
+
+
+def test_web_event_status_uses_the_shared_temporal_evaluator() -> None:
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    events = next(module for module in registry.modules if module.name == "events")
+    prompt = " ".join(events.prompt.lower().split())
+
+    assert "any web-sourced event whose current status you state" in prompt
+    assert "call `evaluate_event_time`" in prompt
+
+
+def test_named_event_time_prefers_the_fetched_official_page() -> None:
+    registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST)
+    events = next(module for module in registry.modules if module.name == "events")
+    prompt = " ".join(events.prompt.lower().split())
+
+    assert "fetch the official event page" in prompt
+    assert "excerpt lacks the requested time" in prompt
+    assert "refetch that page once with the discovered date" in prompt
+
+
 def test_event_shortlist_preserves_each_requested_date() -> None:
     events = [
         Event(
@@ -133,7 +161,7 @@ async def test_event_sources_do_not_truncate_before_shortlisting(monkeypatch) ->
     )
 
     await event_tools.get_tools()[0].handler(
-        {"window_start": "2099-08-15", "window_end": "2099-08-16"}, ctx,
+        {"visit_date": "2099-08-15", "window_end": "2099-08-16"}, ctx,
     )
 
     assert queries == [
@@ -181,7 +209,7 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
         {
             "keyword": "music",
             "classification": "Music",
-            "window_start": "2099-08-16",
+            "visit_date": "2099-08-16",
             "window_end": "2099-08-16",
         },
         ctx,
@@ -191,7 +219,7 @@ async def test_topical_event_lookup_also_searches_for_primary_sources(monkeypatc
     assert web_calls[0]["query"] == "NYC music events August 16, 2099"
     assert web_calls[0]["count"] == 10
     assert {
-        "donyc.com", "eventbrite.com", "luma.com", "ma.to", "partiful.com",
+        "donyc.com", "eventbrite.com", "luma.com", "ma.to", "nyc.gov", "partiful.com",
     } <= set(web_calls[0]["prefer"])
     assert "123 Main" not in str(web_calls)
     assert "one shared bounded shortlist" in result
@@ -249,7 +277,7 @@ async def test_topical_event_lookup_fetches_the_first_authoritative_search_page(
     result = await event_tools.get_tools()[0].handler(
         {
             "classification": "Music",
-            "window_start": "2099-08-16",
+            "visit_date": "2099-08-16",
             "window_end": "2099-08-16",
         },
         ctx,
@@ -327,7 +355,7 @@ async def test_topical_event_lookup_fetches_two_ranked_pages_for_structured_even
     )
 
     result = await event_tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2099-08-16"}, ctx,
+        {"classification": "Music", "visit_date": "2099-08-16"}, ctx,
     )
 
     assert fetched == [
@@ -422,10 +450,10 @@ async def test_event_lookup_fetches_declared_daily_calendar_when_search_omits_it
         },
     )
     first_result = await event_tools.get_tools()[0].handler(
-        {"window_start": "2099-08-16"}, ctx,
+        {"visit_date": "2099-08-16"}, ctx,
     )
     result = await event_tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2099-08-16"}, ctx,
+        {"classification": "Music", "visit_date": "2099-08-16"}, ctx,
     )
 
     assert "https://donyc.com/events/2099/08/16" in fetched
@@ -498,7 +526,7 @@ async def test_calendar_event_with_unknown_locality_is_verified_from_its_direct_
     )
 
     result = await event_tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2099-08-16"}, ctx,
+        {"classification": "Music", "visit_date": "2099-08-16"}, ctx,
     )
 
     assert fetched == [calendar_url, other_url, event_url]
@@ -539,7 +567,7 @@ async def test_general_event_discovery_fetches_an_exact_date_calendar(monkeypatc
         },
     )
 
-    await event_tools.get_tools()[0].handler({"window_start": "2099-08-16"}, ctx)
+    await event_tools.get_tools()[0].handler({"visit_date": "2099-08-16"}, ctx)
 
     assert fetched == ["https://events.example/2099/08/16"]
 
@@ -567,7 +595,7 @@ async def test_music_category_uses_ticketmaster_classification_and_exact_window(
         {
             "keyword": "music",
             "classification": "Music",
-            "window_start": "2099-08-16",
+            "visit_date": "2099-08-16",
             "window_end": "2099-08-16",
         },
         ctx,
@@ -611,22 +639,22 @@ def test_event_tool_schema_comes_from_the_typed_query_model() -> None:
 
 
 def test_event_query_rejects_a_reversed_date_window() -> None:
-    with pytest.raises(ValueError, match="window_end must not be before window_start"):
+    with pytest.raises(ValueError, match="window_end must not be before visit_date"):
         EventQuery.model_validate({
-            "window_start": "2099-08-17",
+            "visit_date": "2099-08-17",
             "window_end": "2099-08-16",
         })
 
 
 def test_event_query_owns_date_time_and_cost_constraints() -> None:
     query = EventQuery.model_validate({
-        "window_start": "2026-08-18",
-        "window_start_time": "17:00:00",
+        "visit_date": "2026-08-18",
+        "visit_time": "17:00:00",
         "cost": "free",
     })
 
-    assert query.window_start.isoformat() == "2026-08-18"
-    assert query.window_start_time.isoformat() == "17:00:00"
+    assert query.visit_date.isoformat() == "2026-08-18"
+    assert query.visit_time.isoformat() == "17:00:00"
     assert query.cost == "free"
 
 
@@ -668,7 +696,7 @@ async def test_event_tool_does_not_reinterpret_raw_resident_constraints(monkeypa
     )
 
     output = await event_tools.get_tools()[0].handler(
-        {"window_start": "2026-08-17"}, ctx,
+        {"visit_date": "2026-08-17"}, ctx,
     )
 
     assert "Afternoon drawing" in output
@@ -706,7 +734,7 @@ async def test_event_tool_applies_typed_free_constraint(monkeypatch) -> None:
 
     output = await event_tools.get_tools()[0].handler(
         {
-            "window_start": "2099-08-17",
+            "visit_date": "2099-08-17",
             "window_end": "2099-08-17",
             "cost": "free",
         },
@@ -733,7 +761,7 @@ async def test_single_absolute_event_date_is_not_an_open_ended_window(monkeypatc
         citations=CitationRegistry(), registry=Registry([]), query="events on August 20",
     )
 
-    await event_tools.get_tools()[0].handler({"window_start": "2099-08-20"}, ctx)
+    await event_tools.get_tools()[0].handler({"visit_date": "2099-08-20"}, ctx)
 
     assert calls[0]["start_datetime"] == "2099-08-20T04:00:00Z"
     assert calls[0]["end_datetime"] == "2099-08-21T04:00:00Z"
@@ -783,7 +811,7 @@ async def test_web_and_catalog_events_share_one_ranked_candidate_pool(monkeypatc
     output = await event_tools.get_tools()[0].handler(
         {
             "classification": "Music",
-            "window_start": "2099-08-16",
+            "visit_date": "2099-08-16",
             "window_end": "2099-08-16",
         },
         ctx,

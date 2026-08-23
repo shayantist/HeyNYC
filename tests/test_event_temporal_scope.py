@@ -37,7 +37,7 @@ def test_event_query_uses_dates_and_interval_filters_without_phrase_enums():
     assert "relative_window" not in schema
     assert "temporal_scope" not in schema
     assert "weekday" not in schema
-    assert {"window_start", "window_end", "window_start_time", "window_end_time"} <= schema.keys()
+    assert {"visit_date", "window_end", "visit_time", "window_end_time"} <= schema.keys()
     assert {"has_started", "has_ended"} <= schema.keys()
 
 
@@ -166,7 +166,7 @@ async def test_generic_event_calendar_gets_one_focused_direct_page_followup(monk
     )
 
     output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2026-08-20", "has_ended": True}, ctx,
+        {"classification": "Music", "visit_date": "2026-08-20", "has_ended": True}, ctx,
     )
 
     assert [kind for kind, _args in calls] == ["search", "search", "fetch"]
@@ -214,7 +214,7 @@ async def test_initial_direct_event_page_is_fetched_without_a_redundant_search(m
     )
 
     output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2026-08-20"}, ctx,
+        {"classification": "Music", "visit_date": "2026-08-20"}, ctx,
     )
 
     assert [kind for kind, _args in calls] == ["search", "fetch"]
@@ -260,7 +260,7 @@ async def test_top_editorial_event_page_is_fetched_without_a_trust_whitelist(mon
     )
 
     output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "window_start": "2026-08-20"}, ctx,
+        {"classification": "Music", "visit_date": "2026-08-20"}, ctx,
     )
 
     assert calls == [url]
