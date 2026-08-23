@@ -204,7 +204,7 @@ def test_inline_source_url_does_not_drop_its_structured_source_note():
     assert "Sources:" not in rendered
 
 
-def test_text_channels_keep_discovery_warning_inline_without_an_endnote():
+def test_text_channels_keep_a_source_backed_excerpt_inline_without_a_blanket_warning():
     result = FakeResult(
         "This may be available {cite:S1}.",
         {
@@ -224,7 +224,7 @@ def test_text_channels_keep_discovery_warning_inline_without_an_endnote():
     rendered = render(result, "sms_twilio")[0]
 
     assert "https://nyc.gov/search-result" in rendered
-    assert "search-result excerpt" in rendered
+    assert "verification note" not in rendered.lower()
     assert "evil.example" not in rendered
     assert "Sources:" not in rendered
 
@@ -281,6 +281,61 @@ def test_text_channels_render_one_link_for_two_citations_to_the_same_page():
     rendered = render(result, "sms_twilio")[0]
 
     assert rendered.count("https://nyc.gov/help") == 1
+
+
+def test_text_channels_render_one_link_for_the_same_page_across_paragraphs():
+    url = "https://www.nyc.gov/html/dot/html/pedestrians/summerstreets.shtml"
+    result = FakeResult(
+        (
+            f"The last event ends at 5 PM. {{cite:S1}}\n\n"
+            f"Earlier dates were July 25 and August 15. {{cite:S1}}\n\n"
+            f"Official Summer Streets schedule: {url}"
+        ),
+        {
+            "S1": {
+                "id": "S1",
+                "url": url,
+                "title": "NYC DOT Summer Streets",
+                "kind": "WEB",
+            }
+        },
+    )
+
+    for channel in ("sms_twilio", "whatsapp_meta"):
+        rendered = "\n".join(render(result, channel))
+        assert rendered.count(url) == 1
+        assert "Official Summer Streets schedule:" not in rendered
+        assert "()" not in rendered
+
+
+def test_text_channels_deduplicate_a_fetched_redirect_alias():
+    requested = "https://nyc.gov/summerstreets"
+    final = "https://www.nyc.gov/html/dot/html/pedestrians/summerstreets.shtml"
+    result = FakeResult(
+        f"The program ended August 22. {{cite:S1}}\n\nOfficial page: {requested}",
+        {
+            "S1": {
+                "id": "S1",
+                "url": final,
+                "title": "NYC DOT - Summer Streets",
+                "kind": "WEB",
+                "provenance": {
+                    "acquisition": {"requested_url": requested, "final_url": final},
+                },
+            },
+            "S2": {
+                "id": "S2",
+                "url": requested,
+                "title": "NYC DOT - Summer Streets",
+                "kind": "WEB",
+            },
+        },
+    )
+
+    rendered = "\n".join(render(result, "sms_twilio"))
+
+    assert rendered.count(final) == 1
+    assert requested not in rendered
 
 
 def test_inline_links_deduplicate_shared_action_urls():

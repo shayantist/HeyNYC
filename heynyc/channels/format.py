@@ -11,7 +11,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from heynyc.core.citations import used_citations
-from heynyc.core.localization import localize, localized_source_limit
+from heynyc.core.localization import localized_source_limit
 
 WA_LIMIT = 4096
 TWILIO_TEXT_LIMIT = 1600
@@ -163,23 +163,56 @@ def _without_code_citations(text: str) -> str:
     return _CODE.sub(lambda match: _INLINE_CITE.sub("", match.group()), text)
 
 
-def _plain_title(value: str) -> str:
-    tokens = _MARKDOWN.parseInline(value)[0].children or ()
-    return "".join(token.content for token in tokens if token.type in {"text", "code_inline"})
+def _deduplicate_delivery_urls(
+    text: str,
+    urls: list[str],
+    aliases: dict[str, str] | None = None,
+) -> str:
+    """Show each registered source or action URL once across a text-channel answer."""
+    delivered = list(dict.fromkeys(
+        _delivery_url(url.split("#:~:text=", 1)[0])
+        for url in urls
+        if url
+    ))
+    aliases = aliases or {}
+    seen: set[str] = set()
+    output: list[str] = []
+    for original in text.splitlines():
+        line = original
+        removed = False
+        for url in delivered:
+            start = 0
+            while (index := line.find(url, start)) >= 0:
+                before = line[index - 1] if index else ""
+                after_index = index + len(url)
+                after = line[after_index] if after_index < len(line) else ""
+                if (
+                    (before and before not in " \t([<{:")
+                    or (after and after not in " \t\r\n).,;!?]}>")
+                ):
+                    start = after_index
+                    continue
+                identity = aliases.get(url, url)
+                if identity not in seen:
+                    seen.add(identity)
+                    start = after_index
+                    continue
+                line = line[:index] + line[index + len(url):]
+                removed = True
+                start = index
+        line = line.replace("()", "").replace("(; ", "(").replace("; )", ")").rstrip()
+        if removed and line.strip().endswith(":"):
+            continue
+        if line.strip():
+            output.append(line)
+        elif not removed:
+            output.append("")
+    return "\n".join(output).strip()
 
 
 def _citation_notes(citation: dict, language: str | None) -> list[str]:
     notes: list[str] = []
     provenance = citation.get("provenance") or {}
-    if (
-        provenance.get("evidence_grade") == "search_excerpt"
-        and provenance.get("source_tier") == "unverified"
-    ):
-        notes.append(localize(
-            "Verification note for {source}: this source is a search-result excerpt. "
-            "I could not confirm it from the full page.",
-            language,
-        ).format(source=_plain_title(str(citation.get("title") or "source"))))
     limitation = str(
         provenance.get("derivation", {}).get("limitations") or ""
     ).strip()
@@ -362,6 +395,16 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         str(citation.get("url") or "")
         for citation in result.citations.values()
     ] + [action.url for action in action_links]
+    if channel != "console":
+        aliases = {
+            _delivery_url(str(acquisition.get("requested_url") or "")): _delivery_url(
+                str(acquisition.get("final_url") or "")
+            )
+            for citation in result.citations.values()
+            if (acquisition := (citation.get("provenance") or {}).get("acquisition"))
+            if acquisition.get("requested_url") and acquisition.get("final_url")
+        }
+        body = _deduplicate_delivery_urls(body, candidate_urls, aliases)
     body_urls = _urls_in(body)
     inline_urls = {
         _canonical_url(url) for url in candidate_urls
