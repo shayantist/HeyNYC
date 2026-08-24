@@ -16,8 +16,12 @@ ssh_host="${HEYNYC_DEPLOY_SSH_HOST:-heynyc-wsl}"
 case "$ssh_host" in
     -*|''|*[[:space:]]*) echo "HEYNYC_DEPLOY_SSH_HOST must be one SSH host or alias" >&2; exit 64 ;;
 esac
+remote_source="${HEYNYC_REMOTE_SOURCE_REPO:-Projects/HeyNYC}"
+case "$remote_source" in
+    /*|''|*[[:space:]]*) echo "HEYNYC_REMOTE_SOURCE_REPO must be a relative path without whitespace" >&2; exit 64 ;;
+esac
 
 ssh "$ssh_host" wsl.exe -d Ubuntu --cd "~" --exec \
-    git -C projects/HeyNYC pull --ff-only origin main
+    git -C "$remote_source" pull --ff-only origin main
 exec ssh -tt "$ssh_host" wsl.exe -d Ubuntu --cd "~" --exec \
-    ./projects/HeyNYC/scripts/deploy.sh "$@"
+    "./$remote_source/scripts/deploy.sh" "$@"

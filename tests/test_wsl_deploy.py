@@ -300,8 +300,8 @@ def test_deploy_via_ssh_uses_only_a_local_ssh_alias(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     commands = log.read_text().splitlines()
     assert commands == [
-        "heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec git -C projects/HeyNYC pull --ff-only origin main",
-        f"-tt heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec ./projects/HeyNYC/scripts/deploy.sh {NEW_SHA}",
+        "heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec git -C Projects/HeyNYC pull --ff-only origin main",
+        f"-tt heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec ./Projects/HeyNYC/scripts/deploy.sh {NEW_SHA}",
     ]
     text = LOCAL_DEPLOY_SCRIPT.read_text()
     assert "HostName " not in text
@@ -336,7 +336,7 @@ def test_deploy_via_ssh_deploys_latest_main_without_a_sha(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines()[-1] == (
         "-tt heynyc-wsl wsl.exe -d Ubuntu --cd ~ --exec "
-        "./projects/HeyNYC/scripts/deploy.sh"
+        "./Projects/HeyNYC/scripts/deploy.sh"
     )
 
 

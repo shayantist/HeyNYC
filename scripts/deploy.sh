@@ -27,7 +27,8 @@ if [ -n "$requested_sha" ]; then
 fi
 
 ROOT="${HEYNYC_DEPLOY_ROOT:-$HOME/services/heynyc}"
-SOURCE="${HEYNYC_SOURCE_REPO:-$HOME/projects/HeyNYC}"
+SOURCE="${HEYNYC_SOURCE_REPO:-$HOME/Projects/HeyNYC}"
+export HEYNYC_SOURCE_REPO="$SOURCE"
 SHARED="$ROOT/shared"
 RELEASES="$ROOT/releases"
 CURRENT="$ROOT/current"
