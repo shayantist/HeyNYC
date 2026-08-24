@@ -91,7 +91,7 @@ async def test_failed_web_fetch_runs_one_focused_search_fallback(monkeypatch):
     )
 
     assert seen == [{
-        "query": "SNAP Fair Hearing request deadline",
+        "query": f"{url} SNAP Fair Hearing request deadline",
         "prefer": ["otda.ny.gov"],
         "count": 5,
     }]

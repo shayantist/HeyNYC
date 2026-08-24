@@ -17,8 +17,8 @@ tests stay offline and the real backend is swappable:
                    compatible litellm model. A general LLM remains a calibrated candidate rather than
                    the production Tier-2.
 
-The configured Pydantic runtime uses PromptedNLI for provider models. Injected test models remain
-offline and do not construct it.
+The resident runtime does not construct a checker. Calibration and A/B tools inject one explicitly;
+PromptedNLI remains an evaluation prototype until it clears a human-labeled calibration gate.
 """
 from __future__ import annotations
 
@@ -164,7 +164,9 @@ _PROMPT = (
     "data-minimization reminder not to share sensitive identifiers, but fail a question that embeds an "
     "unsupported premise, directs another action, or adds other factual or procedural advice. An item "
     "with kind `framing` doesn't require grounding when it only expresses empathy, signposts the answer, "
-    "or states uncertainty about what can be determined. Fail framing that contains an external factual "
+    "or states uncertainty about what can be determined. Supported uncertainty examples include: "
+    "'The page did not load, so I could not confirm its details' and 'The records do not show "
+    "whether these reports came from that building.' Fail framing that contains an external factual "
     "or procedural claim, prediction, or confident conclusion. Label each item supported, partial, "
     "unsupported, or contradicted. Partial, unsupported, and contradicted all fail verification."
 )

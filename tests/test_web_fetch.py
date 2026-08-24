@@ -131,6 +131,18 @@ def test_relevant_chunks_put_strongest_evidence_first():
     assert "full minimum wage" in chunks[0]
 
 
+def test_focused_retrieval_stops_when_selected_chunks_cover_the_scope():
+    text = (
+        ("Tenant program history without contact details. " * 120)
+        + "For other questions, call 311 and ask for the Tenant Helpline."
+    )
+
+    chunks = _relevant_chunks(text, "call 311 ask Tenant Helpline", limit=None)
+
+    assert len(chunks) == 1
+    assert "Tenant Helpline" in chunks[0]
+
+
 def test_evidence_chunks_use_the_token_budget_instead_of_a_fixed_count(monkeypatch):
     text = "\n\n".join(
         f"Target section {index}. " + ("context " * 210)
@@ -1459,6 +1471,45 @@ async def test_failed_source_fetch_preserves_official_excerpt_history():
         "evidence_grade": "authoritative_excerpt",
         "source_tier": "authoritative",
     }
+
+
+async def test_failed_fetch_fallback_search_preserves_the_page_identity(monkeypatch):
+    url = "https://www.nyc.gov/content/organize/pages/talk-to-tenants-nav"
+    captured = {}
+
+    async def unavailable(*_args, **_kwargs):
+        raise ValueError("blocked")
+
+    async def search(args, _ctx):
+        captured.update(args)
+        return "Alternate official source"
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", unavailable)
+    monkeypatch.setattr(
+        web_fetch_module,
+        "web_search_tools",
+        lambda *_args, **_kwargs: [
+            Tool(
+                name="web_search",
+                description="Search",
+                parameters={"type": "object", "properties": {}},
+                handler=search,
+            )
+        ],
+    )
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([ServiceModule(name="housing", allowlist=["nyc.gov"])]),
+    )
+
+    out = await web_fetch_tools()[0].handler(
+        {"url": url, "query": "tenant organizing resources"},
+        ctx,
+    )
+
+    assert captured["query"] == f"{url} tenant organizing resources"
+    assert captured["prefer"] == ["www.nyc.gov"]
+    assert "Alternate official source" in out
 
 
 async def test_failed_source_fetch_preserves_canonical_city_discovery_history():

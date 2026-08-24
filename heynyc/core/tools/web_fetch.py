@@ -337,7 +337,19 @@ def _relevant_chunks(text: str, query: str, limit: int | None = 2) -> list[str]:
         key=lambda item: (item[2], -item[0]),
         reverse=True,
     )
-    if limit is not None:
+    if limit is None:
+        target = set().union(*(_terms(chunk) & wanted for _, chunk, _ in ranked))
+        covered: set[str] = set()
+        selected = []
+        for item in ranked:
+            overlap = _terms(item[1]) & wanted
+            if not selected or overlap - covered:
+                selected.append(item)
+                covered.update(overlap)
+            if covered == target:
+                break
+        ranked = selected
+    else:
         ranked = ranked[:limit]
     return [chunk for _, chunk, _score in ranked]
 
@@ -373,7 +385,7 @@ def _evidence_chunks(
         return [text]
     else:
         candidates = (
-            _relevant_chunks(text, query, limit=None)
+            _relevant_chunks(text, query, limit=len(text))
             if query
             else chunk_text(text)
         )
@@ -678,7 +690,7 @@ def web_fetch_tools() -> list[Tool]:
                 "No page content was retrieved. Any claim attributed only to this source is "
                 f"unverified; preserve the URL so the resident can check it. {{cite:{cite}}}\n"
             )
-            fallback_query = evidence_scope or query
+            fallback_query = " ".join(part for part in (url, evidence_scope or query) if part)
             if not fallback_query:
                 return failure
             host = urlsplit(url).hostname or ""

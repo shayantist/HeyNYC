@@ -7,6 +7,7 @@ from pydantic_ai.models.function import FunctionModel
 from heynyc.core import localization
 from heynyc.core.pydantic_runtime import PydanticRunFailure, PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.runtime import (
+    SOURCE_CHECK_UNAVAILABLE_NOTICE,
     TEMPORARY_FAILURE_FALLBACK,
     VERIFICATION_ABSTAIN_FALLBACK,
 )
@@ -26,6 +27,10 @@ def test_spanish_current_turn_localizes_verification_abstention() -> None:
     assert localization.localize(VERIFICATION_ABSTAIN_FALLBACK, "es") == (
         "No pude verificarlo con las fuentes confiables que encontré, así que no quiero "
         "adivinar. Intenta preguntar con un poco más de detalle y lo comprobaré de nuevo."
+    )
+    assert localization.localize(SOURCE_CHECK_UNAVAILABLE_NOTICE, "es") == (
+        "No pude ejecutar la comprobación de fuentes para esta respuesta. Incluyo las fuentes "
+        "enlazadas para que puedas comprobar los detalles directamente."
     )
 
 

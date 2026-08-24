@@ -353,10 +353,11 @@ def test_chronic_repair_situation_uses_current_city_organizing_routes():
 
     assert hint.high_stakes is True
     assert any("talk-to-tenants" in url for url in hint.urls)
+    assert any("mayors-office/news/2026/07" in url for url in hint.urls)
     assert any("partners-in-preservation" in url for url in hint.urls)
     assert "does not file" in hint.reminder
     assert "ordinary single-request lookup" in hint.reminder
-    assert "load the parent housing capability" in hint.reminder.lower()
+    assert "use the parent housing capability" in hint.reminder.lower()
     assert "get_hpd_building_records" in hint.focus_tools
     assert "request number is supplied" in hint.reminder
     assert "one factual or procedural claim" in hint.reminder.lower()
@@ -364,13 +365,15 @@ def test_chronic_repair_situation_uses_current_city_organizing_routes():
     assert "do not add a recordkeeping checklist" in hint.reminder.lower()
     assert "state the read-only limitation separately" in hint.reminder.lower()
     assert "do not name program partners" in hint.reminder.lower()
-    assert "report only the tenant helpline sentence" in hint.reminder.lower()
-    assert "do not add a purpose qualifier" in hint.reminder.lower()
+    assert "separate statement" in hint.reminder.lower()
+    assert "only for other questions" in hint.reminder.lower()
+    assert "does not verify organizing help" in hint.reminder.lower()
     assert "do not state common-area or retaliation details" in hint.reminder.lower()
-    assert "load_capability(id=\"nyc311_status\")" in hint.reminder
+    assert "load it only" not in hint.reminder.lower()
+    assert "load_capability(id=\"nyc311_status\")" not in hint.reminder
     assert "do not use search_tools" not in hint.reminder
     assert 'complaint_terms=["rodent"]' in hint.reminder
-    assert 'evidence_scope="tenant helpline route"' in hint.reminder.lower()
+    assert 'evidence_scope="hpd other questions handoff"' in hint.reminder.lower()
 
 
 def test_311_status_hands_unresolved_building_repairs_to_composed_records():

@@ -280,6 +280,7 @@ def test_prompted_nli_marks_conversational_framing_as_not_always_grounded() -> N
     assert '"kind": "framing"' in user
     assert "doesn't require grounding" in system
     assert "external factual or procedural claim" in system
+    assert "The page did not load, so I could not confirm its details" in system
 
 
 def test_prompted_nli_preserves_leading_question_for_fail_closed_review() -> None:

@@ -631,6 +631,17 @@ def legacy_claim_support_evidence_preserves_the_retrieved_evidence() -> None:
     assert "anonymous-complaint-scope" in evidence
 
 
+def test_claim_support_evidence_includes_the_exact_citation_url() -> None:
+    evidence = _claim_support_evidence({
+        "url": "https://portal.311.nyc.gov/report-problems/",
+        "title": "Report Problems, NYC311",
+        "snippet": "Use NYC311's official Report Problems page to file a new problem.",
+        "kind": "WEB",
+    })
+
+    assert "https://portal.311.nyc.gov/report-problems/" in evidence
+
+
 async def test_structured_grounding_uses_native_cited_prose() -> None:
     system_prompts: list[str] = []
 
@@ -1987,10 +1998,50 @@ async def test_procedural_advice_cannot_bypass_claim_check_as_framing() -> None:
     ).run("What should I submit?")
 
     assert result.text == (
-        "Submit every document before the deadline.\n\n"
-        "I couldn't verify every detail in that answer. "
-        "Check the linked sources before relying on it."
+        "I couldn't confirm this from the sources I checked: "
+        "Submit every document before the deadline."
     )
+    assert result.text.count("Submit every document before the deadline.") == 1
+
+
+async def test_exhausted_claim_correction_labels_block_in_place_without_damaging_url() -> None:
+    claim = (
+        "The records do not establish that the complaint came from this building. "
+        "The source does not identify the building."
+    )
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse([ToolCallPart(
+            "grounded_answer",
+            {
+                "grounded_blocks": [{
+                    "text": claim,
+                    "citation_ids": [],
+                    "kind": "framing",
+                }]
+            },
+            "final-1",
+        )])
+
+    class RejectingVerifier:
+        async def arun_many(self, inputs):
+            return NLIBatchRun(verdicts=[
+                NLIVerdict(False, 0.0, "fake", label="unsupported") for _ in inputs
+            ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=_HIGH_STAKES_REGISTRY,
+        tools={},
+        structured_grounding=True,
+        claim_support_checker=RejectingVerifier(),
+        scope_screen=_high_stakes_scope,
+    ).run("What do the records show?")
+
+    assert result.text == (
+        "I couldn't confirm this from the sources I checked: " + claim
+    )
+    assert result.text.count(claim) == 1
 
 
 async def legacy_claim_support_check_regenerates_instead_of_pruning_blocks() -> None:
@@ -2379,8 +2430,8 @@ async def test_claim_support_check_preserves_sources_when_provider_is_down() -> 
     assert result.status == "error"
     assert result.text == (
         "The retrieved record suggests benefits are available. {cite:S1}\n\n"
-        "I couldn't verify every detail in that answer. "
-        "Check the linked sources before relying on it."
+        "I couldn't run the source check for this answer. The linked sources are included so "
+        "you can check the details directly."
     )
     rendered = "\n".join(render(result, "sms_twilio"))
     assert "https://www.nyc.gov/example" in rendered
@@ -2437,8 +2488,8 @@ async def legacy_claim_support_outage_labels_cited_and_uncited_paragraphs() -> N
     assert result.text == (
         "The retrieved record suggests benefits are available. {cite:S1}\n\n"
         "Apply again tomorrow.\n\n"
-        "I couldn't verify every detail in that answer. "
-        "Check the linked sources before relying on it."
+        "I couldn't run the source check for this answer. The linked sources are included so "
+        "you can check the details directly."
     )
 
 

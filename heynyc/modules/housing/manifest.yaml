@@ -117,16 +117,16 @@ situations:
       current official NYC chronic building repairs tenant organizing Talk to Tenants Partners in
       Preservation 311 HPD
     urls:
-      - https://www.nyc.gov/content/organize/pages/talk-to-tenants-nav
+      - https://www.nyc.gov/mayors-office/news/2026/07/mayor-mamdani-launches--talk-to-tenants--campaign-to-build-tenan
       - https://www.nyc.gov/site/hpd/services-and-information/partners-in-preservation.page
     reminder: >-
       Compose records without merging their meanings. Use check_311_request when a request number is
       supplied. If a request number is supplied, do not also call search_311_complaints unless the
       resident explicitly asks for other recent nearby reports. Use search_311_complaints when no
-      request number is available. Before any other lookup in that path, call
-      load_capability(id="nyc311_status") directly. For a rat complaint, pass
+      request number is available. Use the nyc311_status capability before any other lookup in
+      that path. For a rat complaint, pass
       complaint_terms=["rodent"], not a short fragment or a combined
-      phrase. Use get_hpd_building_records for separate HPD complaint and violation records. Load the
+      phrase. Use get_hpd_building_records for separate HPD complaint and violation records. Use the
       parent housing capability for that HPD building tool. Use
       get_hpd_litigation_records only when the resident asks about court or litigation records.
       Preserve each source's agency, record type, dates, and status. Closed does not prove repaired.
@@ -135,9 +135,11 @@ situations:
       Preservation route when repeated conditions or organizing are relevant, without claiming
       affiliation, enrollment, or contact. Use the Talk to Tenants page for its published organizing
       information. Fetch Partners in Preservation with the focused query "call 311 ask for Tenant
-      Helpline other questions" and evidence_scope="Tenant Helpline route" for that handoff, and
-      report only the Tenant Helpline sentence from that source. Do not add a purpose qualifier such
-      as "for tenant-organizing questions" to that sentence. Do not name program partners or
+      Helpline other questions" and evidence_scope="HPD other questions handoff" for that handoff.
+      Keep the two sources separate: if Talk to Tenants cannot be fetched, say in a separate statement
+      that its organizing details could not be confirmed. Report Partners in Preservation only for
+      other questions; that source does not verify organizing help. Do not add an organizing, repair,
+      legal, or complaint-purpose qualifier to its Tenant Helpline sentence. Do not name program partners or
       districts unless the resident asks for them. Do
       not state common-area or retaliation details in this path because that focused citation does
       not contain them. Do not add a recordkeeping checklist unless the retrieved source supplies

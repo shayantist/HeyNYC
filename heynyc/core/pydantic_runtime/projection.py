@@ -152,7 +152,7 @@ def _legacy_citation_ids(text: str) -> list[str]:
 
 def _claim_support_evidence(citation: dict) -> str:
     """Project public evidence without exposing private provenance."""
-    parts = [citation.get("snippet"), citation.get("title")]
+    parts = [citation.get("snippet"), citation.get("title"), citation.get("url")]
     provenance = citation.get("provenance") or {}
     if citation.get("kind") == "DATA" and provenance.get("record_id"):
         parts += [

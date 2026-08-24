@@ -122,7 +122,6 @@ from .projection import (
     NONFACTUAL_OUTCOME_TEXT,
     ClarificationRequest,
     GroundedAnswer,
-    GroundedBlock,
     _captured_usage,
     _claim_support_evidence,
     _claim_support_text,
@@ -174,7 +173,9 @@ _MULTI_TOOL_SCOPE_REMINDER = (
 _OUTPUT_CORRECTION_REMINDER = (
     "Correct the rejected final answer now using only evidence already in the conversation. "
     "Preserve every supported requested part, state any unresolved part plainly, and return the "
-    "complete resident answer."
+    "complete resident answer. Keep loaded capability exclusions. For rejected framing, remove "
+    "external judgments and use only empathy about the resident's experience, signposting, or a "
+    "plain statement of what the retrieved sources did not establish."
 )
 _DISCOVERY_CORRECTION_REMINDER = (
     "The rejected answer relied on a search snippet. Fetch that known source once with "
@@ -276,6 +277,11 @@ VERIFICATION_ABSTAIN_FALLBACK = (
 )
 UNVERIFIED_DRAFT_NOTICE = (
     "I couldn't verify every detail in that answer. Check the linked sources before relying on it."
+)
+UNVERIFIED_CLAIM_NOTICE = "I couldn't confirm this from the sources I checked:"
+SOURCE_CHECK_UNAVAILABLE_NOTICE = (
+    "I couldn't run the source check for this answer. The linked sources are included so you "
+    "can check the details directly."
 )
 INCOMPLETE_DRAFT_NOTICE = (
     "This answer is incomplete because I couldn't finish every requested part."
@@ -445,19 +451,30 @@ def _validation_warning_text(
             if isinstance(item.get("id"), str)
             and item["id"].removeprefix("block-").isdigit()
         }
-        if grounded_answer is not None and rejected_blocks:
-            grounded_answer = grounded_answer.model_copy(update={
-                "grounded_blocks": [
-                    block
-                    for index, block in enumerate(grounded_answer.grounded_blocks)
-                    if index not in rejected_blocks
-                ]
-            })
-            answer = (
-                _render_grounded_answer(grounded_answer)
-                if grounded_answer.grounded_blocks
-                else ""
-            )
+        if latest.get("stage") == "claim_support":
+            notice = localize(UNVERIFIED_CLAIM_NOTICE, language)
+            if grounded_answer is not None and rejected_blocks:
+                grounded_answer = grounded_answer.model_copy(update={
+                    "grounded_blocks": [
+                        block.model_copy(update={"text": f"{notice} {block.text}"})
+                        if index in rejected_blocks
+                        else block
+                        for index, block in enumerate(grounded_answer.grounded_blocks)
+                    ]
+                })
+                return _render_grounded_answer(grounded_answer)
+            rejected_claims = {
+                int(item["id"].removeprefix("claim-"))
+                for item in latest.get("items", ())
+                if isinstance(item.get("id"), str)
+                and item["id"].removeprefix("claim-").isdigit()
+            }
+            for index, (original, _claim, _citation_ids) in enumerate(
+                _cited_claims(answer)
+            ):
+                if index in rejected_claims and original in answer:
+                    answer = answer.replace(original, f"{notice} {original}", 1)
+            return answer
         if latest.get("stage") == "structured_grounding":
             for item in latest.get("items", ()):
                 claim = item.get("claim")
@@ -531,13 +548,14 @@ def _validation_citation_ids(
         for citation_id in item.get("citation_ids", ())
     ]
     mapping = citations.mapping()
+    allowed = set(mapping) if current_citation_ids is None else current_citation_ids & mapping.keys()
     unavailable = {
         citation_id
         for citation_id, citation in mapping.items()
-        if current_citation_ids is None or citation_id in current_citation_ids
+        if citation_id in allowed
         if (citation.get("provenance") or {}).get("evidence_grade") == "unavailable"
     }
-    return set(candidates).intersection(mapping) | unavailable
+    return set(candidates).intersection(allowed) | unavailable
 
 
 def _current_turn_citation_ids(citations: CitationRegistry) -> set[str]:
@@ -576,14 +594,23 @@ def _reply_language(safety_run: Any, user_turns: Sequence[str]) -> str:
 
 
 async def _recover_upstream_tool_error(
-    _ctx: RunContext[ToolContext],
+    ctx: RunContext[ToolContext],
     *,
     call: Any,
     tool_def: Any,
     args: Any,
     error: Exception,
 ) -> Any:
-    del call, tool_def, args
+    del call, ctx, tool_def, args
+    if isinstance(error, httpx.TimeoutException):
+        raise ToolFailed(
+            "The upstream service timed out. Use another available source or explain the limitation."
+        )
+    if isinstance(error, httpx.TransportError):
+        raise ToolFailed(
+            "The upstream service could not be reached. Use another available source or explain "
+            "the limitation."
+        )
     if not isinstance(error, httpx.HTTPStatusError):
         raise error
     status = error.response.status_code
@@ -1836,26 +1863,34 @@ class PydanticRuntimeAdapter:
                     }),
                 })
                 if had_prior_support_failure:
-                    notice = localize(UNVERIFIED_DRAFT_NOTICE, ctx.deps.language)
+                    rejected_ids = {item["id"] for item in rejected}
+                    notice = localize(UNVERIFIED_CLAIM_NOTICE, ctx.deps.language)
                     if isinstance(output, GroundedAnswer):
                         return output.model_copy(update={
                             "grounded_blocks": [
-                                *output.grounded_blocks,
-                                GroundedBlock(
-                                    kind="framing",
-                                    text=notice,
-                                    starts_new_paragraph=True,
-                                ),
+                                block.model_copy(update={"text": f"{notice} {block.text}"})
+                                if f"block-{index}" in rejected_ids
+                                else block
+                                for index, block in enumerate(output.grounded_blocks)
                             ]
                         })
-                    return f"{rendered}\n\n{notice}"
+                    corrected = rendered
+                    for item_id, _claim, _kind, _citation_ids, original in claims:
+                        if item_id in rejected_ids and original and original in corrected:
+                            corrected = corrected.replace(
+                                original, f"{notice} {original}", 1
+                            )
+                    return corrected
                 raise ModelRetry(
                     "Return a complete replacement answer. Keep every supported outcome and "
                     "write in the resident's language. The cited evidence did not support every "
                     f"detail in these claims: {json.dumps(rejected, separators=(',', ':'))}. "
                     "For each rejected claim, either state only what its source supports or explain "
                     "naturally what the source did not establish. Preserve the relevant source "
-                    "citation. Do not use an 'Unverified:' label or a standalone yes or no."
+                    "citation. For rejected framing, remove external judgments and keep only pure "
+                    "empathy, signposting, or retrieval uncertainty. Continue following every "
+                    "loaded capability exclusion. Do not use an 'Unverified:' label or a standalone "
+                    "yes or no."
                 )
         return output
 
@@ -1912,7 +1947,7 @@ class PydanticRuntimeAdapter:
         if deps.validation_rejections[-1].get("stage") == "claim_support_unavailable":
             result.text = "\n\n".join((
                 result.text,
-                localize(UNVERIFIED_DRAFT_NOTICE, language),
+                localize(SOURCE_CHECK_UNAVAILABLE_NOTICE, language),
             ))
             result.status = "error"
 

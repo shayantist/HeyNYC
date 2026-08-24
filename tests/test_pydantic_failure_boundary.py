@@ -1044,6 +1044,13 @@ def test_unverified_draft_notice_is_localized() -> None:
     )
 
 
+def test_claim_specific_notice_is_localized() -> None:
+    assert localize(
+        "I couldn't confirm this from the sources I checked:",
+        "es",
+    ) == "No pude confirmar lo siguiente con las fuentes que consulté:"
+
+
 async def test_rejected_final_answer_cannot_switch_to_a_clarification() -> None:
     calls = 0
 
