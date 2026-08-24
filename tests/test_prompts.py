@@ -388,7 +388,9 @@ def test_311_status_hands_unresolved_building_repairs_to_composed_records():
     assert "ordinary status lookup" in low
     assert "30-day" in low
     assert "800-meter" in low
-    assert "within_days" in low
+    assert "lookback_days" in low
+    assert "created_after" in low
+    assert "created_before" in low
     assert "radius_meters" in low
 
 

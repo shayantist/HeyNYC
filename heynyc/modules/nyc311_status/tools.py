@@ -3,7 +3,7 @@
   - "is my complaint moving?"  -> sr_number: look up one row by its own unique_key
     (the SR number). ONLY the number is sent; a resident's address is never geocoded
     or logged on this path.
-  - "what's happening with 311 complaints about X near me?" -> complaint_terms / near: recent
+  - "what's happening with 311 complaints about X near me?" -> complaint_terms / near: matching
     rows filtered on the dataset's own columns (complaint_type, created_date) and the
     location point column (within_circle), summarized by status.
 
@@ -16,11 +16,11 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Self
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field, ValidationError, model_validator
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
@@ -32,9 +32,9 @@ from heynyc.core.tools.geo import GeoPoint, maps_link, resolve_location
 # (category service_request_311) only so the capability table / grounding label read it.
 DATASET_ID = "erm2-nwe9"
 _NYC_TZ = ZoneInfo("America/New_York")
-_DEFAULT_WITHIN_DAYS = 30
-_MIN_WITHIN_DAYS = 1
-_MAX_WITHIN_DAYS = 365
+_DEFAULT_LOOKBACK_DAYS = 30
+_MIN_LOOKBACK_DAYS = 1
+_MAX_LOOKBACK_DAYS = 365
 _DEFAULT_RADIUS_METERS = 800
 _MIN_RADIUS_METERS = 100
 _MAX_RADIUS_METERS = 50_000
@@ -71,11 +71,28 @@ class ComplaintSearchQuery(LocationRequest):
     max_results: int = Field(
         default=5, ge=1, le=10, description="Maximum recent complaints to list"
     )
-    within_days: int = Field(
-        default=_DEFAULT_WITHIN_DAYS,
-        ge=_MIN_WITHIN_DAYS,
-        le=_MAX_WITHIN_DAYS,
-        description="Lookback window in elapsed days; omit to use 30 days",
+    lookback_days: int | None = Field(
+        default=None,
+        ge=_MIN_LOOKBACK_DAYS,
+        le=_MAX_LOOKBACK_DAYS,
+        description=(
+            "Rolling lookback in elapsed days. Use only when the resident gives a relative "
+            "duration; omit all time fields for the 30-day default."
+        ),
+    )
+    created_after: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Inclusive start of an explicit calendar range with New York's UTC offset. Use "
+            "together with created_before, never with lookback_days."
+        ),
+    )
+    created_before: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Exclusive end of an explicit calendar range with New York's UTC offset. Use together "
+            "with created_after, never with lookback_days."
+        ),
     )
     radius_meters: int = Field(
         default=_DEFAULT_RADIUS_METERS,
@@ -83,6 +100,27 @@ class ComplaintSearchQuery(LocationRequest):
         le=_MAX_RADIUS_METERS,
         description="Search radius around near, in meters; omit to use 800 meters",
     )
+
+    @model_validator(mode="after")
+    def valid_time_window(self) -> Self:
+        has_range = self.created_after is not None or self.created_before is not None
+        if self.lookback_days is not None and has_range:
+            raise ValueError("Use lookback_days or an explicit calendar range, not both")
+        if (self.created_after is None) != (self.created_before is None):
+            raise ValueError("created_after and created_before must be supplied together")
+        if (
+            self.created_after is not None
+            and self.created_before is not None
+            and self.created_after >= self.created_before
+        ):
+            raise ValueError("created_after must be earlier than created_before")
+        for boundary in (self.created_after, self.created_before):
+            if (
+                boundary is not None
+                and boundary.utcoffset() != boundary.astimezone(_NYC_TZ).utcoffset()
+            ):
+                raise ValueError("calendar range boundaries must use New York's UTC offset")
+        return self
 
 
 def _nyc_now() -> datetime:
@@ -179,7 +217,7 @@ def _area_citation(
     return ctx.citations.register(
         _area_query_url(where),
         snippet=(
-            f"{total} recent 311 rows for {scope}; {total} total matches; "
+            f"{total} 311 rows for {scope}; {total} total matches; "
             f"{len(rows)} most recent examples shown; status: {breakdown}"
         ),
         title="NYC 311 Service Requests search",
@@ -292,16 +330,37 @@ async def _lookup_area(
     complaint_terms: list[str],
     near: str,
     max_results: int,
-    within_days: int,
+    lookback_days: int | None,
+    created_after: datetime | None,
+    created_before: datetime | None,
     radius_meters: int,
     ctx: ToolContext,
 ) -> str:
-    cutoff = (
-        (_nyc_now().astimezone(UTC) - timedelta(days=within_days))
-        .astimezone(_NYC_TZ)
-        .strftime("%Y-%m-%dT%H:%M:%S")
-    )
-    clauses = [f"created_date > '{cutoff}'"]
+    if created_after is not None and created_before is not None:
+        start = created_after.astimezone(_NYC_TZ)
+        end = created_before.astimezone(_NYC_TZ)
+        clauses = [
+            f"created_date >= '{start:%Y-%m-%dT%H:%M:%S}'",
+            f"created_date < '{end:%Y-%m-%dT%H:%M:%S}'",
+        ]
+        last_included = end - timedelta(microseconds=1)
+        time_label = (
+            f"from {start.strftime('%B %d, %Y').replace(' 0', ' ')} through "
+            f"{last_included.strftime('%B %d, %Y').replace(' 0', ' ')}"
+        )
+    else:
+        days = lookback_days or _DEFAULT_LOOKBACK_DAYS
+        now = _nyc_now()
+        cutoff = (
+            (now.astimezone(UTC) - timedelta(days=days))
+            .astimezone(_NYC_TZ)
+            .strftime("%Y-%m-%dT%H:%M:%S")
+        )
+        clauses = [
+            f"created_date > '{cutoff}'",
+            f"created_date <= '{now:%Y-%m-%dT%H:%M:%S}'",
+        ]
+        time_label = f"in the last {days} days"
     if complaint_terms:
         matches = []
         for term in complaint_terms:
@@ -361,12 +420,12 @@ async def _lookup_area(
         cite = _empty_area_citation(
             ctx,
             where,
-            f'{scope}{where_label} in the last {within_days} days',
+            f"{scope}{where_label} {time_label}",
             origin,
         )
         return (
-            f"I found no recent NYC 311 complaints {scope}{where_label} in the last {within_days} "
-            f"days. That could mean none were filed, or they are older than this window. {{cite:{cite}}} "
+            f"I found no NYC 311 complaints {scope}{where_label} {time_label}. "
+            f"That could mean none were filed in this window. {{cite:{cite}}} "
             "To report a "
             "new problem or check official status, use portal.311.nyc.gov or call 311."
         )
@@ -382,7 +441,7 @@ async def _lookup_area(
     area_cite = _area_citation(
         ctx,
         where,
-        f"{scope}{where_label} in the last {within_days} days".strip(),
+        f"{scope}{where_label} {time_label}".strip(),
         rows,
         counts,
         max_results,
@@ -390,8 +449,7 @@ async def _lookup_area(
     )
     total = sum(counts.values())
     lines = [
-        f"Recent NYC 311 complaints {scope}{where_label} "
-        f"(created in the last {within_days} days) {{cite:{area_cite}}}:",
+        f"NYC 311 complaints {scope}{where_label} {time_label} {{cite:{area_cite}}}:",
         f"- Of the {total} I found, status is: {breakdown} {{cite:{area_cite}}}",
         "Most recent:",
     ]
@@ -417,14 +475,6 @@ async def _check_311_request(args: dict, ctx: ToolContext) -> str:
     return await _lookup_sr(str(args.get("sr_number", "") or "").strip(), ctx)
 
 
-def _bounded_int(args: dict, name: str, default: int, minimum: int, maximum: int) -> int:
-    try:
-        value = int(args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return min(max(value, minimum), maximum)
-
-
 async def _search_311_complaints(args: dict, ctx: ToolContext) -> str:
     raw_terms = [
         str(term).strip()
@@ -442,27 +492,24 @@ async def _search_311_complaints(args: dict, ctx: ToolContext) -> str:
             "Tell me your 311 service request number to check its status, or a complaint type and an "
             "NYC location (like 'noise complaints near Union Square') to see recent 311 activity."
         )
-    max_results = _bounded_int(args, "max_results", 5, 1, 10)
-    within_days = _bounded_int(
-        args,
-        "within_days",
-        _DEFAULT_WITHIN_DAYS,
-        _MIN_WITHIN_DAYS,
-        _MAX_WITHIN_DAYS,
-    )
-    radius_meters = _bounded_int(
-        args,
-        "radius_meters",
-        _DEFAULT_RADIUS_METERS,
-        _MIN_RADIUS_METERS,
-        _MAX_RADIUS_METERS,
-    )
+    try:
+        query = ComplaintSearchQuery.model_validate({
+            **args,
+            "complaint_terms": complaint_terms,
+        })
+    except ValidationError:
+        return (
+            "Use either lookback_days for a relative window or both created_after and "
+            "created_before with New York's UTC offset for a calendar range."
+        )
     return await _lookup_area(
         complaint_terms,
-        near,
-        max_results,
-        within_days,
-        radius_meters,
+        query.near or "",
+        query.max_results,
+        query.lookback_days,
+        query.created_after,
+        query.created_before,
+        query.radius_meters,
         ctx,
     )
 
@@ -492,12 +539,12 @@ def get_tools() -> list[Tool]:
         Tool(
             name="search_311_complaints",
             description=(
-                "Search recent NYC 311 complaints by problem and optional NYC location. Use for "
-                "area activity, not for checking one known service request. Read-only."
+                "Search NYC 311 complaints by problem, time window, and optional NYC location. "
+                "Use for area activity, not for checking one known service request. Read-only."
             ),
             parameters=ComplaintSearchQuery.model_json_schema(),
             handler=_search_311_complaints,
             open_world=True,
-            title="Search recent 311 complaints",
+            title="Search 311 complaints",
         ),
     ]

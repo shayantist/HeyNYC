@@ -1,7 +1,7 @@
 name: nyc311_status
 category: city services
 description: >-
-  Check the status of an existing NYC 311 service request, or see what recent 311
+  Check the status of an existing NYC 311 service request, or see what 311
   complaints about a problem are doing near a location, grounded in the city's own
   311 Service Requests data. Read-only: it looks up and reports status, it never
   files a complaint.
@@ -20,12 +20,15 @@ prompt: |
   For questions about an EXISTING 311 complaint, call check_311_request and pass
   sr_number=<the resident's
     service request number>. Pass ONLY the number, never their name or address.
-  For recent 311 activity, call search_311_complaints and pass complaint_terms=<one to three short
+  For area 311 activity, call search_311_complaints and pass complaint_terms=<one to three short
     alternative complaint-type or descriptor terms, e.g. ["rodent"] or ["noise"]>, and
     optionally near=<one NYC address or landmark>. Keep alternatives as separate list items. Never
     combine them into one phrase. Use max_results only when the resident requests a number of listed
-    examples or results. Pass within_days or radius_meters when the resident supplies that constraint;
-    otherwise omit them so the tool uses its documented 30-day and 800-meter defaults.
+    examples or results. For a resident-supplied relative window, pass lookback_days. For an explicit
+    calendar range, pass both created_after and created_before with New York's UTC offset. Do not mix
+    the two forms. Otherwise omit all time fields so the tool uses its documented 30-day default. Pass
+    radius_meters only when the resident supplies that constraint; otherwise omit it for the 800-meter
+    default.
   Preserve the tool's reported time and distance scope whenever reporting area-search counts or
   implying how complete those results are.
   Preserve the tool's statuses, dates, resolution text, and citations. Report the status verbatim

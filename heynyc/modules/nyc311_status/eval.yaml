@@ -67,8 +67,22 @@
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   utility_criterion: >-
-    Pass within_days=7 and radius_meters=1600 to the tool. Report that exact time window and radius,
+    Pass lookback_days=7 and radius_meters=1600 to the tool. Report that exact time window and radius,
     summarize the complete filtered status counts, and cite any individual examples separately.
+
+- id: sr311_area_calendar_range
+  tags: [must-win]
+  query: "What 311 noise complaints were reported near Union Square between September and October of last year?"
+  expect_tools: [search_311_complaints]
+  expect_cite_kinds: [DATA]
+  abstain: false
+  capability: dataset_grounding
+  test_type: MFT
+  invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
+  utility_criterion: >-
+    Resolve the resident's calendar range to New York-local created_after and created_before values,
+    report the exact range and radius used, summarize the complete filtered status counts, and cite
+    any individual examples separately. Do not substitute the default rolling lookback.
 
 - id: sr311_not_found_abstains
   tags: [must-win]

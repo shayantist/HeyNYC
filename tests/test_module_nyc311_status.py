@@ -12,6 +12,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+from pydantic import ValidationError
 
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
@@ -62,7 +63,9 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
         "complaint_terms",
         "near",
         "max_results",
-        "within_days",
+        "lookback_days",
+        "created_after",
+        "created_before",
         "radius_meters",
     }
     assert tool.parameters["required"] == ["complaint_terms"]
@@ -73,14 +76,17 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
     assert terms["items"]["minLength"] == 4
     assert "dataset-facing" in terms["description"]
     assert "rodent" in terms["description"]
-    assert tool.parameters["properties"]["within_days"] == {
+    lookback = tool.parameters["properties"]["lookback_days"]
+    assert lookback["default"] is None
+    assert lookback["anyOf"][0] == {
         "type": "integer",
         "minimum": 1,
         "maximum": 365,
-        "default": 30,
-        "description": "Lookback window in elapsed days; omit to use 30 days",
-        "title": "Within Days",
     }
+    for name in ("created_after", "created_before"):
+        field = tool.parameters["properties"][name]
+        assert field["default"] is None
+        assert field["anyOf"][0] == {"format": "date-time", "type": "string"}
     assert tool.parameters["properties"]["radius_meters"] == {
         "type": "integer",
         "minimum": 100,
@@ -269,6 +275,7 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
     assert "upper(descriptor) like upper('%loud music%')" in where
     assert " OR " in where
     assert "created_date > '2026-07-20T15:30:00'" in where
+    assert "created_date <= '2026-08-19T15:30:00'" in where
     assert "800 meters (about 0.5 mile)" in out
     assert "In Progress" in out
     assert "Closed" in out
@@ -337,7 +344,7 @@ async def test_area_lookup_honors_explicit_time_window_and_radius(monkeypatch):
         {
             "complaint_terms": ["noise"],
             "near": "Union Square",
-            "within_days": 7,
+            "lookback_days": 7,
             "radius_meters": 1600,
         },
         _ctx(),
@@ -372,11 +379,56 @@ async def test_area_lookup_uses_elapsed_days_across_dst(
     monkeypatch.setattr(nyc311, "_nyc_now", lambda: now)
 
     await nyc311.get_tools()[1].handler(
-        {"complaint_terms": ["noise"], "within_days": 7},
+        {"complaint_terms": ["noise"], "lookback_days": 7},
         _ctx(),
     )
 
     assert f"created_date > '{expected_cutoff}'" in captured[0]["where"]
+
+
+@pytest.mark.asyncio
+async def test_area_lookup_accepts_an_explicit_calendar_range(monkeypatch):
+    captured: list[dict] = []
+
+    async def fake_qd(dataset_id, **kwargs):
+        captured.append(kwargs)
+        return []
+
+    monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
+
+    ctx = _ctx()
+    out = await nyc311.get_tools()[1].handler(
+        {
+            "complaint_terms": ["noise"],
+            "created_after": "2025-09-01T00:00:00-04:00",
+            "created_before": "2025-11-01T00:00:00-04:00",
+        },
+        ctx,
+    )
+
+    assert "created_date >= '2025-09-01T00:00:00'" in captured[0]["where"]
+    assert "created_date < '2025-11-01T00:00:00'" in captured[0]["where"]
+    assert "September 1, 2025 through October 31, 2025" in out
+    assert "recent 311 rows" not in ctx.citations.mapping()["S1"]["snippet"]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"lookback_days": 7, "created_after": "2025-09-01T00:00:00-04:00", "created_before": "2025-11-01T00:00:00-04:00"},
+        {"created_after": "2025-09-01T00:00:00-04:00"},
+        {"created_after": "2025-11-01T00:00:00-04:00", "created_before": "2025-09-01T00:00:00-04:00"},
+        {"created_after": "2025-09-01T00:00:00", "created_before": "2025-11-01T00:00:00"},
+        {"created_after": "2025-09-01T00:00:00Z", "created_before": "2025-11-01T00:00:00Z"},
+        {"created_after": "2025-12-01T00:00:00-04:00", "created_before": "2026-01-01T00:00:00-04:00"},
+    ],
+)
+def test_area_time_window_rejects_ambiguous_or_invalid_combinations(values):
+    with pytest.raises(ValidationError):
+        nyc311.ComplaintSearchQuery.model_validate({
+            "complaint_terms": ["noise"],
+            **values,
+        })
 
 
 @pytest.mark.asyncio
