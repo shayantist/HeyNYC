@@ -54,6 +54,50 @@ def test_record_interaction_counts_only_doc_citations_used_in_the_answer(tmp_pat
     assert rec["used_doc_citations"] == 1
 
 
+def test_record_interaction_counts_only_citations_used_in_the_answer(tmp_path):
+    path = tmp_path / "t.jsonl"
+    res = FakeResult(
+        "Use the current record {cite:S2}.",
+        {
+            "S1": {"url": "https://nyc.gov/old", "title": "Old", "kind": "DATA"},
+            "S2": {"url": "https://nyc.gov/current", "title": "Current", "kind": "DATA"},
+        },
+    )
+
+    rec = analytics.record_interaction(
+        telemetry_path=path, model="m", user_key="k", channel="whatsapp_twilio", result=res
+    )
+
+    assert rec["n_citations"] == 1
+
+
+def test_record_interaction_preserves_claim_source_checker_usage(tmp_path):
+    path = tmp_path / "t.jsonl"
+    res = FakeResult(
+        "Use the current record {cite:S1}.",
+        {"S1": {"url": "https://nyc.gov/current", "title": "Current", "kind": "DATA"}},
+        usage={
+            "input_tokens": 50,
+            "output_tokens": 10,
+            "claim_support_requests": 2,
+            "claim_support_input_tokens": 20,
+            "claim_support_output_tokens": 4,
+            "claim_support_cached_input_tokens": 5,
+            "claim_support_cost_usd": 0.001,
+            "claim_support_time_ms": 1250,
+            "claim_support_labels": {"supported": 1, "partial": 1},
+        },
+    )
+
+    rec = analytics.record_interaction(
+        telemetry_path=path, model="m", user_key="k", channel="whatsapp_twilio", result=res
+    )
+
+    assert rec["claim_support_requests"] == 2
+    assert rec["claim_support_time_ms"] == 1250
+    assert rec["claim_support_labels"] == {"supported": 1, "partial": 1}
+
+
 def test_record_interaction_keeps_pii_free_failure_diagnostics(tmp_path):
     path = tmp_path / "t.jsonl"
     res = FakeResult(

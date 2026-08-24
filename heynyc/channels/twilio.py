@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 
 from heynyc.core import config
 
@@ -194,6 +195,7 @@ class TwilioInboxWorker:
                 pass
 
     async def process_one(self) -> bool:
+        attempt_started = time.perf_counter()
         try:
             item = self.deps.store.claim_next(lease_s=self.lease_s)
         except InboxPayloadError:
@@ -224,12 +226,24 @@ class TwilioInboxWorker:
                     self.retry_after_s if item["attempts"] < self.max_attempts else None
                 )
                 self.deps.store.fail(message.message_id, retry_after_s=retry_after_s)
-                logger.exception("Twilio inbox message generation failed")
+                logger.exception(
+                    "Twilio inbox message generation failed message_id=%s attempt=%d elapsed_ms=%d",
+                    message.message_id,
+                    item["attempts"],
+                    round((time.perf_counter() - attempt_started) * 1000),
+                )
                 return True
             finally:
                 await buffered.stop_typing()
             parts = buffered.parts
             delivered_parts = 0
+            logger.info(
+                "Twilio generation complete message_id=%s attempt=%d elapsed_ms=%d parts=%d",
+                message.message_id,
+                item["attempts"],
+                round((time.perf_counter() - attempt_started) * 1000),
+                len(parts),
+            )
         replier = TwilioReplier(
             self.client, from_=recipient, to=message.sender, message_id=message.message_id,
             on_sent=lambda sid: self.deps.store.record_outbound(message.message_id, sid),
@@ -243,8 +257,16 @@ class TwilioInboxWorker:
                 and pending_approval.get("user_key") != item["user_key"]
             ):
                 raise ValueError("approval outbox resident mismatch")
-            for part in parts[delivered_parts:]:
+            for index, part in enumerate(parts[delivered_parts:], delivered_parts + 1):
+                delivery_started = time.perf_counter()
                 await replier.send_part(part)
+                logger.info(
+                    "Twilio part accepted message_id=%s part=%d/%d elapsed_ms=%d",
+                    message.message_id,
+                    index,
+                    len(parts),
+                    round((time.perf_counter() - delivery_started) * 1000),
+                )
             if pending_approval is not None:
                 self.deps.store.set_pending_approval(
                     item["user_key"],
@@ -254,9 +276,20 @@ class TwilioInboxWorker:
         except Exception:
             retry_after_s = self.retry_after_s if item["attempts"] < self.max_attempts else None
             self.deps.store.fail(message.message_id, retry_after_s=retry_after_s)
-            logger.exception("Twilio inbox message delivery failed")
+            logger.exception(
+                "Twilio inbox message delivery failed message_id=%s attempt=%d elapsed_ms=%d",
+                message.message_id,
+                item["attempts"],
+                round((time.perf_counter() - attempt_started) * 1000),
+            )
             return True
         self.deps.store.complete(message.message_id)
+        logger.info(
+            "Twilio inbox complete message_id=%s attempt=%d elapsed_ms=%d",
+            message.message_id,
+            item["attempts"],
+            round((time.perf_counter() - attempt_started) * 1000),
+        )
         return True
 
 

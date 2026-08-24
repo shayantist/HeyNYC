@@ -25,7 +25,7 @@ def record_interaction(*, telemetry_path: Path, model: str, user_key: str, chann
     extra = {
         "channel": channel,
         "outcome": outcome,
-        "n_citations": len(result.citations),
+        "n_citations": len(used),
         "used_doc_citations": used_doc_citations,
     }
     if result.status not in ("success", None):

@@ -308,9 +308,12 @@ def test_twilio_router_acknowledges_duplicate_without_waking_worker(monkeypatch)
     assert worker.wakes == 0
 
 
-async def test_twilio_worker_processes_envelope_and_records_outbound_sids(monkeypatch, tmp_path):
+async def test_twilio_worker_processes_envelope_and_records_outbound_sids(
+    monkeypatch, tmp_path, caplog,
+):
     from heynyc.channels import twilio
 
+    caplog.set_level("INFO", logger="heynyc.channels.twilio")
     monkeypatch.setenv("HEYNYC_PII_KEY", pii_crypto.generate_key())
     store = ChannelStore(
         tmp_path / "channels.sqlite3", rate_limit=20, window_s=60, dedup_ttl_s=3600,
@@ -345,6 +348,10 @@ async def test_twilio_worker_processes_envelope_and_records_outbound_sids(monkey
     assert store._db.execute(
         "SELECT state, payload, outbound_ids FROM inbox WHERE message_id = ?", ("SM-in-1",)
     ).fetchone() == ("sent", None, '["SM-out-1"]')
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Twilio generation complete" in message for message in messages)
+    assert any("Twilio part accepted" in message for message in messages)
+    assert any("Twilio inbox complete" in message for message in messages)
 
 
 async def test_twilio_worker_stops_retrying_after_bounded_failures(monkeypatch, tmp_path):

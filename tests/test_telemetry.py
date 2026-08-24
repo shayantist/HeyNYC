@@ -27,6 +27,22 @@ def test_record_and_load_roundtrip(tmp_path: Path):
     assert len(loaded) == 1 and loaded[0]["tool_names"] == ["benefits_search"]
 
 
+def test_record_turn_preserves_per_tool_timing(tmp_path: Path):
+    runs = [{"tool": "search_311_complaints", "status": "success", "latency_ms": 1250}]
+    rec = telemetry.record_turn(
+        tmp_path / "telemetry.jsonl",
+        session_id="s1",
+        model="answer/model",
+        usage={"tool_time_ms": 1250, "tool_runs": runs},
+        n_tool_calls=1,
+        tool_names=["search_311_complaints"],
+        status="success",
+    )
+
+    assert rec["tool_time_ms"] == 1250
+    assert rec["tool_runs"] == runs
+
+
 def test_record_turn_preserves_explicit_unpriceable_cost(tmp_path: Path):
     rec = telemetry.record_turn(
         tmp_path / "telemetry.jsonl", session_id="s1", model="unknown/model",

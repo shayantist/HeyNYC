@@ -92,6 +92,10 @@ def record_turn(
         "memory_pre_tokens", "memory_post_tokens",
         "safety_model", "safety_input_tokens", "safety_output_tokens",
         "safety_cached_input_tokens", "safety_cost_usd", "safety_time_ms", "safety_error",
+        "claim_support_requests", "claim_support_input_tokens",
+        "claim_support_output_tokens", "claim_support_cached_input_tokens",
+        "claim_support_cost_usd", "claim_support_time_ms", "claim_support_labels",
+        "tool_runs",
         "scope_modules", "scope_situations",
     ):
         if key in usage:
