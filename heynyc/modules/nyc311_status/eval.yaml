@@ -67,8 +67,9 @@
   test_type: MFT
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   utility_criterion: >-
-    Pass lookback_days=7 and radius_meters=1600 to the tool. Report that exact time window and radius,
-    summarize the complete filtered status counts, and cite any individual examples separately.
+    Pass lookback_days=7 and radius_meters=1600 to the tool. Omit max_results because the resident did
+    not request a count. Report that exact time window and radius, summarize the complete filtered
+    status counts, and cite any individual examples separately.
 
 - id: sr311_area_calendar_range
   tags: [must-win]

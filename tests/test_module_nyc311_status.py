@@ -76,6 +76,10 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
     assert terms["items"]["minLength"] == 4
     assert "dataset-facing" in terms["description"]
     assert "rodent" in terms["description"]
+    max_results = tool.parameters["properties"]["max_results"]
+    assert "only set" in max_results["description"].lower()
+    assert "explicitly requests" in max_results["description"].lower()
+    assert "otherwise omit" in max_results["description"].lower()
     lookback = tool.parameters["properties"]["lookback_days"]
     assert lookback["default"] is None
     assert lookback["anyOf"][0] == {

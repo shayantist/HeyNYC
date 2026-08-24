@@ -62,6 +62,18 @@ def test_system_prompt_bans_internal_jargon_in_replies():
     assert "about 5 items" in low   # consolidated count home (prompt diet block 3)
 
 
+def test_system_prompt_summarizes_repetitive_records_without_sounding_mechanical():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "intelligent, caring friend" in low
+    assert "lead with the useful takeaway" in low
+    assert "summarize the pattern" in low
+    assert "representative examples" in low
+    assert "copying a tool's list line by line" in low
+    assert "retrieval count is not an answer-length target" in low
+    assert "offer more" in low
+
+
 def test_system_prompt_includes_active_publication_freshness_check():
     # The freshness guard goes from passive date-stamping to an active check: on
     # time-sensitive law/policy/rights questions the agent uses the one web search tool.

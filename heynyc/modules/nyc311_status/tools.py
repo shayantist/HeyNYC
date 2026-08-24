@@ -69,7 +69,13 @@ class ComplaintSearchQuery(LocationRequest):
         ),
     )
     max_results: int = Field(
-        default=5, ge=1, le=10, description="Maximum recent complaints to list"
+        default=5,
+        ge=1,
+        le=10,
+        description=(
+            "Only set when the resident explicitly requests a number of complaints to list; "
+            "otherwise omit it to use the default."
+        ),
     )
     lookback_days: int | None = Field(
         default=None,
