@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Sequence
@@ -41,6 +42,28 @@ _FACT_REVIEW_INSTRUCTIONS = (
     "unknown optional fact. Never infer one field from another, from age or role, or "
     "from silence. A narrower statement does not support a broader schema field."
 )
+
+
+def situation_capability_id(module_name: str, situation_name: str) -> str:
+    module_id = module_name.replace("_", "-")
+    situation_id = situation_name.replace("_", "-").removeprefix(f"{module_id}-")
+    return f"{module_id}-{situation_id}"
+
+
+class ScopeSelectedCapability(Capability[ToolContext]):
+    """Make a scope-selected deferred capability available for this run."""
+
+    async def for_run(self, ctx: RunContext[ToolContext]) -> AbstractCapability[ToolContext]:
+        if self.id not in ctx.deps.current_turn_capability_ids:
+            return self
+        return Capability(
+            id=self.id,
+            description=self.get_description(),
+            instructions=self.get_instructions(),
+            toolsets=self.toolsets,
+            tools=self.tools,
+            defer_loading=False,
+        )
 
 
 def _fact_review_prompt(user_turns: Sequence[str]) -> str:
@@ -424,11 +447,55 @@ def adapt_tool(
         return {origin} if isinstance(origin, str) else set()
 
     async def invoke(ctx: RunContext[ToolContext], **kwargs: object) -> Any:
-        result = await tool.handler(dict(kwargs), ctx.deps)
+        cache_key = (
+            tool.name,
+            json.dumps(kwargs, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+        )
+        cacheable = tool.read_only and tool.idempotent and not tool.requires_approval
+        if cacheable and cache_key in ctx.deps.tool_result_cache:
+            ctx.deps.tool_runs.append({
+                "tool": tool.name,
+                "status": "success",
+                "latency_ms": 0,
+                "reused": True,
+            })
+            return ctx.deps.tool_result_cache[cache_key]
+        started = time.perf_counter()
+        citation_cursor = ctx.deps.citations.touch_cursor()
+        reused = False
+        task = ctx.deps.tool_result_tasks.get(cache_key) if cacheable else None
+        if task is None:
+            task = asyncio.create_task(tool.handler(dict(kwargs), ctx.deps))
+            if cacheable:
+                ctx.deps.tool_result_tasks[cache_key] = task
+        else:
+            reused = True
+        try:
+            result = await task
+        except Exception as exc:
+            ctx.deps.tool_runs.append({
+                "tool": tool.name,
+                "status": "error",
+                "error": type(exc).__name__,
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+            })
+            raise
+        finally:
+            ctx.deps.tool_result_citation_ids.update(
+                ctx.deps.citations.touched_since(citation_cursor)
+            )
+            if cacheable and not reused:
+                ctx.deps.tool_result_tasks.pop(cache_key, None)
         if return_adapter is not None:
             try:
                 result = return_adapter.validate_python(result)
-            except ValidationError:
+            except ValidationError as exc:
+                ctx.deps.tool_runs.append({
+                    "tool": tool.name,
+                    "status": "error",
+                    "error": type(exc).__name__,
+                    "latency_ms": round((time.perf_counter() - started) * 1000),
+                })
                 raise ToolFailed(
                     f"{tool.name} returned an invalid structured result"
                 ) from None
@@ -436,7 +503,21 @@ def adapt_tool(
         else:
             json_result = result
         if not action_urls_are_valid(json_result):
+            ctx.deps.tool_runs.append({
+                "tool": tool.name,
+                "status": "error",
+                "error": "ToolFailed",
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+            })
             raise ToolFailed(f"{tool.name} returned invalid action metadata")
+        ctx.deps.tool_runs.append({
+            "tool": tool.name,
+            "status": "success",
+            "latency_ms": (
+                0 if reused else round((time.perf_counter() - started) * 1000)
+            ),
+            **({"reused": True} if reused else {}),
+        })
         ctx.deps.required_response_citation_ids.update(
             response_anchor_citations(json_result).intersection(
                 ctx.deps.citations.mapping()
@@ -444,6 +525,8 @@ def adapt_tool(
         )
         if tool.name not in {"web_search", "web_fetch"}:
             ctx.deps.tool_result_urls.update(result_urls(json_result))
+        if cacheable:
+            ctx.deps.tool_result_cache[cache_key] = result
         return result
 
     adapted = PydanticTool.from_schema(
@@ -572,9 +655,7 @@ def build_module_capabilities(
     root_modules = frozenset(descendants)
 
     def situation_id(module: Any, hint: Any) -> str:
-        module_prefix = module.name.replace("_", "-")
-        hint_id = hint.name.replace("_", "-").removeprefix(f"{module_prefix}-")
-        return f"{module_prefix}-{hint_id}"
+        return situation_capability_id(module.name, hint.name)
 
     def capability_owners(capability_ids: Sequence[str]) -> set[str]:
         return {
@@ -603,7 +684,16 @@ def build_module_capabilities(
             for part in message.parts
             if isinstance(part, LoadCapabilityCallPart)
         }
-        return capability_owners(loaded) or set(ctx.deps.current_turn_modules)
+        selected = set(getattr(
+            getattr(ctx, "deps", None),
+            "current_turn_capability_ids",
+            (),
+        ))
+        active = selected if loaded.issubset(selected) else loaded
+        return (
+            capability_owners(active)
+            or set(getattr(getattr(ctx, "deps", None), "current_turn_modules", ()))
+        )
 
     for owner, owned_tools in (
         *module_tools.items(),
@@ -621,7 +711,14 @@ def build_module_capabilities(
                 prepare: Any = previous_prepare,
             ) -> Any:
                 current_owners = current_turn_owners(ctx)
-                loaded_owners = capability_owners(ctx.loaded_capability_ids)
+                selected = getattr(
+                    getattr(ctx, "deps", None),
+                    "current_turn_capability_ids",
+                    (),
+                )
+                loaded_owners = capability_owners(
+                    (*ctx.loaded_capability_ids, *selected)
+                )
                 if (
                     current_owners
                     and module_name in loaded_owners
@@ -659,9 +756,18 @@ def build_module_capabilities(
             *,
             tool_name: str = tool.name,
         ) -> Any:
+            selected = getattr(
+                getattr(ctx, "deps", None),
+                "current_turn_capability_ids",
+                (),
+            )
+            active_capability_ids = (
+                *ctx.loaded_capability_ids,
+                *selected,
+            )
             loaded_owners = {
                 module_name
-                for capability_id in ctx.loaded_capability_ids
+                for capability_id in active_capability_ids
                 for module_name in root_modules
                 if capability_id == module_name
                 or capability_id.startswith(f"{module_name}-")
@@ -675,7 +781,7 @@ def build_module_capabilities(
                 return definition
             loaded = [
                 focus_by_capability[capability_id]
-                for capability_id in ctx.loaded_capability_ids
+                for capability_id in active_capability_ids
                 if capability_id in focus_by_capability
             ]
             if not loaded:
@@ -714,12 +820,12 @@ def build_module_capabilities(
                 f"Current-source query: {hint.query}" if hint.query else "",
                 "Official pages: " + ", ".join(hint.urls) if hint.urls else "",
                 (
-                    f"Load the parent `{module.name}` capability if you need module tools: "
+                    f"Use the parent `{module.name}` capability tools: "
                     + ", ".join(f"`{name}`" for name in owned_focus_tools)
                     if owned_focus_tools else ""
                 ),
                 *(
-                    f"Load the parent `{owner}` capability if you need its tools: "
+                    f"Use the parent `{owner}` capability tools: "
                     + ", ".join(f"`{name}`" for name in names)
                     for owner, names in external_focus_tools.items()
                 ),
@@ -823,7 +929,7 @@ def build_module_capabilities(
                 "to offer it."
             )
         capabilities.append(
-            Capability(
+            ScopeSelectedCapability(
                 id=module.name,
                 description=description,
                 instructions=instructions,
@@ -835,7 +941,7 @@ def build_module_capabilities(
             for hint in member.situations:
                 capability_id = situation_id(module, hint)
                 capabilities.append(
-                    Capability(
+                    ScopeSelectedCapability(
                         id=capability_id,
                         description=hint.definition.partition(". ")[0].rstrip(".") + ".",
                         instructions=situation_instructions(

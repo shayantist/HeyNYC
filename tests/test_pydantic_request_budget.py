@@ -50,6 +50,7 @@ async def test_missing_evidence_does_not_force_synthesis_after_six_tool_calls():
                 description="Continue looking until the required fact is found",
                 parameters={"type": "object", "properties": {}},
                 handler=lookup,
+                idempotent=False,
             )
         },
         structured_grounding=True,
@@ -97,6 +98,7 @@ async def test_last_allowed_request_remains_an_ordinary_agent_step():
                 description="Look up evidence",
                 parameters={"type": "object", "properties": {}},
                 handler=lookup,
+                idempotent=False,
             )
         },
         structured_grounding=True,
@@ -326,6 +328,7 @@ async def test_parallel_tools_leave_the_next_request_free_to_answer():
                 description="Look up verified evidence",
                 parameters={"type": "object", "properties": {}},
                 handler=lookup,
+                idempotent=False,
             )
         },
         guard_grounding=False,
@@ -376,6 +379,7 @@ async def test_parallel_tool_batch_can_be_followed_by_a_structured_answer():
                 description="Look up verified evidence",
                 parameters={"type": "object", "properties": {}},
                 handler=lookup,
+                idempotent=False,
             )
         },
         structured_grounding=True,
@@ -426,6 +430,7 @@ async def test_default_request_budget_does_not_reject_a_parallel_tool_batch():
                 description="Look up verified evidence",
                 parameters={"type": "object", "properties": {}},
                 handler=lookup,
+                idempotent=False,
             )
         },
         structured_grounding=True,

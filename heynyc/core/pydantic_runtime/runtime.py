@@ -36,6 +36,7 @@ from pydantic_ai import (
     PartDeltaEvent,
     PartStartEvent,
     RunContext,
+    SkipToolExecution,
     TextPartDelta,
     ToolOutput,
     UnexpectedModelBehavior,
@@ -146,6 +147,7 @@ from .tools import (
     adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
+    situation_capability_id,
 )
 
 _GROUNDED_OUTPUT_TOOL = "grounded_answer"
@@ -624,6 +626,23 @@ async def _recover_upstream_tool_error(
     )
 
 
+async def _skip_redundant_capability_load(
+    ctx: RunContext[ToolContext],
+    *,
+    call: Any,
+    tool_def: Any,
+    args: Any,
+) -> Any:
+    del call
+    if (
+        tool_def.tool_kind == "capability-load"
+        and isinstance(args, dict)
+        and args.get("id") in ctx.available_capability_ids
+    ):
+        raise SkipToolExecution({})
+    return args
+
+
 async def _authoritative_output_tools(
     ctx: RunContext[ToolContext],
     tool_defs: list[ToolDefinition],
@@ -658,7 +677,10 @@ async def _authoritative_output_tools(
 
 
 def _loaded_capability_requires_grounded_handoff(ctx: RunContext[ToolContext]) -> bool:
-    for capability_id in ctx.loaded_capability_ids:
+    for capability_id in (
+        *ctx.loaded_capability_ids,
+        *ctx.deps.current_turn_capability_ids,
+    ):
         capability = ctx.capabilities.get(capability_id)
         if capability is None:
             continue
@@ -1178,6 +1200,10 @@ class _OutputCorrectionCapability(AbstractCapability[ToolContext]):
         ctx: RunContext[ToolContext],
         tool_defs: list[ToolDefinition],
     ) -> list[ToolDefinition]:
+        if ctx.deps.current_turn_high_stakes:
+            tool_defs = [
+                tool for tool in tool_defs if tool.name != _FINAL_OUTPUT_TOOL
+            ]
         correction_tool = _answer_correction_tool_name(ctx)
         if correction_tool is None:
             return tool_defs
@@ -1378,7 +1404,10 @@ class PydanticRuntimeAdapter:
             tools=adapted_tools,
             capabilities=[
                 ReinjectSystemPrompt(),
-                Hooks(tool_execute_error=_recover_upstream_tool_error),
+                Hooks(
+                    before_tool_execute=_skip_redundant_capability_load,
+                    tool_execute_error=_recover_upstream_tool_error,
+                ),
                 ToolSearch(tool_description=_TOOL_SEARCH_DESCRIPTION),
                 _PreserveToolScopesCapability(set(self.tools)),
                 _CoolingTerminalCapability(structured_grounding, set(self.tools)),
@@ -1929,7 +1958,7 @@ class PydanticRuntimeAdapter:
             localize(notice, language),
             deps.citations,
             language,
-            citation_ids or set(deps.citations.mapping()),
+            citation_ids or deps.tool_result_citation_ids,
         )
         result.status = "error"
 
@@ -2066,6 +2095,23 @@ class PydanticRuntimeAdapter:
         )
 
     @staticmethod
+    def _merge_tool_usage(result: AgentResult, runs: list[dict[str, Any]]) -> None:
+        result.usage["tool_time_ms"] = sum(float(run["latency_ms"]) for run in runs)
+        result.usage["tool_runs"] = runs
+
+    @staticmethod
+    def _merge_capability_usage(
+        result: AgentResult,
+        preactivated: frozenset[str],
+    ) -> None:
+        model_loaded = result.usage["capabilities_used"]
+        result.usage["model_loaded_capabilities"] = model_loaded
+        result.usage["capabilities_used"] = list(dict.fromkeys((
+            *sorted(preactivated),
+            *model_loaded,
+        )))
+
+    @staticmethod
     def _merge_language_verifier_usage(
         result: AgentResult,
         runs: list[dict[str, Any]],
@@ -2165,6 +2211,7 @@ class PydanticRuntimeAdapter:
         timing_capability: _ModelTimingCapability,
         fact_review_runs: list[dict[str, Any]],
         claim_support_runs: list[dict[str, Any]],
+        tool_runs: list[dict[str, Any]],
         validation_rejections: list[dict[str, Any]],
         status: str,
         text: str = TEMPORARY_FAILURE_FALLBACK,
@@ -2193,6 +2240,7 @@ class PydanticRuntimeAdapter:
         result.usage["retry_kinds"] = _retry_kinds(messages)
         self._merge_fact_review_usage(result, fact_review_runs)
         self._merge_claim_support_usage(result, claim_support_runs)
+        self._merge_tool_usage(result, tool_runs)
         result.diagnostics = {
             **({"fact_review_runs": fact_review_runs} if fact_review_runs else {}),
             "claim_support_runs": claim_support_runs,
@@ -2302,12 +2350,22 @@ class PydanticRuntimeAdapter:
         safety_run = None
         safety_error = None
         language = None
+        safety_task = (
+            asyncio.create_task(self._crisis_screen(user_turns))
+            if self._crisis_screen is not None
+            else None
+        )
+        scope_task = (
+            asyncio.create_task(self._scope_screen(user_turns))
+            if self._scope_screen is not None
+            else None
+        )
         # F146: screen runs on ALL traffic; the regex no longer short-circuits it
         # Owner ruling: the backstop is a last-resort catch under the claim-source check
         # Negligible cost, the regex fires on ~2% of turns
-        if self._crisis_screen is not None:
+        if safety_task is not None:
             try:
-                safety_run = await self._crisis_screen(user_turns)
+                safety_run = await safety_task
             except Exception as exc:
                 safety_error = type(exc).__name__
                 # Fail closed, unless the deterministic floor already caught it
@@ -2337,6 +2395,12 @@ class PydanticRuntimeAdapter:
                         {_SOURCE_MISSED_DOSE, _SOURCE_POISON_CONTROL}
                     )
         if backstop is not None:
+            if scope_task is not None:
+                scope_task.cancel()
+                try:
+                    await scope_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             backstop = _ground_emergency_backstop(backstop, citations, backstop_sources)
             new_messages: list[ModelMessage] = [
                 ModelRequest(parts=[UserPromptPart(safe_user_message)]),
@@ -2412,11 +2476,35 @@ class PydanticRuntimeAdapter:
             return result, new_messages, None, current_location
         scope_run = None
         scope_error = None
-        if self._scope_screen is not None:
+        if scope_task is not None:
             try:
-                scope_run = await self._scope_screen(user_turns)
+                scope_run = await scope_task
             except Exception as exc:
                 scope_error = type(exc).__name__
+        modules_by_name = {module.name: module for module in self.registry.modules}
+
+        def root_module_name(module_name: str) -> str:
+            module = modules_by_name[module_name]
+            while module.parent and module.parent in modules_by_name:
+                module = modules_by_name[module.parent]
+            return module.name
+
+        selected_capability_ids = set(getattr(scope_run, "modules", ()))
+        for situation in getattr(scope_run, "situations", ()):
+            if (entry := self.registry.situation_hints().get(situation)) is None:
+                continue
+            module_name, hint = entry
+            root_name = root_module_name(module_name)
+            selected_capability_ids.add(root_name)
+            selected_capability_ids.add(
+                situation_capability_id(root_name, hint.name)
+            )
+            selected_capability_ids.update(
+                root_module_name(tool.module)
+                for tool_name in hint.focus_tools
+                if (tool := self.tools.get(tool_name)) is not None
+                and tool.module in modules_by_name
+            )
         deps = ToolContext(
             citations=citations,
             registry=self.registry,
@@ -2431,6 +2519,7 @@ class PydanticRuntimeAdapter:
             drafts=drafts,
             event_turn=getattr(scope_run, "event_turn", None),
             current_turn_modules=frozenset(getattr(scope_run, "modules", ())),
+            current_turn_capability_ids=frozenset(selected_capability_ids),
             current_turn_high_stakes=any(
                 hint.high_stakes
                 for situation in getattr(scope_run, "situations", ())
@@ -2520,7 +2609,10 @@ class PydanticRuntimeAdapter:
                 default=len(message_history),
             )
             new_messages = captured[current_index:]
-            current_citation_ids = _current_turn_citation_ids(citations)
+            current_citation_ids = (
+                _current_turn_citation_ids(citations)
+                & deps.tool_result_citation_ids
+            )
             validation_warning = (
                 _validation_warning_text(
                     new_messages,
@@ -2547,6 +2639,7 @@ class PydanticRuntimeAdapter:
                 timing_capability=timing_capability,
                 fact_review_runs=deps.fact_review_runs,
                 claim_support_runs=deps.claim_support_runs,
+                tool_runs=deps.tool_runs,
                 validation_rejections=deps.validation_rejections,
                 status=(
                     "max_turns"
@@ -2567,6 +2660,7 @@ class PydanticRuntimeAdapter:
             )
             self._merge_safety_usage(result, safety_run)
             self._merge_scope_usage(result, scope_run)
+            self._merge_capability_usage(result, deps.current_turn_capability_ids)
             self._merge_language_verifier_usage(result, deps.language_verifier_runs)
             if deps.language_verifier_runs:
                 result.diagnostics["language_verifier_runs"] = deps.language_verifier_runs
@@ -2622,10 +2716,12 @@ class PydanticRuntimeAdapter:
         self._apply_validation_failure_result(result, deps, language)
         await self._apply_output_guard(result, deps, language)
         result.usage["model_request_ms"] = timing_capability.request_ms
+        self._merge_capability_usage(result, deps.current_turn_capability_ids)
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self._merge_fact_review_usage(result, deps.fact_review_runs)
         self._merge_claim_support_usage(result, deps.claim_support_runs)
+        self._merge_tool_usage(result, deps.tool_runs)
         self._merge_language_verifier_usage(result, deps.language_verifier_runs)
         self._merge_safety_usage(result, safety_run)
         self._merge_scope_usage(result, scope_run)
@@ -3265,6 +3361,7 @@ class PydanticAgentSession:
                 timing_capability=timing_capability,
                 fact_review_runs=deps.fact_review_runs,
                 claim_support_runs=deps.claim_support_runs,
+                tool_runs=deps.tool_runs,
                 validation_rejections=deps.validation_rejections,
                 status=(
                     "max_turns"
@@ -3332,6 +3429,7 @@ class PydanticAgentSession:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
         self.runtime._merge_fact_review_usage(result, deps.fact_review_runs)
         self.runtime._merge_claim_support_usage(result, deps.claim_support_runs)
+        self.runtime._merge_tool_usage(result, deps.tool_runs)
         result.diagnostics = {
             **(
                 {"fact_review_runs": deps.fact_review_runs}

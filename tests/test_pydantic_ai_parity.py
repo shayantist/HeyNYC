@@ -170,6 +170,44 @@ async def test_definitive_upstream_tool_failure_returns_to_model_for_recovery() 
     assert result.tool_calls_made == ["web_search", "web_fetch"]
 
 
+async def test_transient_upstream_timeout_returns_to_model_without_aborting_turn() -> None:
+    async def unavailable(_args: dict, _ctx: ToolContext) -> str:
+        request = httpx.Request("GET", "https://data.cityofnewyork.us/resource/example")
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    search = Tool(
+        name="city_records",
+        description="Search current city records",
+        parameters={"type": "object", "properties": {}},
+        handler=unavailable,
+    )
+    observed: list[str] = []
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        returns = _parts(messages, ToolReturnPart)
+        if not returns:
+            return ModelResponse([ToolCallPart("city_records", {}, "records-1")])
+        observed.append(str(returns[-1].content))
+        return ModelResponse([TextPart("I could not reach that city dataset, so I used no records from it.")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={search.name: search},
+        guard_grounding=False,
+    ).run("What do the records show?")
+
+    assert result.status == "success"
+    assert result.text == "I could not reach that city dataset, so I used no records from it."
+    assert observed == [
+        "The upstream service timed out. Use another available source or explain the limitation."
+    ]
+    assert result.usage["tool_time_ms"] >= 0
+    assert result.usage["tool_runs"][0]["tool"] == "city_records"
+    assert result.usage["tool_runs"][0]["status"] == "error"
+    assert result.usage["tool_runs"][0]["error"] == "ReadTimeout"
+
+
 @pytest.mark.parametrize(
     ("proposed", "query", "expected"),
     [
@@ -5134,6 +5172,7 @@ async def test_runtime_does_not_apply_an_arbitrary_default_tool_call_limit() -> 
                 description="Return a test result",
                 parameters={"type": "object", "properties": {}},
                 handler=handler,
+                idempotent=False,
             )
         },
         model=FunctionModel(model),
@@ -5168,7 +5207,11 @@ async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_roun
     source = Tool(
         name="find_nyc_events",
         description="Find current NYC events",
-        parameters={"type": "object", "properties": {}},
+        parameters={
+            "type": "object",
+            "properties": {"page": {"type": "integer"}},
+            "required": ["page"],
+        },
         handler=handler,
         module="events",
     )
@@ -5187,7 +5230,13 @@ async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_roun
             )
         if model_calls < 10:
             return ModelResponse(
-                [ToolCallPart("find_nyc_events", {}, f"events-{model_calls}")]
+                [
+                    ToolCallPart(
+                        "find_nyc_events",
+                        {"page": model_calls},
+                        f"events-{model_calls}",
+                    )
+                ]
             )
         return ModelResponse([TextPart("Done")])
 

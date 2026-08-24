@@ -168,6 +168,9 @@ async def test_adapter_preserves_declared_nested_pydantic_result() -> None:
         "error": None,
     }
     assert context.tool_result_urls == {"https://www.nyc.gov/example/center"}
+    assert context.tool_runs[0]["tool"] == "typed_lookup"
+    assert context.tool_runs[0]["status"] == "success"
+    assert context.tool_runs[0]["latency_ms"] >= 0
 
 
 async def test_adapter_reports_invalid_declared_result_as_terminal_tool_failure() -> None:
@@ -207,6 +210,8 @@ async def test_adapter_reports_invalid_declared_result_as_terminal_tool_failure(
 
     assert result.output == "The provider result was unavailable."
     assert failures == ["typed_lookup returned an invalid structured result"]
+    assert context.tool_runs[0]["status"] == "error"
+    assert context.tool_runs[0]["error"] == "ValidationError"
 
 
 async def test_adapter_rejects_invalid_structured_action_url_before_model_use() -> None:
@@ -237,14 +242,17 @@ async def test_adapter_rejects_invalid_structured_action_url_before_model_use() 
         failures.append(str(returns[-1].content))
         return ModelResponse([TextPart("The action link was unavailable.")])
 
+    context = ToolContext(citations=CitationRegistry(), registry=Registry([]))
     result = await Agent(
         FunctionModel(model),
         deps_type=ToolContext,
         tools=[adapt_tool(source)],
     ).run(
         "Find it",
-        deps=ToolContext(citations=CitationRegistry(), registry=Registry([])),
+        deps=context,
     )
+    assert context.tool_runs[0]["status"] == "error"
+    assert context.tool_runs[0]["error"] == "ToolFailed"
 
     assert result.output == "The action link was unavailable."
     assert failures == ["typed_lookup returned invalid action metadata"]
@@ -287,7 +295,7 @@ def test_model_visible_surface_is_pinned():
     )
     utility_instructions = "\n".join(utility._instructions)
     assert (
-        "Load the parent `benefits` capability if you need module tools: "
+        "Use the parent `benefits` capability tools: "
         "`get_utility_shutoff_guidance`"
     ) in utility_instructions
 

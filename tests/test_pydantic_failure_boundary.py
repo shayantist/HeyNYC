@@ -781,6 +781,8 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
 
     assert calls == 4
     assert raised.value.partial_result.status == "error"
+    assert raised.value.partial_result.usage["tool_runs"][0]["tool"] == "retrieve"
+    assert raised.value.partial_result.usage["tool_runs"][0]["status"] == "success"
     assert "212-555-9999" not in raised.value.partial_result.text
     assert "Call 212-555-0100." in raised.value.partial_result.text
     assert "Structured data record" not in raised.value.partial_result.text

@@ -57,15 +57,21 @@ class ToolContext:
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
     event_turn: Optional[str] = None  # semantic scope-preflight tri-state: none|discovery|preparation (None → tool falls back to its regexes)
     current_turn_modules: frozenset[str] = frozenset()
+    current_turn_capability_ids: frozenset[str] = frozenset()
     current_turn_high_stakes: bool = False
     allow_unverified_search_excerpts: bool = False
     delivered_notify_titles: frozenset = frozenset()  # F080: normalized Notify titles already cited earlier in THIS conversation; a repeat advisories call answers with a marker, not a re-brief
     resident_facts: dict[str, ResidentFact] = field(default_factory=dict)
     fact_review_runs: list[dict[str, Any]] = field(default_factory=list)
     claim_support_runs: list[dict[str, Any]] = field(default_factory=list)
+    tool_runs: list[dict[str, Any]] = field(default_factory=list)
+    # Turn-local only: exact duplicate reads share one snapshot, never cross-turn freshness.
+    tool_result_cache: dict[tuple[str, str], Any] = field(default_factory=dict)
+    tool_result_tasks: dict[tuple[str, str], Any] = field(default_factory=dict)
     language_verifier_runs: list[dict[str, Any]] = field(default_factory=list)
     validation_rejections: list[dict[str, Any]] = field(default_factory=list)
     tool_result_urls: set[str] = field(default_factory=set)
+    tool_result_citation_ids: set[str] = field(default_factory=set)
     response_priority_citation_ids: set[str] = field(default_factory=set)
     required_response_citation_ids: set[str] = field(default_factory=set)
     rendered_fetch_urls: set[str] = field(default_factory=set)

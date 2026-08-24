@@ -138,6 +138,52 @@ def test_new_turn_capability_hides_stale_module_tools():
     assert food_tool.prepare(context, definition("find_food")) is not None
 
 
+def test_redundant_situation_load_keeps_scope_selected_dependency_tools():
+    registry = Registry([
+        ServiceModule(name="housing"),
+        ServiceModule(name="nyc311_status"),
+    ])
+    housing = _tool("get_hpd")
+    housing.module = "housing"
+    status = _tool("search_311")
+    status.module = "nyc311_status"
+    _adapted, capabilities = build_module_capabilities(
+        registry,
+        {"get_hpd": housing, "search_311": status},
+    )
+    context = SimpleNamespace(
+        loaded_capability_ids={"housing", "nyc311_status"},
+        deps=SimpleNamespace(
+            current_turn_capability_ids={
+                "housing",
+                "nyc311_status",
+                "housing-chronic-tenant-repairs",
+            },
+            current_turn_modules={"housing", "nyc311_status"},
+        ),
+        messages=[
+            ModelRequest(parts=[UserPromptPart("Check 311 and HPD")]),
+            ModelResponse(parts=[LoadCapabilityCallPart(
+                args={"id": "housing-chronic-tenant-repairs"},
+                tool_call_id="redundant-load",
+            )]),
+        ],
+    )
+    status_tool = next(
+        tool
+        for capability in capabilities
+        if capability.id == "nyc311_status"
+        for tool in capability.tools
+    )
+    definition = ToolDefinition(
+        name="search_311",
+        description="search_311",
+        parameters_json_schema={"type": "object", "properties": {}},
+    )
+
+    assert status_tool.prepare(context, definition) is definition
+
+
 def test_hot_water_situation_is_its_own_deferred_capability():
     registry = Registry.discover(Path("heynyc/modules"))
     housing_guidance = _tool("get_housing_guidance")
@@ -199,7 +245,8 @@ def test_cross_module_situation_names_the_capability_that_owns_its_tool():
     )
     instructions = "\n".join(capability.get_instructions())
 
-    assert "Load the parent `food_pantries` capability" in instructions
+    assert "Use the parent `food_pantries` capability tools" in instructions
+    assert "Load it only" not in instructions
     assert "`find_foodhelp_locations`" in instructions
 
 

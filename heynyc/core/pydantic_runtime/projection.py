@@ -74,8 +74,9 @@ class GroundedBlock(BaseModel):
         min_length=1,
         description=(
             "For kind=claim, write exactly one factual or procedural claim directly supported by "
-            "the cited evidence, without citation markers. Use a separate block with kind=framing for "
-            "a limitation. Do not turn a cited prohibition into "
+            "the cited evidence, without citation markers. Do not copy URLs; citation IDs attach "
+            "the registered source links. Use a separate block with kind=framing for a limitation. "
+            "Do not turn a cited prohibition into "
             "an unsupported positive instruction or assert an unsupported fact and then disclaim it."
         ),
     )
@@ -113,7 +114,6 @@ class GroundedAnswer(BaseModel):
 
     grounded_blocks: list[GroundedBlock] = Field(
         min_length=1,
-        max_length=12,
         description=(
             "Ordered resident-facing answer blocks with supporting source IDs. Put an urgent "
             "need or immediately usable action before eligibility details, appeals, and background. "
