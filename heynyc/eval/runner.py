@@ -26,6 +26,7 @@ _ADDITIVE_USAGE_KEYS = {
     "iterations",
     "latency_ms",
     "model_time_ms",
+    "tool_time_ms",
 }
 
 
@@ -43,15 +44,24 @@ def merge_eval_results(
         sum(costs) if all(isinstance(cost, (int, float)) for cost in costs) else None
     )
     usage["cost_status"] = "priced" if usage["cost_usd"] is not None else "unpriced"
-    for key in ("capabilities_used", "executed_tool_calls"):
-        usage[key] = list(
-            dict.fromkeys(
-                [
-                    *(pending.usage.get(key) or ()),
-                    *(final.usage.get(key) or ()),
-                ]
-            )
+    usage["capabilities_used"] = list(
+        dict.fromkeys(
+            [
+                *(pending.usage.get("capabilities_used") or ()),
+                *(final.usage.get("capabilities_used") or ()),
+            ]
         )
+    )
+    for key in (
+        "requested_tool_calls",
+        "executed_tool_calls",
+        "reused_tool_calls",
+        "tool_runs",
+    ):
+        usage[key] = [
+            *(pending.usage.get(key) or ()),
+            *(final.usage.get(key) or ()),
+        ]
     usage["model_request_ms"] = [
         *(pending.usage.get("model_request_ms") or ()),
         *(final.usage.get("model_request_ms") or ()),

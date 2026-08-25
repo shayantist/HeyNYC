@@ -29,11 +29,16 @@ def test_record_and_load_roundtrip(tmp_path: Path):
 
 def test_record_turn_preserves_per_tool_timing(tmp_path: Path):
     runs = [{"tool": "search_311_complaints", "status": "success", "latency_ms": 1250}]
+    call_usage = {
+        "requested_tool_calls": ["search_311_complaints", "search_311_complaints"],
+        "executed_tool_calls": ["search_311_complaints"],
+        "reused_tool_calls": ["search_311_complaints"],
+    }
     rec = telemetry.record_turn(
         tmp_path / "telemetry.jsonl",
         session_id="s1",
         model="answer/model",
-        usage={"tool_time_ms": 1250, "tool_runs": runs},
+        usage={"tool_time_ms": 1250, "tool_runs": runs, **call_usage},
         n_tool_calls=1,
         tool_names=["search_311_complaints"],
         status="success",
@@ -41,6 +46,7 @@ def test_record_turn_preserves_per_tool_timing(tmp_path: Path):
 
     assert rec["tool_time_ms"] == 1250
     assert rec["tool_runs"] == runs
+    assert {key: rec[key] for key in call_usage} == call_usage
 
 
 def test_record_turn_preserves_explicit_unpriceable_cost(tmp_path: Path):

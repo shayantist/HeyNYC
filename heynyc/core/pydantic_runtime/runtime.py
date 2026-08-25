@@ -2096,6 +2096,14 @@ class PydanticRuntimeAdapter:
 
     @staticmethod
     def _merge_tool_usage(result: AgentResult, runs: list[dict[str, Any]]) -> None:
+        returned = list(result.usage.get("executed_tool_calls", ()))
+        timed_tools = {run["tool"] for run in runs}
+        result.usage["executed_tool_calls"] = [
+            tool for tool in returned if tool not in timed_tools
+        ] + [run["tool"] for run in runs if not run.get("reused")]
+        result.usage["reused_tool_calls"] = [
+            run["tool"] for run in runs if run.get("reused")
+        ]
         result.usage["tool_time_ms"] = sum(float(run["latency_ms"]) for run in runs)
         result.usage["tool_runs"] = runs
 
@@ -2915,6 +2923,7 @@ class PydanticRuntimeAdapter:
                 "n_model_calls": usage.requests,
                 "n_answer_model_calls": usage.requests,
                 "n_tool_calls": usage.tool_calls,
+                "requested_tool_calls": tool_calls,
                 "executed_tool_calls": executed_tool_calls,
                 "iterations": iterations,
                 "capabilities_used": capabilities_used,

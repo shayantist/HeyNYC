@@ -44,11 +44,23 @@ def test_merge_eval_results_keeps_pending_and_final_diagnostics():
     pending = AgentResult(
         text="",
         citations={},
+        usage={
+            "requested_tool_calls": ["lookup", "lookup"],
+            "executed_tool_calls": ["lookup"],
+            "reused_tool_calls": ["lookup"],
+            "tool_runs": [{"tool": "lookup", "reused": False}],
+        },
         diagnostics={"validation_rejections": [{"stage": "pending"}]},
     )
     final = AgentResult(
         text="done",
         citations={},
+        usage={
+            "requested_tool_calls": ["confirm_lookup"],
+            "executed_tool_calls": ["confirm_lookup"],
+            "reused_tool_calls": [],
+            "tool_runs": [{"tool": "confirm_lookup", "reused": False}],
+        },
         diagnostics={"validation_rejections": [{"stage": "final"}]},
     )
 
@@ -60,6 +72,29 @@ def test_merge_eval_results_keeps_pending_and_final_diagnostics():
             {"stage": "final"},
         ]
     }
+    assert result.usage["requested_tool_calls"] == ["lookup", "lookup", "confirm_lookup"]
+    assert result.usage["reused_tool_calls"] == ["lookup"]
+    assert [run["tool"] for run in result.usage["tool_runs"]] == ["lookup", "confirm_lookup"]
+
+
+def test_merge_eval_results_preserves_repeated_tool_executions():
+    pending = AgentResult(
+        text="",
+        citations={},
+        usage={"executed_tool_calls": ["search_311_complaints"]},
+    )
+    final = AgentResult(
+        text="done",
+        citations={},
+        usage={"executed_tool_calls": ["search_311_complaints"]},
+    )
+
+    result = merge_eval_results(pending, final, set())
+
+    assert result.usage["executed_tool_calls"] == [
+        "search_311_complaints",
+        "search_311_complaints",
+    ]
 
 
 async def test_stream_emits_text_then_done(empty_registry):

@@ -95,7 +95,7 @@ def record_turn(
         "claim_support_requests", "claim_support_input_tokens",
         "claim_support_output_tokens", "claim_support_cached_input_tokens",
         "claim_support_cost_usd", "claim_support_time_ms", "claim_support_labels",
-        "tool_runs",
+        "tool_runs", "requested_tool_calls", "executed_tool_calls", "reused_tool_calls",
         "scope_modules", "scope_situations",
     ):
         if key in usage:

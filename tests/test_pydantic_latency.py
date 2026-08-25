@@ -384,6 +384,9 @@ async def test_exact_read_only_tool_call_is_reused_within_turn() -> None:
     assert result.text == "Done"
     assert executions == 1
     assert result.usage["tool_runs"][-1]["reused"] is True
+    assert result.usage["requested_tool_calls"] == ["lookup", "lookup"]
+    assert result.usage["executed_tool_calls"] == ["lookup"]
+    assert result.usage["reused_tool_calls"] == ["lookup"]
 
 
 async def test_concurrent_exact_read_only_calls_share_one_execution() -> None:

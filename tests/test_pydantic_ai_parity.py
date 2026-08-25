@@ -1288,6 +1288,11 @@ async def test_runtime_adapter_can_use_deferred_module_capabilities() -> None:
         "load_capability",
         "find_nyc_events",
     ]
+    assert result.usage["requested_tool_calls"] == [
+        "load_capability",
+        "find_nyc_events",
+    ]
+    assert result.usage["reused_tool_calls"] == []
     assert result.iterations == result.usage["n_answer_model_calls"] == 3
     assert result.usage["capabilities_used"] == ["events"]
 
