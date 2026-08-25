@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 
 from heynyc.core import config, outcomes, pii_crypto
 from heynyc.core.drafts import DraftStore
+from heynyc.core.localization import sms_controls as _localized_sms_controls
 from heynyc.core.localization import welcome_footer as _localized_welcome_footer
 from heynyc.core.memory import ContextCapacityError
 from heynyc.core.session import PendingTurn, Session
@@ -40,7 +41,7 @@ _FLAG_CONFIRM_MSG = (
 )
 _FLAG_SENT_MSG = "Sent. A human will review that one exchange."
 _FLAG_NOTHING_MSG = "Nothing to flag yet, ask me something first."
-_HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "start", "/help", "/menu",
+_HELP_TOKENS = {"hi", "hello", "hey", "help", "menu", "/help", "/menu",
                 "what can you do", "what can i ask", "what do you do"}
 _RATE_LIMIT_MSG = "You're sending a lot at once, give me a moment and try again shortly. 🙏"
 _MEDIA_REMINDER = (
@@ -79,13 +80,21 @@ _DELETE_DONE_MSG = (
     "for abuse control, neither of which identifies you. This conversation starts fresh now."
 )
 # First-contact welcome footer: one line on what HeyNYC is, one naming the controls. Sent once ever.
-def _welcome_footer(registry, language: str | None = None) -> str | None:
+def _welcome_footer(
+    registry,
+    language: str | None = None,
+    channel: str = "",
+) -> str | None:
     """First-contact greeting. The capability line derives from the installed manifests at send
     time (the same zero-drift pattern as HELP and the README table), so new modules appear here
     automatically and this copy can never lie about what is installed."""
     categories = sorted({m.category for m in registry.modules if m.category})
     footer = _localized_welcome_footer(categories, language)
-    return f"{footer}\nSource code: {config.HEYNYC_SOURCE_URL}" if footer is not None else None
+    if footer is None:
+        return None
+    if channel == "sms_twilio":
+        footer += f"\n{_localized_sms_controls(language)}"
+    return f"{footer}\nSource code: {config.HEYNYC_SOURCE_URL}"
 _NEW_MESSAGE = (
     "Started a new conversation. I won't use the earlier chat as context. "
     "This does not delete stored records."
@@ -274,7 +283,10 @@ async def handle(
                 await replier.send_text(_DELETE_CONFIRM_MSG)
                 return
             if is_help(msg.text):   # greeting / "what can you do" → the grounded capability menu
-                await replier.send_text(deps.agent.registry.welcome_text())
+                state = getattr(session.convo, "state", None)
+                await replier.send_text(deps.agent.registry.welcome_text(
+                    getattr(state, "safety_language", None),
+                ))
                 return
             native_runtime = hasattr(deps.agent, "conversation_from_state")
             approval_pending = native_runtime and deps.store.has_pending_approval(key)
@@ -358,7 +370,7 @@ async def handle(
                 # this explains them, so the console gets it too.
                 if deps.store.first_contact(key):
                     language = (result.diagnostics or {}).get("safety_language")
-                    welcome = _welcome_footer(deps.agent.registry, language)
+                    welcome = _welcome_footer(deps.agent.registry, language, msg.channel)
                     if welcome is not None:
                         await replier.send_text(welcome + "\n\nNow, about your message:")
                 for chunk in render(result, msg.channel):

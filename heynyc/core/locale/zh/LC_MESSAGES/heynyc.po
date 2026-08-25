@@ -3,6 +3,15 @@ msgstr ""
 "Language: zh_CN\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "First time here? I'm HeyNYC. I help with {categories} across NYC using current city information, and I show the source links.\nAnytime, text HELP to see what I can do and all chat controls."
+msgstr "第一次使用？我是 HeyNYC。我使用最新的纽约市信息，帮助你查找全市的 {categories}，并附上来源链接。\n随时发送 HELP，查看我能做什么以及所有聊天控制选项。"
+
+msgid "On SMS, text MENU for the full menu, STOP to stop messages, or START to resume."
+msgstr "通过短信发送 MENU 查看完整菜单，发送 STOP 停止接收消息，或发送 START 恢复。"
+
+msgid "Hi! I'm HeyNYC. I help you find and use NYC services with current city information, and I show the source links.\n\nTell me what you need in your language.\n\nChat controls:\n• HELP or MENU: show this menu\n• NEW: start fresh without using the earlier chat\n• PRIVACY: see how your messages are handled\n• REPORT or 👎: flag the last exchange for review, after you confirm\n• DELETE MY DATA: erase the conversation data I keep, after you confirm\n• STOP / START: stop or resume SMS messages (SMS only)\n\nHeads up: I'm an AI assistant, not a City employee or caseworker. Double-check anything important against the official source."
+msgstr "你好！我是 HeyNYC。我使用最新的纽约市信息，帮助你查找和使用 NYC 服务，并附上来源链接。\n\n请用你的语言告诉我需要什么。\n\n聊天控制：\n• HELP 或 MENU：显示此菜单\n• NEW：不使用之前的聊天内容，重新开始\n• PRIVACY：查看如何处理你的消息\n• REPORT 或 👎：确认后，将上一次对话标记为待审核\n• DELETE MY DATA：确认后，删除我保存的对话数据\n• STOP / START：停止或恢复短信（仅限短信）\n\n请注意：我是 AI 助手，不是市政府工作人员或个案工作人员。重要信息请到官方来源核实。"
+
 msgid "Sources"
 msgstr "来源"
 

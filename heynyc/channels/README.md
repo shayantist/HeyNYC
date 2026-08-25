@@ -32,6 +32,10 @@ Senders are reduced to a salted-HMAC `user_key` at the door. Raw phone numbers a
   beside its supported claim on SMS and WhatsApp while retaining row-addressed evidence internally.
 - Twilio WhatsApp sends a native typing indicator before model work using Twilio's
   [public-beta indicator API](https://www.twilio.com/docs/whatsapp/api/typing-indicators-resource). It fails open so a beta outage cannot block the final reply.
+- Twilio may answer SMS `HELP`, `STOP`, and `START` itself before forwarding the webhook, following
+  its [opt-out controls](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out). HeyNYC
+  does not send a duplicate reply when `OptOutType` says Twilio already answered. Residents can
+  text `MENU` for HeyNYC's full command menu on every channel.
 - A user message opens/resets a **24-hour service window** where free-form replies are free and
   unlimited, an inbound assistant lives here, so WhatsApp messaging cost ≈ $0; the LLM call is the real cost.
 - Re-initiating after 24h needs a pre-approved **template** (out of scope for v1).

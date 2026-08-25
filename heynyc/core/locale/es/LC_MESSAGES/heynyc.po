@@ -3,6 +3,15 @@ msgstr ""
 "Language: es\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "First time here? I'm HeyNYC. I help with {categories} across NYC using current city information, and I show the source links.\nAnytime, text HELP to see what I can do and all chat controls."
+msgstr "¿Es tu primera vez aquí? Soy HeyNYC. Ayudo con {categories} en toda la ciudad de Nueva York usando información municipal actualizada, y muestro los enlaces de las fuentes.\nEn cualquier momento, envía HELP para ver qué puedo hacer y todos los controles del chat."
+
+msgid "On SMS, text MENU for the full menu, STOP to stop messages, or START to resume."
+msgstr "Por SMS, envía MENU para ver el menú completo, STOP para dejar de recibir mensajes o START para reanudarlos."
+
+msgid "Hi! I'm HeyNYC. I help you find and use NYC services with current city information, and I show the source links.\n\nTell me what you need in your language.\n\nChat controls:\n• HELP or MENU: show this menu\n• NEW: start fresh without using the earlier chat\n• PRIVACY: see how your messages are handled\n• REPORT or 👎: flag the last exchange for review, after you confirm\n• DELETE MY DATA: erase the conversation data I keep, after you confirm\n• STOP / START: stop or resume SMS messages (SMS only)\n\nHeads up: I'm an AI assistant, not a City employee or caseworker. Double-check anything important against the official source."
+msgstr "¡Hola! Soy HeyNYC. Te ayudo a encontrar y usar servicios de NYC con información municipal actualizada y muestro los enlaces de las fuentes.\n\nDime lo que necesitas en tu idioma.\n\nControles del chat:\n• HELP o MENU: mostrar este menú\n• NEW: empezar de nuevo sin usar el chat anterior\n• PRIVACY: ver cómo se manejan tus mensajes\n• REPORT o 👎: marcar el último intercambio para revisión, después de confirmar\n• DELETE MY DATA: borrar los datos de la conversación que guardo, después de confirmar\n• STOP / START: detener o reanudar mensajes SMS (solo SMS)\n\nAviso: Soy un asistente de IA, no un empleado municipal ni un trabajador de casos. Verifica cualquier asunto importante en la fuente oficial."
+
 msgid "These are regular hours. Confirm holiday or temporary schedule exceptions before traveling."
 msgstr "Estas son las horas habituales. Confirme las excepciones por días festivos o cambios temporales en el horario antes de viajar."
 

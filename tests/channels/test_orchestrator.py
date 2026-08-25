@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from babel.messages.extract import extract_from_file
@@ -485,12 +486,81 @@ async def test_first_contact_appends_a_welcome_footer_exactly_once(tmp_path):
     footer = " ".join(r1.sent)
     assert "HeyNYC" in footer                                  # one line on what HeyNYC is
     assert "https://github.com/shayantist/HeyNYC" in footer    # AGPL source offer
-    for command in ("HELP", "PRIVACY", "REPORT", "DELETE MY DATA"):
-        assert command in footer                               # names every control, once
+    assert "HELP" in footer and "chat controls" in footer
+    assert "PRIVACY" not in footer                             # full menu lives behind HELP
 
     r2 = FakeReplier()
     await handle(_msg(text="what about SNAP?", mid="w2"), r2, deps)
-    assert "DELETE MY DATA" not in " ".join(r2.sent)           # never welcomed twice
+    assert "chat controls" not in " ".join(r2.sent)            # never welcomed twice
+
+
+async def test_sms_first_contact_names_carrier_controls(tmp_path):
+    deps = _deps(tmp_path)
+    replier = FakeReplier()
+
+    await handle(
+        InboundMessage(
+            channel="sms_twilio",
+            sender="+1555",
+            text="when do cooling centers open?",
+            message_id="sms-welcome",
+        ),
+        replier,
+        deps,
+    )
+
+    welcome = replier.sent[0]
+    assert "HELP" in welcome
+    assert "MENU" in welcome
+    assert "STOP" in welcome and "START" in welcome
+
+
+async def test_help_is_the_canonical_command_menu(tmp_path):
+    deps, replier = _deps(tmp_path), FakeReplier()
+
+    await handle(_msg(text="HELP", mid="help-menu"), replier, deps)
+
+    text = replier.sent[0]
+    for command in (
+        "HELP",
+        "NEW",
+        "PRIVACY",
+        "REPORT",
+        "👎",
+        "DELETE MY DATA",
+        "STOP",
+        "START",
+    ):
+        assert command in text
+    assert "SMS only" in text
+
+
+async def test_help_uses_the_session_language(tmp_path):
+    seen = []
+
+    class NativeAgent:
+        model = "fake-native"
+        tools = {}
+        registry = SimpleNamespace(welcome_text=lambda language: seen.append(language) or "Ayuda")
+
+        def conversation(self):
+            return SimpleNamespace(
+                state=SimpleNamespace(safety_language="es"),
+                turns=[],
+            )
+
+    deps = _deps(tmp_path)
+    deps.agent = NativeAgent()
+    replier = FakeReplier()
+
+    await handle(_msg(text="HELP", mid="help-spanish"), replier, deps)
+
+    assert seen == ["es"]
+    assert replier.sent == ["Ayuda"]
+
+
+def test_sms_start_is_not_misrouted_as_help():
+    assert is_help("START") is False
 
 
 async def test_first_contact_passes_native_safety_language_to_welcome(tmp_path, monkeypatch):
@@ -584,10 +654,9 @@ async def test_first_contact_accepts_regional_english_language_once(tmp_path):
     await handle(_msg(text="where can I find food?", mid="regional-english"), replier, deps)
 
     assert replier.sent == [
-        "First time here? I'm HeyNYC. I help with NYC services across NYC, grounded in real city "
-            "data, and I cite my sources.\n"
-            "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
-            "flag a bad answer, or DELETE MY DATA to erase everything I keep.\n"
+        "First time here? I'm HeyNYC. I help with NYC services across NYC using current city "
+            "information, and I show the source links.\n"
+            "Anytime, text HELP to see what I can do and all chat controls.\n"
             "Source code: https://github.com/shayantist/HeyNYC\n\n"
             "Now, about your message:",
         "Grounded answer",
@@ -598,7 +667,7 @@ async def test_first_contact_accepts_regional_english_language_once(tmp_path):
     assert second.sent == ["Grounded answer"]
 
 
-@pytest.mark.parametrize("language", ["es", 123, "not-a-language"])
+@pytest.mark.parametrize("language", [123, "not-a-language"])
 async def test_first_contact_suppresses_untranslated_non_english_welcome(tmp_path, language):
     deps = _deps(tmp_path)
     deps.agent = _welcome_test_agent(language)
@@ -621,9 +690,36 @@ def test_welcome_footer_uses_english_fallback_and_babel_list_format(language):
     assert "I help with Food and Transit across NYC" in footer
 
 
-@pytest.mark.parametrize("language", ["es", 123, "not-a-language"])
+@pytest.mark.parametrize("language", [123, "not-a-language"])
 def test_welcome_footer_fails_closed_without_a_usable_catalog(language):
     assert _welcome_footer(Registry([]), language) is None
+
+
+@pytest.mark.parametrize("language", ["es", "bn", "zh"])
+def test_supported_languages_discover_help_on_first_contact(language):
+    footer = _welcome_footer(Registry([]), language)
+
+    assert footer is not None
+    assert "HELP" in footer
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [("es", "Controles del chat"), ("bn", "চ্যাট নিয়ন্ত্রণ"), ("zh", "聊天控制")],
+)
+def test_supported_languages_have_a_localized_help_menu(language, expected):
+    text = Registry([]).welcome_text(language)
+
+    assert expected in text
+    assert "DELETE MY DATA" in text
+
+
+def test_spanish_sms_first_contact_includes_the_provider_safe_menu_command():
+    footer = _welcome_footer(Registry([]), "es", "sms_twilio")
+
+    assert footer is not None
+    assert "MENU" in footer
+    assert "menú completo" in footer
 
 
 def test_babel_extracts_welcome_msgid_from_localization_module():

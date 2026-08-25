@@ -47,8 +47,11 @@ def test_failure_copy_preserves_english_for_non_localized_turns(monkeypatch, tmp
     )
 
 
-def test_partial_chinese_catalog_does_not_add_an_english_welcome_footer() -> None:
-    assert localization.welcome_footer(("cooling centers",), "zh") is None
+def test_chinese_catalog_has_a_localized_welcome_footer() -> None:
+    footer = localization.welcome_footer(("cooling centers",), "zh")
+
+    assert footer is not None
+    assert "HELP" in footer
 
 
 @pytest.mark.asyncio

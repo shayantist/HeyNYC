@@ -12,6 +12,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from . import config
+from .localization import help_text as localized_help_text
 from .manifest import DatasetBinding, ServiceModule, SituationHint
 
 # Trust-tier ordering for web_search ranking; higher = more trusted. (§10.4)
@@ -273,12 +274,14 @@ class Registry:
             )
         return "\n".join(lines)
 
-    def welcome_text(self) -> str:
+    def welcome_text(self, language: str | None = None) -> str:
         """A warm, grounded 'here's what I can do' for first contact / the help intent, generated
         from the modules' examples, never a bare 'How can I help?'. Single source = the manifests,
         so it can never drift from what's actually installed."""
-        lines = ["Hi! I'm HeyNYC, I help you find and use NYC services, grounded in real city data, "
-                 "and I cite my sources.", "", "Here are some things you can ask me:"]
+        if localized := localized_help_text(language):
+            return f"{localized}\n\nSource code: {config.HEYNYC_SOURCE_URL}"
+        lines = ["Hi! I'm HeyNYC. I help you find and use NYC services with current city data, "
+                 "and I show my sources.", "", "Here are some things you can ask me:"]
         for example in self.welcome_examples(6):
             lines.append(f"  • {example}")
         lines += [
@@ -286,9 +289,13 @@ class Registry:
             "Just tell me what you need, I'll reply in your language, using the city's official "
             "translation where there is one and translating the rest as best I can.",
             "",
-            "If I get something wrong, reply REPORT and, once you confirm, I'll share that one "
-            "exchange with a person to review. Send PRIVACY for how your info is handled, or "
-            "DELETE MY DATA to erase everything I keep.",
+            "Chat controls:",
+            "  • HELP or MENU: show this menu",
+            "  • NEW: start fresh without using the earlier chat",
+            "  • PRIVACY: see how your messages are handled",
+            "  • REPORT or 👎: flag the last exchange for review, after you confirm",
+            "  • DELETE MY DATA: erase the conversation data I keep, after you confirm",
+            "  • STOP / START: stop or resume SMS messages (SMS only)",
             "",
             "Heads up: I'm an AI assistant, not a City employee or caseworker, so please "
             "double-check anything important against the official source.",

@@ -308,6 +308,43 @@ def test_twilio_router_acknowledges_duplicate_without_waking_worker(monkeypatch)
     assert worker.wakes == 0
 
 
+@pytest.mark.parametrize("opt_out_type", ["STOP", "START", "HELP"])
+def test_twilio_router_does_not_duplicate_provider_control_reply(monkeypatch, opt_out_type):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from heynyc.channels import twilio
+
+    class Validator:
+        def validate(self, url, params, signature):
+            return True
+
+    class Store:
+        def enqueue(self, message_id, user_key, payload):
+            raise AssertionError("provider-handled control must not enter the app inbox")
+
+    class Worker:
+        def wake(self):
+            raise AssertionError("provider-handled control must not wake the worker")
+
+    monkeypatch.setattr("twilio.request_validator.RequestValidator", lambda token: Validator())
+    app = FastAPI()
+    app.include_router(twilio.make_twilio_router(
+        SimpleNamespace(store=Store(), salt="test-salt"), Worker(),
+    ))
+
+    with TestClient(app) as client:
+        response = client.post("/webhook/twilio", data={
+            "From": "+15551234567",
+            "To": "+18882120042",
+            "Body": opt_out_type,
+            "MessageSid": f"SM-{opt_out_type.lower()}",
+            "OptOutType": opt_out_type,
+        })
+
+    assert response.status_code == 200
+
+
 async def test_twilio_worker_processes_envelope_and_records_outbound_sids(
     monkeypatch, tmp_path, caplog,
 ):

@@ -3,6 +3,15 @@ msgstr ""
 "Language: bn\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "First time here? I'm HeyNYC. I help with {categories} across NYC using current city information, and I show the source links.\nAnytime, text HELP to see what I can do and all chat controls."
+msgstr "এখানে প্রথমবার? আমি HeyNYC। আমি নিউ ইয়র্ক সিটি জুড়ে {categories} বিষয়ে বর্তমান সিটি তথ্য ব্যবহার করে সাহায্য করি এবং উৎসের লিঙ্ক দেখাই।\nআমি কী করতে পারি এবং চ্যাটের সব নিয়ন্ত্রণ দেখতে যেকোনো সময় HELP লিখে পাঠান।"
+
+msgid "On SMS, text MENU for the full menu, STOP to stop messages, or START to resume."
+msgstr "SMS-এ সম্পূর্ণ মেনু দেখতে MENU, বার্তা বন্ধ করতে STOP, অথবা আবার চালু করতে START লিখে পাঠান।"
+
+msgid "Hi! I'm HeyNYC. I help you find and use NYC services with current city information, and I show the source links.\n\nTell me what you need in your language.\n\nChat controls:\n• HELP or MENU: show this menu\n• NEW: start fresh without using the earlier chat\n• PRIVACY: see how your messages are handled\n• REPORT or 👎: flag the last exchange for review, after you confirm\n• DELETE MY DATA: erase the conversation data I keep, after you confirm\n• STOP / START: stop or resume SMS messages (SMS only)\n\nHeads up: I'm an AI assistant, not a City employee or caseworker. Double-check anything important against the official source."
+msgstr "হ্যালো! আমি HeyNYC। আমি বর্তমান সিটি তথ্য ব্যবহার করে NYC পরিষেবা খুঁজে পেতে ও ব্যবহার করতে সাহায্য করি এবং উৎসের লিঙ্ক দেখাই।\n\nআপনার ভাষায় কী দরকার তা বলুন।\n\nচ্যাট নিয়ন্ত্রণ:\n• HELP বা MENU: এই মেনু দেখুন\n• NEW: আগের চ্যাট ব্যবহার না করে নতুন করে শুরু করুন\n• PRIVACY: আপনার বার্তা কীভাবে ব্যবহৃত হয় দেখুন\n• REPORT বা 👎: নিশ্চিত করার পরে শেষ কথোপকথনটি পর্যালোচনার জন্য চিহ্নিত করুন\n• DELETE MY DATA: নিশ্চিত করার পরে রাখা কথোপকথনের তথ্য মুছুন\n• STOP / START: SMS বার্তা বন্ধ বা আবার চালু করুন (শুধু SMS)\n\nমনে রাখুন: আমি একটি AI সহকারী, সিটি কর্মী বা কেসওয়ার্কার নই। গুরুত্বপূর্ণ তথ্য সরকারি উৎসে যাচাই করুন।"
+
 msgid "Sources"
 msgstr "উৎসসমূহ"
 

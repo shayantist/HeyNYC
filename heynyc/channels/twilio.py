@@ -347,6 +347,11 @@ def make_twilio_router(deps: Deps, worker):
         if not sender or not recipient:
             return Response(status_code=400)
         inbound = to_inbound(params)
+        if inbound.channel == "sms_twilio" and (
+            str(params.get("OptOutType", "")).upper() in {"STOP", "START", "HELP"}
+            or inbound.text.strip().upper() in {"STOP", "START"}
+        ):
+            return Response(status_code=200)
         payload = json.dumps({
             "channel": inbound.channel,
             "sender": inbound.sender,

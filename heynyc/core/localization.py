@@ -17,10 +17,23 @@ def _(message: str) -> str:
 
 
 _WELCOME_FOOTER = _(
-    "First time here? I'm HeyNYC. I help with {categories} across NYC, grounded in real city "
-    "data, and I cite my sources.\n"
-    "Anytime, text HELP for what I can do, PRIVACY for how your info is handled, REPORT to "
-    "flag a bad answer, or DELETE MY DATA to erase everything I keep."
+    "First time here? I'm HeyNYC. I help with {categories} across NYC using current city "
+    "information, and I show the source links.\n"
+    "Anytime, text HELP to see what I can do and all chat controls."
+)
+_SMS_CONTROLS = _(
+    "On SMS, text MENU for the full menu, STOP to stop messages, or START to resume."
+)
+_HELP_TEXT = _(
+    "Hi! I'm HeyNYC. I help you find and use NYC services with current city information, and I "
+    "show the source links.\n\nTell me what you need in your language.\n\nChat controls:\n"
+    "• HELP or MENU: show this menu\n• NEW: start fresh without using the earlier chat\n"
+    "• PRIVACY: see how your messages are handled\n"
+    "• REPORT or 👎: flag the last exchange for review, after you confirm\n"
+    "• DELETE MY DATA: erase the conversation data I keep, after you confirm\n"
+    "• STOP / START: stop or resume SMS messages (SMS only)\n\n"
+    "Heads up: I'm an AI assistant, not a City employee or caseworker. Double-check anything "
+    "important against the official source."
 )
 _REGULAR_HOURS_SOURCE_LIMIT = _(
     "These are regular hours. Confirm holiday or temporary schedule exceptions before traveling."
@@ -51,6 +64,18 @@ def localize(message: str, language: str | None) -> str:
         fallback=True,
     )
     return translation.gettext(message)
+
+
+def sms_controls(language: str | None = None) -> str:
+    return localize(_SMS_CONTROLS, language)
+
+
+def help_text(language: str | None = None) -> str | None:
+    locale = _locale(language)
+    if locale is None or locale.split("_", 1)[0] == "en":
+        return None
+    translated = localize(_HELP_TEXT, locale)
+    return translated if translated != _HELP_TEXT else None
 
 
 def localized_source_limit(message: str, language: str | None) -> str | None:

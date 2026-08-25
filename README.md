@@ -80,16 +80,16 @@ HeyNYC is an alpha release. The public pilot number above runs from an operator-
 
 ## Using it
 
-**As a resident (SMS or WhatsApp):** text the pilot number above, or the number your operator shares if someone else runs an instance. Ask in plain language, any language. Your first message gets a one-time note naming the built-in commands, which work in any chat, always free of model calls:
+**As a resident (SMS or WhatsApp):** text the pilot number above, or the number your operator shares if someone else runs an instance. Ask in plain language, any language. Your first answer points to `HELP`, which shows the built-in chat controls without using a model:
 
 | Text | What happens |
 | --- | --- |
-| `HELP` | what HeyNYC can do |
+| `HELP` / `MENU` | what HeyNYC can do; `MENU` reliably reaches HeyNYC on SMS when the provider handles `HELP` |
 | `PRIVACY` | how your info is handled, in short |
 | `REPORT` (or 👎) | flag the last answer for human review, after you confirm |
 | `DELETE MY DATA` | erase your conversation, queued messages, draft, and pending flags, after you confirm |
 | `NEW` | start a fresh conversation the assistant no longer sees |
-| `STOP` / `START` | SMS opt-out and opt-in (carrier-level) |
+| `STOP` / `START` | SMS opt-out and opt-in, handled by [Twilio](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out) |
 
 **As an operator or developer (CLI):** every command reads `.env` for models and keys; `--model` overrides explicitly where offered.
 
