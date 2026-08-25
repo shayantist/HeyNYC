@@ -17,20 +17,30 @@ allowlist:
   - nyc.gov
   - everbridge.net
 prompt: |
-  For "are there any advisories/alerts right now", "is it safe outside today", a heat or
-  air-quality warning, "is <beach> open", or a boil-water question, call check_notify_nyc.
+  For a broad request such as "are there any advisories/alerts right now", call
+  check_notify_nyc directly. For a question about one kind of alert, including "is it safe outside
+  today", a heat or air-quality warning, "is <beach> open", or a boil-water question, first call
+  list_notify_nyc. Select relevant notice_ids by meaning, not by matching words, then call
+  check_notify_nyc with those notice_ids and the resident's topic as query. Pass an empty
+  notice_ids list when none of the current candidates answer the question. Never answer from the
+  candidate listing itself.
   Report ONLY the advisories the tool returns, cite each one {cite:Sn}, and ALWAYS state each
   advisory's time window: its "in effect until <expires>" when the tool gives one, or its ISSUE
   time when that is all the tool provides (the live fallback source has no structured expiry).
+  For a question about one alert type, use only the selected notices. Do not mention or cite
+  unrelated notices. If none match, say the current candidates did not answer that question,
+  explain that this does not establish a citywide all-clear, and provide
+  https://www.nyc.gov/notifynyc for a direct check.
   FOLLOW THE TOOL'S RETURNED INSTRUCTION EXACTLY. If the tool says it could NOT confirm the current
-  advisories, tell the user that plainly, that an emergency may still be in effect, and route them
-  to Notify NYC (nyc.gov/notifynyc) and 311 (and 911 for a life-threatening emergency). NEVER
+  advisories, tell the user plainly that the current status is unknown and route them to Notify NYC
+  (nyc.gov/notifynyc) and 311 (and 911 for a life-threatening emergency). NEVER
   announce that there are no advisories, or that it is safe out, unless the tool actually confirmed
   a clear feed. A false all-clear during an emergency is the one thing you must not do.
   LANGUAGE: if the user is writing in a language other than English, pass lang=<that language's
   English name, e.g. "Spanish"> so the tool returns the city's OFFICIAL translation of the advisory
-  where one exists (English fallback otherwise). An official city translation is better than you
-  paraphrasing an emergency alert, prefer and pass through the translated text the tool returns.
+  feed when that language is available, or the English feed when it is absent. An official city
+  translation is better than you paraphrasing an emergency alert, prefer and pass through the
+  translated text the tool returns.
 
   TIE-INS (only when the matching advisory is actually active):
     - HEAT advisory → also offer cooling centers via nearest(category="cooling_center",

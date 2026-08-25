@@ -4041,17 +4041,11 @@ async def test_runtime_reinforces_separate_scopes_only_after_multiple_tools() ->
 
 async def test_runtime_injects_current_awareness_each_turn() -> None:
     seen: list[str] = []
-    seen_registries: list[CitationRegistry] = []
+    seen_registries: list[CitationRegistry | None] = []
 
-    async def awareness(citations: CitationRegistry) -> str:
+    async def awareness(citations: CitationRegistry | None) -> str:
         seen_registries.append(citations)
-        citation_id = citations.register(
-            "https://www.nyc.gov/notifynyc",
-            title="Current citywide advisory",
-            snippet="Current citywide advisory",
-            kind="DATA",
-        )
-        return f"Current citywide advisory {{cite:{citation_id}}}"
+        return "Current citywide advisory"
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         request = next(
@@ -4064,7 +4058,7 @@ async def test_runtime_injects_current_awareness_each_turn() -> None:
             [
                 ToolCallPart(
                     "final_answer",
-                    {"answer": "Current citywide advisory. {cite:S1}"},
+                    {"answer": "I can check the current citywide advisory."},
                     "final-awareness",
                 )
             ]
@@ -4081,9 +4075,8 @@ async def test_runtime_injects_current_awareness_each_turn() -> None:
     result = await runtime.run("First")
 
     assert "Current citywide advisory" in seen[0]
-    assert "{cite:S1}" in seen[0]
-    assert len(seen_registries) == 1
-    assert result.text == "Current citywide advisory. {cite:S1}"
+    assert seen_registries == [None]
+    assert result.text == "I can check the current citywide advisory."
 
 
 async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:

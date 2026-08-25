@@ -1318,7 +1318,7 @@ class PydanticRuntimeAdapter:
         prompt_builder: Callable[[str], str] | None = None,
         guard_grounding: bool = True,
         use_module_capabilities: bool = False,
-        current_awareness: Callable[[CitationRegistry], Awaitable[str]] | None = None,
+        current_awareness: Callable[[CitationRegistry | None], Awaitable[str]] | None = None,
         extra_capabilities: Sequence[Any] = (),
         usage_limits: UsageLimits | None = None,
         instrument: InstrumentationSettings | None = None,
@@ -2555,7 +2555,7 @@ class PydanticRuntimeAdapter:
         if reply_language:
             instructions.append(_REPLY_LANGUAGE_INSTRUCTION.format(language=reply_language))
         if self._current_awareness is not None:
-            awareness = await self._current_awareness(citations)
+            awareness = await self._current_awareness(None)
             if awareness:
                 instructions.append(
                     _follow_up_awareness(awareness, delivered_notify_titles)

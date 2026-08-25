@@ -197,7 +197,11 @@ def _deduplicate_delivery_urls(
                     seen.add(identity)
                     start = after_index
                     continue
-                line = line[:index] + line[index + len(url):]
+                prefix = line[:index]
+                suffix = line[index + len(url):]
+                if suffix.strip() and prefix.rstrip().endswith(":"):
+                    prefix = prefix.rstrip()[:-1]
+                line = prefix + suffix
                 removed = True
                 start = index
         line = line.replace("()", "").replace("(; ", "(").replace("; )", ")").rstrip()

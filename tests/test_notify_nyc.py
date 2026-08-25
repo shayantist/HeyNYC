@@ -227,10 +227,10 @@ async def test_fetch_advisories_keeps_english_and_parses():
     assert by_id["NYC-EXPIRED-1"].source_url == f"{FEED_BASE}/cap/expired.xml"
 
 
-# The same alert (identifier NYC-ACTIVE-1) in English and Spanish — the CAP identifier is
-# language-stable, which is what lets the Spanish variant overlay the English one per alert.
+# The same alert can carry different CAP identifiers in English and Spanish, matching the live
+# Notify NYC feed observed 2026-08-24.
 CAP_ACTIVE_ES = _cap(
-    "NYC-ACTIVE-1",
+    "NYC-ACTIVE-ES-1",
     severity="Severe",
     event="Calor Extremo",
     headline="Aviso de calor en vigor para NYC",
@@ -255,21 +255,18 @@ CAPS_MULTILANG = {
 
 
 async def test_fetch_advisories_surfaces_requested_language_variant():
-    # Red-team/compliance 4a: a Spanish request returns the city's OFFICIAL Spanish translation of
-    # the alert (not a paraphrase), keeping English as the per-alert fallback.
+    # Red-team/compliance 4a: a Spanish request returns only the city's OFFICIAL Spanish feed,
+    # avoiding duplicate English and Spanish copies whose CAP identifiers do not match.
     seen: list[str] = []
     client = _client(RSS_MULTILANG, CAPS_MULTILANG, seen=seen)
     advisories = (await fetch_advisories(client, lang="Spanish")).advisories
     await client.aclose()
 
-    by_id = {a.guid: a for a in advisories}
-    assert (
-        by_id["NYC-ACTIVE-1"].headline == "Aviso de calor en vigor para NYC"
-    )  # Spanish won
-    assert by_id["NYC-ACTIVE-1"].language == "es-US"
-    # The expired alert has no Spanish variant → English fallback is still fetched + present.
-    assert by_id["NYC-EXPIRED-1"].headline == "Expired advisory"
+    assert [a.guid for a in advisories] == ["NYC-ACTIVE-ES-1"]
+    assert advisories[0].headline == "Aviso de calor en vigor para NYC"
+    assert advisories[0].language == "es-US"
     assert any("active-es" in p for p in seen)  # the Spanish CAP WAS fetched this time
+    assert not any("active.xml" in p or "expired.xml" in p for p in seen)
 
 
 async def test_fetch_advisories_language_alias_resolves():
@@ -277,9 +274,15 @@ async def test_fetch_advisories_language_alias_resolves():
     client = _client(RSS_MULTILANG, CAPS_MULTILANG)
     advisories = (await fetch_advisories(client, lang="es")).advisories
     await client.aclose()
-    assert {a.guid: a for a in advisories}[
-        "NYC-ACTIVE-1"
-    ].headline == "Aviso de calor en vigor para NYC"
+    assert advisories[0].headline == "Aviso de calor en vigor para NYC"
+
+
+async def test_fetch_advisories_falls_back_to_english_when_language_is_unavailable():
+    client = _client(RSS_MULTILANG, CAPS_MULTILANG)
+    advisories = (await fetch_advisories(client, lang="French")).advisories
+    await client.aclose()
+
+    assert {a.guid for a in advisories} == {"NYC-ACTIVE-1", "NYC-EXPIRED-1"}
 
 
 async def test_fetch_advisories_english_default_ignores_other_languages():
@@ -582,6 +585,7 @@ async def test_check_notify_nyc_failsafe_on_empty_feed():
     assert "no advisories" not in low
     # It must say it could not confirm, and route to the official live source + 311 + 911.
     assert "could not confirm" in low
+    assert "emergency may still" not in low
     assert "nyc.gov/notifynyc" in low
     assert "311" in low
     assert "911" in low
@@ -713,20 +717,47 @@ async def test_fetch_recent_advisories_parses_live_format():
     assert len(feed.notes) == 3
     # Newest first (07/06 00:33 leads 07/05 23:31 leads 07/05 22:13).
     assert feed.notes[0].title == "Notify NYC - Mass Transit Restoration"
-
     flood = next(n for n in feed.notes if "Flood Advisory" in n.title)
-    assert (
-        flood.issued == "2026-07-05T23:31:01-04:00"
-    )  # pubDate parsed as ET → ISO 8601 w/ offset
-    assert flood.issued_raw == "07/05/2026 23:31:01"  # raw kept for honest display
+    assert flood.issued == "2026-07-05T23:31:01-04:00"
+    assert flood.issued_raw == "07/05/2026 23:31:01"
     assert "Flood Advisory is in effect" in flood.body
-    assert (
-        "<a" not in flood.body and "href" not in flood.body
-    )  # HTML tags stripped from body
-    assert "on.nyc.gov/flood" in flood.body  # the translation URL text is preserved
+    assert "<a" not in flood.body and "href" not in flood.body
+    assert "on.nyc.gov/flood" in flood.body
     assert flood.source_url == RECENT_MESSAGES_URL
-    assert flood.guid  # a stable dedupe key exists
+    assert flood.guid
     assert flood.provider_record == json.loads(RECENT_MESSAGES_JSON)[1]
+
+
+async def test_fetch_recent_advisories_normalizes_source_supplied_bare_urls():
+    client = _combo_client(
+        rss=_rss(),
+        recent_json=json.dumps([{
+            "pubDate": "08/23/2026 12:01:30",
+            "title": "Notify NYC - Public Pool Closure",
+            "description": "Updates: nyc.gov/parks/outdoor-pools or call 311.",
+        }]),
+    )
+
+    feed = await fetch_recent_advisories(client)
+    await client.aclose()
+
+    assert feed.notes[0].body == (
+        "Updates: https://nyc.gov/parks/outdoor-pools or call 311."
+    )
+
+async def test_fetch_recent_advisories_uses_the_official_language_parameter():
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, text=RECENT_MESSAGES_JSON)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    feed = await fetch_recent_advisories(client, lang="Spanish")
+    await client.aclose()
+
+    assert feed.confirmed is True
+    assert seen[0].params["lang"] == "es"
 
 
 async def test_fetch_recent_advisories_failsafe_on_error():
@@ -1052,6 +1083,100 @@ async def test_check_notify_nyc_prefers_cap_when_it_has_active():
     await client.aclose()
     assert "Heat Advisory in effect for NYC" in out  # the structured CAP advisory
     assert "in effect until 2099-07-02T19:45:28-04:00" in out
+    assert "Use only notices relevant to the resident's question" in out
+    assert "https://www.nyc.gov/notifynyc" in out
+
+
+async def test_notify_nyc_lists_candidates_without_registering_citations():
+    citations = CitationRegistry()
+    recent_json = json.dumps(
+        [{
+            "pubDate": "08/24/2026 08:59:23",
+            "title": "Notify NYC - Air Quality Health Advisory (NYC)",
+            "description": "Air quality is unhealthy for sensitive groups.",
+        }]
+    )
+    client = _combo_client(
+        rss=RSS_MAIN, recent_json=recent_json, caps=CAPS_MAIN
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+
+    tools = {tool.name: tool for tool in get_tools()}
+    out = await tools["list_notify_nyc"].handler({"lang": "English"}, ctx)
+    await client.aclose()
+
+    assert "notice_id=" in out
+    assert "Air Quality Health Advisory" in out
+    assert "Heat Advisory in effect for NYC" in out
+    assert len(citations) == 0
+
+
+async def test_check_notify_nyc_registers_only_selected_notice_ids():
+    citations = CitationRegistry()
+    recent_json = json.dumps(
+        [{
+            "pubDate": "08/24/2026 08:59:23",
+            "title": "Notify NYC - Air Quality Health Advisory (NYC)",
+            "description": "Air quality is unhealthy for sensitive groups.",
+        }]
+    )
+    client = _combo_client(rss=RSS_MAIN, recent_json=recent_json, caps=CAPS_MAIN)
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+
+    tools = {tool.name: tool for tool in get_tools()}
+    candidates = await tools["list_notify_nyc"].handler({}, ctx)
+    selected_id = next(
+        line.split("notice_id=", 1)[1].split(")", 1)[0]
+        for line in candidates.splitlines()
+        if "Air Quality Health Advisory" in line
+    )
+    out = await tools["check_notify_nyc"].handler(
+        {"notice_ids": [selected_id], "query": "air quality"}, ctx
+    )
+    await client.aclose()
+
+    assert "{cite:S1}" in out
+    assert len(citations) == 1
+    assert citations.mapping()["S1"]["title"] == (
+        "Notify NYC - Air Quality Health Advisory (NYC)"
+    )
+    assert "Heat Advisory in effect for NYC" not in out
+
+
+async def test_check_notify_nyc_empty_selection_returns_a_compact_receipt():
+    citations = CitationRegistry()
+    client = _combo_client(
+        rss=RSS_MAIN, recent_json=RECENT_MESSAGES_JSON, caps=CAPS_MAIN
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    tool = next(tool for tool in get_tools() if tool.name == "check_notify_nyc")
+
+    out = await tool.handler({"notice_ids": [], "query": "air quality"}, ctx)
+    await client.aclose()
+
+    assert "no current notice was selected for air quality" in out.lower()
+    assert "does not establish a citywide all-clear" in out
+    assert "attached Notify NYC source link" in out
+    assert out.count(advisory_tools.NOTIFY_NYC_URL) == 0
+    assert "{cite:S1}" in out
+    receipt = citations.mapping()["S1"]["provenance"]["snapshot"]
+    assert receipt["query"] == "air quality"
+    assert receipt["selected_notice_ids"] == []
+    assert "cap" not in receipt and "recent" not in receipt
+
+
+def test_notify_nyc_tools_use_selection_not_alert_type_filtering():
+    tools = {tool.name: tool for tool in get_tools()}
+
+    assert {"check_notify_nyc", "list_notify_nyc"} <= set(tools)
+    check_schema = tools["check_notify_nyc"].parameters["properties"]
+    assert "notice_ids" in check_schema
+    assert "query" in check_schema
+    assert "alert_type" not in check_schema
+    assert "requested language is absent" in check_schema["lang"]["description"]
+    assert "requested language is absent" in (
+        tools["list_notify_nyc"].parameters["properties"]["lang"]["description"]
+    )
 
 
 async def test_check_notify_nyc_combines_cap_and_recent_without_exact_duplicates():
@@ -1157,6 +1282,25 @@ def test_advisories_module_loads_with_tool_and_eval():
     assert cases, "advisories should ship eval cases"
     assert any(c.invariants.get("must_abstain_or_redirect") for c in cases)
     assert any(c.harm_category == "injection" for c in cases)
+    air_quality = next(c for c in cases if c.id == "adv_air_quality")
+    assert "unrelated notices" in module.prompt.lower()
+    assert "emergency may still" not in module.prompt.lower()
+    assert "english feed when it is absent" in module.prompt.lower()
+    assert air_quality.expect_tools == ["list_notify_nyc", "check_notify_nyc"]
+    assert not air_quality.invariants.get("must_ground")
+    assert "cite it" in air_quality.utility_criterion.lower()
+    assert "hydrate only" in air_quality.utility_criterion.lower()
+    assert "could not confirm" in air_quality.utility_criterion.lower()
+    assert "unrelated" in air_quality.utility_criterion.lower()
+    assert "unspecified emergency" in air_quality.utility_criterion.lower()
+    spanish = next(c for c in cases if c.id == "adv_air_quality_es")
+    assert spanish.expect_tools == ["list_notify_nyc", "check_notify_nyc"]
+    assert spanish.language == "es"
+    assert "spanish" in spanish.utility_criterion.lower()
+    spanish_broad = next(c for c in cases if c.id == "adv_any_active_es")
+    assert spanish_broad.expect_tools == ["check_notify_nyc"]
+    assert spanish_broad.language == "es"
+    assert "english copy" in spanish_broad.utility_criterion.lower()
 
 
 # --- F080 residual: repeat advisory calls in one conversation return a marker, not a re-brief ---

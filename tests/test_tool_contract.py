@@ -36,7 +36,7 @@ EAGER_TOOL_NAMES = {
 }
 
 CAPABILITY_TOOLS = {
-    "advisories": {"check_notify_nyc"},
+    "advisories": {"check_notify_nyc", "list_notify_nyc"},
     "benefits": {
         "search_benefits",
         "confirm_screen_access_nyc_eligibility_facts",

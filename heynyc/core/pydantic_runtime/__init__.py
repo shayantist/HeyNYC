@@ -79,7 +79,7 @@ def build_runtime(
     tools: dict[str, Tool] | None = None,
     index: Any = None,
     use_module_capabilities: bool = False,
-    current_awareness: Callable[[CitationRegistry], Awaitable[str]] | None = None,
+    current_awareness: Callable[[CitationRegistry | None], Awaitable[str]] | None = None,
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
     structured_grounding: bool = True,
@@ -184,7 +184,7 @@ def build_configured_runtime(
     *,
     model: Any,
     index: Any = None,
-    current_awareness: Callable[[CitationRegistry], Awaitable[str]] | None = None,
+    current_awareness: Callable[[CitationRegistry | None], Awaitable[str]] | None = None,
     output_guard: Any = None,
     stream_model_requests: bool = False,
 ) -> PydanticRuntimeAdapter:

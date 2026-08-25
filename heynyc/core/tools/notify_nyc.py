@@ -9,8 +9,8 @@ The feed is two hops:
   1. RSS (`RSS_URL`, must follow redirects), ~64 `<item>`s, one per (alert × language). Each item's
      `<author>` tags the language ("NYCEM [English]" / "NYCEM [Spanish]" / …). We RETAIN every
      language variant the feed carries (~12 official languages besides English) so a caller can
-     request an advisory in the user's language, falling back to the official English text when that
-     language has no variant of a given alert. The CAP XML url is the item's `<enclosure url="...">`
+     request the official feed in the user's language, falling back to English only when that
+     language is absent from the feed. The CAP XML url is the item's `<enclosure url="...">`
      (fallback: `<link>` text). An official city translation beats an LLM paraphrase, so we surface it.
   2. Each CAP XML (namespace `urn:oasis:names:tc:emergency:cap:1.2`) carries the structured alert:
      event/severity/urgency/category, `sent`/`expires` (ISO 8601 with tz offset), headline, and an
@@ -24,6 +24,7 @@ fabricating, this feed never invents an advisory. Verified live 2026-07-02.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -115,6 +116,23 @@ _LANG_ALIASES = {
     "bn": "bengali", "বাংলা": "bengali", "ar": "arabic", "العربية": "arabic",
     "ur": "urdu", "اردو": "urdu", "fr": "french", "français": "french", "francais": "french",
     "pl": "polish", "yi": "yiddish", "it": "italian", "ja": "japanese", "pt": "portuguese",
+}
+
+# The official Notify NYC portal's language links and RecentMessages `lang` parameter.
+_RECENT_LANGUAGE_CODES = {
+    "arabic": "ar",
+    "bengali": "bn",
+    "chinese": "zh",
+    "english": "en",
+    "french": "fr",
+    "haitian creole": "ht",
+    "italian": "it",
+    "korean": "ko",
+    "polish": "pl",
+    "russian": "ru",
+    "spanish": "es",
+    "urdu": "ur",
+    "yiddish": "yi",
 }
 
 
@@ -297,6 +315,11 @@ def _resolve_language(requested: Optional[str], available: list[str]) -> Optiona
     return None
 
 
+def _recent_language_code(requested: Optional[str]) -> str:
+    language = _resolve_language(requested, list(_RECENT_LANGUAGE_CODES))
+    return _RECENT_LANGUAGE_CODES.get(language or DEFAULT_LANGUAGE, "en")
+
+
 async def _fetch_cap(client: httpx.AsyncClient, url: str) -> Optional[Advisory]:
     """Fetch one CAP XML and parse it. Raises on HTTP failure (gather tolerates it)."""
     response = await client.get(url, follow_redirects=True)
@@ -305,7 +328,7 @@ async def _fetch_cap(client: httpx.AsyncClient, url: str) -> Optional[Advisory]:
 
 
 def _advisory_key(advisory: Advisory) -> str:
-    """The dedupe / alert-identity key: the CAP identifier (language-independent), else headline+sent."""
+    """The dedupe key within one language feed: the CAP identifier, else headline plus sent time."""
     return advisory.guid or f"{advisory.headline}|{advisory.sent}"
 
 
@@ -329,13 +352,12 @@ async def fetch_advisories(
 ) -> AdvisoryFeed:
     """Fetch the Notify NYC feed and return an `AdvisoryFeed` (deduped), in `lang` where available.
 
-    GETs the RSS (following redirects), then fetches CAP XMLs CONCURRENTLY (tolerating individual
-    failures), parses each, and dedupes by CAP identifier (the alert id, which is language-stable).
-    The default (`lang=None` or English) fetches ONLY the English items, unchanged behavior. When a
-    non-English language is requested AND the feed carries it, we ALSO fetch those variants and
-    overlay them on the English base per alert: the requested language wins, English is the fallback
-    for any alert with no variant in that language (an official city translation, not a paraphrase).
-    Inject `client` to mock the HTTP calls offline.
+    GETs the RSS (following redirects), then fetches the requested language's CAP XMLs CONCURRENTLY
+    (tolerating individual failures), parses each, and dedupes by CAP identifier. The default
+    (`lang=None` or English) fetches only English. If the requested language is absent from the RSS,
+    the whole feed falls back to English. Notify NYC assigns different CAP identifiers and issue
+    times to translations, so mixing languages and attempting per-alert overlay can duplicate one
+    notice. Inject `client` to mock the HTTP calls offline.
 
     FAIL-SAFE: on any network/parse error, an empty body, or a feed we could not read a single
     advisory from, this returns `AdvisoryFeed(confirmed=False, advisories=[])`. `confirmed` is True
@@ -348,11 +370,10 @@ async def fetch_advisories(
         response = await client.get(RSS_URL, follow_redirects=True)
         response.raise_for_status()
         by_lang = _cap_urls_by_language(response.text)
-        english_urls = by_lang.get(DEFAULT_LANGUAGE, [])
         target = _resolve_language(lang, list(by_lang))
-        target_urls = by_lang.get(target, []) if (target and target != DEFAULT_LANGUAGE) else []
+        urls = by_lang.get(target or DEFAULT_LANGUAGE, [])
         results = await asyncio.gather(
-            *(_fetch_cap(client, url) for url in english_urls + target_urls),
+            *(_fetch_cap(client, url) for url in urls),
             return_exceptions=True,
         )
     except Exception:
@@ -361,14 +382,7 @@ async def fetch_advisories(
         if own_client:
             await client.aclose()
 
-    english_results = results[: len(english_urls)]
-    target_results = results[len(english_urls):]
-    advisories = _dedupe(english_results)
-    if target_urls:  # overlay the requested-language variants onto the English base, per alert
-        by_key = {_advisory_key(a): a for a in advisories}
-        for translated in _dedupe(target_results):
-            by_key[_advisory_key(translated)] = translated  # target wins; English stays the fallback
-        advisories = list(by_key.values())
+    advisories = _dedupe(results)
     # confirmed iff we read at least one real advisory: an empty body / all-failed CAPs / zero
     # parseable items all collapse to []  → confirmed=False → the caller fails safe.
     return AdvisoryFeed(confirmed=bool(advisories), advisories=advisories)
@@ -472,6 +486,10 @@ class RecentFeed:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_BARE_WEB_URL_RE = re.compile(
+    r"(?<![a-z0-9@:/.-])(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>()]*)?",
+    re.IGNORECASE,
+)
 _NYC_BOROUGHS = ("bronx", "brooklyn", "manhattan", "queens", "staten island")
 
 
@@ -486,7 +504,8 @@ def is_citywide_area(area: str) -> bool:
 def _strip_html(text: str) -> str:
     """Drop HTML tags (the feed wraps its translation link in an <a> element), keeping the visible
     text (including the plain URL) and collapsing the whitespace the tags leave behind."""
-    return re.sub(r"[ \t]+", " ", _TAG_RE.sub("", text or "")).strip()
+    cleaned = re.sub(r"[ \t]+", " ", _TAG_RE.sub("", text or "")).strip()
+    return _BARE_WEB_URL_RE.sub(lambda match: f"https://{match.group()}", cleaned)
 
 
 def _parse_pubdate(pubdate: str) -> str:
@@ -505,18 +524,24 @@ def _parse_recent_note(record: dict) -> Optional[RecentNote]:
     if not title and not body:
         return None
     issued_raw = (record.get("pubDate") or "").strip()
+    record_key = hashlib.sha256(
+        f"{issued_raw}\0{title}\0{body}".encode()
+    ).hexdigest()[:20]
     return RecentNote(
         title=title,
         body=body,
         issued=_parse_pubdate(issued_raw),
         issued_raw=issued_raw,
         source_url=RECENT_MESSAGES_URL,
-        guid=f"recent:{issued_raw}:{title}",
+        guid=f"recent:{record_key}",
         provider_record=dict(record),
     )
 
 
-async def fetch_recent_advisories(client: Optional[httpx.AsyncClient] = None) -> RecentFeed:
+async def fetch_recent_advisories(
+    client: Optional[httpx.AsyncClient] = None,
+    lang: Optional[str] = None,
+) -> RecentFeed:
     """Fetch the live Notify NYC "recent messages" endpoint (the city portal's own real-time source).
 
     GETs RECENT_MESSAGES_URL, parses the JSON array of {pubDate, title, description}, cleans each into
@@ -529,7 +554,11 @@ async def fetch_recent_advisories(client: Optional[httpx.AsyncClient] = None) ->
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
     try:
-        response = await client.get(RECENT_MESSAGES_URL, follow_redirects=True)
+        response = await client.get(
+            RECENT_MESSAGES_URL,
+            params={"lang": _recent_language_code(lang)},
+            follow_redirects=True,
+        )
         response.raise_for_status()
         records = response.json()
     except Exception:

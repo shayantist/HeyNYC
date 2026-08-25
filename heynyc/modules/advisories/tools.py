@@ -29,6 +29,8 @@ from zoneinfo import ZoneInfo
 from heynyc.core.citations import CitationRegistry, data_provenance
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.notify_nyc import (
+    RECENT_MESSAGES_URL,
+    RSS_URL,
     Advisory,
     RecentFeed,
     RecentNote,
@@ -65,11 +67,58 @@ NO_ACTIVE = (
 COULD_NOT_CONFIRM = (
     "We could not reach or read the Notify NYC feed just now, so we could NOT confirm the current "
     "advisories. Do NOT tell the user the city is clear or that nothing is active, and do NOT state "
-    "an all-clear. Tell them plainly that we could not confirm active advisories at the moment and "
-    "that an emergency may still be in effect, then send them to the official live source, Notify NYC "
-    f"at {NOTIFY_NYC_URL}, and to 311 for current advisories. For a life-threatening emergency, tell "
+    "an all-clear. Tell them plainly that the current advisory status is unknown, then send them to "
+    f"the official live source, Notify NYC at {NOTIFY_NYC_URL}, and to 311 for current advisories. "
+    "For a life-threatening emergency, tell "
     "them to call 911 right away. Offer to check again."
 )
+
+
+def _cap_notice_id(advisory: Advisory) -> str:
+    return f"cap:{advisory.guid}"
+
+
+def _selection_receipt_citation(
+    ctx: ToolContext,
+    query: str,
+    selected_notice_ids: list[str],
+    *,
+    cap_confirmed: bool,
+    recent_confirmed: bool,
+    cap_records: int,
+    recent_records: int,
+    observed_at: datetime,
+) -> str:
+    snapshot = {
+        "observed_at": observed_at.isoformat(),
+        "query": query,
+        "selected_notice_ids": selected_notice_ids,
+        "sources": [
+            {"url": RSS_URL, "confirmed": cap_confirmed},
+            {"url": RECENT_MESSAGES_URL, "confirmed": recent_confirmed},
+        ],
+        "counts": {
+            "cap_records": cap_records,
+            "recent_records": recent_records,
+            "selected_records": len(selected_notice_ids),
+        },
+    }
+    provenance = data_provenance(
+        snapshot,
+        record_id=f"notify-nyc-selection-{observed_at.isoformat()}",
+        field_pointer="/",
+        derivation=snapshot,
+    )
+    return ctx.citations.register(
+        NOTIFY_NYC_URL,
+        snippet=(
+            f"No current Notify NYC notice was selected for {query or 'the resident request'}."
+        ),
+        title="Notify NYC current-notice selection",
+        kind="DATA",
+        valid_as_of=observed_at.isoformat(),
+        provenance=provenance,
+    )
 
 
 def _advisory_snapshot(advisory: Advisory) -> dict:
@@ -202,11 +251,9 @@ def _recent_awareness(
         return ""
     lines = [
         "Notify NYC notifications from the last seven days (NYC Emergency Management), full "
-        "text below. They are "
-        "exact cached messages. When citation markers are present, they are registered DATA "
-        "evidence for the message text and issue time; call `check_notify_nyc` when the resident "
-        "asks for a refresh, CAP severity or expiry, or more advisory detail. Judge each notice by "
-        "its meaning:",
+        "text below. They are exact cached messages and a relevance hint, not answer evidence. "
+        "Before mentioning any notice, call `check_notify_nyc` so the current matching source is "
+        "registered. Judge each cached notice by its meaning:",
         "- A notice about immediate personal safety: surface it proactively even when you do not "
         "know where the resident is — state its area and let them judge (\"if you're in the "
         "Bronx...\"). Never withhold a safety notice because the resident hasn't shared a location.",
@@ -286,8 +333,11 @@ async def current_awareness(
 def _render_cap(ctx: ToolContext, advisories: list[Advisory], near: str) -> str:
     """The structured CAP report: each active advisory with severity + 'in effect until', cited."""
     lines = [
-        "Active NYC advisories from the Notify NYC feed (NYC Emergency Management), report ONLY "
-        "these, cite each, and state each one's 'in effect until' time:",
+        "Active NYC advisories from the Notify NYC feed (NYC Emergency Management). Use only "
+        "notices relevant to the resident's question. For a broad advisory question, report these "
+        "notices, cite each one, and state its 'in effect until' time. For a question about one "
+        "alert type, do not mention or cite unrelated notices. If none match, say the feed did not "
+        f"return a matching notice and provide {NOTIFY_NYC_URL} for a direct check:",
     ]
     if near:
         lines.append(
@@ -317,8 +367,10 @@ def _render_recent(ctx: ToolContext, notes: list[RecentNote], near: str) -> str:
         "The Notify NYC CAP feed was empty or unreachable, so these are the CITY'S OWN live Notify "
         f"NYC notifications (newest first) from {NOTIFY_NYC_URL}. This live source gives "
         "an ISSUE TIME, not a machine-readable 'in effect until', so state each notification's issue "
-        "time and let the user judge how current it is. Report ONLY these, cite each, and do NOT "
-        "invent a severity or an expiry:",
+        "time and let the user judge how current it is. Use only notices relevant to the resident's "
+        "question. For a question about one alert type, do not mention or cite unrelated notices. "
+        "If none match, say the feed did not return a matching notice and provide the Notify NYC "
+        "URL above for a direct check. Do NOT invent a severity or an expiry:",
     ]
     if near:
         lines.append(
@@ -369,6 +421,67 @@ def _norm_title(title: str) -> str:
     return (title or "").strip().casefold()
 
 
+async def _current_sources(
+    ctx: ToolContext,
+    *,
+    now: datetime,
+    lang: str | None,
+):
+    return await asyncio.gather(
+        active_advisories(ctx.http, now=now, lang=lang),
+        fetch_recent_advisories(ctx.http, lang=lang),
+    )
+
+
+def _candidate_listing(
+    advisories: list[Advisory],
+    notes: list[RecentNote],
+) -> str:
+    lines = [
+        "Current Notify NYC candidates. These are source records for semantic selection, not "
+        "answer citations. Select by meaning, then call `check_notify_nyc` with only the relevant "
+        "notice_ids. Call it with an empty notice_ids list when none match:"
+    ]
+    for advisory in advisories:
+        lines.append(
+            f"- {advisory.headline or advisory.event or 'NYC advisory'} "
+            f"(notice_id={_cap_notice_id(advisory)})\n"
+            f"  Event: {advisory.event or 'unknown'}; category: "
+            f"{advisory.category or 'unknown'}; sent: {advisory.sent or 'unknown'}; expires: "
+            f"{advisory.expires or 'unknown'}; area: {advisory.area_desc or 'unknown'}"
+        )
+        if advisory.description:
+            lines.append(f"  {advisory.description}")
+        if advisory.instruction:
+            lines.append(f"  Instruction: {advisory.instruction}")
+    for note in notes:
+        lines.append(
+            f"- {note.title or 'Notify NYC notification'} (notice_id={note.guid})\n"
+            f"  Issued: {note.issued_raw or 'unknown'}"
+        )
+        if note.body:
+            lines.append(f"  {note.body}")
+    return "\n".join(lines)
+
+
+async def _list_handler(args: dict, ctx: ToolContext) -> str:
+    lang = (args.get("lang") or "").strip() or None
+    now = datetime.now(timezone.utc)
+    feed, recent = await _current_sources(ctx, now=now, lang=lang)
+    cap_titles = {
+        _norm_title(advisory.headline or advisory.event)
+        for advisory in feed.advisories
+    }
+    recent_notes = [
+        note for note in recent.notes if _norm_title(note.title) not in cap_titles
+    ]
+    if feed.advisories or recent_notes:
+        return _candidate_listing(feed.advisories, recent_notes)
+    if feed.confirmed:
+        return NO_ACTIVE
+    return COULD_NOT_CONFIRM
+
+
 def _render_recent_delta(
     ctx: ToolContext,
     notes: list[RecentNote],
@@ -403,15 +516,58 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     #   3. Fail safe: if NEITHER source can be confirmed, we NEVER say "no advisories"; we say we
     #      could not confirm and route to the official live source + 311 (+ 911 for a life-threat).
     # `lang` surfaces the official city translation of a CAP advisory where the feed carries it.
-    feed, recent = await asyncio.gather(
-        active_advisories(ctx.http, now=now, lang=lang),
-        fetch_recent_advisories(ctx.http),
-    )
+    feed, recent = await _current_sources(ctx, now=now, lang=lang)
     # F061: no area filter that parses notice prose — the feed spells areas however it likes
     # ("BK/SI/MN/QN", "parts of NYC"), so every active notice returns and the model judges
     # relevance from the full cited text.
-    cap_advisories = feed.advisories
-    recent_notes = recent.notes
+    all_cap_advisories = feed.advisories
+    all_recent_notes = recent.notes
+    cap_advisories = all_cap_advisories
+    recent_notes = all_recent_notes
+    if "notice_ids" in args:
+        selected_notice_ids = list(dict.fromkeys(args.get("notice_ids") or ()))
+        query = (args.get("query") or "").strip()
+        if not selected_notice_ids:
+            cite = _selection_receipt_citation(
+                ctx,
+                query,
+                selected_notice_ids,
+                cap_confirmed=feed.confirmed,
+                recent_confirmed=recent.confirmed,
+                cap_records=len(all_cap_advisories),
+                recent_records=len(all_recent_notes),
+                observed_at=now,
+            )
+            return (
+                f"No current notice was selected for {query or 'the resident request'} "
+                f"{{cite:{cite}}}. This does not establish a citywide all-clear. Check Notify NYC "
+                "using the attached Notify NYC source link or call 311 for confirmation."
+            )
+        selected = set(selected_notice_ids)
+        cap_advisories = [
+            advisory for advisory in all_cap_advisories
+            if _cap_notice_id(advisory) in selected
+        ]
+        recent_notes = [note for note in all_recent_notes if note.guid in selected]
+        found = {
+            *(_cap_notice_id(advisory) for advisory in cap_advisories),
+            *(note.guid for note in recent_notes),
+        }
+        if not found:
+            cite = _selection_receipt_citation(
+                ctx,
+                query,
+                selected_notice_ids,
+                cap_confirmed=feed.confirmed,
+                recent_confirmed=recent.confirmed,
+                cap_records=len(all_cap_advisories),
+                recent_records=len(all_recent_notes),
+                observed_at=now,
+            )
+            return (
+                f"The selected Notify NYC notice IDs were no longer present {{cite:{cite}}}. "
+                f"Check {NOTIFY_NYC_URL} directly or call 311 for confirmation."
+            )
 
     if feed.confirmed and cap_advisories:
         cap_titles = {
@@ -504,7 +660,25 @@ def get_tools() -> list[Tool]:
                         "description": "Optional language NAME for the advisory text (e.g. 'Spanish', "
                         "'Chinese'), pass the language the user is writing in. The feed carries "
                         "official city translations for ~12 languages; defaults to English, and "
-                        "falls back to English for any alert with no variant in that language.",
+                        "uses the English feed only when the requested language is absent.",
+                    },
+                    "notice_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "description": "One stable notice ID from `list_notify_nyc`.",
+                        },
+                        "description": "Stable notice IDs returned by `list_notify_nyc`. For a "
+                        "specific-alert question, pass only the semantically relevant IDs, or an "
+                        "empty list when none match. Omit only for a broad request for all current "
+                        "advisories.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "The resident's requested alert topic, in their language. "
+                        "Required with notice_ids so an empty or changed selection has an honest "
+                        "search receipt. This documents the selection and does not perform string "
+                        "matching.",
                     },
                     "full_text": {
                         "type": "boolean",
@@ -516,5 +690,28 @@ def get_tools() -> list[Tool]:
             },
             handler=_handler,
             open_world=True,  # hits the live Notify NYC / Everbridge feed
-        )
+        ),
+        Tool(
+            name="list_notify_nyc",
+            description=(
+                "List the compact current Notify NYC candidates, with stable notice IDs and "
+                "source text but no answer citations. Use this first for a question about one "
+                "kind of alert, select relevant records by meaning, then call check_notify_nyc "
+                "with those notice_ids. Pass `lang` so Notify NYC supplies its official "
+                "translation where available."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "lang": {
+                        "type": "string",
+                        "description": "Optional language NAME or code matching the resident's "
+                        "language. Uses that official language feed when present, or the English "
+                        "feed when the requested language is absent.",
+                    },
+                },
+            },
+            handler=_list_handler,
+            open_world=True,
+        ),
     ]

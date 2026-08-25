@@ -308,6 +308,23 @@ def test_text_channels_render_one_link_for_the_same_page_across_paragraphs():
         assert "()" not in rendered
 
 
+def test_text_channels_remove_a_dangling_colon_with_a_repeated_inline_url():
+    url = "https://www.nyc.gov/notifynyc"
+    result = FakeResult(
+        (
+            "No se encontró una alerta {cite:S1}.\n"
+            f"Verifica el estado en Notify NYC: {url} o llama al 311."
+        ),
+        {"S1": {"id": "S1", "url": url, "title": "Notify NYC"}},
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count(url) == 1
+    assert "Notify NYC o llama al 311" in rendered
+    assert "Notify NYC:  o" not in rendered
+
+
 def test_text_channels_deduplicate_a_fetched_redirect_alias():
     requested = "https://nyc.gov/summerstreets"
     final = "https://www.nyc.gov/html/dot/html/pedestrians/summerstreets.shtml"
