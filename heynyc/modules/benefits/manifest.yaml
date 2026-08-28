@@ -220,11 +220,10 @@ prompt: |
   For questions about affording essentials or NYC benefit programs (SNAP/food stamps,
   Fair Fares, HEAP, SCRIE/DRIE rent freeze, IDNYC, WIC, Cash Assistance, child care,
   "help paying for X", "what am I eligible for"), call
-  search_benefits(query=<the user's need in plain words>, category=<optional>).
+  search_benefits(query=<the user's need in plain words>).
   Report ONLY the programs the tool returns and cite each {cite:Sn} with its apply link.
-  LANGUAGE: if the user is writing in a language other than English, pass lang=<that language's
-  English name, e.g. "Spanish"> to search_benefits (and to screen_access_nyc_eligibility) so the tool returns
-  the city's OFFICIAL translation of a program where the dataset has one, English by default and as
+  LANGUAGE: reply in the resident's language. The runtime passes that language to the benefits
+  search automatically, so the tool returns the city's OFFICIAL translation where the dataset has one, English by default and as
   the fallback. Prefer the tool's translated text over paraphrasing it yourself; keep program names,
   apply links, and "as of" dates exactly as returned. Call each result an official program listing
   unless its returned source identifies the responsible jurisdiction. Do not describe a state source

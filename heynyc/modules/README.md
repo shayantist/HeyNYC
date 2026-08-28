@@ -92,7 +92,7 @@ prompt: |                         # operation choice, source boundaries, and hon
 eval: eval.yaml                   # OPTIONAL but recommended
 ```
 
-Everything except `name` is optional. A module with just `name`, `description`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group known domains by trust so `web_search` can rank and label them) and a **`topics/`** folder for submodules. `authoritative` is valid for any module. The `editorial` and `community` tiers are only for explicitly low-stakes modules with `official_only: false`; the manifest validator rejects them otherwise. See `modules/events/` for both.
+Everything except `name` is optional. A module with just `name`, `description`, `seeds`, and `prompt` is a perfectly good info module. Two more optional fields exist for richer modules: **`source_tiers`** (group known domains by trust so `web_search` can rank, label, and prefer them) and a **`topics/`** folder for submodules. Source tiers describe evidence; they do not decide claim risk. The runtime's current-turn high-stakes decision applies stricter evidence rules when needed. See `modules/events/` for both.
 
 ### Finding a dataset + its column names (for "nearest X")
 1. Go to <https://data.cityofnewyork.us> and search (e.g. "senior centers").
@@ -110,8 +110,8 @@ You usually don't have to write the tools, but point the module at these shared 
   Enabled by adding a `datasets:` entry. Used for "where's the nearest …".
 - **`web_search(query)`**, searches the live web for fresh or long-tail information. A module's
   known domains guide trust and ranking without blocking discovery from unlisted sources. For an
-  explicitly low-stakes module, an unverified excerpt may support only the claim it states and
-  remains labeled unverified. High-stakes modules require authoritative evidence from a sufficient
+  low-stakes turn, an unverified excerpt may support only the claim it states and remains labeled
+  unverified. High-stakes turns require authoritative evidence from a sufficient
   direct excerpt or fetched page
   ([source trust grading](../core/tools/web_search.py)).
 - **`web_fetch(url, query)`**, opens one known result page when its search excerpt does not contain
@@ -173,8 +173,7 @@ class Result(BaseModel):
     name: str
     source_url: str
 
-async def _handler(args: dict, ctx: ToolContext) -> Result:
-    query = Query.model_validate(args)
+async def _handler(query: Query, ctx: ToolContext) -> Result:
     # ctx.citations.register(url, snippet=..., title=..., kind="DATA"|"DOC"|"WEB")
     # Fetch and normalize the real source using query.near.
     ...
@@ -183,7 +182,7 @@ def get_tools() -> list[Tool]:
     return [Tool(
         name="find_example",
         description="Find an example near a resident-supplied NYC location.",
-        parameters=Query.model_json_schema(),
+        input_type=Query,
         return_type=Result,
         handler=_handler,
     )]
