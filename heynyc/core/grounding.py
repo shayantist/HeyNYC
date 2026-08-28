@@ -27,6 +27,7 @@ a name mismatch is only ever SOFT (informational).
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -67,6 +68,19 @@ _FULL_DATE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_DATE_RANGE_RE = re.compile(
+    r"\b(?P<month>[^\W\d_]{3,20})\.?\s+"
+    r"(?P<start>\d{1,2})(?:st|nd|rd|th)?\s*(?:-|\N{EN DASH}|\bto\b|\bthrough\b)\s*"
+    r"(?P<end>\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(?P<year>\d{4}))?\b",
+    re.IGNORECASE,
+)
+_DAY_FIRST_DATE_RANGE_RE = re.compile(
+    r"\b(?P<start>\d{1,2})\s*(?:-|\N{EN DASH})\s*(?P<end>\d{1,2})\s+"
+    r"(?:[^\W\d_]{1,4}\s+)?(?P<month>[^\W\d_]{3,20})\.?"
+    r"(?:,?\s+(?:[^\W\d_]{1,4}\s+)?(?P<year>\d{4}))?\b",
+    re.IGNORECASE,
+)
+_LIST_ITEM_RE = re.compile(r"^\s*(?:>\s*)?(?:[-*]|\d+[.)])\s+")
 _URL_RE = re.compile(r"https?://[^\s)>]+")
 _MARKDOWN_LINK_ONLY_RE = re.compile(r"(?:\[[^\]\n]+\]\([^\n]+\)\s*)+")
 _COORDINATE_PAIR_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
@@ -218,7 +232,7 @@ def citation_evidence(c: dict) -> Optional[str]:
     (DOC/WEB carry only snippet + title). None if the source has none, then it cannot be verified."""
     parts: list[str] = []
     prov = c.get("provenance") or {}
-    for key in ("snapshot", "response"):
+    for key in ("snapshot", "response", "structured_data"):
         if prov.get(key):
             parts.append(_stringify(prov[key]))
     derivation = prov.get("derivation") or {}
@@ -276,7 +290,11 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
                 out.append((block, bare, []))
             continue
         tail = re.search(r"(?:\s*\{cite:S\d+\}\s*)+$", block)
-        if tail and block_cited == _CITE_REF_RE.findall(tail.group()):
+        if (
+            tail
+            and block_cited == _CITE_REF_RE.findall(tail.group())
+            and not any(_LIST_ITEM_RE.match(line) for line in block.splitlines())
+        ):
             cited = list(dict.fromkeys(block_cited))
             claims = _split_claims(block[:tail.start()])
             if claims:
@@ -298,30 +316,33 @@ def _cited_claims(text: str) -> list[tuple[str, str, list[str]]]:
                     for claim in _split_claims(original)
                 )
             continue
-        for seg in _split_claims(block):
-            cited = _CITE_REF_RE.findall(seg)
-            bare = _without_citations(seg)
-            if (
-                cited
-                and _MARKDOWN_LINK_ONLY_RE.fullmatch(bare)
-                and len(out) > block_start
-                and not out[-1][2]
-            ):
-                original, prev_bare, prev_cited = out[-1]
-                out[-1] = (
-                    f"{original} {seg}",
-                    prev_bare,
-                    prev_cited + [cid for cid in cited if cid not in prev_cited],
-                )
-            elif cited and not bare and out:
-                original, prev_bare, prev_cited = out[-1]
-                out[-1] = (
-                    original,
-                    prev_bare,
-                    prev_cited + [cid for cid in cited if cid not in prev_cited],
-                )
-            elif bare:
-                out.append((seg, bare, cited))
+        for line in block.splitlines():
+            line_cited = list(dict.fromkeys(_CITE_REF_RE.findall(line)))
+            inherited = line_cited if _LIST_ITEM_RE.match(line) else []
+            for seg in _split_claims(line):
+                cited = _CITE_REF_RE.findall(seg) or inherited
+                bare = _without_citations(seg)
+                if (
+                    cited
+                    and _MARKDOWN_LINK_ONLY_RE.fullmatch(bare)
+                    and len(out) > block_start
+                    and not out[-1][2]
+                ):
+                    original, prev_bare, prev_cited = out[-1]
+                    out[-1] = (
+                        f"{original} {seg}",
+                        prev_bare,
+                        prev_cited + [cid for cid in cited if cid not in prev_cited],
+                    )
+                elif cited and not bare and out:
+                    original, prev_bare, prev_cited = out[-1]
+                    out[-1] = (
+                        original,
+                        prev_bare,
+                        prev_cited + [cid for cid in cited if cid not in prev_cited],
+                    )
+                elif bare:
+                    out.append((seg, bare, cited))
     return [(original, bare, cited) for original, bare, cited in out if cited]
 
 
@@ -372,6 +393,28 @@ def _salient_tokens(claim: str) -> list[dict]:
             "text": m.group().strip(),
             "digits": m.group(1),
             "unit_category": _unit_category(m.group(2)),
+        })
+    day_first_ranges = list(_DAY_FIRST_DATE_RANGE_RE.finditer(prose))
+    for m in _DATE_RANGE_RE.finditer(prose):
+        if any(m.start() < other.end() and other.start() < m.end() for other in day_first_ranges):
+            continue
+        tokens.append({
+            "kind": "date_range",
+            "text": m.group().strip(),
+            "month": _norm(m.group("month")),
+            "days": [str(int(m.group("start"))), str(int(m.group("end")))],
+            "year": m.group("year") or "",
+        })
+    for m in day_first_ranges:
+        tokens.append({
+            "kind": "date_range",
+            "text": m.group().strip(),
+            "month": _norm(m.group("month")),
+            "days": [
+                str(int(_fold_digits(m.group("start")))),
+                str(int(_fold_digits(m.group("end")))),
+            ],
+            "year": _fold_digits(m.group("year") or ""),
         })
     for m in _FULL_DATE_RE.finditer(prose):
         parsed = _parsed_date(m.group())
@@ -428,6 +471,34 @@ def _money_value(text: str) -> Optional[Decimal]:
         return Decimal(text.replace("$", "").replace(",", "").strip())
     except InvalidOperation:
         return None
+
+
+def _schema_money_values(text: str) -> set[Decimal]:
+    """Read USD prices from complete JSON objects embedded in provider evidence."""
+    values: set[Decimal] = set()
+    decoder = json.JSONDecoder()
+
+    def collect(value) -> None:
+        if isinstance(value, dict):
+            if str(value.get("priceCurrency") or "").casefold() == "usd":
+                for key in ("price", "lowPrice", "highPrice"):
+                    if key in value and (parsed := _money_value(str(value[key]))) is not None:
+                        values.add(parsed)
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    for index, character in enumerate(text):
+        if character not in "[{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        collect(value)
+    return values
 
 
 def _unit_category(unit: str) -> str:
@@ -514,7 +585,7 @@ def _token_matches(
             if allow_bare_money
             else set()
         )
-        return value is not None and value in explicit | bare
+        return value is not None and value in explicit | bare | _schema_money_values(blob)
     if kind == "unit_number":
         return any(
             match.group(1) == tok["digits"]
@@ -555,12 +626,51 @@ def _token_matches(
                 or f"{month[:3]} {parsed.day}" in blob_norm
             )
         )
+    if kind == "date_range":
+        words = set(blob_norm.split())
+        month = tok["month"]
+        month_number = _MONTH_NUMBERS.get(month[:3])
+        month_aliases = {month, month[:3]}
+        if month_number is not None:
+            month_aliases.add((
+                "january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november", "december",
+            )[month_number - 1])
+        if month[:3] == "sep":
+            month_aliases.add("sept")
+        folded = _fold_digits(blob)
+        iso_parts = [
+            tuple(map(int, match.groups()))
+            for match in re.finditer(
+                r"(?<!\d)((?:19|20)\d{2})-(\d{2})-(\d{2})(?!\d)", folded
+            )
+        ]
+        iso_dates = any(
+            (not tok["year"] or year == int(tok["year"]))
+            and (month_number is None or source_month == month_number)
+            and all(
+                any(
+                    candidate_year == year
+                    and candidate_month == source_month
+                    and candidate_day == int(day)
+                    for candidate_year, candidate_month, candidate_day in iso_parts
+                )
+                for day in tok["days"]
+            )
+            for year, source_month, _day in iso_parts
+        )
+        if not (month_aliases & words) and not iso_dates:
+            return False
+        values = [*tok["days"], *([tok["year"]] if tok["year"] else [])]
+        return all(re.search(rf"(?<!\d){re.escape(value)}(?!\d)", folded) for value in values)
     if kind == "address":
         if any(nd not in blob_digits for nd in tok["nums"]):
             return False
         return bool(tok["phrase"] and tok["phrase"] in blob_norm) or _mostly_present(tok["words"], blob_norm)
     if kind == "street_ordinal":
         number = _digits(tok["text"])
+        if tok["phrase"] in blob_norm.split():
+            return True
         source_ordinals = [
             _norm(match.group())
             for match in _STREET_ORDINAL_RE.finditer(blob)
@@ -602,12 +712,14 @@ def _locate(tok: dict, cid: str, c: dict) -> str:
     if tok["kind"] == "map_coordinates":
         return f"{cid}#/provenance"
     use_digits = tok["kind"] in (
-        "phone", "service_number", "money", "unit_number", "date", "address"
+        "phone", "service_number", "money", "unit_number", "date", "date_range", "address"
     )
     if tok["kind"] == "address":
         needle = tok["nums"][0] if tok["nums"] else ""
     elif tok["kind"] == "date":
         needle = tok["numbers"][-1] if tok["numbers"] else ""
+    elif tok["kind"] == "date_range":
+        needle = tok["days"][0]
     else:
         needle = tok["digits"] if use_digits else tok.get("phrase", "")
     snapshot = (c.get("provenance") or {}).get("snapshot")
@@ -699,7 +811,7 @@ def check_grounding(
     checked = 0
     nli_checked = 0
     current_date = current_date or datetime.now(ZoneInfo("America/New_York")).date()
-    system_dates = {current_date, *resident_calendar_dates(query, current_date)}
+    resident_dates = resident_calendar_dates(query, current_date)
     for block in re.split(r"\n\s*\n", text):
         cited = list(dict.fromkeys(_CITE_REF_RE.findall(block)))
         if not cited:
@@ -769,7 +881,13 @@ def check_grounding(
             hit = (
                 "system-date"
                 if tok["kind"] == "date"
-                and tok["parsed"] in system_dates
+                and (
+                    tok["parsed"] in resident_dates
+                    or (
+                        tok["parsed"] == current_date
+                        and re.search(r"\b(?:today|as of|current date)\b", bare_claim, re.I)
+                    )
+                )
                 else None
             )
             for cid, blob in blobs.items():

@@ -82,7 +82,6 @@ class ServiceModule(BaseModel):
     datasets: list[DatasetBinding] = Field(default_factory=list)
     official_link: str = ""  # public service link, independent from RAG index seeds
     seeds: list[str] = Field(default_factory=list)
-    event_calendar_templates: list[str] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)
     prompt: str = ""  # capability blurb injected into the system prompt
     # Shared tools kept visible after this module capability loads. Empty means no narrowing.
@@ -92,34 +91,12 @@ class ServiceModule(BaseModel):
     # Trust tiers for web_search ranking: {tier: [domain, ...]} where tier is one of
     # authoritative | editorial | community. Aggregated by registry.source_tiers().
     source_tiers: dict[str, list[str]] = Field(default_factory=dict)
-    # RULED 2026-07-18, stakes-tiered retrieval: official modules (the DEFAULT) answer from
-    # official sources only, because being wrong costs someone a benefit, a home, or their
-    # safety. A module opts out (`official_only: false`) only when its answers are lifestyle
-    # discovery, such as events atmosphere, where-to-watch, or fun, where an editorial pool
-    # matches the stakes. Enforced at load: no opt-out, no editorial/community tiers.
-    official_only: bool = True
-    # Submodule hint (events topics): the Ticketmaster `keyword` the agent should pass to
-    # find_nyc_events for this topic. Advisory metadata; the prompt blurb drives the call.
-    ticketmaster_keyword: Optional[str] = None
     # Module-owned high-stakes situations for the scope preflight checklist.
     situations: list[SituationHint] = Field(default_factory=list)
 
     # Populated by the loader, not from YAML.
     path: Optional[Path] = Field(default=None, exclude=True)
     parent: Optional[str] = Field(default=None, exclude=True)  # set on submodules to the parent module name
-
-    @model_validator(mode="after")
-    def _official_only_blocks_non_official_tiers(self) -> "ServiceModule":
-        if self.official_only:
-            declared = set(self.source_tiers) & {"editorial", "community", "news"}
-            if declared:
-                raise ValueError(
-                    f"module {self.name!r} declares {sorted(declared)} source tiers but is "
-                    "official_only (the default); set `official_only: false` in its manifest "
-                    "only if this module answers lifestyle discovery, never benefits, housing, "
-                    "health, or safety"
-                )
-        return self
 
     @classmethod
     def from_manifest(cls, manifest_path: Path) -> "ServiceModule":

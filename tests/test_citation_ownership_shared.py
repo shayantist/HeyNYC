@@ -114,7 +114,6 @@ async def _run(
             "guidance": Tool(
                 name="guidance",
                 description="Get official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },

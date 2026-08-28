@@ -113,17 +113,6 @@ FORCED_TOOL_FALLBACK = (
     "Please try again, or call 311 for help."
 )
 
-EVENT_CONTEXT_ABSTAIN_FALLBACK = (
-    "I found event sources, but I couldn't turn them into a reliable, directly linked shortlist. "
-    "Tell me a borough or a type like music, sports, family, or museums and I'll try a narrower search."
-)
-
-EVENT_PREPARATION_ABSTAIN_FALLBACK = (
-    "I found current event sources, but I couldn't confirm which event you mean or turn them "
-    "into a reliable plan. Tell me which event you're going to, or its venue or team, and I'll "
-    "pull the current details."
-)
-
 # The scope preflight is a CHECKLIST, not a gate (RULED 2026-07-21, the denial redesign / HYBRID):
 # it no longer returns an allow/deny verdict and no longer swaps the response. Every turn reaches the
 # answer model, which writes the reply carried by the ambient values in the standing prompt. What the
@@ -1011,19 +1000,31 @@ def _required_scope_feedback(
     return None
 
 
+def _usable_citation_id(
+    citations: dict[str, dict],
+    url: str,
+    *,
+    prefix: bool = False,
+) -> Optional[str]:
+    """Find retrieved citation evidence, never an unavailable or discovery-only URL."""
+    for citation_id, citation in citations.items():
+        citation_url = str(citation.get("url") or "")
+        if (citation_url.startswith(url) if prefix else citation_url == url):
+            grade = (citation.get("provenance") or {}).get("evidence_grade")
+            if citation.get("snippet") and grade not in {"unavailable", "discovery"}:
+                return citation_id
+    return None
+
+
 def _section8_grounded_backstop(user_message: str, citations: dict[str, dict]) -> Optional[str]:
     """Return a narrow legal-status summary only when both exact live sources were captured."""
     if "section 8" not in _routing_text(user_message).lower():
         return None
-    city_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nyc.gov/site/cchr/media/source-of-income.page"),
-        None,
+    city_id = _usable_citation_id(
+        citations, "https://www.nyc.gov/site/cchr/media/source-of-income.page",
     )
-    court_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nycourts.gov/reporter/3dseries/2026/2026_01253.htm"),
-        None,
+    court_id = _usable_citation_id(
+        citations, "https://www.nycourts.gov/reporter/3dseries/2026/2026_01253.htm",
     )
     if not city_id or not court_id:
         return None
@@ -1059,15 +1060,10 @@ def _rent_stabilization_grounded_backstop(
     routed = _routing_text(user_message).lower()
     if "rent stabil" not in routed or not ("ended" in routed or "as much" in routed):
         return None
-    city_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://portal.311.nyc.gov/article/?kanumber=KA-03296"),
-        None,
+    city_id = _usable_citation_id(
+        citations, "https://portal.311.nyc.gov/article/?kanumber=KA-03296",
     )
-    hcr_id = next(
-        (cid for cid, cite in citations.items() if cite.get("url") == "https://hcr.ny.gov/rent-control"),
-        None,
-    )
+    hcr_id = _usable_citation_id(citations, "https://hcr.ny.gov/rent-control")
     if not city_id or not hcr_id:
         return None
     return (
@@ -1082,31 +1078,22 @@ def _public_charge_grounded_backstop(
     user_message: str, citations: dict[str, dict],
 ) -> Optional[str]:
     """Return the current public-charge floor only with both exact MOIA sources captured."""
-    rule_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page"),
-        None,
+    rule_id = _usable_citation_id(
+        citations, "https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page",
     )
-    help_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == (
-             "https://www.nyc.gov/site/immigrants/legal-resources/"
-             "moia-immigration-legal-support-hotline.page"
-         )),
-        None,
+    help_id = _usable_citation_id(
+        citations,
+        "https://www.nyc.gov/site/immigrants/legal-resources/"
+        "moia-immigration-legal-support-hotline.page",
     )
     if not rule_id or not help_id:
         return None
     routed = _routing_text(user_message)
-    snap_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml"),
-        None,
+    snap_id = _usable_citation_id(
+        citations, "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml",
     )
-    health_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nyc.gov/site/doh/health/health-topics/immigrant-health.page"),
-        None,
+    health_id = _usable_citation_id(
+        citations, "https://www.nyc.gov/site/doh/health/health-topics/immigrant-health.page",
     )
     citizen_children = bool(re.search(
         r"\b(?:citizen children|hijos?\b.{0,30}\bciudadanos?)\b", routed, re.I,
@@ -1168,20 +1155,12 @@ def _cashless_grounded_backstop(
     user_message: str, citations: dict[str, dict],
 ) -> Optional[str]:
     """Return the cash-acceptance floor only when the live rule and enacted law were captured."""
-    rule_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == (
-             "https://www.nyc.gov/site/dca/consumers/"
-             "Prohibition-of-Cashless-Establishments.page"
-         )),
-        None,
+    rule_id = _usable_citation_id(
+        citations,
+        "https://www.nyc.gov/site/dca/consumers/Prohibition-of-Cashless-Establishments.page",
     )
-    law_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url", "").startswith(
-             "https://legistar.council.nyc.gov/LegislationDetail.aspx?"
-         )),
-        None,
+    law_id = _usable_citation_id(
+        citations, "https://legistar.council.nyc.gov/LegislationDetail.aspx?", prefix=True,
     )
     if not rule_id or not law_id:
         return None
@@ -1206,20 +1185,14 @@ def _school_immigration_grounded_backstop(
     user_message: str, citations: dict[str, dict],
 ) -> Optional[str]:
     """Return NYCPS enrollment rights only when both current school sources were captured."""
-    family_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == (
-             "https://www.schools.nyc.gov/school-life/school-environment/immigrant-families"
-         )),
-        None,
+    family_id = _usable_citation_id(
+        citations,
+        "https://www.schools.nyc.gov/school-life/school-environment/immigrant-families",
     )
-    rights_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == (
-             "https://www.schools.nyc.gov/learning/multilingual-learners/"
-             "bill-of-rights-for-parents-of-english-language-learners"
-         )),
-        None,
+    rights_id = _usable_citation_id(
+        citations,
+        "https://www.schools.nyc.gov/learning/multilingual-learners/"
+        "bill-of-rights-for-parents-of-english-language-learners",
     )
     if not family_id or not rights_id:
         return None
@@ -1246,10 +1219,8 @@ def _benefits_denial_grounded_backstop(
     user_message: str, citations: dict[str, dict],
 ) -> Optional[str]:
     """Keep an unclear denial recoverable without inventing a program-specific appeal rule."""
-    claims_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nyc.gov/site/hra/about/claims-collections.page"),
-        None,
+    claims_id = _usable_citation_id(
+        citations, "https://www.nyc.gov/site/hra/about/claims-collections.page",
     )
     if claims_id and _BENEFITS_OVERPAYMENT_RE.search(_routing_text(user_message)):
         if _SPANISH_QUERY_RE.search(user_message):
@@ -1265,10 +1236,8 @@ def _benefits_denial_grounded_backstop(
             f"on and what repayment options are available {{cite:{claims_id}}}. If you dispute the "
             "decision, follow the fair-hearing instructions on the notice before the deadline."
         )
-    snap_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml"),
-        None,
+    snap_id = _usable_citation_id(
+        citations, "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml",
     )
     if not snap_id:
         return None
@@ -1294,10 +1263,8 @@ def _lockout_grounded_backstop(
 ) -> Optional[str]:
     """Return the illegal-lockout floor only with the NYC311 and HPD sources captured."""
     routed = _routing_text(user_message)
-    route_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == "https://portal.311.nyc.gov/article/?kanumber=KA-02518"),
-        None,
+    route_id = _usable_citation_id(
+        citations, "https://portal.311.nyc.gov/article/?kanumber=KA-02518",
     )
     if route_id and _ESSENTIAL_SERVICES_SHUTOFF_RE.search(routed):
         if _SPANISH_QUERY_RE.search(user_message):
@@ -1313,13 +1280,10 @@ def _lockout_grounded_backstop(
             f"to 911 {{cite:{route_id}}}. Call 911 now and then 311, and keep proof of the shutoff and "
             "the landlord's messages."
         )
-    law_id = next(
-        (cid for cid, cite in citations.items()
-         if cite.get("url") == (
-             "https://home4.nyc.gov/site/hpd/services-and-information/"
-             "tenants-rights-and-responsibilities.page"
-         )),
-        None,
+    law_id = _usable_citation_id(
+        citations,
+        "https://home4.nyc.gov/site/hpd/services-and-information/"
+        "tenants-rights-and-responsibilities.page",
     )
     if not route_id or not law_id:
         return None
@@ -1414,8 +1378,8 @@ def _routing_text(user_message: str) -> str:
 def _current_source_call(tools: dict[str, Tool], query: str, urls: tuple[str, ...]):
     """Prefer declared-page retrieval, with scoped web search as a compatibility fallback."""
     if "web_fetch" in tools and urls:
-        return "web_fetch", {"url": urls[0], "query": query}
-    return "web_search", {"query": query}
+        return "web_fetch", {"url": urls[0]}
+    return "web_search", {"queries": [query]}
 
 
 def _benefits_recovery_allowed_tools(user_message: str) -> set[str]:
@@ -2076,8 +2040,7 @@ _EVENT_PREP_DATE_RE = re.compile(
 def is_event_preparation_query(user_message: str) -> bool:
     """A dated practical event-preparation turn that needs identity resolution before advice.
 
-    Public because `heynyc/modules/events/tools.py` uses the same predicate to pick its
-    coordinated retrieval lanes and synthesis rules, keeping the two layers from drifting."""
+    This is a compatibility floor for callers that do not use the semantic scope preflight."""
     routed = _routing_text(user_message)
     return bool(
         _EVENT_PREP_INTENT_RE.search(routed)
@@ -2090,8 +2053,8 @@ def is_event_preparation_query(user_message: str) -> bool:
 _EVENT_PREPARATION_SCOPE_REMINDER = (
     "This turn asks how to prepare for a specific dated event whose name may be abbreviated or "
     "ambiguous. Resolve the event identity from current retrieved sources before giving any "
-    "advice: call `find_nyc_events` with the event keyword for structured listings, then use "
-    "`web_search` when those listings do not establish the event identity or current context. "
+    "advice: use `web_search` to identify the event, then `web_fetch` only when a selected "
+    "source excerpt lacks a detail needed for the answer. "
     "If the evidence supports one plausible event, state plainly "
     "which event it is with its date and local time, then build the plan only from cited "
     "evidence: how to attend or watch it, ticket or reservation status, venue access, transit or "
@@ -2099,95 +2062,14 @@ _EVENT_PREPARATION_SCOPE_REMINDER = (
     "event remains plausible, ask one short clarifying question instead of guessing. The event "
     "happening on the asked date is the answer; a more prominent event on a different date is "
     "context at most, never the resident's event. Residents "
-    "often use texting shorthand: expand an abbreviated event name to its likely full name for "
-    "the `find_nyc_events` keyword instead of searching the raw abbreviation, and retry once "
-    "with a broader keyword if the first search returns nothing relevant. In a follow-up turn, "
+    "often use texting shorthand: use the conversation context to resolve an abbreviated event "
+    "name. In a follow-up turn, "
     "keep the event already under discussion instead of re-asking for details the resident "
     "already gave. State the event's own date plainly, and say so when it is not on the exact "
     "day the resident asked about. Do not "
     "give generic packing advice unless a retrieved advisory or forecast supports it. Pure "
     "predictions and sports trivia remain out of scope."
 )
-
-_BULLET_LINE_RE = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+")
-# Imperative advice verbs that mark UNCITED text as smuggled preparation advice rather than a
-# clarifying question ("Wear team colors. Which game do you mean?").
-_PREP_ADVICE_VERB_RE = re.compile(
-    r"\b(?:wear|bring|pack|carry|grab|charge|lleva|llevar|trae|empaca|carga)\b",
-    re.IGNORECASE,
-)
-
-
-def _event_preparation_feedback(
-    user_message: str,
-    text: str,
-    citations: dict[str, dict],
-    available_citation_ids: Optional[set[str]] = None,
-    preparation_turn: Optional[bool] = None,
-) -> Optional[str]:
-    """Reject an event-preparation answer that is neither grounded nor a clarification.
-
-    Deterministic floor for the F046 contract: a preparation answer must carry cited current
-    evidence or ask one clarifying question, and must not carry uncited generic-advice lists.
-    Event-identity quality beyond that floor is judged semantically by the eval suite.
-    `preparation_turn` is the semantic scope-preflight flag; the regex predicate is only the
-    fallback for callers without the preflight."""
-    active = (
-        is_event_preparation_query(user_message)
-        if preparation_turn is None else preparation_turn
-    )
-    if not active:
-        return None
-    available_ids = set(citations) if available_citation_ids is None else available_citation_ids
-    answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
-    cited = [m for m in _CITE_MARKER_RE.finditer(answer_body) if m.group(1) in available_ids]
-    if not cited:
-        # One SHORT clarifying question is the accepted uncited path. A trailing question does
-        # not launder a plan: any bullet list, long body, or advice verb still needs cited
-        # evidence.
-        body = answer_body.strip()
-        if (
-            "?" in body
-            and len(body) <= 280
-            and not _BULLET_LINE_RE.search(body)
-            and not _PREP_ADVICE_VERB_RE.search(body)
-        ):
-            return None
-        return (
-            "<system-reminder>\n"
-            "This is a preparation question about a specific dated event, but your answer has no "
-            "cited current evidence and is not one short clarifying question. Resolve which event "
-            "the resident means from retrieved sources, state it with its date and local time, and "
-            "build the plan from cited evidence with direct links, or ask one short clarifying "
-            "question and stop. Do not give uncited generic preparation advice.\n"
-            "</system-reminder>"
-        )
-    # A filler-led answer opens with uncited generic advice; a long grounded resolution
-    # sentence whose citation lands at its end is fine (observed live), so the lead is judged
-    # by advice content, never by length.
-    lead = answer_body[: cited[0].start()]
-    if len(_BULLET_LINE_RE.findall(lead)) >= 2 or _PREP_ADVICE_VERB_RE.search(lead):
-        return (
-            "<system-reminder>\n"
-            "Your event-preparation answer leads with generic uncited advice before any cited "
-            "fact. Lead with the resolved event: which event it is, with its date and local time, "
-            "from cited evidence. Keep only preparation advice tied to retrieved conditions or "
-            "advisories, and put each option's direct link beside it.\n"
-            "</system-reminder>"
-        )
-    # An uncited packing LIST is filler wherever it sits, including after a citation: any
-    # citation-free run of 2+ advice-verb bullet lines is rejected.
-    for segment in _CITE_STRIP_RE.split(answer_body)[1:]:
-        if len(_BULLET_LINE_RE.findall(segment)) >= 2 and _PREP_ADVICE_VERB_RE.search(segment):
-            return (
-                "<system-reminder>\n"
-                "Your event-preparation answer contains an uncited generic advice list. Keep "
-                "only preparation advice tied to cited retrieved conditions or advisories, with "
-                "the supporting citation beside it, and drop the rest.\n"
-                "</system-reminder>"
-            )
-    return None
-
 
 _URGENT_NOTIFY_TITLE_RE = re.compile(
     r"\b(?:advisory|warning|emergency|alert)\b", re.IGNORECASE,
@@ -2293,6 +2175,8 @@ def _attach_event_action_urls(
 
 def _citation_coordinates(citation: dict) -> Optional[tuple[float, float]]:
     provenance = citation.get("provenance") or {}
+    if provenance.get("navigable") is False:
+        return None
     derivation = provenance.get("derivation") or {}
     point = derivation.get("point")
     if isinstance(point, (list, tuple)) and len(point) >= 2:
@@ -2333,13 +2217,6 @@ def _attach_location_action_urls(
     """Keep a usable map beside every cited NYC location when the model drops it."""
     answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
     available_ids = set(citations) if available_citation_ids is None else available_citation_ids
-    mapped_ids = {
-        cid
-        for cid in _CITE_MARKER_RE.findall(answer_body)
-        if cid in available_ids
-        and citations.get(cid, {}).get("kind") == "DATA"
-        and _citation_coordinates(citations.get(cid, {})) is not None
-    }
     for cid in dict.fromkeys(_CITE_MARKER_RE.findall(answer_body)):
         citation = citations.get(cid, {})
         if cid not in available_ids or citation.get("kind") != "DATA":
@@ -2349,72 +2226,18 @@ def _attach_location_action_urls(
         if coordinates is None:
             continue
         url = maps_link(*coordinates)
-        title = " ".join(str(citation.get("title") or "").split())[:120]
-        directions = f"Directions for {title}" if len(mapped_ids) > 1 and title else "Directions"
         if _block_has_map_for_coordinates(answer_body, coordinates):
             continue
         text = re.sub(
             rf"{re.escape(marker)}(?:[ \t]+{{cite:S\d+}})*[.!?]?"
             rf"(?:\n  Directions: https?://\S+)*",
-            lambda match: f"{match.group(0)}\n  {directions}: {url}\n",
+            lambda match: f"{match.group(0)}\n  Directions: {url}\n",
             text,
             count=1,
         )
         answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
     return re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", text)
 
-
-def _broad_event_context_feedback(
-    user_message: str,
-    text: str,
-    citations: dict[str, dict],
-    tools_made: list[str],
-    available_citation_ids: Optional[set[str]] = None,
-    discovery_turn: Optional[bool] = None,
-) -> Optional[str]:
-    if "find_nyc_events" not in tools_made:
-        return None
-    # `discovery_turn` is the resolved semantic scope-preflight signal; the broad-events regex
-    # is only the fallback for callers without the preflight (mirrors `_event_preparation_feedback`).
-    active = _is_broad_event_query(user_message) if discovery_turn is None else discovery_turn
-    if not active:
-        return None
-
-    available_ids = set(citations) if available_citation_ids is None else available_citation_ids
-    answer_body = re.split(r"(?im)^\s*(?:sources?|fuentes):", text, maxsplit=1)[0]
-    cited_ids = set(_CITE_MARKER_RE.findall(answer_body))
-    missing = []
-    broad_notify = {
-        cid: citation for cid, citation in citations.items()
-        if cid in available_ids
-        and _URGENT_NOTIFY_TITLE_RE.search(str(citation.get("title") or ""))
-        and _is_broad_notify_citation(citation)
-    }
-    unnamed_notify = {
-        cid: citation for cid, citation in broad_notify.items()
-        if cid not in cited_ids
-        or _notify_subject(citation).casefold() not in answer_body.replace("-", " ").casefold()
-    }
-    if unnamed_notify:
-        missing.append("a broadly applicable current Notify NYC warning")
-    if not missing:
-        return None
-    notify_refs = "; ".join(
-        f"{cid}: {_notify_subject(citation)} - {citation.get('snippet', '')}"
-        for cid, citation in sorted(unnamed_notify.items())
-    )
-    return (
-        "<system-reminder>\n"
-        f"Your broad current-events answer omitted {', and '.join(missing)} from the evidence "
-        "already retrieved by `find_nyc_events`. Regenerate a concise answer using those current "
-        "citation ids. Do not call anything free unless its cited source says so. If an advisory "
-        "applies today but not to the requested weekend, label it as a separate today-only heads-up "
-        "and do not present it as a weekend forecast.\n"
-        f"Broad Notify NYC evidence: {notify_refs or 'none'}\n"
-        "For each recommended event, include any known date, time, place, and ticket or "
-        "reservation step. Do not invent a missing detail.\n"
-        "</system-reminder>"
-    )
 
 # Non-streaming model fn: (messages, tool_schemas) -> assistant message dict.
 CompletionFn = Callable[[list[dict], list[dict]], Awaitable[dict]]
@@ -2437,6 +2260,7 @@ class ScopeResult:
     event_turn: str | None = None
     modules: tuple[str, ...] = ()
     situations: tuple[str, ...] = ()
+    usable: bool = True
     # Prompt-cache read for the scope call's static prefix (prompt_tokens_details.cached_tokens),
     # captured the same way the answer stream captures its own, so both calls' cache rates surface.
     cached_input_tokens: int = 0
@@ -2648,7 +2472,7 @@ class Agent:
         # registry (top-level modules), assembled at call time so adding a module extends
         # the checklist with zero core changes. Definitions are meaning, never word lists.
         module_lines = "\n".join(
-            f"{module.name}: {' '.join(str(module.description or '').split())[:140]}"
+            f"{module.name}: {' '.join(str(module.description or '').split())}"
             for module in self.registry.modules
             if getattr(module, "parent", None) is None
         )
@@ -2709,6 +2533,7 @@ class Agent:
         event_turn: Optional[str] = None
         checked_modules: tuple[str, ...] = ()
         checked_situations: tuple[str, ...] = ()
+        usable = True
         known_modules = {
             module.name for module in self.registry.modules
             if getattr(module, "parent", None) is None
@@ -2734,6 +2559,7 @@ class Agent:
                         if input_tokens or output_tokens else None
                     ),
                     cached_input_tokens=cached_input_tokens,
+                    usable=False,
                 )
             message = response.choices[0].message
             response_usage = getattr(response, "usage", None)
@@ -2741,6 +2567,7 @@ class Agent:
             output_tokens += usage_value(response_usage, "completion_tokens")
             cached_input_tokens += cached_value(response_usage)
             if getattr(message, "refusal", None):
+                usable = False
                 break
             parsed = getattr(message, "parsed", None)
             content = (message.content or "").strip()
@@ -2748,6 +2575,7 @@ class Agent:
                 if attempt == 0:
                     continue
                 logger.warning("scope model returned empty output twice; returning empty signal")
+                usable = False
                 break
             try:
                 verdict = (
@@ -2763,6 +2591,7 @@ class Agent:
                 )
             except Exception:
                 logger.exception("scope model returned invalid structured output; empty signal")
+                usable = False
             break
         return ScopeResult(
             model=config.HEYNYC_SCOPE_MODEL,
@@ -2776,6 +2605,7 @@ class Agent:
             modules=checked_modules,
             situations=checked_situations,
             cached_input_tokens=cached_input_tokens,
+            usable=usable,
         )
 
     def _tool_schemas(self, excluded_tools: Optional[set[str]] = None) -> list[dict]:
@@ -2786,7 +2616,8 @@ class Agent:
         """Return the one current-source reminder added to the real request."""
         if self._scope_fn is not None:
             return ""
-        if "web_fetch" in self.tools or "web_search" in self.tools:
+        has_current_source = "web_fetch" in self.tools or "web_search" in self.tools
+        if has_current_source:
             lockout_entry = self.registry.situation_hints().get("active_lockout")
             if lockout_entry is not None and _needs_current_lockout_guidance(user_message):
                 return lockout_entry[1].reminder
@@ -2799,7 +2630,7 @@ class Agent:
                 return _BENEFITS_RECOVERY_SCOPE_REMINDER
             if _current_civic_law_search(user_message):
                 return _CIVIC_LAW_SCOPE_REMINDER
-        if "find_nyc_events" in self.tools and is_event_preparation_query(user_message):
+        if has_current_source and is_event_preparation_query(user_message):
             return _EVENT_PREPARATION_SCOPE_REMINDER
         return ""
 
@@ -3106,13 +2937,16 @@ class Agent:
         scope_event_turn: Optional[str] = None
         scope_modules: tuple[str, ...] = ()
         scope_situations: tuple[str, ...] = ()
+        scope_result: ScopeResult | None = None
         if self._scope_fn is not None:
             scope_started = time.perf_counter()
             try:
                 scope_result = await self._scope_fn(user_message, list(history or []))
             except Exception:
                 logger.exception("scope classifier failed; returning empty signal")
-                scope_result = ScopeResult(model="unknown/injected-scope", cost_usd=None)
+                scope_result = ScopeResult(
+                    model="unknown/injected-scope", cost_usd=None, usable=False,
+                )
             turn_usage["scope_time_ms"] = (time.perf_counter() - scope_started) * 1000.0
             # No gate: whatever the preflight returns, the turn proceeds to the answer model. A
             # non-ScopeResult (a legacy bare return) simply carries no checklist config.
@@ -3160,8 +2994,8 @@ class Agent:
         event_discovery_turn = event_turn == "discovery"
         ctx.event_turn = event_turn
         ctx.current_turn_modules = frozenset(scope_modules)
-        ctx.allow_unverified_search_excerpts = (
-            self.registry.allows_unverified_search_excerpts(set(scope_modules))
+        ctx.allow_unverified_search_excerpts = bool(
+            isinstance(scope_result, ScopeResult) and scope_result.usable
         )
         # A checked high-stakes SITUATION contributes its manifest-declared retrieval config
         # to this same turn (RULED: checklist, never a router). One mandatory-first fetch at
@@ -3172,6 +3006,8 @@ class Agent:
             high = next((entry for entry in checked_hints if entry[1].high_stakes), None)
             if high is not None:
                 _module_name, hint = high
+                ctx.current_turn_high_stakes = True
+                ctx.allow_unverified_search_excerpts = False
                 # A checked high-stakes situation must ground its answer in a current source, so
                 # the terminal-answer citation guard applies even when only the semantic signal
                 # fired (mirrors the deterministic high-stakes turns).
@@ -3202,7 +3038,7 @@ class Agent:
                     )
         if (
             event_preparation_turn
-            and "find_nyc_events" in self.tools
+            and has_current_source
             and _EVENT_PREPARATION_SCOPE_REMINDER not in effective_reminders
         ):
             messages.insert(-1, {
@@ -3224,7 +3060,7 @@ class Agent:
                 titles = "; ".join(
                     line.lstrip("- ").split(": ", 1)[-1]
                     for line in notify_awareness.splitlines() if line.startswith("- ")
-                )[:400]
+                )
                 notify_awareness = (
                     "You already told the resident about today's Notify NYC notices earlier in "
                     "this conversation. Do NOT re-brief them. Mention one again only if it "
@@ -3451,47 +3287,10 @@ class Agent:
                     text, citations.mapping(), available_citation_ids=tool_citation_ids,
                 )
                 assistant["content"] = text
-                event_context_feedback = _broad_event_context_feedback(
-                    user_message, text, citations.mapping(), tools_made,
-                    available_citation_ids=tool_citation_ids,
-                    discovery_turn=event_discovery_turn,
-                )
-                if event_context_feedback and guard_retries < self.guard_max_retries:
-                    guard_retries += 1
-                    yield events.MessageCompleted(
-                        message_id=message_id, text="", citations=citations.mapping()
-                    )
-                    yield events.Reminder(
-                        summary=("event context guard: required evidence lane omitted, retrying "
-                                 f"({guard_retries}/{self.guard_max_retries})")
-                    )
-                    messages.append({"role": "user", "content": event_context_feedback})
-                    continue
-                if event_context_feedback:
-                    text = EVENT_CONTEXT_ABSTAIN_FALLBACK
-                    assistant["content"] = text
                 # Availability means the turn's citation registry, not the {cite:Sn} markers
                 # seen in tool text: tools may register a citation while referencing it in
                 # another format (observed live with `web_fetch`), and invented ids are
                 # already rejected by the unknown-citation guard below.
-                preparation_feedback = _event_preparation_feedback(
-                    user_message, text, citations.mapping(),
-                    preparation_turn=event_preparation_turn,
-                )
-                if preparation_feedback and guard_retries < self.guard_max_retries:
-                    guard_retries += 1
-                    yield events.MessageCompleted(
-                        message_id=message_id, text="", citations=citations.mapping()
-                    )
-                    yield events.Reminder(
-                        summary=("event preparation guard: unresolved or ungrounded plan, "
-                                 f"retrying ({guard_retries}/{self.guard_max_retries})")
-                    )
-                    messages.append({"role": "user", "content": preparation_feedback})
-                    continue
-                if preparation_feedback:
-                    text = EVENT_PREPARATION_ABSTAIN_FALLBACK
-                    assistant["content"] = text
                 cited_ids = set(_CITE_MARKER_RE.findall(text))
                 if current_source_required and not (cited_ids & set(citations.mapping())):
                     text = GROUNDING_ABSTAIN_FALLBACK
@@ -3518,7 +3317,7 @@ class Agent:
                 discovery_citations = used_discovery_citations(
                     text, citations.mapping(),
                 )
-                if discovery_citations:
+                if ctx.current_turn_high_stakes and discovery_citations:
                     if guard_retries < self.guard_max_retries:
                         guard_retries += 1
                         yield events.MessageCompleted(
@@ -3668,7 +3467,7 @@ class Agent:
                 return
 
         try:
-            yield None, await tool.handler(args, ctx)
+            yield None, await tool.invoke(args, ctx)
         except Exception as exc:  # surface tool errors to the model, don't crash
             logger.exception("tool %s failed", name)
             yield None, f"ERROR: tool '{name}' failed: {exc}"

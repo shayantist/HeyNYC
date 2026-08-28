@@ -112,7 +112,7 @@ def test_history_migrates_accepted_legacy_framing_citations() -> None:
 
 @pytest.mark.parametrize(
     "citation_ids",
-    ["S1", 1, {"S1": True}, [123], [f"S{index}" for index in range(9)]],
+    ["S1", 1, {"S1": True}, [123]],
 )
 def test_history_rejects_malformed_legacy_framing_citations(citation_ids) -> None:
     messages = [

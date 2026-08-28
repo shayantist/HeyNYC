@@ -117,6 +117,23 @@ def test_faithfulness_flags_citation_not_in_any_output():
     assert not inv_faithfulness(fabricated, case).passed
 
 
+def test_faithfulness_ignores_unsurfaced_search_candidates():
+    case = _case(invariants={"must_not_fabricate": True})
+    trace = Trace(
+        case_id="c",
+        query="q",
+        spans=[Span(kind="tool", name="web_search", output="Chosen event")],
+        final_text="Chosen event {cite:S1}",
+        citations={
+            "S1": {"kind": "WEB", "url": "u1", "snippet": "Chosen event"},
+            "S2": {"kind": "WEB", "url": "u2", "snippet": "Unsurfaced result"},
+        },
+        outcome="answered",
+    )
+
+    assert inv_faithfulness(trace, case).passed
+
+
 def test_faithfulness_uses_validated_data_snapshot_when_tool_reformats_values():
     case = _case(invariants={"must_not_fabricate": True})
     trace = Trace(

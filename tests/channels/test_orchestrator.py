@@ -28,6 +28,7 @@ from heynyc.core.agent import (
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool
+from heynyc.core.tools.base import ToolInput
 
 
 class FakeReplier:
@@ -847,6 +848,10 @@ async def test_channel_followup_survives_fresh_dependencies(tmp_path):
 
 
 async def test_screen_command_forces_and_executes_the_screener_through_the_channel(tmp_path):
+    class ScreeningInput(ToolInput):
+        persons: list[dict]
+        show_all: bool
+
     calls = []
 
     async def screen(args, ctx):
@@ -854,8 +859,10 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
         return "official estimate"
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility",
+        description="x",
+        handler=screen,
+        input_type=ScreeningInput,
     )
     agent = Agent(Registry([]), tools={"screen_access_nyc_eligibility": tool})
     model_calls = []
@@ -890,7 +897,7 @@ async def test_screen_command_forces_and_executes_the_screener_through_the_chann
         ("screen_access_nyc_eligibility", ["screen_access_nyc_eligibility"]),
         (None, ["screen_access_nyc_eligibility"]),
     ]
-    assert calls == [
+    assert [call.model_dump() for call in calls] == [
         {"persons": [], "show_all": False},
         {"persons": [], "show_all": True},
     ]
@@ -945,7 +952,6 @@ async def test_native_approval_is_reviewed_and_resumed_through_the_channel(
             "submit_request": Tool(
                 name="submit_request",
                 description="Submit",
-                parameters={"type": "object", "properties": {}},
                 handler=lambda args, ctx: None,
                 read_only=False,
                 requires_approval=True,
@@ -1047,7 +1053,6 @@ async def test_second_approval_is_not_active_when_its_review_delivery_fails(
             name: Tool(
                 name=name,
                 description=name,
-                parameters={"type": "object", "properties": {}},
                 handler=lambda args, ctx: None,
                 read_only=False,
                 requires_approval=True,
@@ -1141,7 +1146,6 @@ async def test_native_retry_safe_approval_recovers_after_partial_failure(
             "prepare_application": Tool(
                 name="prepare_application",
                 description="Prepare an approved draft",
-                parameters={"type": "object", "properties": {}},
                 handler=prepare,
                 read_only=False,
                 requires_approval=True,

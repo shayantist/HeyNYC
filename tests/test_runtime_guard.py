@@ -66,8 +66,7 @@ def _lookup_tool(snapshot, snippet=""):
         )
         return f"Found a record {{cite:{cid}}}"
 
-    return Tool(name="lookup", description="look up a record",
-                parameters={"type": "object", "properties": {}}, handler=handler)
+    return Tool(name="lookup", description="look up a record", handler=handler)
 
 
 def _agent(complete, **kw):
@@ -622,7 +621,7 @@ async def test_exact_fact_missing_from_snippet_triggers_guard_retry():
                                      title="Notify NYC")
         return f"ok {{cite:{cid}}}"
 
-    tool = Tool(name="weather", description="weather", parameters={"type": "object", "properties": {}},
+    tool = Tool(name="weather", description="weather",
                 handler=handler)
     unsupported = "There's a heat advisory with highs near 95°F {cite:S1}."
     corrected = "There's a heat advisory in effect today {cite:S1}."

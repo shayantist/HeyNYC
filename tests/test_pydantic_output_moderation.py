@@ -207,7 +207,6 @@ async def test_output_guard_failure_preserves_retrieved_source_material() -> Non
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -219,4 +218,4 @@ async def test_output_guard_failure_preserves_retrieved_source_material() -> Non
     assert "unreviewed answer" not in result.text
     assert "safety review" in result.text
     assert "The service record remains available." in result.text
-    assert "https://data.cityofnewyork.us/service" in result.text
+    assert "{cite:S1}" in result.text

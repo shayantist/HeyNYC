@@ -75,10 +75,10 @@ from heynyc.core.pydantic_runtime import (
     _native_orchestration_history,
     _resident_fact_errors,
     _resident_history,
-    adapt_tool,
     build_module_capabilities,
     build_runtime,
     resident_fact_confirmation_tool,
+    runtime_tool,
 )
 from heynyc.core.pydantic_runtime.runtime import (
     TEMPORARY_FAILURE_FALLBACK,
@@ -91,13 +91,94 @@ from heynyc.core.pydantic_runtime.runtime import (
 from heynyc.core.registry import Registry
 from heynyc.core.telemetry import priced_cost_usd
 from heynyc.core.tools import build_toolbox
-from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
+from heynyc.core.tools.base import ResidentFact, Tool, ToolContext, ToolInput
 from heynyc.core.tools.geo import GeoPoint, resident_supplied_location
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
 from heynyc.eval.trace import build_trace
 from heynyc.modules.cooling_centers import tools as cooling
 from scripts.pydantic_ai_repl import _resolve_pending
+
+
+class _NameInput(ToolInput):
+    name: str
+
+
+class _EventInput(ToolInput):
+    keyword: str
+    borough: str
+    visit_date: str
+    window_end: str
+
+
+class _CoolingInput(ToolInput):
+    near: str
+    kind: str | None = None
+    visit_date: str | None = None
+
+
+class _ProfileInput(ToolInput):
+    profile: dict[str, object]
+
+
+class _WorkedProfile(ToolInput):
+    age: int
+    worked_last_18_months: bool | None = None
+
+
+class _WorkedInput(ToolInput):
+    profile: _WorkedProfile
+
+
+class _ProfileHouseholdInput(ToolInput):
+    profile: dict[str, object]
+    household: dict[str, object]
+
+
+class _ScreeningInput(ToolInput):
+    household: dict[str, object]
+    persons: list[dict[str, object]]
+
+
+class _BoroughInput(ToolInput):
+    borough: str
+
+
+class _CaseInput(ToolInput):
+    case_id: str
+
+
+class _DraftInput(ToolInput):
+    draft_id: str
+
+
+class _QueryInput(ToolInput):
+    query: str
+
+
+class _ValueInput(ToolInput):
+    value: int
+
+
+class _TextValueInput(ToolInput):
+    value: str
+
+
+class _PageInput(ToolInput):
+    page: int
+
+
+class _ReviewPerson(ToolInput):
+    pregnant: bool
+    veteran: bool
+
+
+class _ReviewInput(ToolInput):
+    persons: list[_ReviewPerson]
+
+
+def _dump(value):
+    return value.model_dump(exclude_none=True) if isinstance(value, BaseModel) else value
 
 
 def _context() -> ToolContext:
@@ -139,13 +220,11 @@ async def test_definitive_upstream_tool_failure_returns_to_model_for_recovery() 
     search = Tool(
         name="web_search",
         description="Search the web",
-        parameters={"type": "object", "properties": {}},
         handler=unavailable,
     )
     source = Tool(
         name="web_fetch",
         description="Fetch an official source",
-        parameters={"type": "object", "properties": {}},
         handler=official,
     )
 
@@ -178,7 +257,6 @@ async def test_transient_upstream_timeout_returns_to_model_without_aborting_turn
     search = Tool(
         name="city_records",
         description="Search current city records",
-        parameters={"type": "object", "properties": {}},
         handler=unavailable,
     )
     observed: list[str] = []
@@ -235,11 +313,15 @@ def test_adapter_accepts_every_current_tool_schema() -> None:
     registry = Registry.discover(Path("heynyc/modules"))
     toolbox = build_toolbox(registry)
 
-    adapted = {name: adapt_tool(tool) for name, tool in toolbox.items()}
+    adapted = {name: runtime_tool(tool) for name, tool in toolbox.items()}
 
     assert adapted.keys() == toolbox.keys()
     for name, tool in toolbox.items():
-        assert adapted[name].function_schema.json_schema == tool._input_schema()
+        schema = adapted[name].function_schema.json_schema
+        assert set(schema.get("properties", {})) == set(
+            tool._input_schema().get("properties", {})
+        )
+        assert schema.get("required", []) == tool._input_schema().get("required", [])
 
 
 def test_benefits_situations_are_separate_on_demand_capabilities() -> None:
@@ -373,18 +455,13 @@ def test_side_effecting_tool_gets_its_own_deferred_capability() -> None:
     discovery = Tool(
         name="benefits_search",
         description="Find benefits",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         module="benefits",
     )
     application = Tool(
         name="prepare_application",
         description="Prepare an application draft",
-        parameters={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        },
+        input_type=_NameInput,
         handler=handler,
         read_only=False,
         idempotent=False,
@@ -426,46 +503,20 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
         "find_nyc_events": Tool(
             name="find_nyc_events",
             description="Find current NYC events",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "keyword": {"type": "string"},
-                    "borough": {"type": "string"},
-                    "visit_date": {"type": "string"},
-                    "window_end": {"type": "string"},
-                },
-                "required": [
-                    "keyword",
-                    "borough",
-                    "visit_date",
-                    "window_end",
-                ],
-            },
+            input_type=_EventInput,
             handler=event_handler,
             module="events",
         ),
         "find_cool_options": Tool(
             name="find_cool_options",
             description="Find current NYC cooling options",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {"type": "string"},
-                    "kind": {
-                        "type": "string",
-                        "enum": ["all", "indoor", "cooling_center"],
-                    },
-                    "visit_date": {"type": "string"},
-                },
-                "required": ["near"],
-            },
+            input_type=_CoolingInput,
             handler=cooling_handler,
             module="cooling_centers",
         ),
         "geocode": Tool(
             name="geocode",
             description="Resolve an NYC place",
-            parameters={"type": "object", "properties": {}},
             handler=geocode_handler,
         ),
     }
@@ -552,7 +603,7 @@ async def test_module_capabilities_keep_multi_intent_tool_arguments_separate() -
     )
 
     assert result.output == "Done"
-    assert calls == [
+    assert [(name, _dump(args)) for name, args in calls] == [
         (
             "events",
             {
@@ -583,21 +634,7 @@ async def test_f107_rejects_untrusted_optional_fact_before_tool_execution() -> N
     source = Tool(
         name="screen",
         description="Screen a resident profile",
-        parameters={
-            "type": "object",
-            "properties": {
-                "profile": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "age": {"type": "number"},
-                        "worked_last_18_months": {"type": "boolean"},
-                    },
-                    "required": ["age"],
-                }
-            },
-            "required": ["profile"],
-        },
+        input_type=_WorkedInput,
         handler=handler,
         resident_fact_scope=("/profile",),
     )
@@ -635,14 +672,14 @@ async def test_f107_rejects_untrusted_optional_fact_before_tool_execution() -> N
     agent = Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
         retries={"tools": 1, "output": 0},
     )
 
     result = await agent.run("Screen me", deps=ctx)
 
     assert result.output == "screened"
-    assert calls == [{"profile": {"age": 35}}]
+    assert [_dump(call) for call in calls] == [{"profile": {"age": 35.0}}]
 
 
 async def test_resident_fact_ledger_survives_conversation_state_round_trip() -> None:
@@ -655,17 +692,7 @@ async def test_resident_fact_ledger_survives_conversation_state_round_trip() -> 
     source = Tool(
         name="screen",
         description="Screen a resident profile",
-        parameters={
-            "type": "object",
-            "properties": {
-                "profile": {
-                    "type": "object",
-                    "properties": {"age": {"type": "number"}},
-                    "required": ["age"],
-                }
-            },
-            "required": ["profile"],
-        },
+        input_type=_ProfileInput,
         handler=handler,
         resident_fact_scope=("/profile",),
     )
@@ -698,7 +725,10 @@ async def test_resident_fact_ledger_survives_conversation_state_round_trip() -> 
     restored = runtime.conversation_from_state(conversation.dump_state())
     await restored.send("Screen me again")
 
-    assert calls == [{"profile": {"age": 35}}, {"profile": {"age": 35}}]
+    assert [_dump(call) for call in calls] == [
+        {"profile": {"age": 35}},
+        {"profile": {"age": 35}},
+    ]
 
 
 @pytest.mark.parametrize("persisted_language", [None, "xx", ["en"]])
@@ -877,46 +907,18 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     source = Tool(
         name="screen",
         description="Screen a resident profile",
-        parameters={
-            "type": "object",
-            "properties": {
-                "profile": {
-                    "type": "object",
-                    "properties": {
-                        "age": {"type": "number"},
-                        "worked": {"type": "boolean"},
-                    },
-                    "required": ["age"],
-                },
-                "household": {
-                    "type": "object",
-                    "properties": {
-                        "address": {
-                            "type": "object",
-                            "properties": {
-                                "borough": {"type": "string"},
-                            },
-                            "required": ["borough"],
-                        }
-                    },
-                    "required": ["address"],
-                },
-            },
-            "required": ["profile", "household"],
-        },
+        input_type=_ProfileHouseholdInput,
         handler=handler,
         resident_fact_scope=("/profile", "/household/address"),
     )
     benefit = Tool(
         name="benefit",
         description="Explain SNAP",
-        parameters={"type": "object", "properties": {}},
         handler=benefit_handler,
     )
     lookup = Tool(
         name="lookup",
         description="Find immediate food help",
-        parameters={"type": "object", "properties": {}},
         handler=lookup_handler,
     )
     assert "runs the requested read-only check after approval" in (
@@ -984,7 +986,7 @@ async def test_structured_fact_confirmation_unlocks_read_only_screening() -> Non
     assert result.citations["S1"]["title"] == "SNAP"
     assert result.citations["S2"]["title"] == "NYC FoodHelp"
     assert result.citations["S3"]["title"] == "ACCESS NYC screening"
-    assert screened == [
+    assert [_dump(call) for call in screened] == [
         {
             "profile": {"age": 35, "worked": False},
             "household": {"address": {"borough": "Queens"}},
@@ -1019,7 +1021,6 @@ def test_fact_confirmation_rejects_destructive_tool() -> None:
     destructive = Tool(
         name="change_record",
         description="Change a record",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         destructive=True,
         requires_approval=True,
@@ -1050,7 +1051,6 @@ def test_runtime_rejects_other_unsafe_scoped_tools(unsafe) -> None:
     tool = Tool(
         name="unsafe_scoped",
         description="Unsafe scoped tool",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         resident_fact_scope=("/record",),
         **unsafe,
@@ -1098,7 +1098,7 @@ async def test_screen_fact_confirmation_rejects_conflicting_housing_before_appro
             )
         retries = _parts(messages, RetryPromptPart)
         assert retries[-1].tool_call_id == "invalid-confirmation"
-        assert "Invalid arguments" in str(retries[-1].content)
+        assert "livingPreferNotToSay conflicts" in str(retries[-1].content)
         return ModelResponse(
             [
                 ToolCallPart(
@@ -1121,7 +1121,7 @@ async def test_screen_fact_confirmation_rejects_conflicting_housing_before_appro
     agent = Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(confirmation)],
+        tools=[runtime_tool(confirmation)],
         output_type=[str, DeferredToolRequests],
     )
 
@@ -1143,17 +1143,7 @@ async def test_rejected_fact_confirmation_does_not_unlock_screening() -> None:
     source = Tool(
         name="screen",
         description="Screen a resident profile",
-        parameters={
-            "type": "object",
-            "properties": {
-                "profile": {
-                    "type": "object",
-                    "properties": {"age": {"type": "number"}},
-                    "required": ["age"],
-                }
-            },
-            "required": ["profile"],
-        },
+        input_type=_ProfileInput,
         handler=handler,
         resident_fact_scope=("/profile",),
     )
@@ -1251,7 +1241,6 @@ async def test_runtime_adapter_can_use_deferred_module_capabilities() -> None:
     source = Tool(
         name="find_nyc_events",
         description="Find current NYC events",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         module="events",
     )
@@ -1313,7 +1302,6 @@ async def test_governed_workflow_shares_one_coherent_module_capability() -> None
     discovery = Tool(
         name="search_benefits",
         description="Find benefit programs",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         module="benefits",
     )
@@ -1323,14 +1311,7 @@ async def test_governed_workflow_shares_one_coherent_module_capability() -> None
             "Run a read-only eligibility estimate. "
             "This second sentence is schema guidance, not discovery metadata."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "household": {"type": "object"},
-                "persons": {"type": "array"},
-            },
-            "required": ["household", "persons"],
-        },
+        input_type=_ScreeningInput,
         handler=handler,
         module="benefits",
         resident_fact_scope=("/household", "/persons"),
@@ -1403,14 +1384,7 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
             "Run a read-only eligibility estimate. "
             "This second sentence is schema guidance, not discovery metadata."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "household": {"type": "object"},
-                "persons": {"type": "array"},
-            },
-            "required": ["household", "persons"],
-        },
+        input_type=_ScreeningInput,
         handler=handler,
         module="benefits",
         resident_fact_scope=("/household", "/persons"),
@@ -1418,7 +1392,6 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     guidance = Tool(
         name="search_benefits",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         module="benefits",
     )
@@ -1485,7 +1458,7 @@ async def test_governed_workflow_capability_loads_for_explicit_request() -> None
     assert result.usage["executed_tool_calls"] == [
         "confirm_screen_access_nyc_eligibility_facts"
     ]
-    assert screened == [
+    assert [_dump(call) for call in screened] == [
         {
             "household": {"householdSize": 1},
             "persons": [{"age": 35}],
@@ -1572,21 +1545,13 @@ async def test_governed_workflow_rejects_clarification_before_grounded_handoff()
         "search_benefits": Tool(
             name="search_benefits",
             description="Get current official guidance",
-            parameters={"type": "object", "properties": {}},
             handler=guidance_handler,
             module="benefits",
         ),
         "screen_access_nyc_eligibility": Tool(
             name="screen_access_nyc_eligibility",
             description="Run a read-only eligibility estimate.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "household": {"type": "object"},
-                    "persons": {"type": "array"},
-                },
-                "required": ["household", "persons"],
-            },
+            input_type=_ScreeningInput,
             handler=screening_handler,
             module="benefits",
             resident_fact_scope=("/household", "/persons"),
@@ -1673,14 +1638,7 @@ async def test_governed_workflow_catalog_preserves_cross_turn_context() -> None:
     screening = Tool(
         name="screen_access_nyc_eligibility",
         description="Run a read-only eligibility estimate.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "household": {"type": "object"},
-                "persons": {"type": "array"},
-            },
-            "required": ["household", "persons"],
-        },
+        input_type=_ScreeningInput,
         handler=handler,
         module="benefits",
         resident_fact_scope=("/household", "/persons"),
@@ -1765,7 +1723,6 @@ async def test_loaded_module_capability_survives_resident_turns(
     source = Tool(
         name="screen_access_nyc_eligibility",
         description="Run the official benefits screener",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         module="benefits",
     )
@@ -1842,18 +1799,14 @@ async def test_adapter_preserves_schema_and_retries_invalid_arguments() -> None:
     source = Tool(
         name="lookup",
         description="Look up an official result",
-        parameters={
-            "type": "object",
-            "properties": {"borough": {"type": "string"}},
-            "required": ["borough"],
-        },
+        input_type=_BoroughInput,
         handler=handler,
         open_world=True,
         strict=True,
         title="Official lookup",
         module="housing",
     )
-    adapted = adapt_tool(source)
+    adapted = runtime_tool(source)
     calls = 0
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -1870,7 +1823,12 @@ async def test_adapter_preserves_schema_and_retries_invalid_arguments() -> None:
     agent = Agent(FunctionModel(model), deps_type=ToolContext, tools=[adapted])
     result = await agent.run("Find it", deps=_context())
 
-    assert adapted.function_schema.json_schema == source._input_schema()
+    assert set(adapted.function_schema.json_schema["properties"]) == set(
+        source._input_schema()["properties"]
+    )
+    assert adapted.function_schema.json_schema["required"] == source._input_schema()[
+        "required"
+    ]
     assert adapted.strict is True
     assert adapted.metadata == {
         "title": "Official lookup",
@@ -1884,10 +1842,7 @@ async def test_adapter_preserves_schema_and_retries_invalid_arguments() -> None:
     retries = _parts(result.all_messages(), RetryPromptPart)
     assert len(retries) == 1
     assert retries[0].tool_call_id == "bad-call"
-    assert (
-        retries[0].content
-        == "Invalid arguments for lookup: borough: 7 is not of type 'string'"
-    )
+    assert "valid string" in str(retries[0].content)
     returns = _parts(result.all_messages(), ToolReturnPart)
     assert returns[0].content == "Grounded result for Queens {cite:S1}"
 
@@ -1902,23 +1857,7 @@ async def test_adapter_reports_all_distinct_required_fields_in_one_retry() -> No
     source = Tool(
         name="review",
         description="Review a profile",
-        parameters={
-            "type": "object",
-            "properties": {
-                "persons": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "pregnant": {"type": "boolean"},
-                            "veteran": {"type": "boolean"},
-                        },
-                        "required": ["pregnant", "veteran"],
-                    },
-                }
-            },
-            "required": ["persons"],
-        },
+        input_type=_ReviewInput,
         handler=handler,
         requires_approval=True,
     )
@@ -1933,8 +1872,9 @@ async def test_adapter_reports_all_distinct_required_fields_in_one_retry() -> No
             )
         if calls == 2:
             retry_text = str(_parts(messages, RetryPromptPart)[-1].content)
-            assert "'pregnant' is a required property" in retry_text
-            assert "'veteran' is a required property" in retry_text
+            assert "pregnant" in retry_text
+            assert "veteran" in retry_text
+            assert "Field required" in retry_text
             return ModelResponse(
                 [
                     ToolCallPart(
@@ -1954,7 +1894,7 @@ async def test_adapter_reports_all_distinct_required_fields_in_one_retry() -> No
     agent = Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
         output_type=[str, DeferredToolRequests],
         retries={"tools": 1},
     )
@@ -1963,8 +1903,8 @@ async def test_adapter_reports_all_distinct_required_fields_in_one_retry() -> No
     assert isinstance(pending.output, DeferredToolRequests)
     assert executed == []
     retry = _parts(pending.all_messages(), RetryPromptPart)[0]
-    assert retry.content.count("'pregnant' is a required property") == 1
-    assert retry.content.count("'veteran' is a required property") == 1
+    assert sum(item["loc"][-1] == "pregnant" for item in retry.content) == 2
+    assert sum(item["loc"][-1] == "veteran" for item in retry.content) == 2
     call_id = pending.output.approvals[0].tool_call_id
     result = await agent.run(
         message_history=pending.all_messages(),
@@ -1973,7 +1913,7 @@ async def test_adapter_reports_all_distinct_required_fields_in_one_retry() -> No
     )
 
     assert result.output == "Done"
-    assert executed == [
+    assert [_dump(call) for call in executed] == [
         {
             "persons": [
                 {"pregnant": False, "veteran": False},
@@ -1993,11 +1933,7 @@ async def test_adapter_preserves_approval_and_resumes_exact_call() -> None:
     source = Tool(
         name="submit",
         description="Submit an approved action",
-        parameters={
-            "type": "object",
-            "properties": {"case_id": {"type": "string"}},
-            "required": ["case_id"],
-        },
+        input_type=_CaseInput,
         handler=handler,
         read_only=False,
         destructive=True,
@@ -2015,7 +1951,7 @@ async def test_adapter_preserves_approval_and_resumes_exact_call() -> None:
             )
         return ModelResponse([TextPart("Completed")])
 
-    adapted = adapt_tool(source)
+    adapted = runtime_tool(source)
     agent = Agent(
         FunctionModel(model),
         deps_type=ToolContext,
@@ -2043,7 +1979,7 @@ async def test_adapter_preserves_approval_and_resumes_exact_call() -> None:
     )
 
     assert resumed.output == "Completed"
-    assert executed == [{"case_id": "ABC-123"}]
+    assert [_dump(call) for call in executed] == [{"case_id": "ABC-123"}]
     assert (
         _parts(resumed.all_messages(), ToolReturnPart)[0].tool_call_id
         == "approval-call"
@@ -2065,11 +2001,7 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
     source = Tool(
         name="prepare_application",
         description="Prepare an application artifact",
-        parameters={
-            "type": "object",
-            "properties": {"draft_id": {"type": "string"}},
-            "required": ["draft_id"],
-        },
+        input_type=_DraftInput,
         handler=handler,
         requires_approval=True,
     )
@@ -2182,7 +2114,9 @@ async def test_runtime_conversation_persists_and_resumes_exact_approval(
 
     assert result.text == ("Prepared" if approved else "Cancelled")
     assert result.diagnostics["safety_language"] == "es"
-    assert executed == ([{"draft_id": "draft-123"}] if approved else [])
+    assert [_dump(call) for call in executed] == (
+        [{"draft_id": "draft-123"}] if approved else []
+    )
     assert restored.pending_approvals == {}
 
     fresh = await restored.send("Start another turn")
@@ -2206,11 +2140,7 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
     source = Tool(
         name="prepare_application",
         description="Prepare an application artifact",
-        parameters={
-            "type": "object",
-            "properties": {"draft_id": {"type": "string"}},
-            "required": ["draft_id"],
-        },
+        input_type=_DraftInput,
         handler=handler,
         requires_approval=True,
     )
@@ -2279,10 +2209,10 @@ async def test_approval_flow_survives_restart_and_rejects_replay(
         if approved
         else []
     )
-    assert executed == expected
+    assert [_dump(call) for call in executed] == expected
     with pytest.raises(ValueError, match="expired or already consumed"):
         await restarted.resume(True)
-    assert executed == expected
+    assert [_dump(call) for call in executed] == expected
 
 
 @pytest.mark.parametrize(
@@ -2306,7 +2236,6 @@ async def test_approval_retry_preserves_only_idempotent_pending_state(
     source = Tool(
         name="prepare_application",
         description="Prepare an idempotent draft",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         read_only=False,
         requires_approval=True,
@@ -2376,7 +2305,6 @@ async def test_approval_partial_failure_preserves_only_idempotent_pending_state(
     source = Tool(
         name="prepare_application",
         description="Prepare an approved draft",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         read_only=False,
         requires_approval=True,
@@ -2436,7 +2364,6 @@ async def test_approval_flow_rejects_external_deferral_before_persistence(
     source = Tool(
         name="external_lookup",
         description="Start an external lookup",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
 
@@ -2475,11 +2402,7 @@ async def test_adapter_resumes_deferred_result_without_reexecuting_tool() -> Non
     source = Tool(
         name="external_lookup",
         description="Start an external lookup",
-        parameters={
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
+        input_type=_QueryInput,
         handler=handler,
     )
 
@@ -2495,7 +2418,7 @@ async def test_adapter_resumes_deferred_result_without_reexecuting_tool() -> Non
     agent = Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
         output_type=[str, DeferredToolRequests],
     )
     pending = await agent.run("Look it up", deps=_context())
@@ -2523,11 +2446,7 @@ async def test_output_validator_retries_without_sharing_tool_budget() -> None:
     source = Tool(
         name="validate",
         description="Validate one value",
-        parameters={
-            "type": "object",
-            "properties": {"value": {"type": "integer"}},
-            "required": ["value"],
-        },
+        input_type=_ValueInput,
         handler=handler,
     )
     calls = 0
@@ -2546,7 +2465,7 @@ async def test_output_validator_retries_without_sharing_tool_budget() -> None:
     agent = Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
         retries={"tools": 1, "output": 1},
     )
 
@@ -2560,10 +2479,8 @@ async def test_output_validator_retries_without_sharing_tool_budget() -> None:
 
     assert result.output == "grounded"
     retries = _parts(result.all_messages(), RetryPromptPart)
-    assert [retry.content for retry in retries] == [
-        "Invalid arguments for validate: value: 'bad' is not of type 'integer'",
-        "Final answer was not grounded",
-    ]
+    assert "valid integer" in str(retries[0].content)
+    assert retries[1].content == "Final answer was not grounded"
 
 
 async def test_existing_grounding_guard_can_retry_as_output_validator() -> None:
@@ -2620,7 +2537,6 @@ async def test_structured_grounding_retries_unknown_citations_and_normalizes_mar
     source = Tool(
         name="official_guidance",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     calls = 0
@@ -2752,13 +2668,11 @@ async def legacy_priority_tool_evidence_leads_a_mixed_intent_answer() -> None:
         "urgent_help": Tool(
             name="urgent_help",
             description="Find immediate help",
-            parameters={"type": "object", "properties": {}},
             handler=urgent_handler,
         ),
         "estimate": Tool(
             name="estimate",
             description="Estimate benefits",
-            parameters={"type": "object", "properties": {}},
             handler=estimate_handler,
         ),
     }
@@ -2850,13 +2764,11 @@ async def legacy_priority_evidence_survives_approval_state_round_trip() -> None:
             "urgent_help": Tool(
                 name="urgent_help",
                 description="Find immediate help",
-                parameters={"type": "object", "properties": {}},
                 handler=urgent_handler,
             ),
             "estimate": Tool(
                 name="estimate",
                 description="Estimate benefits",
-                parameters={"type": "object", "properties": {}},
                 handler=estimate_handler,
                 requires_approval=True,
             ),
@@ -2957,12 +2869,11 @@ async def test_mechanical_validator_does_not_parse_phone_meaning() -> None:
     source = Tool(
         name="official_guidance",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     calls = 0
 
-    async def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -3011,7 +2922,6 @@ async def legacy_explicit_claim_support_checker_owns_acceptance() -> None:
     source = Tool(
         name="official_guidance",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     calls = 0
@@ -3117,7 +3027,6 @@ async def test_mechanical_validator_does_not_semantically_reject_a_claim() -> No
     source = Tool(
         name="official_guidance",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     calls = 0
@@ -3145,13 +3054,13 @@ async def test_mechanical_validator_does_not_semantically_reject_a_claim() -> No
     assert result.status == "success"
 
 
-async def test_discovery_evidence_cannot_support_resident_visible_text() -> None:
+async def test_low_stakes_discovery_evidence_can_support_the_exact_sourced_claim() -> None:
     async def handler(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://example.org/search-result",
             title="Search result",
             kind="WEB",
-            snippet="An unverified search snippet.",
+            snippet="The event happened on August 23, 2026.",
             provenance={"evidence_grade": "discovery"},
         )
         return f"Search result only. {{cite:{citation_id}}}"
@@ -3170,36 +3079,77 @@ async def test_discovery_evidence_cannot_support_resident_visible_text() -> None
             for part in message.parts
         ):
             return ModelResponse([ToolCallPart("search", {}, "search-1")])
-        return ModelResponse(
-            [_cited_answer("Would you like me to check a different date? {cite:S1}")]
+        return ModelResponse([_cited_answer(
+            "The event happened on August 23, 2026. {cite:S1}"
+        )])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "search": Tool(
+                name="search",
+                description="Search for a source",
+                handler=handler,
+            )
+        },
+        structured_grounding=True,
+    ).run("What should I do?")
+
+    assert calls == 2
+    assert result.status == "success"
+    assert result.text == "The event happened on August 23, 2026. {cite:S1}"
+    assert result.diagnostics["validation_rejections"] == []
+
+
+async def test_low_stakes_discovery_evidence_rejects_a_mismatched_exact_fact() -> None:
+    async def handler(_args: dict, ctx: ToolContext) -> str:
+        citation_id = ctx.citations.register(
+            "https://example.org/search-result",
+            title="Search result",
+            kind="WEB",
+            snippet="The event happened on August 23, 2026.",
+            provenance={"evidence_grade": "discovery"},
         )
+        return f"Search result only. {{cite:{citation_id}}}"
 
-    with pytest.raises(PydanticRunFailure) as caught:
-        await PydanticRuntimeAdapter(
-            FunctionModel(model),
-            registry=Registry([]),
-            tools={
-                "search": Tool(
-                    name="search",
-                    description="Search for a source",
-                    parameters={"type": "object", "properties": {}},
-                    handler=handler,
-                )
-            },
-            structured_grounding=True,
-        ).run("What should I do?")
+    calls = 0
 
-    assert calls == 4
-    partial = caught.value.partial_result
-    assert partial.status == "error"
-    assert partial.diagnostics["validation_rejections"] == [
-        {"attempt": 1, "stage": "discovery_only", "citation_ids": ["S1"]},
-        {"attempt": 2, "stage": "discovery_only", "citation_ids": ["S1"]},
-        {"attempt": 3, "stage": "discovery_only", "citation_ids": ["S1"]},
-    ]
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+        date = "August 24, 2026" if calls == 2 else "August 23, 2026"
+        return ModelResponse([_cited_answer(
+            f"The event happened on {date}. {{cite:S1}}"
+        )])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "search": Tool(
+                name="search",
+                description="Search for a source",
+                handler=handler,
+            )
+        },
+        structured_grounding=True,
+    ).run("When did the event happen?")
+
+    assert calls == 3
+    assert result.text == "The event happened on August 23, 2026. {cite:S1}"
+    assert result.diagnostics["validation_rejections"][0]["stage"] == (
+        "structured_grounding"
+    )
 
 
-async def test_output_correction_preserves_supported_sibling_without_more_tools() -> (
+async def test_low_stakes_discovery_claim_does_not_force_output_correction() -> (
     None
 ):
     async def handler(_args: dict, ctx: ToolContext) -> str:
@@ -3217,7 +3167,7 @@ async def test_output_correction_preserves_supported_sibling_without_more_tools(
             "https://example.org/search-result",
             title="Search result",
             kind="WEB",
-            snippet="A search result names the captain.",
+            snippet="The captain is Alex.",
             provenance={"evidence_grade": "discovery"},
         )
         return f"Schedule {{cite:{supported}}}; captain lead {{cite:{discovery}}}"
@@ -3238,15 +3188,7 @@ async def test_output_correction_preserves_supported_sibling_without_more_tools(
                     )
                 ]
             )
-        assert info.function_tools == []
-        return ModelResponse(
-            [
-                _cited_answer(
-                    "The next game is Tuesday at 7 PM. {cite:S1} "
-                    "I could not verify the current captain from answer-grade evidence."
-                )
-            ]
-        )
+        raise AssertionError("A matching low-stakes excerpt should not require correction")
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
@@ -3255,23 +3197,22 @@ async def test_output_correction_preserves_supported_sibling_without_more_tools(
             "search": Tool(
                 name="search",
                 description="Search for both requested facts",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
             )
         },
         structured_grounding=True,
     ).run("Who is the captain, and when is the next game?")
 
-    assert calls == 3
+    assert calls == 2
     assert result.status == "success"
     assert result.text == (
         "The next game is Tuesday at 7 PM. {cite:S1} "
-        "I could not verify the current captain from answer-grade evidence."
+        "The captain is Alex. {cite:S2}"
     )
 
 
 async def test_output_correction_removes_tools_from_pydantic_tool_manager() -> None:
-    capability = _OutputCorrectionCapability()
+    capability = _OutputCorrectionCapability(set(), set())
     tool_defs = [ToolDefinition(name="search")]
 
     available = await capability.prepare_tools(
@@ -3335,7 +3276,6 @@ async def legacy_structured_grounding_does_not_fallback_before_retrieval() -> No
     search = Tool(
         name="search",
         description="Search for a source",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     calls = 0
@@ -3389,7 +3329,6 @@ async def test_approval_resume_retains_usage_after_output_retry_failure() -> Non
     action = Tool(
         name="act",
         description="Complete an approved action",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         requires_approval=True,
     )
@@ -3436,7 +3375,6 @@ async def test_approval_resume_timeout_preserves_pending_state() -> None:
     action = Tool(
         name="act",
         description="Complete an approved action",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         requires_approval=True,
     )
@@ -3480,7 +3418,6 @@ async def test_approval_resume_honors_runtime_request_limit() -> None:
     action = Tool(
         name="act",
         description="Complete an approved action",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         requires_approval=True,
     )
@@ -3537,7 +3474,6 @@ async def test_successful_approval_resume_keeps_retry_diagnostics() -> None:
     action = Tool(
         name="act",
         description="Complete an approved action",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         requires_approval=True,
     )
@@ -3774,7 +3710,6 @@ async def test_f106_runtime_does_not_parse_phone_semantics() -> None:
     source = Tool(
         name="lookup_help",
         description="Return screening and pantry help",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
 
@@ -3828,11 +3763,7 @@ async def test_runtime_adapter_runs_through_existing_eval_and_trace_contract() -
     source = Tool(
         name="lookup",
         description="Look up one official result",
-        parameters={
-            "type": "object",
-            "properties": {"borough": {"type": "string"}},
-            "required": ["borough"],
-        },
+        input_type=_BoroughInput,
         handler=handler,
     )
 
@@ -3996,7 +3927,6 @@ async def test_runtime_reinforces_separate_scopes_only_after_multiple_tools() ->
         name: Tool(
             name=name,
             description=name,
-            parameters={"type": "object", "properties": {}},
             handler=handler,
         )
         for name in ("events", "cooling")
@@ -4036,10 +3966,11 @@ async def test_runtime_reinforces_separate_scopes_only_after_multiple_tools() ->
     assert "Keep each tool result within that tool call's own scope" not in seen[1]
     assert "Keep each tool result within that tool call's own scope" not in seen[2]
     assert "Keep each tool result within that tool call's own scope" in seen[3]
+    assert "State every requested part that still lacks evidence or required input" in seen[3]
     assert "Keep each tool result within that tool call's own scope" not in seen[4]
 
 
-async def test_runtime_injects_current_awareness_each_turn() -> None:
+async def test_runtime_does_not_inject_current_awareness_into_unrelated_turns() -> None:
     seen: list[str] = []
     seen_registries: list[CitationRegistry | None] = []
 
@@ -4068,18 +3999,17 @@ async def test_runtime_injects_current_awareness_each_turn() -> None:
         FunctionModel(model),
         registry=Registry([]),
         tools={},
-        current_awareness=awareness,
         structured_grounding=True,
     )
 
     result = await runtime.run("First")
 
-    assert "Current citywide advisory" in seen[0]
-    assert seen_registries == [None]
+    assert "Current citywide advisory" not in seen[0]
+    assert seen_registries == []
     assert result.text == "I can check the current citywide advisory."
 
 
-async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:
+async def test_runtime_preserves_delivered_notify_titles_without_prompt_injection() -> None:
     seen_instructions: list[str] = []
     seen_titles: list[frozenset] = []
     calls = 0
@@ -4123,11 +4053,9 @@ async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:
             "check_notify_nyc": Tool(
                 "check_notify_nyc",
                 "Current Notify NYC advisories",
-                {"type": "object", "properties": {}},
-                advisory,
+                    advisory,
             )
         },
-        current_awareness=awareness,
     )
     conversation = runtime.conversation()
 
@@ -4139,9 +4067,8 @@ async def test_runtime_reuses_delivered_notify_context_on_follow_up() -> None:
         frozenset(),
         frozenset({"heat advisory in effect for nyc"}),
     ]
-    assert "full alert payload" in seen_instructions[0]
-    assert "You already told the resident" in seen_instructions[2]
-    assert "full alert payload" not in seen_instructions[2]
+    assert all("full alert payload" not in instruction for instruction in seen_instructions)
+    assert all("You already told the resident" not in instruction for instruction in seen_instructions)
 
 
 async def test_transcript_restore_ignores_notify_metadata_not_cited_in_text() -> None:
@@ -4166,8 +4093,7 @@ async def test_transcript_restore_ignores_notify_metadata_not_cited_in_text() ->
             "check_notify_nyc": Tool(
                 "check_notify_nyc",
                 "Current Notify NYC advisories",
-                {"type": "object", "properties": {}},
-                advisory,
+                    advisory,
             )
         },
     )
@@ -4212,7 +4138,6 @@ async def test_approval_resume_preserves_only_delivered_notify_titles() -> None:
     source = Tool(
         name="prepare_application",
         description="Prepare an application artifact",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         requires_approval=True,
     )
@@ -4613,11 +4538,7 @@ async def test_completed_tool_turns_collapse_but_pending_calls_remain_exact() ->
     source = Tool(
         name="act",
         description="Run one action",
-        parameters={
-            "type": "object",
-            "properties": {"value": {"type": "string"}},
-            "required": ["value"],
-        },
+        input_type=_TextValueInput,
         handler=handler,
         requires_approval=True,
     )
@@ -4677,7 +4598,6 @@ async def test_runtime_projects_native_request_limit_as_max_turns() -> None:
     source = Tool(
         name="lookup",
         description="Look up one record",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
 
@@ -4715,7 +4635,6 @@ async def test_runtime_result_uses_existing_sms_and_whatsapp_renderers() -> None
     source = Tool(
         name="lookup",
         description="Look up official help",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
 
@@ -4792,7 +4711,6 @@ async def test_runtime_preserves_typed_action_links_for_channel_rendering() -> N
     source = Tool(
         name="find_locations",
         description="Find locations",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         return_type=LocationResult,
     )
@@ -4915,7 +4833,6 @@ async def test_typed_location_result_requires_explicit_primary_record() -> None:
             "find_locations": Tool(
                 name="find_locations",
                 description="Find selected locations",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
                 return_type=LocationResult,
             ),
@@ -4979,7 +4896,6 @@ async def test_empty_typed_location_result_still_requires_its_resolved_origin() 
             "find_locations": Tool(
                 name="find_locations",
                 description="Find selected locations",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
                 return_type=LocationResult,
             ),
@@ -5038,7 +4954,6 @@ async def test_empty_typed_location_result_without_origin_adds_no_coverage_requi
             "find_locations": Tool(
                 name="find_locations",
                 description="Find selected locations",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
                 return_type=LocationResult,
             ),
@@ -5076,7 +4991,6 @@ async def test_untyped_dict_result_keeps_legacy_location_action_fallback() -> No
             "legacy_lookup": Tool(
                 name="legacy_lookup",
                 description="Return one legacy location",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
             ),
         },
@@ -5168,7 +5082,6 @@ async def test_runtime_does_not_apply_an_arbitrary_default_tool_call_limit() -> 
             "probe": Tool(
                 name="probe",
                 description="Return a test result",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
                 idempotent=False,
             )
@@ -5205,11 +5118,7 @@ async def test_capability_runtime_can_answer_after_discovery_and_seven_tool_roun
     source = Tool(
         name="find_nyc_events",
         description="Find current NYC events",
-        parameters={
-            "type": "object",
-            "properties": {"page": {"type": "integer"}},
-            "required": ["page"],
-        },
+        input_type=_PageInput,
         handler=handler,
         module="events",
     )
@@ -5308,7 +5217,6 @@ async def test_memory_capability_counts_only_currently_exposed_function_schemas(
     source = Tool(
         name="lookup",
         description="Look up SNAP",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         module="benefits",
     )
@@ -5469,7 +5377,6 @@ async def test_default_memory_rejects_unfit_current_tool_schema_before_model(
     source = Tool(
         name="lookup",
         description="Look up help",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
 
@@ -5630,12 +5537,18 @@ def test_failure_text_surfaces_the_official_pages_already_retrieved() -> None:
     )
 
     text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+    rendered = "\n".join(render(SimpleNamespace(
+        text=text,
+        citations=citations.mapping(),
+        diagnostics={},
+        action_links=(),
+    ), "sms_twilio"))
 
-    assert "https://www.nyc.gov/site/dhs/shelter/families/path.page" in text
-    assert "google.com" in text
+    assert "https://www.nyc.gov/site/dhs/shelter/families/path.page" in rendered
+    assert "google.com" in rendered
 
 
-def test_failure_text_localizes_the_source_label_without_a_heading() -> None:
+def test_failure_text_uses_source_title_without_an_internal_label() -> None:
     citations = CitationRegistry()
     citations.register(
         "https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page",
@@ -5652,7 +5565,8 @@ def test_failure_text_localizes_the_source_label_without_a_heading() -> None:
     )
 
     assert "Fuentes:" not in text
-    assert "Fuente verificada" in text
+    assert "SNAP Benefits - HRA" in text
+    assert "Fuente verificada" not in text
 
 
 def test_failure_text_surfaces_an_unverified_source_for_resident_review() -> None:
@@ -5666,9 +5580,15 @@ def test_failure_text_surfaces_an_unverified_source_for_resident_review() -> Non
     )
 
     text = _degraded_failure_text(TEMPORARY_FAILURE_FALLBACK, citations)
+    rendered = "\n".join(render(SimpleNamespace(
+        text=text,
+        citations=citations.mapping(),
+        diagnostics={},
+        action_links=(),
+    ), "sms_twilio"))
 
     assert "Sources:" not in text
-    assert "https://example.org/whatever" in text
+    assert "https://example.org/whatever" in rendered
 
 
 async def test_a_healthy_model_request_is_not_retried() -> None:
@@ -5934,7 +5854,6 @@ async def test_pydantic_event_sink_observes_tool_and_text_stream() -> None:
         "lookup": Tool(
             name="lookup",
             description="Find a cooling center",
-            parameters={"type": "object", "properties": {}},
             handler=lookup,
         ),
     }
@@ -6013,7 +5932,6 @@ async def legacy_structured_runtime_does_not_preview_unvalidated_model_text() ->
             "source": Tool(
                 name="source",
                 description="Retrieve an official NYC source",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -6067,7 +5985,6 @@ async def test_structured_runtime_event_sink_does_not_force_streaming() -> None:
             "source": Tool(
                 name="source",
                 description="Retrieve an official NYC source",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -6127,7 +6044,6 @@ async def legacy_structured_approval_resume_does_not_preview_unvalidated_text() 
             "act": Tool(
                 name="act",
                 description="Complete an approved action",
-                parameters={"type": "object", "properties": {}},
                 handler=act,
                 requires_approval=True,
             )
@@ -6201,7 +6117,6 @@ async def test_pydantic_approval_resume_emits_events() -> None:
     action = Tool(
         name="act",
         description="Complete an approved action",
-        parameters={"type": "object", "properties": {}},
         handler=complete_action,
         requires_approval=True,
     )

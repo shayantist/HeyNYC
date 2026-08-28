@@ -9,6 +9,33 @@ from heynyc.core.agent import Agent
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import Tool, ToolContext
+from heynyc.core.tools.base import ToolInput
+
+
+class _QueryInput(ToolInput):
+    queries: list[str]
+
+
+class _CategoryInput(ToolInput):
+    category: str
+
+
+class _AdvisoryInput(ToolInput):
+    incidental: bool = False
+
+
+class _EventInput(ToolInput):
+    keyword: str | None = None
+
+
+class _FetchInput(ToolInput):
+    url: str | None = None
+    find: str | None = None
+    start_line: int | None = None
+
+
+class _ShowAllInput(ToolInput):
+    show_all: bool | None = None
 
 
 def _scripted(*responses):
@@ -129,7 +156,7 @@ async def test_broad_event_turn_forces_advisory_check_when_notifications_exist(
         else:
             yield {"type": "message", "message": _assistant(content="Current plans checked.")}
 
-    tool = Tool("check_notify_nyc", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", advisory, input_type=_AdvisoryInput)
     agent = Agent(
         empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
     )
@@ -138,7 +165,7 @@ async def test_broad_event_turn_forces_advisory_check_when_notifications_exist(
     result = await agent.run("What events are happening in NYC this weekend?")
 
     assert forced == ["check_notify_nyc", None]
-    assert received_args == [{"incidental": True}]
+    assert [args.model_dump() for args in received_args] == [{"incidental": True}]
     assert result.tool_calls_made == ["check_notify_nyc"]
 
 
@@ -157,7 +184,7 @@ async def test_broad_event_turn_skips_advisory_check_on_a_quiet_day(
         forced.append(forced_tool)
         yield {"type": "message", "message": _assistant(content="Current plans checked.")}
 
-    tool = Tool("check_notify_nyc", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", advisory, input_type=_AdvisoryInput)
     agent = Agent(
         empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
     )
@@ -193,7 +220,7 @@ async def test_event_preparation_turn_forces_advisory_check_from_awareness(
                 content="Advisory noted for the plan. What game do you mean?",
             )}
 
-    tool = Tool("check_notify_nyc", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", advisory, input_type=_AdvisoryInput)
     agent = Agent(
         empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
     )
@@ -205,17 +232,14 @@ async def test_event_preparation_turn_forces_advisory_check_from_awareness(
     assert result.tool_calls_made == ["check_notify_nyc"]
 
 
-def test_repl_and_chat_wire_notify_awareness_like_the_server():
-    """Surface parity (owner-reported): the console REPL and one-shot chat must carry the same
-    Notify NYC awareness lane as the SMS/WhatsApp server. The unified REPL's agent is built in
-    channels.console.build_console_deps; one-shot chat still builds its own."""
+def test_pydantic_chat_does_not_preload_notify_awareness():
     import inspect
 
     import heynyc.__main__ as cli
     from heynyc.channels import console
 
     assert "notify_awareness=current_awareness" in inspect.getsource(console.build_console_deps)
-    assert "current_awareness=current_awareness" in inspect.getsource(cli._cmd_chat)
+    assert "current_awareness=current_awareness" not in inspect.getsource(cli._cmd_chat)
     assert "build_configured_runtime" in inspect.getsource(cli._cmd_chat)
 
 
@@ -280,13 +304,31 @@ async def test_scope_classifier_error_is_noop_and_turn_proceeds(empty_registry):
     async def broken_scope(user_message, history):
         raise TimeoutError("classifier timed out")
 
-    complete = _scripted(_assistant(content="Here is help with your NYC question."))
-    agent = Agent(empty_registry, tools={}, complete_fn=complete, scope_fn=broken_scope)
+    async def inspect_policy(_args, ctx):
+        assert ctx.allow_unverified_search_excerpts is False
+        return "No excerpt used."
+
+    complete = _scripted(
+        _assistant(tool_calls=[_tool_call("inspect_policy", {})]),
+        _assistant(content="Here is help with your NYC question."),
+    )
+    agent = Agent(
+        empty_registry,
+        tools={
+            "inspect_policy": Tool(
+                name="inspect_policy",
+                description="Inspect test policy",
+                handler=inspect_policy,
+            )
+        },
+        complete_fn=complete,
+        scope_fn=broken_scope,
+    )
 
     result = await agent.run("Is Israel committing genocide?")
 
     assert result.text == "Here is help with your NYC question."   # reached the answer model
-    assert result.iterations == 1
+    assert result.iterations == 2
     assert result.usage["scope_model"] == "unknown/injected-scope"
     assert result.usage["cost_usd"] is None                        # scope is unpriceable
     assert result.usage["cost_status"] == "unpriced"
@@ -367,10 +409,16 @@ def test_scope_schema_accepts_event_turn_tristate():
         _ScopeDecision.model_validate_json('{"event_turn":"maybe"}')
 
 
+def test_event_preparation_reminder_uses_shared_web_tools():
+    from heynyc.core.agent import _EVENT_PREPARATION_SCOPE_REMINDER
+
+    assert "find_nyc_events" not in _EVENT_PREPARATION_SCOPE_REMINDER
+    assert "web_search" in _EVENT_PREPARATION_SCOPE_REMINDER
+
+
 async def test_omitted_scope_flag_falls_back_to_regex_detection(empty_registry):
-    """A scope reply that never mentions event_preparation must not silently disable the
-    preparation guard: absent means unknown, and unknown falls back to the regex floor."""
-    from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK, ScopeResult
+    """An absent event flag does not add a separate event-only output guard."""
+    from heynyc.core.agent import ScopeResult
 
     async def flagless_scope(user_message, history):
         return ScopeResult(model="test")
@@ -383,11 +431,11 @@ async def test_omitted_scope_flag_falls_back_to_regex_detection(empty_registry):
 
     result = await agent.run("What to prepare for tomorrows WC game")
 
-    assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
+    assert result.text == packing["content"]
 
 
 async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
-    from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK, ScopeResult
+    from heynyc.core.agent import ScopeResult
 
     uncited = _assistant(content="Bring a pencil, a calculator, and your student ID.")
 
@@ -410,9 +458,9 @@ async def test_semantic_event_flag_overrides_regex_detection(empty_registry):
         empty_registry, tools={}, complete_fn=_scripted(packing, packing, packing),
         scope_fn=event_scope,
     )
-    # Regex misses the numeric date, but the semantic flag binds the guard.
+    # The semantic flag adds retrieval guidance, not a second answer-rewrite loop.
     result = await event_agent.run("What should I bring to the game on 7/18?")
-    assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
+    assert result.text == packing["content"]
 
 
 async def test_semantic_discovery_event_turn_overrides_preparation_shaped_query(
@@ -437,7 +485,7 @@ async def test_semantic_discovery_event_turn_overrides_preparation_shaped_query(
 
     agent = Agent(
         empty_registry,
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, events_tool)},
+        tools={"find_nyc_events": Tool("find_nyc_events", "", events_tool)},
         complete_fn=complete, scope_fn=discovery_scope,
     )
 
@@ -482,7 +530,7 @@ async def test_discovery_event_turn_forces_advisory_check_by_meaning(
                 content="No match shows in NYC today.",
             )}
 
-    tool = Tool("check_notify_nyc", "", {}, advisory)
+    tool = Tool("check_notify_nyc", "", advisory, input_type=_AdvisoryInput)
     agent = Agent(
         empty_registry, tools={"check_notify_nyc": tool}, notify_awareness=awareness,
         scope_fn=discovery_scope,
@@ -492,44 +540,14 @@ async def test_discovery_event_turn_forces_advisory_check_by_meaning(
     result = await agent.run("is there a game today")
 
     assert forced == ["check_notify_nyc", None]
-    assert received_args == [{"incidental": True}]
+    assert [args.model_dump() for args in received_args] == [{"incidental": True}]
     assert result.tool_calls_made == ["check_notify_nyc"]
 
 
 def test_broad_event_feedback_honors_discovery_turn_signal():
-    """F058: the broad-events context guard now takes the resolved discovery signal. When the
-    preflight marks a turn discovery, the guard fires even though the regex would not; when the
-    preflight says it is not discovery, the guard stays silent even on a regex-broad message."""
-    from heynyc.core.agent import _broad_event_context_feedback, _is_broad_event_query
+    from heynyc.core import agent
 
-    citations = {
-        "S1": {
-            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
-            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
-            "snippet": (
-                "Air quality is unhealthy for everyone in all or part of NYC. "
-                "Limit strenuous outdoor activity."
-            ),
-        },
-    }
-
-    assert not _is_broad_event_query("is there a game today")
-    # Discovery by meaning: the guard must fire despite the regex miss.
-    assert _broad_event_context_feedback(
-        "is there a game today",
-        "The event search returned one result. {cite:S1}",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-        discovery_turn=True,
-    ) is not None
-    # Preflight says not-discovery: the guard stays silent even on a regex-broad message.
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        "The event search returned one result. {cite:S1}",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-        discovery_turn=False,
-    ) is None
+    assert not hasattr(agent, "_broad_event_context_feedback")
 
 
 async def test_scope_classifier_returns_module_checklist(empty_registry, monkeypatch):
@@ -832,7 +850,7 @@ async def test_empty_answer_after_tool_call_still_falls_back(empty_registry):
     async def noop(args, ctx):
         return "ok"
 
-    tool = Tool(name="noop", description="x", parameters={"type": "object", "properties": {}}, handler=noop)
+    tool = Tool(name="noop", description="x", handler=noop)
     complete = _scripted(
         _assistant(tool_calls=[_tool_call("noop", {})]),
         _assistant(content=""),   # model then returns nothing
@@ -867,7 +885,7 @@ async def test_tool_call_then_final_answer(empty_registry):
     tool = Tool(
         name="nearest",
         description="find nearest",
-        parameters={"type": "object", "properties": {"category": {"type": "string"}}},
+        input_type=_CategoryInput,
         handler=nearest,
     )
     complete = _scripted(
@@ -901,7 +919,7 @@ async def test_handler_exception_surfaced(empty_registry):
     async def boom(args, ctx):
         raise RuntimeError("socrata down")
 
-    tool = Tool(name="boom", description="x", parameters={"type": "object", "properties": {}}, handler=boom)
+    tool = Tool(name="boom", description="x", handler=boom)
     complete = _scripted(
         _assistant(tool_calls=[_tool_call("boom", {})]),
         _assistant(content="I couldn't reach the data source right now."),
@@ -1039,7 +1057,7 @@ async def test_conversation_recalls_prior_answer_without_reusing_stale_evidence(
 
     agent = Agent(
         empty_registry,
-        tools={"grounded": Tool("grounded", "", {}, grounded)},
+        tools={"grounded": Tool("grounded", "", grounded)},
         complete_fn=complete,
     )
     convo = agent.conversation()
@@ -1079,7 +1097,7 @@ def test_build_messages_routes_with_the_immediately_prior_exchange():
     assert "Preserve the tool's distinction between activated cooling centers" in reminder_text
     assert "Interpret the latest message using the conversation" in system_text
     # F062: follow-ups pick up mid-conversation instead of re-announcing settled facts.
-    assert "never re-announce what the conversation has already established" in system_text
+    assert "answer the new part without repeating established context" in system_text
 
 
 async def test_notify_awareness_is_checked_for_every_turn(empty_registry):
@@ -1134,7 +1152,7 @@ async def test_broad_event_answer_does_not_force_every_source_lane():
             f"editorial {{cite:{editorial}}}"
         )
 
-    tool = Tool("find_nyc_events", "events", {}, event_context)
+    tool = Tool("find_nyc_events", "events", event_context)
     complete = _scripted(
         _assistant(tool_calls=[_tool_call("find_nyc_events", {})]),
         _assistant(content=(
@@ -1151,198 +1169,6 @@ async def test_broad_event_answer_does_not_force_every_source_lane():
     assert "Free Yoga" in result.text
     assert "seasonal event" not in result.text
     assert "editorial" not in result.text
-
-
-def test_broad_event_feedback_rejects_buried_citywide_advisory():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
-            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
-            "snippet": (
-                "Air quality is unhealthy for everyone in all or part of NYC. "
-                "Limit strenuous outdoor activity."
-            ),
-        },
-    }
-    feedback = _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        "The event search returned one result. {cite:S1}",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-    )
-
-    assert feedback is not None
-    assert "Air Quality Health Advisory" in feedback
-
-
-def test_broad_event_feedback_accepts_named_citywide_advisory():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
-            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
-            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
-        },
-    }
-
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        "Today-only heads-up: there is an air quality health advisory. {cite:S1}",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-    ) is None
-
-
-def test_broad_event_feedback_rejects_named_but_uncited_citywide_advisory():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
-            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
-            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
-        },
-    }
-
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        "Today-only heads-up: there is an air quality health advisory.",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-    ) is not None
-
-
-def test_broad_event_feedback_rejects_advisory_cited_only_in_sources():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
-            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
-            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
-        },
-    }
-    text = (
-        "Today-only heads-up: there is an air quality health advisory.\n\n"
-        "Sources:\nNotify NYC {cite:S1}"
-    )
-
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        text,
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-    ) is not None
-
-
-def test_broad_event_feedback_rejects_advisory_named_only_in_sources():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://a858-nycnotify.nyc.gov/notifynyc/Home/RecentMessages",
-            "title": "Notify NYC - Air Quality Health Advisory - 7/16",
-            "snippet": "Air quality is unhealthy for everyone in all or part of NYC.",
-        },
-    }
-    feedback = _broad_event_context_feedback(
-        "What events are happening in NYC this weekend?",
-        "Free Yoga is Saturday.\n\nSources:\nAir Quality Health Advisory {cite:S1}",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-    )
-
-    assert feedback is not None
-
-
-def test_broad_event_feedback_handles_citywide_cap_advisory():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://member.everbridge.net/cap/alert.xml",
-            "title": "Heat Health Emergency",
-            "snippet": "Heat Health Emergency, in effect until tonight. Area: New York City",
-            "provenance": {
-                "snapshot": {"headline": "Heat Health Emergency", "areaDesc": "New York City"},
-            },
-        },
-    }
-    feedback = _broad_event_context_feedback(
-        "What events are happening in NYC this weekend?",
-        "Free Yoga is Saturday. {cite:S1}",
-        citations,
-        ["check_notify_nyc", "find_nyc_events"],
-    )
-
-    assert feedback is not None
-    assert "Heat Health Emergency" in feedback
-
-
-def test_broad_event_feedback_does_not_require_direct_links_for_cited_event_sources():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://www.nycforfree.co/events/fifa-museum#details",
-            "title": "FIFA Museum: Legacies of Champions",
-            "snippet": "Free on July 19, 2026.",
-        },
-        "S2": {
-            "url": "https://www.nycgovparks.org/events/free-yoga",
-            "title": "Free Yoga",
-            "snippet": "Free Yoga, Saturday, July 18 at Franz Sigel Park.",
-        },
-    }
-    text = "- FIFA Museum on Sunday. {cite:S1}\n- Free Yoga on Saturday. {cite:S2}"
-
-    feedback = _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        text,
-        citations,
-        ["find_nyc_events"],
-    )
-
-    linked = (
-        "- FIFA Museum on Sunday: https://www.nycforfree.co/events/fifa-museum {cite:S1}\n"
-        "- Free Yoga on Saturday: https://www.nycgovparks.org/events/free-yoga {cite:S2}"
-    )
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        linked,
-        citations,
-        ["find_nyc_events"],
-    ) is None
-
-    assert feedback is None
-
-    linked_continuation = (
-        "- FIFA Museum on Sunday. {cite:S1}\n"
-        "  Details: https://www.nycforfree.co/events/fifa-museum\n"
-        "- Free Yoga on Saturday. {cite:S2}\n"
-        "  Details: https://www.nycgovparks.org/events/free-yoga"
-    )
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        linked_continuation,
-        citations,
-        ["find_nyc_events"],
-    ) is None
-
-    footer_only = (
-        "- FIFA Museum on Sunday. {cite:S1}\n- Free Yoga on Saturday. {cite:S2}\n\n"
-        "Sources:\nhttps://www.nycforfree.co/events/fifa-museum\n"
-        "https://www.nycgovparks.org/events/free-yoga"
-    )
-    assert _broad_event_context_feedback(
-        "What free events are happening in NYC this weekend?",
-        footer_only,
-        citations,
-        ["find_nyc_events"],
-    ) is None
 
 
 def test_event_preparation_query_detection():
@@ -1375,7 +1201,7 @@ def test_event_preparation_reminder_requires_resolution_before_advice(empty_regi
 
     agent = Agent(
         empty_registry,
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, noop)},
+        tools={"web_search": Tool("web_search", "", noop)},
         complete_fn=_scripted(_assistant(content="unused")),
     )
 
@@ -1387,9 +1213,8 @@ def test_event_preparation_reminder_requires_resolution_before_advice(empty_regi
     assert "packing" in low or "generic" in low
     assert "prediction" in low
     assert "shorthand" in low
-    assert "keyword" in low
     assert "web_search" in low
-    assert "structured listings" in low
+    assert "web_fetch" in low
     assert "context it returns" not in low
 
     bare = Agent(empty_registry, tools={}, complete_fn=_scripted(_assistant(content="x")))
@@ -1397,106 +1222,9 @@ def test_event_preparation_reminder_requires_resolution_before_advice(empty_regi
 
 
 def test_event_preparation_feedback_contract():
-    from heynyc.core.agent import _event_preparation_feedback
+    from heynyc.core import agent
 
-    query = "What to prepare for tomorrows WC game"
-    citations = {
-        "S1": {"url": "https://www.nycgovparks.org/events/watch-party", "title": "Watch Party"},
-    }
-    filler = (
-        "- Wear team colors\n- Bring a phone charger\n- Carry water and a snack\n"
-        "- Plan for indoor backup\n- Check weather before you head out"
-    )
-
-    assert _event_preparation_feedback(query, filler, citations, {"S1"}) is not None
-
-    filler_with_question = filler + "\nWhat else should I bring?"
-    assert _event_preparation_feedback(query, filler_with_question, citations, {"S1"}) is not None
-
-    filler_led = filler + "\n\nThere is a watch party at Snug Harbor. {cite:S1}"
-    assert _event_preparation_feedback(query, filler_led, citations, {"S1"}) is not None
-
-    prose_filler_led = (
-        "For tomorrow's game the safest prep is to wear team colors or a jersey, bring a phone "
-        "charger or battery pack, carry water and a snack, plan an indoor backup if you'll be "
-        "outside, and check the weather and city alerts before you head out the door. "
-        "There is a watch party at Snug Harbor. {cite:S1}"
-    )
-    assert _event_preparation_feedback(query, prose_filler_led, citations, {"S1"}) is not None
-
-    # A long resolution sentence whose citation lands at its end is not filler (observed live:
-    # the guard must not reject a resolved-candidate-plus-clarification answer, even when the
-    # uncited lead runs long).
-    long_grounded_lead = (
-        "I'm not sure which parade you mean, so here is the one current grounded result.\n\n"
-        "The only grounded parade result I found in the current retrieved city sources is the "
-        "July Falun Dafa Parade on Saturday, July 18, 2026, with a DOT weekend traffic advisory "
-        "saying 6th Avenue between 42nd Street and 56th Street will be closed for the march "
-        "{cite:S1}.\n\n"
-        "If that's the one, I can help you plan around the street closure. If not, send me the "
-        "parade name or neighborhood and I'll look it up."
-    )
-    assert _event_preparation_feedback(query, long_grounded_lead, citations, {"S1"}) is None
-
-    grounded = (
-        "Tomorrow's game is the World Cup bronze final. {cite:S1}\n"
-        "- Watch party at Snug Harbor. {cite:S1}"
-    )
-    assert _event_preparation_feedback(query, grounded, citations, {"S1"}) is None
-
-    clarification = (
-        "Which game do you mean, the bronze final watch party or the final on Sunday?"
-    )
-    assert _event_preparation_feedback(query, clarification, citations, {"S1"}) is None
-
-    advice_smuggled_into_question = "Wear team colors and bring water. Which game do you mean?"
-    assert _event_preparation_feedback(
-        query, advice_smuggled_into_question, citations, {"S1"},
-    ) is not None
-
-    # An uncited packing list does not become acceptable by following a citation.
-    filler_after_citation = (
-        "Air quality advisory is in effect tomorrow. {cite:S1}\n\n"
-        "Packing list:\n- Wear team colors\n- Bring a phone charger\n- Carry water and a snack"
-    )
-    assert _event_preparation_feedback(query, filler_after_citation, citations, {"S1"}) is not None
-
-    # Cited plan bullets with advice tied to cited conditions stay acceptable.
-    cited_plan = (
-        "Tomorrow's game is the bronze final. {cite:S1}\n"
-        "- Watch party at Snug Harbor {cite:S1}\n"
-        "- Heat advisory in effect, so carry water {cite:S1}"
-    )
-    assert _event_preparation_feedback(query, cited_plan, citations, {"S1"}) is None
-
-    assert _event_preparation_feedback("Where is the nearest pantry?", filler, {}, set()) is None
-
-
-async def test_event_preparation_turn_without_grounding_retries_then_abstains(empty_registry):
-    from heynyc.core.agent import EVENT_PREPARATION_ABSTAIN_FALLBACK
-
-    async def events_tool(args, ctx):
-        cite = ctx.citations.register(
-            "https://www.nycgovparks.org/events/watch-party",
-            snippet="World Cup Watch Party, Saturday", title="Watch Party", kind="DATA",
-        )
-        return f"- World Cup Watch Party {{cite:{cite}}}"
-
-    packing = _assistant(content="- Wear team colors\n- Bring a charger\n- Carry water and snacks")
-    complete = _scripted(
-        _assistant(tool_calls=[_tool_call("find_nyc_events", {"keyword": "world cup"})]),
-        packing, packing, packing,
-    )
-    agent = Agent(
-        empty_registry,
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, events_tool)},
-        complete_fn=complete, guard_grounding=False,
-    )
-
-    result = await agent.run("What to prepare for tomorrows WC game")
-
-    assert result.text == EVENT_PREPARATION_ABSTAIN_FALLBACK
-    assert "which event" in result.text.lower()
+    assert not hasattr(agent, "_event_preparation_feedback")
 
 
 async def test_event_preparation_accepts_registry_citations_without_tool_markers(empty_registry):
@@ -1525,7 +1253,11 @@ async def test_event_preparation_accepts_registry_citations_without_tool_markers
     )
     agent = Agent(
         empty_registry,
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, sources_tool)},
+        tools={
+            "find_nyc_events": Tool(
+                "find_nyc_events", "", sources_tool, input_type=_EventInput
+            )
+        },
         complete_fn=complete, guard_grounding=False,
     )
 
@@ -1555,15 +1287,23 @@ async def test_event_preparation_turn_keeps_free_web_search_after_events_tool(em
     complete = _scripted(
         _assistant(tool_calls=[_tool_call("find_nyc_events", {"keyword": "world cup"})]),
         _assistant(tool_calls=[
-            _tool_call("web_search", {"query": "world cup game tomorrow July 18 2026"}, call_id="c2"),
+            _tool_call(
+                "web_search",
+                {"queries": ["world cup game tomorrow July 18 2026"]},
+                call_id="c2",
+            ),
         ]),
         _assistant(content="Tomorrow's game is the bronze final, Saturday, July 18. {cite:S1}"),
     )
     agent = Agent(
         empty_registry,
         tools={
-            "find_nyc_events": Tool("find_nyc_events", "", {}, events_tool),
-            "web_search": Tool("web_search", "", {}, web_tool),
+            "find_nyc_events": Tool(
+                "find_nyc_events", "", events_tool, input_type=_EventInput
+            ),
+            "web_search": Tool(
+                "web_search", "", web_tool, input_type=_QueryInput
+            ),
         },
         complete_fn=complete, guard_grounding=False,
     )
@@ -1591,7 +1331,11 @@ async def test_event_preparation_grounded_plan_preserves_model_prose(empty_regis
     )
     agent = Agent(
         empty_registry,
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, events_tool)},
+        tools={
+            "find_nyc_events": Tool(
+                "find_nyc_events", "", events_tool, input_type=_EventInput
+            )
+        },
         complete_fn=complete, guard_grounding=False,
     )
 
@@ -1599,79 +1343,6 @@ async def test_event_preparation_grounded_plan_preserves_model_prose(empty_regis
 
     assert "bronze final" in result.text
     assert "Details: https://www.nycgovparks.org/events/watch-party" not in result.text
-
-
-def test_broad_event_feedback_ignores_a_source_url_trailing_slash():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://secretnyc.co/what-to-do-this-weekend-nyc/",
-            "title": "Weekend guide",
-            "snippet": "Current weekend events.",
-        },
-    }
-    text = (
-        "- Weekend event: https://secretnyc.co/what-to-do-this-weekend-nyc {cite:S1}"
-    )
-
-    assert _broad_event_context_feedback(
-        "What events are happening in NYC this weekend?",
-        text,
-        citations,
-        ["find_nyc_events"],
-    ) is None
-
-
-def test_broad_event_feedback_does_not_require_matching_event_urls():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://example.org/events/a",
-            "title": "Event A",
-            "snippet": "Event A is Saturday.",
-        },
-    }
-
-    assert _broad_event_context_feedback(
-        "What events are happening in NYC this weekend?",
-        "- Event A: https://example.org/events/abc {cite:S1}",
-        citations,
-        ["find_nyc_events"],
-    ) is None
-
-
-def test_broad_event_feedback_ignores_registered_but_hidden_sources():
-    from heynyc.core.agent import _broad_event_context_feedback
-
-    citations = {
-        "S1": {
-            "url": "https://secretnyc.co/stale-event",
-            "title": "Stale editorial event",
-            "snippet": "July 10, 2026.",
-        },
-        "S2": {
-            "url": "https://www.nycgovparks.org/events/free-yoga",
-            "title": "Free Yoga",
-            "snippet": "July 18, 2026.",
-        },
-    }
-
-    assert _broad_event_context_feedback(
-        "What events are happening in NYC this weekend?",
-        "- Free Yoga: https://www.nycgovparks.org/events/free-yoga {cite:S2}",
-        citations,
-        ["find_nyc_events"],
-        available_citation_ids={"S2"},
-    ) is None
-
-    from heynyc.core.agent import _attach_event_action_urls
-
-    unchanged = _attach_event_action_urls(
-        "A stale event. {cite:S1}", citations, available_citation_ids={"S2"},
-    )
-    assert "https://secretnyc.co/stale-event" not in unchanged
 
 
 def test_broad_event_action_urls_put_notify_source_inline():
@@ -1708,6 +1379,25 @@ def test_attach_location_action_urls_adds_directions_from_cited_coordinates():
     assert "Directions: https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737" in text
 
 
+def test_attach_location_action_urls_skips_non_navigable_public_records():
+    from heynyc.core.agent import _attach_location_action_urls
+
+    text = _attach_location_action_urls(
+        "A nearby complaint was opened August 19. {cite:S1}",
+        {
+            "S1": {
+                "kind": "DATA",
+                "provenance": {
+                    "navigable": False,
+                    "snapshot": {"latitude": 40.76082, "longitude": -73.97737},
+                },
+            },
+        },
+    )
+
+    assert "google.com/maps" not in text
+
+
 def test_attach_location_action_urls_keeps_adjacent_citations_with_the_claim():
     from heynyc.core.agent import _attach_location_action_urls
 
@@ -1731,7 +1421,7 @@ def test_attach_location_action_urls_keeps_adjacent_citations_with_the_claim():
     assert "query=40.76545,-73.97496" in text
 
 
-def test_attach_location_action_urls_separates_the_next_claim():
+def test_attach_location_action_urls_separates_the_next_claim_without_copying_titles():
     from heynyc.core.agent import _attach_location_action_urls
 
     text = _attach_location_action_urls(
@@ -1750,14 +1440,9 @@ def test_attach_location_action_urls_separates_the_next_claim():
         },
     )
 
-    assert (
-        "Directions for NYC 311 Service Request 1: "
-        "https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737"
-    ) in text
-    assert (
-        "Directions for NYC 311 Service Request 2: "
-        "https://www.google.com/maps/search/?api=1&query=40.76545,-73.97496"
-    ) in text
+    assert "Directions: https://www.google.com/maps/search/?api=1&query=40.76082,-73.97737" in text
+    assert "Directions: https://www.google.com/maps/search/?api=1&query=40.76545,-73.97496" in text
+    assert "Directions for" not in text
     assert "\n\n\n" not in text
 
 
@@ -1976,8 +1661,6 @@ def test_location_action_urls_do_not_rewrite_numbered_list_statuses():
 
 
 async def test_broad_event_answer_preserves_model_prose_without_a_retry(empty_registry):
-    from heynyc.core.agent import EVENT_CONTEXT_ABSTAIN_FALLBACK
-
     async def event_context(args, ctx):
         cite = ctx.citations.register(
             "https://www.nycgovparks.org/events/free-yoga",
@@ -1987,9 +1670,9 @@ async def test_broad_event_answer_preserves_model_prose_without_a_retry(empty_re
 
     agent = Agent(
         empty_registry,
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, event_context)},
+        tools={"web_search": Tool("web_search", "", event_context)},
         complete_fn=_scripted(
-            _assistant(tool_calls=[_tool_call("find_nyc_events", {})]),
+            _assistant(tool_calls=[_tool_call("web_search", {})]),
             _assistant(content="Free Yoga is Saturday. {cite:S1}"),
         ),
         guard_grounding=False,
@@ -1998,15 +1681,13 @@ async def test_broad_event_answer_preserves_model_prose_without_a_retry(empty_re
 
     result = await agent.run("What free events are happening in NYC this weekend?")
 
-    assert result.text != EVENT_CONTEXT_ABSTAIN_FALLBACK
     assert "Free Yoga is Saturday. {cite:S1}" in result.text
     assert "https://www.nycgovparks.org/events/free-yoga" not in result.text
     assert result.iterations == 2
 
 
-async def test_broad_event_answer_fails_closed_after_context_retry_cap():
+async def test_broad_event_answer_has_no_event_only_context_rewrite():
     from heynyc.core import config
-    from heynyc.core.agent import EVENT_CONTEXT_ABSTAIN_FALLBACK
 
     async def event_context(args, ctx):
         cite = ctx.citations.register(
@@ -2018,9 +1699,9 @@ async def test_broad_event_answer_fails_closed_after_context_retry_cap():
 
     agent = Agent(
         Registry.discover(config.MODULES_DIR),
-        tools={"find_nyc_events": Tool("find_nyc_events", "", {}, event_context)},
+        tools={"web_search": Tool("web_search", "", event_context)},
         complete_fn=_scripted(
-            _assistant(tool_calls=[_tool_call("find_nyc_events", {})]),
+            _assistant(tool_calls=[_tool_call("web_search", {})]),
             _assistant(content="I couldn't find anything."),
         ),
         guard_grounding=False,
@@ -2029,7 +1710,7 @@ async def test_broad_event_answer_fails_closed_after_context_retry_cap():
 
     result = await agent.run("What free events are happening in NYC this weekend?")
 
-    assert result.text == EVENT_CONTEXT_ABSTAIN_FALLBACK
+    assert result.text == "I couldn't find anything."
 
 
 async def test_atomic_event_tool_keeps_general_search_available(empty_registry):
@@ -2055,9 +1736,9 @@ async def test_atomic_event_tool_keeps_general_search_available(empty_registry):
             yield {"type": "message", "message": _assistant(content="Current events checked.")}
 
     tools = {
-        "find_nyc_events": Tool("find_nyc_events", "", {}, event_context),
-        "web_search": Tool("web_search", "", {}, unused),
-        "check_notify_nyc": Tool("check_notify_nyc", "", {}, unused),
+        "find_nyc_events": Tool("find_nyc_events", "", event_context),
+        "web_search": Tool("web_search", "", unused),
+        "check_notify_nyc": Tool("check_notify_nyc", "", unused),
     }
     agent = Agent(empty_registry, tools=tools, stream_fn=stream)
 
@@ -2115,7 +1796,7 @@ async def test_hits_max_iters(empty_registry):
     async def noop(args, ctx):
         return "ok"
 
-    tool = Tool(name="loop", description="x", parameters={"type": "object", "properties": {}}, handler=noop)
+    tool = Tool(name="loop", description="x", handler=noop)
 
     async def always_tool(messages, tool_schemas):
         return _assistant(tool_calls=[_tool_call("loop", {})])
@@ -2177,7 +1858,7 @@ async def test_agent_reports_latency_breakdown_and_call_counts(empty_registry):
     async def echo(args, ctx: ToolContext):
         return "tool ran"
 
-    tool = Tool(name="echo", description="x", parameters={"type": "object", "properties": {}}, handler=echo)
+    tool = Tool(name="echo", description="x", handler=echo)
     responses = [
         _assistant(tool_calls=[_tool_call("echo", {})]),
         _assistant(content="done"),
@@ -2253,22 +1934,22 @@ async def test_snap_work_rule_query_forces_current_official_search():
     schemas_seen = []
 
     async def search(args, ctx):
-        assert "SNAP" in args["query"]
-        assert "fair hearing" not in args["query"].lower()
+        assert "SNAP" in args["queries"][0]
+        assert "fair hearing" not in args["queries"][0].lower()
         return "current official HRA guidance"
 
     tool = Tool(
         name="web_search", description="x",
-        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        input_type=_QueryInput,
         handler=search,
     )
     unrelated = Tool(
-        name="housing_guidance", description="x", parameters={},
+        name="housing_guidance", description="x",
         handler=lambda args, ctx: "unrelated",
     )
     agent = Agent(registry, tools={"web_search": tool, "housing_guidance": unrelated})
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(content="Use the current HRA instructions."),
     ]
 
@@ -2311,24 +1992,24 @@ async def test_benefits_denial_forces_current_official_appeal_search(empty_regis
     first_messages = []
 
     async def search(args, ctx):
-        assert "benefits denial" in args["query"]
-        assert "fair hearing" in args["query"]
+        assert "benefits denial" in args["queries"][0]
+        assert "fair hearing" in args["queries"][0]
         return "current official appeal guidance"
 
     tools = {
         "web_search": Tool(
             name="web_search", description="x",
-            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            input_type=_QueryInput,
             handler=search,
         ),
-        "benefits_search": Tool(name="benefits_search", description="x", parameters={},
+        "benefits_search": Tool(name="benefits_search", description="x",
                                 handler=lambda args, ctx: "benefits"),
-            "get_housing_guidance": Tool(name="get_housing_guidance", description="x", parameters={},
+            "get_housing_guidance": Tool(name="get_housing_guidance", description="x",
                                  handler=lambda args, ctx: "housing"),
     }
     agent = Agent(empty_registry, tools=tools)
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(content=(
             "Reapplying and appealing are different. Keep the denial notice and do not miss its "
             "deadline. Which benefit and agency issued it? I can give you the appeal or fair-hearing path."
@@ -2357,24 +2038,23 @@ async def test_immigration_and_benefits_forces_current_eligibility_search(empty_
     seen = {}
 
     async def search(args, ctx):
-        seen["query"] = args["query"]
+        seen["query"] = args["queries"][0]
         return "current official mixed-status guidance"
 
     tools = {
         "web_search": Tool(
             name="web_search", description="x",
-            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            input_type=_QueryInput,
             handler=search,
         ),
-        "health_coverage_guidance": Tool(name="health_coverage_guidance", description="x",
-                                         parameters={}, handler=lambda args, ctx: "health"),
-        "housing_guidance": Tool(name="housing_guidance", description="x", parameters={},
+        "health_coverage_guidance": Tool(name="health_coverage_guidance", description="x", handler=lambda args, ctx: "health"),
+        "housing_guidance": Tool(name="housing_guidance", description="x",
                                  handler=lambda args, ctx: "housing"),
     }
     agent = Agent(empty_registry, tools=tools)
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(content="Eligibility, public charge, and data sharing are separate questions."),
     ]
 
@@ -2405,28 +2085,28 @@ async def test_active_lockout_forces_current_official_housing_search():
     seen = {}
 
     async def search(args, ctx):
-        seen["query"] = args["query"]
+        seen["query"] = args["find"]
         return "current official illegal-lockout guidance"
 
     tools = {
-        "web_fetch": Tool(
-            name="web_fetch", description="x",
-            parameters={"type": "object", "properties": {}},
-            handler=search,
-        ),
+            "web_fetch": Tool(
+                name="web_fetch", description="x",
+                handler=search,
+                input_type=_FetchInput,
+            ),
         "get_housing_guidance": Tool(
-            name="get_housing_guidance", description="x", parameters={},
+            name="get_housing_guidance", description="x",
             handler=lambda args, ctx: "housing",
         ),
         "search_benefits": Tool(
-            name="search_benefits", description="x", parameters={},
+            name="search_benefits", description="x",
             handler=lambda args, ctx: "benefits",
         ),
     }
     agent = Agent(registry, tools=tools)
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_fetch", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored"})]),
         _assistant(content="Call 911 now and say your landlord locked you out."),
     ]
 
@@ -2439,7 +2119,7 @@ async def test_active_lockout_forces_current_official_housing_search():
 
     assert result.tool_calls_made == ["web_fetch"]
     assert calls[0][0] == "web_fetch"
-    assert "illegal lockout" in seen["query"]
+    assert seen["query"] is None
     assert "get_housing_guidance" in calls[0][1]
     assert "search_benefits" not in calls[0][1]
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
@@ -2860,13 +2540,24 @@ def test_yes_no_legal_injection_cannot_force_a_flat_verdict():
     ) is None
 
 
+def _with_usable_evidence(citations: dict[str, dict]) -> dict[str, dict]:
+    return {
+        citation_id: {
+            **citation,
+            "snippet": "Retrieved source content supports this backstop.",
+            "provenance": {"evidence_grade": "fetched"},
+        }
+        for citation_id, citation in citations.items()
+    }
+
+
 def test_section_8_backstop_requires_both_live_web_fetch_and_preserves_citations():
     from heynyc.core.agent import _section8_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S4": {"url": "https://www.nyc.gov/site/cchr/media/source-of-income.page"},
         "S9": {"url": "https://www.nycourts.gov/reporter/3dseries/2026/2026_01253.htm"},
-    }
+    })
 
     answer = _section8_grounded_backstop(
         "¿Puedo negarme a aceptar Section 8?", citations,
@@ -2892,7 +2583,7 @@ def test_section_8_backstop_requires_both_live_web_fetch_and_preserves_citations
 def test_public_charge_backstop_requires_current_moia_sources_and_answers_deportation_premise():
     from heynyc.core.agent import _public_charge_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S1": {"url": "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml"},
         "S2": {"url": "https://www.nyc.gov/site/doh/health/health-topics/immigrant-health.page"},
         "S3": {"url": "https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page"},
@@ -2900,7 +2591,7 @@ def test_public_charge_backstop_requires_current_moia_sources_and_answers_deport
             "url": "https://www.nyc.gov/site/immigrants/legal-resources/"
             "moia-immigration-legal-support-hotline.page",
         },
-    }
+    })
 
     answer = _public_charge_grounded_backstop(
         "usé Medicaid, ¿me van a deportar en mi cita de green card?", citations,
@@ -2933,10 +2624,10 @@ def test_public_charge_backstop_requires_current_moia_sources_and_answers_deport
 def test_rent_stabilization_backstop_uses_current_regulator_sources_without_guessing_rates():
     from heynyc.core.agent import _rent_stabilization_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S1": {"url": "https://portal.311.nyc.gov/article/?kanumber=KA-03296"},
         "S4": {"url": "https://hcr.ny.gov/rent-control"},
-    }
+    })
     answer = _rent_stabilization_grounded_backstop(
         "Rent stabilization ended, so can my landlord raise rent as much as he wants?", citations,
     )
@@ -2952,7 +2643,7 @@ def test_rent_stabilization_backstop_uses_current_regulator_sources_without_gues
 def test_cashless_backstop_requires_live_rule_and_law_sources():
     from heynyc.core.agent import _cashless_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S1": {
             "url": "https://www.nyc.gov/site/dca/consumers/"
             "Prohibition-of-Cashless-Establishments.page",
@@ -2961,7 +2652,7 @@ def test_cashless_backstop_requires_live_rule_and_law_sources():
             "url": "https://legistar.council.nyc.gov/LegislationDetail.aspx?"
             "GUID=7800AFC9-D8B1-41FD-9C31-172565712686&ID=3763665&Options=ID%7CText%7C",
         },
-    }
+    })
 
     answer = _cashless_grounded_backstop("Can my small cafe go cash-free?", citations)
 
@@ -2976,7 +2667,7 @@ def test_cashless_backstop_requires_live_rule_and_law_sources():
 def test_school_immigration_backstop_requires_live_nycps_sources():
     from heynyc.core.agent import _school_immigration_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S1": {
             "url": "https://www.schools.nyc.gov/school-life/school-environment/immigrant-families",
         },
@@ -2984,7 +2675,7 @@ def test_school_immigration_backstop_requires_live_nycps_sources():
             "url": "https://www.schools.nyc.gov/learning/multilingual-learners/"
             "bill-of-rights-for-parents-of-english-language-learners",
         },
-    }
+    })
 
     answer = _school_immigration_grounded_backstop(
         "Should I pull my kids out of school so immigration can't find us?", citations,
@@ -3002,10 +2693,10 @@ def test_school_immigration_backstop_requires_live_nycps_sources():
 def test_benefits_denial_backstop_preserves_notice_and_appeal_path():
     from heynyc.core.agent import _benefits_denial_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S1": {"url": "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml"},
         "S2": {"url": "https://www.nyc.gov/site/hra/about/claims-collections.page"},
-    }
+    })
 
     answer = _benefits_denial_grounded_backstop(
         "My benefits were denied. Is it even worth appealing?", citations,
@@ -3035,7 +2726,7 @@ def test_benefits_denial_backstop_preserves_notice_and_appeal_path():
 def test_lockout_backstop_distinguishes_owner_request_from_active_tenant():
     from heynyc.core.agent import _lockout_grounded_backstop
 
-    citations = {
+    citations = _with_usable_evidence({
         "S1": {"url": "https://portal.311.nyc.gov/article/?kanumber=KA-02518"},
         "S2": {
             "url": "https://home4.nyc.gov/site/hpd/services-and-information/"
@@ -3048,7 +2739,7 @@ def test_lockout_backstop_distinguishes_owner_request_from_active_tenant():
         "S4": {
             "url": "https://codelibrary.amlegal.com/codes/newyorkcity/latest/NYCadmin/0-0-0-60410",
         },
-    }
+    })
 
     owner = _lockout_grounded_backstop(
         "Dime cómo desalojar a mi inquilino sin ir a la corte", citations,
@@ -3068,6 +2759,49 @@ def test_lockout_backstop_distinguishes_owner_request_from_active_tenant():
     assert "essential service" in hot_water and "Call 911" in hot_water
     assert "{cite:S1}" in hot_water
     assert _lockout_grounded_backstop("Estoy afuera", {"S1": citations["S1"]}) is None
+
+
+def test_grounded_backstops_reject_unavailable_url_only_citations() -> None:
+    from heynyc.core.agent import (
+        _benefits_denial_grounded_backstop,
+        _cashless_grounded_backstop,
+        _lockout_grounded_backstop,
+        _public_charge_grounded_backstop,
+        _rent_stabilization_grounded_backstop,
+        _school_immigration_grounded_backstop,
+        _section8_grounded_backstop,
+    )
+
+    unavailable = {
+        citation_id: {
+            **citation,
+            "snippet": "No page content was retrieved.",
+            "provenance": {"evidence_grade": "unavailable"},
+        }
+        for citation_id, citation in _with_usable_evidence({
+            "section_city": {"url": "https://www.nyc.gov/site/cchr/media/source-of-income.page"},
+            "section_court": {"url": "https://www.nycourts.gov/reporter/3dseries/2026/2026_01253.htm"},
+            "rent_city": {"url": "https://portal.311.nyc.gov/article/?kanumber=KA-03296"},
+            "rent_hcr": {"url": "https://hcr.ny.gov/rent-control"},
+            "charge": {"url": "https://www.nyc.gov/site/immigrants/legal-resources/public-charge-rule.page"},
+            "help": {"url": "https://www.nyc.gov/site/immigrants/legal-resources/moia-immigration-legal-support-hotline.page"},
+            "cash": {"url": "https://www.nyc.gov/site/dca/consumers/Prohibition-of-Cashless-Establishments.page"},
+            "cash_law": {"url": "https://legistar.council.nyc.gov/LegislationDetail.aspx?id=1"},
+            "school": {"url": "https://www.schools.nyc.gov/school-life/school-environment/immigrant-families"},
+            "rights": {"url": "https://www.schools.nyc.gov/learning/multilingual-learners/bill-of-rights-for-parents-of-english-language-learners"},
+            "snap": {"url": "https://www.nyc.gov/assets/hra/ACCESSNYC/html/snapfaq/english.shtml"},
+            "lockout": {"url": "https://portal.311.nyc.gov/article/?kanumber=KA-02518"},
+            "tenant_rights": {"url": "https://home4.nyc.gov/site/hpd/services-and-information/tenants-rights-and-responsibilities.page"},
+        }).items()
+    }
+
+    assert _section8_grounded_backstop("Can I refuse Section 8?", unavailable) is None
+    assert _rent_stabilization_grounded_backstop("Rent stabilization ended, right?", unavailable) is None
+    assert _public_charge_grounded_backstop("Does Medicaid affect my green card?", unavailable) is None
+    assert _cashless_grounded_backstop("Can my cafe go cash-free?", unavailable) is None
+    assert _school_immigration_grounded_backstop("Can my child attend school?", unavailable) is None
+    assert _benefits_denial_grounded_backstop("My SNAP was denied", unavailable) is None
+    assert _lockout_grounded_backstop("My landlord changed the locks", unavailable) is None
 
 
 async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeypatch):
@@ -3096,13 +2830,10 @@ async def test_no_heat_scope_situation_does_not_trigger_lockout_backstop(monkeyp
     tools = {
         "web_fetch": Tool(
             "web_fetch", "x",
-            {"type": "object", "properties": {
-                "urls": {"type": "array", "items": {"type": "string"}},
-                "query": {"type": "string"}}},
             web_fetch,
         ),
-        "get_housing_guidance": Tool("get_housing_guidance", "x", {}, lambda a, c: "h"),
-        "search_benefits": Tool("search_benefits", "x", {}, lambda a, c: "b"),
+        "get_housing_guidance": Tool("get_housing_guidance", "x", lambda a, c: "h"),
+        "search_benefits": Tool("search_benefits", "x", lambda a, c: "b"),
     }
 
     async def scope(user_message, history):
@@ -3200,21 +2931,22 @@ async def test_civic_law_query_prefers_direct_declared_official_source(empty_reg
         return f"Retail employers must give 72 hours notice {{cite:{cite}}}."
 
     tools = {
-        "web_fetch": Tool(
-            name="web_fetch", description="x", parameters={}, handler=official,
+            "web_fetch": Tool(
+                name="web_fetch", description="x", handler=official,
+                input_type=_FetchInput,
         ),
         "web_search": Tool(
-            name="web_search", description="x", parameters={},
+            name="web_search", description="x",
             handler=lambda args, ctx: "search should not run",
         ),
         "housing_guidance": Tool(
-            name="housing_guidance", description="x", parameters={},
+            name="housing_guidance", description="x",
             handler=lambda args, ctx: "unrelated housing guidance",
         ),
     }
     agent = Agent(empty_registry, tools=tools, guard_grounding=False)
     responses = [
-        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored", "query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored"})]),
         _assistant(content="Retail workers are covered by Fair Workweek."),
     ]
     forced = []
@@ -3233,7 +2965,6 @@ async def test_civic_law_query_prefers_direct_declared_official_source(empty_reg
     assert seen["url"] == (
         "https://www.nyc.gov/site/dca/workers/workersrights/retail-workers.page"
     )
-    assert "Fair Workweek" in seen["query"]
 
 
 async def test_current_source_turn_fails_closed_when_answer_has_no_citation(empty_registry):
@@ -3244,12 +2975,12 @@ async def test_current_source_turn_fails_closed_when_answer_has_no_citation(empt
 
     tools = {
         "web_fetch": Tool(
-            name="web_fetch", description="x", parameters={}, handler=unavailable,
+            name="web_fetch", description="x", handler=unavailable,
         ),
     }
     agent = Agent(empty_registry, tools=tools, guard_grounding=False, guard_max_retries=0)
     responses = [
-        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored", "query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored"})]),
         _assistant(content="Restaurants may refuse cash under Local Law 99."),
     ]
 
@@ -3307,8 +3038,8 @@ async def test_forced_tool_applies_only_to_first_model_iteration(empty_registry)
         return "screened"
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
+        input_type=_ShowAllInput,
     )
     agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
 
@@ -3335,8 +3066,8 @@ async def test_forced_tool_arguments_override_model_values(empty_registry):
         return "screened\nThis is a phone-friendly shortlist, not an official ranking."
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
+        input_type=_ShowAllInput,
     )
     agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
@@ -3352,7 +3083,9 @@ async def test_forced_tool_arguments_override_model_values(empty_registry):
         "/screen", forced_tool="screen_access_nyc_eligibility", forced_tool_args={"show_all": False},
     )
 
-    assert calls == [{"show_all": False}]
+    assert [call.model_dump(exclude_none=True) for call in calls] == [
+        {"show_all": False}
+    ]
     assert result.text == "done"
 
 
@@ -3363,8 +3096,7 @@ async def test_non_english_screen_answer_does_not_append_english_shortlist_copy(
         return "screened\nThis is a phone-friendly shortlist, not an official ranking."
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
     )
     agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
@@ -3397,8 +3129,7 @@ async def test_final_answer_surfaces_schedule_source_date(empty_registry):
         return f"Site is scheduled open {{cite:{cite}}}"
 
     tool = Tool(
-        name="schedule", description="x",
-        parameters={"type": "object", "properties": {}}, handler=schedule,
+        name="schedule", description="x", handler=schedule,
     )
     agent = Agent(empty_registry, tools={"schedule": tool})
     responses = [
@@ -3420,8 +3151,7 @@ async def test_count_only_screen_response_does_not_claim_to_be_a_shortlist(empty
         return "16 likely matches. Which need matters most?"
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
     )
     agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
@@ -3447,8 +3177,7 @@ async def test_grounding_fallback_does_not_claim_to_be_a_shortlist(empty_registr
         return "screened\nThis is a phone-friendly shortlist, not an official ranking."
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
     )
     agent = Agent(
         empty_registry,
@@ -3481,8 +3210,7 @@ async def test_forced_tool_rejects_non_object_json_arguments(empty_registry, raw
         return "screened"
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
     )
     agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
     responses = [
@@ -3517,8 +3245,7 @@ async def test_forced_tool_fails_closed_when_model_does_not_call_it(empty_regist
         return "screened"
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x",
-        parameters={"type": "object", "properties": {}}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
     )
     agent = Agent(empty_registry, tools={"screen_access_nyc_eligibility": tool})
 
@@ -3549,7 +3276,7 @@ async def test_forced_tool_rejects_wrong_multiple_and_malformed_calls(empty_regi
         return "ran"
 
     tools = {
-        name: Tool(name=name, description="x", parameters={}, handler=record)
+        name: Tool(name=name, description="x", handler=record)
         for name in ("screen_access_nyc_eligibility", "other")
     }
     agent = Agent(empty_registry, tools=tools)
@@ -3575,7 +3302,7 @@ async def test_excluded_tool_is_hidden_and_cannot_execute(empty_registry):
         return "ran"
 
     tool = Tool(
-        name="screen_access_nyc_eligibility", description="x", parameters={}, handler=screen,
+        name="screen_access_nyc_eligibility", description="x", handler=screen,
     )
     responses = [
         _assistant(tool_calls=[_tool_call("screen_access_nyc_eligibility", {})]),
@@ -3806,17 +3533,15 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
     seen = {}
 
     async def search(args, ctx):
-        seen["query"] = args["query"]
+        seen["query"] = args["find"]
         return "current official illegal-lockout guidance"
 
     tools = {
-        "web_fetch": Tool("web_fetch", "x",
-                           {"type": "object", "properties": {}},
-                           search),
+        "web_fetch": Tool("web_fetch", "x", search, input_type=_FetchInput),
         "get_housing_guidance": Tool(
-            "get_housing_guidance", "x", {}, lambda a, c: "h"
+            "get_housing_guidance", "x", lambda a, c: "h"
         ),
-        "search_benefits": Tool("search_benefits", "x", {}, lambda a, c: "b"),
+        "search_benefits": Tool("search_benefits", "x", lambda a, c: "b"),
     }
 
     async def situation_scope(user_message, history):
@@ -3827,7 +3552,7 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
 
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_fetch", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_fetch", {"url": "ignored"})]),
         _assistant(content="Call 911 now."),
     ]
 
@@ -3843,7 +3568,7 @@ async def test_checked_situation_forces_manifest_configured_retrieval(monkeypatc
 
     assert result.tool_calls_made == ["web_fetch"]
     assert calls[0][0] == "web_fetch"
-    assert "lockout" in seen["query"]
+    assert seen["query"] is None
     assert "get_housing_guidance" in calls[0][1]
     assert "search_benefits" not in calls[0][1]  # single-module turn keeps the manifest focus
     prompt = "\n".join(str(m.get("content", "")) for m in calls[0][2])
@@ -3862,11 +3587,9 @@ async def test_cross_module_situation_turn_never_narrows_tools(monkeypatch):
         return "guidance"
 
     tools = {
-        "web_search": Tool("web_search", "x",
-                           {"type": "object", "properties": {"query": {"type": "string"}}},
-                           search),
-        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
-        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
+        "web_search": Tool("web_search", "x", search, input_type=_QueryInput),
+        "housing_guidance": Tool("housing_guidance", "x", lambda a, c: "h"),
+        "benefits_search": Tool("benefits_search", "x", lambda a, c: "b"),
     }
 
     async def cross_scope(user_message, history):
@@ -3877,7 +3600,7 @@ async def test_cross_module_situation_turn_never_narrows_tools(monkeypatch):
 
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(content="Call 911 now, and your SNAP question is safe to handle after."),
     ]
 
@@ -3905,15 +3628,13 @@ async def test_checked_snap_work_rule_situation_forces_manifest_retrieval(monkey
     seen = {}
 
     async def search(args, ctx):
-        seen["query"] = args["query"]
+        seen["query"] = args["queries"][0]
         return "current official HRA guidance"
 
     tools = {
-        "web_search": Tool("web_search", "x",
-                           {"type": "object", "properties": {"query": {"type": "string"}}},
-                           search),
-        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
-        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+        "web_search": Tool("web_search", "x", search, input_type=_QueryInput),
+        "benefits_search": Tool("benefits_search", "x", lambda a, c: "b"),
+        "housing_guidance": Tool("housing_guidance", "x", lambda a, c: "h"),
     }
 
     async def situation_scope(user_message, history):
@@ -3924,7 +3645,7 @@ async def test_checked_snap_work_rule_situation_forces_manifest_retrieval(monkey
 
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(content="Ask HRA for a fair hearing."),
     ]
 
@@ -3962,10 +3683,9 @@ async def test_cross_module_snap_work_rule_situation_never_narrows_tools(monkeyp
 
     tools = {
         "web_search": Tool("web_search", "x",
-                           {"type": "object", "properties": {"query": {"type": "string"}}},
                            search),
-        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
-        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+        "benefits_search": Tool("benefits_search", "x", lambda a, c: "b"),
+        "housing_guidance": Tool("housing_guidance", "x", lambda a, c: "h"),
     }
 
     async def cross_scope(user_message, history):
@@ -3976,7 +3696,7 @@ async def test_cross_module_snap_work_rule_situation_never_narrows_tools(monkeyp
 
     calls = []
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(content="Fair hearing for SNAP, and Homebase can help with the eviction."),
     ]
 
@@ -4005,10 +3725,9 @@ async def test_ordinary_snap_apply_question_does_not_trigger_work_rule_machinery
 
     tools = {
         "web_search": Tool("web_search", "x",
-                           {"type": "object", "properties": {"query": {"type": "string"}}},
                            lambda a, c: "x"),
-        "benefits_search": Tool("benefits_search", "x", {}, lambda a, c: "b"),
-        "housing_guidance": Tool("housing_guidance", "x", {}, lambda a, c: "h"),
+        "benefits_search": Tool("benefits_search", "x", lambda a, c: "b"),
+        "housing_guidance": Tool("housing_guidance", "x", lambda a, c: "h"),
     }
 
     async def plain_scope(user_message, history):
@@ -4046,8 +3765,8 @@ async def test_semantic_scope_prevents_legacy_civic_regex_from_forcing_or_narrow
         return ScopeResult(model="test", modules=("workers",), situations=())
 
     tools = {
-        "web_fetch": Tool("web_fetch", "x", {}, lambda a, c: "official source"),
-        "worker_guidance": Tool("worker_guidance", "x", {}, lambda a, c: "guidance"),
+        "web_fetch": Tool("web_fetch", "x", lambda a, c: "official source"),
+        "worker_guidance": Tool("worker_guidance", "x", lambda a, c: "guidance"),
     }
     calls = []
 
@@ -4245,13 +3964,13 @@ async def test_snap_situation_also_forces_the_food_pantry_prefetch():
         return "Ask the resident for a location to find the nearest pantry."
 
     web = Tool(name="web_search", description="x",
-               parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+               input_type=_QueryInput,
                handler=search)
-    pantry_tool = Tool(name="find_foodhelp_locations", description="x", parameters={},
+    pantry_tool = Tool(name="find_foodhelp_locations", description="x",
                        handler=pantry, module="food_pantries")
     agent = Agent(registry, tools={"web_search": web, "find_foodhelp_locations": pantry_tool})
     responses = [
-        _assistant(tool_calls=[_tool_call("web_search", {"query": "ignored"})]),
+        _assistant(tool_calls=[_tool_call("web_search", {"queries": ["ignored"]})]),
         _assistant(tool_calls=[_tool_call("find_foodhelp_locations", {})]),
         _assistant(content="Here is the plan, and where is a pantry near you?"),
     ]

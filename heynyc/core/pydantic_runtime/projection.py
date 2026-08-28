@@ -57,10 +57,11 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\s)]+\)")
 class GroundedBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["claim", "framing", "question"] = Field(
+    kind: Literal["claim", "lead", "framing", "question"] = Field(
         default="claim",
         description=(
             "Use claim for facts and procedures that the cited evidence must support. Use "
+            "lead for a sourced but incomplete low-stakes option that the resident should verify. Use "
             "framing for exactly one of: empathy, signposting, or an honest limitation on what "
             "retrieval established. Never combine those purposes in one framing block. Empathy "
             "must stay source-free and must not restate the resident's factual situation. Framing "
@@ -74,15 +75,15 @@ class GroundedBlock(BaseModel):
         min_length=1,
         description=(
             "For kind=claim, write exactly one factual or procedural claim directly supported by "
-            "the cited evidence, without citation markers. Do not copy URLs; citation IDs attach "
-            "the registered source links. Use a separate block with kind=framing for a limitation. "
+            "the cited evidence, without citation markers. Citation IDs attach registered source "
+            "links. Copy a URL only when that exact URL was returned by a tool and it is more direct "
+            "than the cited collection page. Use a separate block with kind=framing for a limitation. "
             "Do not turn a cited prohibition into "
             "an unsupported positive instruction or assert an unsupported fact and then disclaim it."
         ),
     )
     citation_ids: list[str] = Field(
         default_factory=list,
-        max_length=8,
         description=(
             "For claims, all sources needed to support every factual detail in this block. "
             "Framing and questions must not declare sources. Put sourced text in a claim block so its source "
@@ -100,8 +101,8 @@ class GroundedBlock(BaseModel):
 
     @model_validator(mode="after")
     def claim_has_a_source(self) -> "GroundedBlock":
-        if self.kind == "claim" and not self.citation_ids:
-            raise ValueError("claim blocks require at least one citation")
+        if self.kind in {"claim", "lead"} and not self.citation_ids:
+            raise ValueError("claim and lead blocks require at least one citation")
         if self.kind in {"framing", "question"} and self.citation_ids:
             raise ValueError(
                 "framing and question blocks cannot declare citations; use a claim block"

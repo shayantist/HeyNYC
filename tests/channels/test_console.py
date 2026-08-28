@@ -165,7 +165,7 @@ def test_console_uses_the_configured_pydantic_runtime(tmp_path, monkeypatch):
 
     assert deps.agent is sentinel
     assert seen["model"] == "openai/test-model"
-    assert seen["current_awareness"] is not None
+    assert "current_awareness" not in seen
 
 
 def test_legacy_console_startup_invalidates_pydantic_approvals(tmp_path, monkeypatch):

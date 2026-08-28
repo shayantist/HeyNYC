@@ -63,7 +63,7 @@ async def test_session_persists_grounded_assistant_evidence(tmp_path: Path):
 
     agent = Agent(
         Registry([]),
-        tools={"lookup": Tool("lookup", "", {}, lookup)},
+        tools={"lookup": Tool("lookup", "", lookup)},
         complete_fn=complete,
     )
     await Session(agent=agent, id="grounded", path=path).send("look it up")

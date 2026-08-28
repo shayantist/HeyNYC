@@ -20,7 +20,7 @@ def test_immigration_situations_are_high_stakes_official_retrieval():
     module = _module()
     allowed = set(module.allowlist)
 
-    assert module.official_only
+    assert not module.source_tiers.get("editorial")
     assert module.situations
     assert module.tools is None
     for situation in module.situations:

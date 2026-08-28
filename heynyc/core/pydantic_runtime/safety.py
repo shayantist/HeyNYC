@@ -49,6 +49,7 @@ class ScopeScreenRun:
     requests: int
     cost_usd: float | None
     latency_ms: float
+    usable: bool = True
 
 
 def build_scope_screen(
@@ -59,7 +60,7 @@ def build_scope_screen(
 ) -> Callable[[tuple[str, ...]], Awaitable[ScopeScreenRun]]:
     registry = registry or Registry([])
     module_lines = "\n".join(
-        f"{module.name}: {' '.join(str(module.description or '').split())[:140]}"
+        f"{module.name}: {' '.join(str(module.description or '').split())}"
         for module in registry.modules
         if module.parent is None
     )
@@ -104,6 +105,7 @@ def build_scope_screen(
             requests=usage.requests,
             cost_usd=cost,
             latency_ms=(time.perf_counter() - started) * 1000,
+            usable=True,
         )
 
     return screen

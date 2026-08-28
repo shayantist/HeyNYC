@@ -13,7 +13,6 @@ from heynyc.core.agent import Agent
 from heynyc.core.drafts import DraftStore
 from heynyc.core.registry import Registry
 from heynyc.core.session import migrate_plaintext_sessions, purge_expired_sessions
-from heynyc.modules.advisories.tools import current_awareness
 
 from . import analytics
 from .base import drain
@@ -72,7 +71,6 @@ def build_agent() -> Agent:
         registry,
         model=config.HEYNYC_MODEL,
         index=index,
-        current_awareness=current_awareness,
     )
 
 

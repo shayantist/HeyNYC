@@ -9,7 +9,6 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     ToolCallPart,
-    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -40,16 +39,15 @@ def test_preferred_domain_audit_records_only_primary_publishers() -> None:
     assert "services6.arcgis.com" not in tiers
 
 
-def test_source_policy_requires_only_known_low_stakes_modules() -> None:
+def test_source_tiers_also_supply_preferred_domains() -> None:
     registry = Registry([
-        ServiceModule(name="events", official_only=False),
-        ServiceModule(name="benefits"),
+        ServiceModule(
+            name="events",
+            source_tiers={"editorial": ["example.org"]},
+        ),
     ])
 
-    assert registry.allows_unverified_search_excerpts({"events"}) is True
-    assert registry.allows_unverified_search_excerpts({"events", "benefits"}) is False
-    assert registry.allows_unverified_search_excerpts({"unknown"}) is False
-    assert registry.allows_unverified_search_excerpts(set()) is False
+    assert registry.allowlist() == ["example.org"]
 
 
 async def test_low_stakes_unknown_search_excerpt_is_answer_grade() -> None:
@@ -71,6 +69,84 @@ async def test_low_stakes_unknown_search_excerpt_is_answer_grade() -> None:
 
     assert ctx.citations.mapping()["S1"]["provenance"] == {
         "evidence_grade": "search_excerpt",
+        "source_tier": "unverified",
+    }
+
+
+async def test_low_stakes_community_search_excerpt_is_answer_grade() -> None:
+    async def search(_query, _domains, **_kwargs):
+        return [{
+            "title": "Neighborhood event listing",
+            "url": "https://eventbrite.com/e/neighborhood-event",
+            "snippet": "The neighborhood event starts Friday at 7 p.m.",
+        }]
+
+    tool = web_search_tools(
+        ["eventbrite.com"],
+        source_tiers={"eventbrite.com": ("community", "events")},
+        search_fn=search,
+    )[0]
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        allow_unverified_search_excerpts=True,
+    )
+
+    await tool.handler({"query": "neighborhood events Friday"}, ctx)
+
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "search_excerpt",
+        "source_tier": "community",
+    }
+
+
+async def test_high_stakes_community_search_excerpt_stays_discovery_only() -> None:
+    async def search(_query, _domains, **_kwargs):
+        return [{
+            "title": "Community benefits post",
+            "url": "https://eventbrite.com/e/benefits-advice",
+            "snippet": "A community post describes benefit eligibility.",
+        }]
+
+    tool = web_search_tools(
+        ["eventbrite.com"],
+        source_tiers={"eventbrite.com": ("community", "events")},
+        search_fn=search,
+    )[0]
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        allow_unverified_search_excerpts=True,
+        current_turn_high_stakes=True,
+    )
+
+    await tool.handler({"query": "benefit eligibility"}, ctx)
+
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "discovery",
+    }
+
+
+async def test_high_stakes_unknown_search_excerpt_stays_discovery_only() -> None:
+    async def search(_query, _domains, **_kwargs):
+        return [{
+            "title": "Unknown benefits post",
+            "url": "https://unknown.example/benefits-advice",
+            "snippet": "An unknown post describes benefit eligibility.",
+        }]
+
+    tool = web_search_tools([], search_fn=search)[0]
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        allow_unverified_search_excerpts=True,
+        current_turn_high_stakes=True,
+    )
+
+    await tool.handler({"query": "benefit eligibility"}, ctx)
+
+    assert ctx.citations.mapping()["S1"]["provenance"] == {
+        "evidence_grade": "discovery",
         "source_tier": "unverified",
     }
 
@@ -126,7 +202,7 @@ async def test_event_label_alone_cannot_relax_source_policy() -> None:
 
 def test_pydantic_source_policy_uses_the_current_capability() -> None:
     registry = Registry([
-        ServiceModule(name="events", official_only=False),
+        ServiceModule(name="events"),
         ServiceModule(name="benefits"),
     ])
 
@@ -136,7 +212,6 @@ def test_pydantic_source_policy_uses_the_current_capability() -> None:
     web_search = Tool(
         name="web_search",
         description="search",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     adapted, _capabilities = build_module_capabilities(
@@ -144,7 +219,11 @@ def test_pydantic_source_policy_uses_the_current_capability() -> None:
         {"web_search": web_search},
     )
     tool = adapted[0]
-    deps = ToolContext(citations=CitationRegistry(), registry=registry)
+    deps = ToolContext(
+        citations=CitationRegistry(),
+        registry=registry,
+        allow_unverified_search_excerpts=True,
+    )
     context = SimpleNamespace(
         deps=deps,
         loaded_capability_ids={"events"},
@@ -164,140 +243,10 @@ def test_pydantic_source_policy_uses_the_current_capability() -> None:
     assert tool.prepare(context, definition) is definition
     assert deps.allow_unverified_search_excerpts is True
 
-    context.messages.extend([
-        ModelRequest(parts=[UserPromptPart("Could I qualify for SNAP?")]),
-        ModelResponse(parts=[]),
-    ])
+    deps.current_turn_high_stakes = True
 
     assert tool.prepare(context, definition) is definition
     assert deps.allow_unverified_search_excerpts is False
-
-    deps.current_turn_modules = frozenset({"events"})
-
-    assert tool.prepare(context, definition) is definition
-    assert deps.allow_unverified_search_excerpts is True
-
-    deps.current_turn_modules = frozenset({"benefits"})
-
-    assert tool.prepare(context, definition) is definition
-    assert deps.allow_unverified_search_excerpts is False
-
-    deps.current_turn_modules = frozenset({"events", "benefits"})
-
-    assert tool.prepare(context, definition) is definition
-    assert deps.allow_unverified_search_excerpts is False
-
-    context.messages.append(ModelResponse(parts=[LoadCapabilityCallPart(
-        args={"id": "events"}, tool_call_id="load-events-again"
-    ), LoadCapabilityCallPart(
-        args={"id": "benefits"}, tool_call_id="load-benefits"
-    )]))
-
-    assert tool.prepare(context, definition) is definition
-    assert deps.allow_unverified_search_excerpts is False
-
-
-async def test_high_stakes_output_rejects_editorial_evidence() -> None:
-    registry = Registry([
-        ServiceModule(
-            name="benefits",
-            situations=[SituationHint(
-                name="appeal",
-                definition="Appeal a benefits decision.",
-                high_stakes=True,
-                focus_tools=["guidance"],
-            )],
-        )
-    ])
-
-    async def guidance(_args: dict, ctx: ToolContext) -> str:
-        editorial = ctx.citations.register(
-            "https://news.example/snap-appeal",
-            title="SNAP appeal explainer",
-            kind="WEB",
-            snippet="Request a fair hearing from HRA.",
-            provenance={
-                "evidence_grade": "search_excerpt",
-                "source_tier": "editorial",
-            },
-        )
-        official = ctx.citations.register(
-            "https://www.nyc.gov/site/hra/help/fair-hearings.page",
-            title="HRA fair hearings",
-            kind="WEB",
-            snippet="Request a fair hearing from HRA.",
-            provenance={
-                "evidence_grade": "authoritative",
-                "source_tier": "authoritative",
-            },
-        )
-        return f"Editorial {{cite:{editorial}}} Official {{cite:{official}}}"
-
-    calls = 0
-
-    async def model(
-        messages: list[ModelMessage],
-        _info: AgentInfo,
-    ) -> ModelResponse:
-        nonlocal calls
-        calls += 1
-        returns = [
-            part
-            for message in messages
-            for part in message.parts
-            if isinstance(part, ToolReturnPart)
-        ]
-        if not returns:
-            return ModelResponse([
-                ToolCallPart(
-                    "load_capability",
-                    {"id": "benefits-appeal"},
-                    "load-appeal",
-                )
-            ])
-        if returns[-1].tool_name == "load_capability":
-            return ModelResponse([ToolCallPart("guidance", {}, "guidance-1")])
-        if calls == 5:
-            return ModelResponse([ToolCallPart(
-                "grounded_answer",
-                {"grounded_blocks": [{
-                    "text": "Request a fair hearing from HRA.",
-                    "citation_ids": ["S2"],
-                }]},
-                "answer-5",
-            )])
-        answer = (
-            "Request a fair hearing from HRA. {cite:S1}"
-            if calls == 3
-            else "File by August 30, 2026."
-        )
-        return ModelResponse([
-            ToolCallPart(
-                "final_answer",
-                {"answer": answer},
-                f"answer-{calls}",
-            )
-        ])
-
-    result = await PydanticRuntimeAdapter(
-        FunctionModel(model),
-        registry=registry,
-        tools={
-            "guidance": Tool(
-                name="guidance",
-                description="Get appeal guidance",
-                parameters={"type": "object", "properties": {}},
-                handler=guidance,
-            )
-        },
-        structured_grounding=True,
-        use_module_capabilities=True,
-    ).run("How do I appeal my SNAP decision?")
-
-    assert result.text == "Request a fair hearing from HRA. {cite:S2}"
-    assert result.diagnostics["validation_rejections"][0]["stage"] == (
-        "high_stakes_source"
-    )
 
 
 async def test_high_stakes_output_requires_cited_claim_blocks() -> None:
@@ -359,8 +308,215 @@ async def test_high_stakes_output_requires_cited_claim_blocks() -> None:
     )])
 
 
+async def test_loaded_root_capability_inherits_its_high_stakes_situations() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            situations=[SituationHint(
+                name="appeal",
+                definition="Benefits appeal guidance",
+                high_stakes=True,
+            )],
+        )
+    ])
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda _messages, _info: ModelResponse([])),
+        registry=registry,
+        tools={},
+        structured_grounding=True,
+        use_module_capabilities=True,
+    )
+    ctx = SimpleNamespace(
+        deps=ToolContext(citations=CitationRegistry(), registry=registry),
+        messages=[
+            ModelRequest(parts=[UserPromptPart("Can I appeal?")]),
+            ModelResponse(parts=[LoadCapabilityCallPart(
+                args={"id": "benefits"},
+                tool_call_id="load-benefits",
+            )]),
+        ],
+    )
+
+    with pytest.raises(ModelRetry):
+        await runtime._validate_grounding(ctx, "You are definitely eligible to appeal.")
+
+    assert ctx.deps.validation_rejections[-1]["stage"] == "high_stakes_format"
+
+
+async def test_high_stakes_claim_rejects_discovery_only_evidence() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            situations=[SituationHint(
+                name="eligibility",
+                definition="Benefits eligibility guidance",
+                high_stakes=True,
+            )],
+        )
+    ])
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda _messages, _info: ModelResponse([])),
+        registry=registry,
+        tools={},
+        structured_grounding=True,
+        use_module_capabilities=True,
+    )
+    citations = CitationRegistry()
+    citations.register(
+        "https://example.org/benefits",
+        snippet="A search result says every applicant qualifies.",
+        provenance={"evidence_grade": "discovery", "source_tier": "unverified"},
+    )
+    ctx = SimpleNamespace(
+        deps=ToolContext(citations=citations, registry=registry),
+        messages=[
+            ModelRequest(parts=[UserPromptPart("Do I qualify?")]),
+            ModelResponse(parts=[LoadCapabilityCallPart(
+                args={"id": "benefits"},
+                tool_call_id="load-benefits",
+            )]),
+        ],
+    )
+
+    with pytest.raises(ModelRetry):
+        await runtime._validate_grounding(
+            ctx,
+            GroundedAnswer(grounded_blocks=[GroundedBlock(
+                text="Every applicant qualifies.",
+                citation_ids=["S1"],
+            )]),
+        )
+
+    assert ctx.deps.validation_rejections[-1]["stage"] == "discovery_only"
+
+
+async def test_governed_tool_use_marks_the_turn_high_stakes() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            situations=[SituationHint(
+                name="eligibility",
+                definition="Benefits eligibility guidance",
+                high_stakes=True,
+            )],
+        )
+    ])
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda _messages, _info: ModelResponse([])),
+        registry=registry,
+        tools={"check_benefits": Tool(
+            name="check_benefits",
+            description="Check benefits",
+            handler=lambda _args, _ctx: None,
+            module="benefits",
+        )},
+        structured_grounding=True,
+        use_module_capabilities=True,
+    )
+    ctx = SimpleNamespace(
+        deps=ToolContext(
+            citations=CitationRegistry(),
+            registry=registry,
+            tool_runs=[{"tool": "check_benefits", "status": "success"}],
+        ),
+        messages=[ModelRequest(parts=[UserPromptPart("Do I qualify?")])],
+    )
+
+    with pytest.raises(ModelRetry):
+        await runtime._validate_grounding(ctx, "You definitely qualify.")
+
+    assert ctx.deps.validation_rejections[-1]["stage"] == "high_stakes_format"
+
+
+async def test_high_stakes_mixed_turn_preserves_a_sourced_low_stakes_lead() -> None:
+    registry = Registry([
+        ServiceModule(
+            name="benefits",
+            situations=[SituationHint(
+                name="eligibility",
+                definition="Benefits eligibility guidance",
+                high_stakes=True,
+            )],
+        )
+    ])
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda _messages, _info: ModelResponse([])),
+        registry=registry,
+        tools={},
+        structured_grounding=True,
+        use_module_capabilities=True,
+    )
+    citations = CitationRegistry()
+    citations.register(
+        "https://www.nyc.gov/site/hra/help/snap-benefits-food-program.page",
+        snippet="Apply for SNAP through ACCESS HRA.",
+        provenance={"evidence_grade": "authoritative", "source_tier": "authoritative"},
+    )
+    citations.register(
+        "https://example.org/finance-event",
+        snippet="Finance networking event Thursday from 6 to 9 PM.",
+        provenance={"evidence_grade": "discovery", "source_tier": "community"},
+    )
+    ctx = SimpleNamespace(
+        deps=ToolContext(citations=citations, registry=registry),
+        messages=[
+            ModelRequest(parts=[UserPromptPart("Help with SNAP and an event tonight")]),
+            ModelResponse(parts=[LoadCapabilityCallPart(
+                args={"id": "benefits"},
+                tool_call_id="load-benefits",
+            )]),
+        ],
+    )
+    output = GroundedAnswer(grounded_blocks=[
+        GroundedBlock(text="Apply for SNAP through ACCESS HRA.", citation_ids=["S1"]),
+        GroundedBlock(
+            kind="lead",
+            text="A community source lists a finance networking event Thursday from 6 to 9 PM.",
+            citation_ids=["S2"],
+        ),
+    ])
+
+    assert await runtime._validate_grounding(ctx, output) == output
+
+
+async def test_grounded_blocks_keep_exact_dates_bound_to_their_declared_sources() -> None:
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(lambda _messages, _info: ModelResponse([])),
+        registry=Registry([]),
+        tools={},
+        structured_grounding=True,
+    )
+    citations = CitationRegistry()
+    citations.register(
+        "https://events.example/august",
+        snippet="Finance August Networking Event Thu, Aug 27th, 2026, 6:00 PM to 9:00 PM.",
+        provenance={"evidence_grade": "search_excerpt"},
+    )
+    citations.register(
+        "https://events.example/september",
+        snippet="Join us Wednesday, September 2nd, 2026, at 6:00 PM ET.",
+        provenance={"evidence_grade": "search_excerpt"},
+    )
+    ctx = SimpleNamespace(
+        deps=ToolContext(citations=citations, registry=Registry([])),
+        messages=[ModelRequest(parts=[UserPromptPart("What events did you find?")])],
+    )
+    output = GroundedAnswer(grounded_blocks=[
+        GroundedBlock(
+            text="The August event is on August 27, 2026, from 6:00 PM to 9:00 PM. https://events.example/august",
+            citation_ids=["S1"],
+        ),
+        GroundedBlock(
+            text="The next listing is September 2, 2026, at 6:00 PM ET. https://events.example/september",
+            citation_ids=["S2"],
+        ),
+    ])
+
+    assert await runtime._validate_grounding(ctx, output) == output
+
+
 async def test_pydantic_scope_checklist_sets_current_source_policy() -> None:
-    registry = Registry([ServiceModule(name="events", official_only=False)])
+    registry = Registry([ServiceModule(name="events")])
 
     async def search(_args: dict, ctx: ToolContext) -> str:
         assert ctx.current_turn_modules == frozenset({"events"})
@@ -389,6 +545,7 @@ async def test_pydantic_scope_checklist_sets_current_source_policy() -> None:
             requests=1,
             cost_usd=0.0,
             latency_ms=1.0,
+            usable=True,
         )
 
     calls = 0
@@ -413,7 +570,6 @@ async def test_pydantic_scope_checklist_sets_current_source_policy() -> None:
             "web_search": Tool(
                 name="web_search",
                 description="Search the web",
-                parameters={"type": "object", "properties": {}},
                 handler=search,
             )
         },
@@ -427,6 +583,43 @@ async def test_pydantic_scope_checklist_sets_current_source_policy() -> None:
     message = "\n".join(render(result, "sms"))
     assert "https://unknown.example/event" in message
     assert "verification note" not in message.lower()
+
+
+async def test_pydantic_untyped_scope_result_keeps_sourced_excerpts_available() -> None:
+    async def untyped_scope(_turns: tuple[str, ...]):
+        return SimpleNamespace(event_turn=None, modules=(), situations=())
+
+    async def search(_args: dict, ctx: ToolContext) -> str:
+        assert ctx.allow_unverified_search_excerpts is True
+        return "No excerpt used."
+
+    calls = 0
+
+    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("web_search", {}, "search-1")])
+        return ModelResponse([
+            ToolCallPart("final_answer", {"answer": "I could not verify that."}, "answer-1")
+        ])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([ServiceModule(name="events")]),
+        tools={
+            "web_search": Tool(
+                name="web_search",
+                description="Search the web",
+                handler=search,
+            )
+        },
+        structured_grounding=True,
+        use_module_capabilities=True,
+        scope_screen=untyped_scope,
+    ).run("What is happening tonight?")
+
+    assert result.text == "I could not verify that."
 
 
 def test_source_backed_excerpt_does_not_get_a_blanket_warning() -> None:

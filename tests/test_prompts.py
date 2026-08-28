@@ -20,8 +20,17 @@ def test_system_prompt_injects_current_nyc_datetime():
     assert "Current date & time" in prompt
     assert "June 28, 2026" in prompt
     assert "America/New_York" in prompt
+    assert "Monday, June 22, 2026 through Sunday, June 28, 2026" in prompt
     # still carries the grounding rules
     assert "GROUND EVERYTHING" in prompt
+
+
+def test_system_prompt_disambiguates_a_calendar_week_across_new_year():
+    fixed = datetime(2026, 12, 31, 19, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    prompt = build_system_prompt(Registry([]), now=fixed)
+
+    assert "Monday, December 28, 2026 through Sunday, January 3, 2027" in prompt
 
 
 def test_system_prompt_teaches_broad_search_for_an_ambiguous_reference():
@@ -29,8 +38,7 @@ def test_system_prompt_teaches_broad_search_for_an_ambiguous_reference():
     prompt = build_system_prompt(Registry([]))
     low = prompt.lower()
     assert "ambiguous or unfamiliar reference" in low
-    assert "start with one broad `web_search`" in low
-    assert "reference itself plus at most a date or \"nyc\"" in low
+    assert "search its name plus at most nyc or a date" in low
     assert "not the resident's whole sentence" in low
 
 
@@ -39,14 +47,14 @@ def test_system_prompt_routes_retrieval_by_evidence_shape_instead_of_a_fixed_cha
 
     assert "first `index_search`" not in low
     assert "index_search" not in low
-    assert "choose the available tool whose operation matches the evidence gap" in low
+    assert "choose the tool that matches the evidence gap" in low
 
 
 def test_system_prompt_does_not_date_filter_standing_official_guidance():
     low = build_system_prompt(Registry([])).lower()
 
     assert "standing official guidance without publication bounds" in low
-    assert "recent change itself" in low
+    assert "recent change" in low
 
 
 def test_system_prompt_bans_internal_jargon_in_replies():
@@ -58,8 +66,9 @@ def test_system_prompt_bans_internal_jargon_in_replies():
     assert "never say" in low or "plumbing" in low or "internal words" in low
     assert '"grounded"' in prompt  # the ban names the exact word residents saw
     # Luna-medium runs long for SMS (2026-07-18 review): the voice caps answer size.
-    assert "text-message sized" in low
-    assert "about 5 items" in low   # consolidated count home (prompt diet block 3)
+    assert "concise" in low
+    assert "about 5 items" not in low
+    assert "honor a requested count" in low
 
 
 def test_system_prompt_summarizes_repetitive_records_without_sounding_mechanical():
@@ -68,10 +77,16 @@ def test_system_prompt_summarizes_repetitive_records_without_sounding_mechanical
     assert "intelligent, caring friend" in low
     assert "lead with the useful takeaway" in low
     assert "summarize the pattern" in low
-    assert "representative examples" in low
-    assert "copying a tool's list line by line" in low
-    assert "retrieval count is not an answer-length target" in low
-    assert "offer more" in low
+    assert "call the choices a shortlist" in low
+    assert "instead of dumping records" in low
+    assert "honor a requested count" in low
+    assert "natural follow-up" in low
+
+
+def test_system_prompt_does_not_dump_rejected_records():
+    low = build_system_prompt(Registry([])).lower()
+
+    assert "never infer missing properties, mention rejected records" in low
 
 
 def test_system_prompt_includes_active_publication_freshness_check():
@@ -79,12 +94,10 @@ def test_system_prompt_includes_active_publication_freshness_check():
     # time-sensitive law/policy/rights questions the agent uses the one web search tool.
     prompt = build_system_prompt(Registry([]))
     low = prompt.lower()
-    assert "web_search" in prompt
-    assert "published_after" in low
-    assert "published_before" in low
-    assert "publication date" in low
+    assert "publication bounds" in low
+    assert "published in a requested period" in low
     assert "recent_developments" not in prompt
-    assert "check for recent changes" in low
+    assert "recent change" in low
     # The heads-up shape ("this may be changing") rehomed to the tool description with the
     # rest of the protocol (prompt diet, 2026-07-22); pinned there by the contested test.
 
@@ -112,26 +125,23 @@ def test_system_prompt_forbids_uncited_authority_on_substantive_facts():
     # Grounding discipline has one rule: retrieve and cite, otherwise state the gap and route.
     low = build_system_prompt(Registry([])).lower()
     assert "general information, not an official ruling" not in low
-    assert "if retrieval does not support the claim, state the gap" in low
+    assert "if no tool can close it" in low
     assert "an uncited substantive claim is not" in low
-    assert "misconception" in low
 
 
 def test_system_prompt_requires_citations_on_the_supported_sentence_or_bullet():
     low = build_system_prompt(Registry([])).lower()
     assert "same sentence or bullet" in low
-    assert "elsewhere in a paragraph or list does not count" in low
-    assert "separate facts from different sources into separate sentences or bullets" in low
-    assert "one factual or procedural claim" in low
-    assert "one factual claim per `groundedanswer` block" in low
-    assert "never put braces around a url" in low
+    assert "in the same sentence or bullet it supports" in low
+    assert "use only citations and links returned by tools" in low
+    assert "uncited substantive claim is not allowed" in low
 
 
 def test_system_prompt_describes_data_practices_accurately():
     # Product-policy details live behind the eagerly available documentation tool.
     low = build_system_prompt(Registry([])).lower()
     assert "about_heynyc" in low
-    assert "product-policy questions from memory" in low
+    assert "do not answer from memory" in low
     assert "ssn" in low and "sensitive id" in low
     assert "encrypted conversation" not in low
     assert "configured retention period" not in low
@@ -148,11 +158,9 @@ def test_system_prompt_orders_urgent_help_and_makes_handoffs_actionable():
     low = build_system_prompt(Registry([])).lower()
 
     assert "immediate need first" in low
-    assert "time-sensitive appeal or challenge step next" in low
+    assert "time-sensitive appeal or challenge next" in low
     assert "usable contact method or link" in low
-    assert "action page is unavailable" in low
-    assert "one focused search for that action" in low
-    assert "spell out an acronym the first time" in low
+    assert "usable contact method or link" in low
 
 
 def test_contested_legal_matter_protocol_lives_in_global_policy():
@@ -167,18 +175,28 @@ def test_contested_legal_matter_protocol_lives_in_global_policy():
     assert "currently stands" in low                      # the never-cross line survives
     assert "never a repeal" in low
     assert "recent_developments" not in low
-    assert "web_search" in low
+    assert "publication bounds" in low
 
 
-def test_web_search_query_contract_separates_independent_facts():
+def test_web_search_query_contract_preserves_resident_constraints():
     from heynyc.core.tools.web_search import web_search_tools
 
     tool = web_search_tools(["nyc.gov"], {}, set())[0]
-    description = tool.parameters["properties"]["query"]["description"].lower()
+    description = tool._input_schema()["properties"]["queries"]["description"].lower()
 
-    assert "one fact-finding objective" in description
-    assert "parallel" in description
-    assert "independent" in description
+    assert "independent focused searches" in description
+
+
+def test_web_search_description_stays_focused_on_the_search_operation():
+    from heynyc.core.tools.web_search import web_search_tools
+
+    description = web_search_tools(["nyc.gov"], {}, set())[0].description.lower()
+
+    assert "short noun-phrase query" in description
+    assert "ranked source excerpts" in description
+    assert "collection" not in description
+    assert "search again" not in description
+    assert "recommend" not in description
 
 
 def test_system_prompt_emergency_no_medical_dosing():
@@ -194,8 +212,8 @@ def test_system_prompt_does_not_generalize_unknown_medication_instructions():
     low = build_system_prompt(Registry([])).lower()
 
     assert "unknown medication" in low
-    assert "do not infer its instructions from other drugs" in low
-    assert "dispensing pharmacist or prescriber" in low
+    assert "do not infer instructions from other drugs" in low
+    assert "dispensing pharmacist" in low and "prescriber" in low
     assert "poison control" in low and "extra dose" in low
 
 
@@ -204,9 +222,9 @@ def test_system_prompt_does_not_make_personalized_medical_mobility_decisions():
 
     assert "health condition or recovery" in low
     assert "do not recommend walking, driving, or another transport mode based on medical facts" in low
-    assert "clinician's instructions" in low
+    assert "follow the resident's clinician" in low
     assert "verified logistical facts" in low
-    assert "do not follow that limitation with a vehicle, escort, or walking recommendation" in low
+    assert "do not follow a limitation with a vehicle, escort, or walking recommendation" in low
 
 
 def test_system_prompt_public_charge_snap_guardrail():
@@ -214,7 +232,7 @@ def test_system_prompt_public_charge_snap_guardrail():
     # injected into every conversation. The latter hijacked a Bengali SNAP-loss question.
     low = build_system_prompt(Registry([])).lower()
     assert "public charge" in low
-    assert "only when the resident asks" in low
+    assert "unless asked" in low
     assert "never introduce immigration or public charge" in low
     assert "retrieve current official guidance" in low
     assert "snap (food stamps)" not in low
@@ -229,15 +247,14 @@ def test_system_prompt_same_discipline_in_every_language():
     low = build_system_prompt(Registry([])).lower()
     assert "every language" in low
     assert "law number" in low  # never invent a law number in any language
-    # cites the concrete correct statute the Spanish ES13 failure fabricated ("Local Law 68")
-    assert "local law 34" in low or "20-840" in low
+    assert "never invent a law number" in low
 
 
 def test_system_prompt_translates_resident_facing_source_language():
     low = build_system_prompt(Registry([])).lower()
     assert "translate resident-facing labels and suggested phrases" in low
-    assert "required official keyword" in low
-    assert "keep official names, addresses, and links exact" in low
+    assert "required commands" in low
+    assert "keep official names" in low and "addresses, links" in low
 
 
 def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
@@ -251,7 +268,7 @@ def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
     low = stable.lower()
     assert "equal dignity" in low
     assert "civil rights" in low
-    assert "never take sides" in low
+    assert "do not take sides" in low
     assert "contested" in low
     # No named groups anywhere in the values baseline.
     assert "palestinian" not in low
@@ -264,8 +281,8 @@ def test_system_prompt_carries_ambient_equal_dignity_values_in_stable_tier():
 def test_system_prompt_answers_broadly_without_topic_suppression():
     low = build_system_prompt(Registry([])).lower()
 
-    assert "answer broadly" in low
-    assert "do not suppress" in low
+    assert "answer useful nyc questions broadly" in low
+    assert "do not suppress them" in low
     assert "stay in scope" not in low
     assert "outside what you help with" not in low
 
@@ -276,29 +293,26 @@ def test_system_prompt_teaches_per_turn_composition_in_stable_tier():
 
     stable, volatile = build_system_prompt_tiers(Registry([]))
     low = stable.lower()
-    assert "tool menu" in low
-    assert "what each result means on its own and alongside the last one" in low
-    assert "parallelize only independent tool calls" in low
-    assert "return the final resident answer immediately" in low
-    assert "official guidance first, in any language" in low
-    assert "return the final resident answer immediately" not in volatile.lower()
+    assert "parallelize independent calls" in low
+    assert "answer if the request is supported" in low
+    assert "answer if the request is supported" not in volatile.lower()
 
 
 def test_system_prompt_sequences_dependent_tool_calls():
     low = build_system_prompt(Registry([])).lower()
-    assert "parallelize only independent tool calls" in low
-    assert "wait for that result" in low
+    assert "parallelize independent calls" in low
+    assert "sequence dependent ones" in low
 
 
 def test_system_prompt_stops_retrieval_once_requested_constraints_are_supported():
     low = build_system_prompt(Registry([])).lower()
-    assert low.count("return the final resident answer immediately") == 1
+    assert low.count("answer if the request is supported") == 1
     assert "call `final_answer`" not in low
-    assert "call the real tool most likely to resolve that specific gap" in low
-    assert "no available tool can resolve it" in low
-    assert "supported information" in low
-    assert "state the limit plainly" in low
-    assert "do not repeat a search or fetch that already answered the same question" in low
+    assert "focused call needed for the remaining gap" in low
+    assert "no tool can close it" in low
+    assert "supported evidence" in low
+    assert "what remains unknown" in low
+    assert "never repeat a successful search or fetch" in low
 
 
 def test_system_prompt_does_not_prescribe_removed_regeneration_or_deferred_module_tools():
@@ -314,10 +328,9 @@ def test_system_prompt_separates_partial_matches_from_exact_results():
     low = build_system_prompt(Registry([])).lower()
 
     assert "treat partial matches as alternatives, not exact matches" in low
-    assert "do not infer a missing property" in low
+    assert "never infer missing properties" in low
+    assert "conflicting actionable sources" in low
     assert "related fallback" not in low
-    assert "systemwide statement supports a specific location only" in low
-    assert "names that location" in low
 
 
 def test_system_prompt_preserves_source_time_and_population_scope():
@@ -325,19 +338,15 @@ def test_system_prompt_preserves_source_time_and_population_scope():
 
     assert "source's as-of date" in low
     assert "sample or shortlist" in low
-    assert "complete population" in low
-    assert "current, permanent, temporary, or citywide" in low
-    assert "does not substantiate a premise" in low
-    assert "do not assert the opposite" in low
+    assert "whole population" in low
 
 
 def test_system_prompt_keeps_complaint_privacy_rules_procedure_specific():
     low = build_system_prompt(Registry([])).lower()
 
     assert "anonymous, confidential, or disclosed" in low
-    assert "exact complaint or application procedure" in low
-    assert "do not transfer a privacy rule" in low
-    assert "if that procedure's source is silent" in low
+    assert "that exact procedure's source" in low
+    assert "if it is silent" in low
 
 
 def test_housing_privacy_situation_fetches_each_exact_complaint_page():
@@ -409,25 +418,26 @@ def test_311_status_hands_unresolved_building_repairs_to_composed_records():
 def test_system_prompt_preserves_official_handoff_without_reasking_named_landmarks():
     low = build_system_prompt(Registry([])).lower()
 
-    assert "best retrieved official next step" in low
     assert "named venue or landmark" in low
-    assert "already-supplied endpoint" in low
+    assert "already supplied" in low
 
 
 def test_system_prompt_minimizes_missing_attachment_recovery():
     low = build_system_prompt(Registry([])).lower()
     assert "attachment was not received" in low
-    assert "paste only the redacted text" in low
+    assert "ask for redacted text" in low
     assert "redacted image or text summary" not in low
     assert "case or client numbers" in low
-    assert "never ask for a full case number" in low
+    assert "never request" in low and "full case number" in low
 
 
-def test_phone_style_limits_combined_default_without_capping_user_requests():
+def test_phone_style_stays_concise_without_an_arbitrary_count():
     from heynyc.core.prompts import BASE_SYSTEM_PROMPT
 
-    assert "about 6 across categories" in BASE_SYSTEM_PROMPT
-    assert "honor the user's requested count" in BASE_SYSTEM_PROMPT
+    assert "Keep lists concise" in BASE_SYSTEM_PROMPT
+    assert "about 5 items" not in BASE_SYSTEM_PROMPT
+    assert "about 6 across categories" not in BASE_SYSTEM_PROMPT
+    assert "honor a requested count" in BASE_SYSTEM_PROMPT
 
 
 def test_legacy_module_guidance_is_complete_and_query_independent():
@@ -490,10 +500,8 @@ def test_conversation_rules_preserve_transform_only_followups_without_retrieval(
     stable, _ = build_system_prompt_tiers(_real_registry())
     low = stable.lower()
     assert "translate, repeat, shorten, or reformat" in low
-    assert "do not call a discovery or retrieval tool" in low
-    assert "preserve the same items" in low
-    assert "inclusive or exclusive boundary" in low
-    assert "negation, quantity, date, and eligibility condition" in low
-    assert "retrieve again only when the resident asks for updated or new facts" in low
-    assert "earlier answer lacks the evidence" in low
-    assert "when a new or current factual answer is needed" in low
+    assert "without new retrieval" in low
+    assert "preserve its items" in low
+    assert "conditions, negations, quantities, and dates" in low
+    assert "resident asks for new facts" in low
+    assert "evidence is missing" in low

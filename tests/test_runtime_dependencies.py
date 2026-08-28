@@ -37,7 +37,6 @@ async def test_runtime_reuses_the_configured_index_embedder_in_tools(tmp_path):
             "probe": Tool(
                 name="probe",
                 description="Inspect runtime dependencies",
-                parameters={"type": "object", "properties": {}},
                 handler=probe,
             )
         },

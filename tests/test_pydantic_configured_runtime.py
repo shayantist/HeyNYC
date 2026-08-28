@@ -20,7 +20,6 @@ def test_configured_runtime_uses_structured_grounding_without_claim_support_chec
 ):
     captured = {}
     safety_screen = object()
-    scope_screen = object()
     output_guard = object()
 
     def build_runtime(_registry, **kwargs):
@@ -37,12 +36,6 @@ def test_configured_runtime_uses_structured_grounding_without_claim_support_chec
             safety_screen if model_name == "TestModel" else AssertionError(model_name)
         ),
     )
-    monkeypatch.setattr(
-        "heynyc.core.pydantic_runtime.build_scope_screen",
-        lambda _model, *, model_name, registry: (
-            scope_screen if model_name == "TestModel" else AssertionError(model_name)
-        ),
-    )
     model = TestModel()
     build_configured_runtime(
         Registry([]),
@@ -56,7 +49,7 @@ def test_configured_runtime_uses_structured_grounding_without_claim_support_chec
     assert captured["model"] is model
     assert captured["fact_review_model"] is model
     assert captured["crisis_screen"] is safety_screen
-    assert captured["scope_screen"] is scope_screen
+    assert captured["scope_screen"] is None
     assert captured["output_guard"] is output_guard
 
 
@@ -115,7 +108,6 @@ async def test_configured_runtime_preserves_typed_provider_failure_result() -> N
             "provider_lookup": Tool(
                 name="provider_lookup",
                 description="Return one provider result",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
                 return_type=ProviderResult,
             )
@@ -133,6 +125,49 @@ async def test_configured_runtime_preserves_typed_provider_failure_result() -> N
         "next_cursor": None,
         "error": "provider unavailable",
     }
+
+
+async def test_configured_runtime_passes_validated_input_to_tool_handler() -> None:
+    class LookupInput(BaseModel):
+        count: int
+
+    received: list[dict] = []
+
+    async def handler(args: dict, _ctx: ToolContext) -> str:
+        received.append(args)
+        return "found"
+
+    async def model(messages, _info) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            return ModelResponse(
+                [ToolCallPart("typed_lookup", {"count": "2"}, "typed-1")]
+            )
+        return ModelResponse([TextPart("Done")])
+
+    runtime = build_runtime(
+        Registry([]),
+        model=FunctionModel(model),
+        tools={
+            "typed_lookup": Tool(
+                name="typed_lookup",
+                description="Typed lookup",
+                input_type=LookupInput,
+                handler=handler,
+            )
+        },
+        structured_grounding=False,
+    )
+
+    result = await runtime.run("Find two")
+
+    assert result.status == "success"
+    assert [value.model_dump() for value in received] == [{"count": 2}]
 
 
 def test_configured_structured_runtime_does_not_stream_model_requests(monkeypatch):
@@ -180,6 +215,35 @@ def test_configured_runtime_keeps_uncalibrated_claim_support_checker_out_of_publ
 
     assert captured.get("claim_support_checker") is None
     assert "openai/gpt-5.6-luna" in configured
+
+
+def test_configured_runtime_disables_reasoning_for_chat_classifier_tools(monkeypatch):
+    configured = []
+
+    def capture(model, **kwargs):
+        configured.append((model, kwargs))
+        return object()
+
+    monkeypatch.setattr("heynyc.core.pydantic_runtime.configured_model", capture)
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_crisis_screen",
+        lambda _model, *, model_name: object(),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_scope_screen",
+        lambda _model, *, model_name, registry: object(),
+    )
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.build_runtime",
+        lambda _registry, **kwargs: object(),
+    )
+
+    build_configured_runtime(Registry([]), model="openai/gpt-5.6-luna")
+
+    assert configured[1] == (
+        config.HEYNYC_SCOPE_MODEL,
+        {"reasoning_effort": "none"},
+    )
 
 
 def test_configured_model_delegates_non_openai_providers_to_pydantic(
@@ -237,6 +301,12 @@ def test_configured_luna_disables_rejected_native_tool_search(monkeypatch) -> No
     assert "ToolSearchTool" not in native_names
 
 
+def test_openai_models_use_pydantic_responses_without_litellm_routing() -> None:
+    model = configured_model("openai/gpt-5.6-luna")
+
+    assert type(model).__name__ == "OpenAIResponsesModel"
+
+
 @pytest.mark.parametrize("with_index", [False, True])
 async def test_configured_luna_prepared_request_hides_undiscovered_tools(
     monkeypatch,
@@ -283,7 +353,6 @@ async def test_configured_luna_prepared_request_hides_undiscovered_tools(
         "geocode",
         "nearest",
         "distance",
-        "evaluate_event_time",
         "web_search",
         "web_fetch",
         "about_heynyc",
@@ -297,7 +366,6 @@ async def test_configured_luna_prepared_request_hides_undiscovered_tools(
     assert "general web facts" in search_tools.description
     assert {tool.name for tool in prepared.output_tools} == {
         "final_answer",
-        "grounded_answer",
         "clarification_request",
         "nonfactual_outcome",
     }

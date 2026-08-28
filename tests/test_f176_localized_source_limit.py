@@ -145,7 +145,6 @@ async def test_f176_missing_localized_limit_is_rendered_without_a_model_retry() 
             "nearest": Tool(
                 name="nearest",
                 description="Find a SNAP center",
-                parameters={"type": "object", "properties": {}},
                 handler=nearest,
             )
         },

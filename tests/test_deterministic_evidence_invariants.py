@@ -48,7 +48,7 @@ def test_deterministic_backstop_citations_are_runtime_evidence() -> None:
     }
 
     assert checks["grounding"].passed
-    assert set(checks) == {"grounding"}
+    assert set(checks) == {"grounding", "faithfulness"}
 
 
 def test_model_authored_authoritative_citation_is_not_runtime_evidence() -> None:
@@ -63,7 +63,7 @@ def test_model_authored_authoritative_citation_is_not_runtime_evidence() -> None
     }
 
     assert not checks["grounding"].passed
-    assert set(checks) == {"grounding"}
+    assert set(checks) == {"grounding", "faithfulness"}
 
 
 def test_specialized_semantics_are_left_to_trace_review() -> None:
@@ -76,7 +76,7 @@ def test_specialized_semantics_are_left_to_trace_review() -> None:
     }
 
     assert checks["grounding"].passed
-    assert set(checks) == {"grounding"}
+    assert set(checks) == {"grounding", "faithfulness"}
 
 
 def test_prior_citation_does_not_hide_current_deterministic_evidence() -> None:

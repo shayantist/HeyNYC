@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from datetime import date
 
-from heynyc.core.citations import content_hash
+import pytest
+
+from heynyc.core.citations import CitationRegistry, content_hash
 from heynyc.core.grounding import _split_claims, check_grounding, citation_evidence
 
 
@@ -46,6 +48,24 @@ def test_location_citation_evidence_includes_resolved_origin() -> None:
     assert evidence is not None
     assert "Rockefeller Center" in evidence
     assert "45, Rockefeller Plaza" in evidence
+
+
+def test_web_json_ld_is_source_evidence() -> None:
+    evidence = citation_evidence({
+        "url": "https://venue.example/jazz-night",
+        "kind": "WEB",
+        "snippet": "Jazz night",
+        "title": "Jazz night",
+        "provenance": {
+            "structured_data": [{
+                "@type": "Event",
+                "name": "Jazz night",
+                "startDate": "2099-08-28T20:00:00-04:00",
+            }],
+        },
+    })
+
+    assert "2099-08-28T20:00:00-04:00" in evidence
 
 
 def test_clock_claim_is_not_semantically_parsed():
@@ -192,6 +212,21 @@ def test_markdown_source_link_keeps_a_matching_previous_claim_grounded():
     assert not result.blocking
 
 
+def test_street_ordinal_matches_compact_range_and_plural_abbreviation():
+    result = check_grounding(
+        "The plaza is between 42nd and 43rd Streets. {cite:S1}",
+        {
+            "S1": _data_cite(
+                {},
+                snippet="Broadway plaza between 42nd–43rd Sts",
+            )
+        },
+    )
+
+    assert result is not None
+    assert result.passed
+
+
 def test_translated_full_date_matches_english_source_by_numeric_components():
     citation = _data_cite(
         {},
@@ -286,6 +321,20 @@ def test_current_date_does_not_need_source_support():
     assert any(item["where"] == "system-date" for item in res.locations)
 
 
+def test_current_date_still_needs_support_when_claimed_as_an_event_date():
+    citation = _data_cite({}, snippet="Movie nights run every Monday.")
+
+    res = check_grounding(
+        "Movie night is Wednesday, August 26, 2026. {cite:S1}",
+        {"S1": citation},
+        current_date=date(2026, 8, 26),
+    )
+
+    assert res is not None
+    assert res.blocking
+    assert res.hard_failures[0].kind == "date"
+
+
 def test_date_derived_from_resident_weekday_does_not_need_source_support():
     citation = _data_cite({}, snippet="Use the MTA trip planner for an accessible route.")
 
@@ -338,6 +387,178 @@ def test_full_month_date_matches_abbreviated_source_month():
 
     assert supported is not None and supported.passed
     assert wrong is not None and wrong.blocking
+
+
+def test_compact_date_range_requires_support_from_its_own_citation():
+    supported = check_grounding(
+        "The festival runs August 28–30. {cite:S1}",
+        {"S1": _data_cite({}, snippet="The festival returns August 28–30.")},
+    )
+    wrong_source = check_grounding(
+        "The festival runs August 28–30. {cite:S1}",
+        {"S1": _data_cite({}, snippet="The festival is a three-day celebration of jazz.")},
+    )
+
+    assert supported is not None and supported.passed
+    assert wrong_source is not None and wrong_source.blocking
+    assert wrong_source.hard_failures[0].kind == "date_range"
+
+
+def test_compact_date_range_matches_iso_dates_in_structured_evidence():
+    result = check_grounding(
+        "The festival runs August 28 through 30, 2026. {cite:S1}",
+        {
+            "S1": _data_cite({
+                "start_date": "2026-08-28",
+                "end_date": "2026-08-30",
+            })
+        },
+    )
+
+    assert result is not None and result.passed
+
+
+def test_list_item_citation_checks_every_sentence_on_that_line():
+    result = check_grounding(
+        (
+            "- Charlie Parker Jazz Festival 2026, August 28–30. "
+            "It is a three-day jazz festival. {cite:S1}"
+        ),
+        {"S1": _data_cite({}, snippet="A three-day celebration of live jazz.")},
+    )
+
+    assert result is not None and result.blocking
+    assert result.hard_failures[0].kind == "date_range"
+
+
+def test_trailing_list_item_citation_does_not_cover_an_earlier_item():
+    result = check_grounding(
+        (
+            "- First event runs August 28–30\n"
+            "- Second event runs September 1–2 {cite:S1}"
+        ),
+        {"S1": _data_cite({}, snippet="Second event: September 1–2")},
+    )
+
+    assert result is not None and result.passed
+    assert result.checked == 1
+
+
+def test_compact_date_range_matches_common_month_abbreviation():
+    for claim, source in (
+        ("September 28–30, 2026", "Sept 28–30, 2026"),
+        ("Sept 28–30, 2026", "September 28–30, 2026"),
+        ("Sep 28–30, 2026", "September 28–30, 2026"),
+    ):
+        result = check_grounding(
+            f"The festival runs {claim}. {{cite:S1}}",
+            {"S1": _data_cite({}, snippet=f"The festival runs {source}.")},
+        )
+
+        assert result is not None and result.passed
+
+
+@pytest.mark.parametrize(
+    ("claim", "source", "wrong_source"),
+    [
+        (
+            "El festival será agosto 28–30, 2026.",
+            "Festival: agosto 28–30, 2026.",
+            "Festival: agosto 27–30, 2026.",
+        ),
+        (
+            "المهرجان ٢٨–٣٠ أغسطس ٢٠٢٦.",
+            "المهرجان ٢٨–٣٠ أغسطس ٢٠٢٦.",
+            "المهرجان ٢٧–٣٠ أغسطس ٢٠٢٦.",
+        ),
+    ],
+)
+def test_compact_date_range_matches_localized_month_order_and_digits(
+    claim, source, wrong_source
+):
+    supported = check_grounding(
+        f"{claim} {{cite:S1}}",
+        {"S1": _data_cite({}, snippet=source)},
+    )
+    mismatched = check_grounding(
+        f"{claim} {{cite:S1}}",
+        {"S1": _data_cite({}, snippet=wrong_source)},
+    )
+
+    assert supported is not None and supported.passed
+    assert mismatched is not None and mismatched.blocking
+    assert mismatched.hard_failures[0].kind == "date_range"
+
+
+def test_day_first_compact_date_range_checks_the_month():
+    result = check_grounding(
+        "المهرجان ٢٨–٣٠ أغسطس ٢٠٢٦. {cite:S1}",
+        {"S1": _data_cite({}, snippet="المهرجان ٢٨–٣٠ سبتمبر ٢٠٢٦.")},
+    )
+
+    assert result is not None and result.blocking
+    assert any(failure.kind == "date_range" for failure in result.hard_failures)
+
+
+def test_day_first_compact_date_range_allows_a_short_connector():
+    supported = check_grounding(
+        "El festival será del 28–30 de agosto de 2026. {cite:S1}",
+        {"S1": _data_cite({}, snippet="Festival del 28–30 de agosto de 2026.")},
+    )
+    mismatched = check_grounding(
+        "El festival será del 28–30 de agosto de 2026. {cite:S1}",
+        {"S1": _data_cite({}, snippet="Festival del 28–30 de septiembre de 2026.")},
+    )
+
+    assert supported is not None and supported.passed
+    assert mismatched is not None and mismatched.blocking
+    assert any(failure.kind == "date_range" for failure in mismatched.hard_failures)
+
+
+def test_day_first_range_does_not_extract_the_preceding_verb_as_a_month():
+    result = check_grounding(
+        "The festival runs 28–30 August 2026. {cite:S1}",
+        {"S1": _data_cite({}, snippet="The festival takes place 28–30 August 2026.")},
+    )
+
+    assert result is not None and result.passed
+    assert all(location["token"] != "runs 28–30" for location in result.locations)
+
+
+def test_day_first_range_without_a_year_checks_the_month():
+    supported = check_grounding(
+        "The festival runs 28–30 August. {cite:S1}",
+        {"S1": _data_cite({}, snippet="The festival takes place 28–30 August.")},
+    )
+    mismatched = check_grounding(
+        "The festival runs 28–30 August. {cite:S1}",
+        {"S1": _data_cite({}, snippet="The festival takes place 28–30 September.")},
+    )
+
+    assert supported is not None and supported.passed
+    assert mismatched is not None and mismatched.blocking
+    assert any(failure.kind == "date_range" for failure in mismatched.hard_failures)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "El festival será agosto 28–30, 2026.",
+        "المهرجان ٢٨–٣٠ أغسطس ٢٠٢٦.",
+    ],
+)
+def test_localized_date_range_matches_iso_structured_evidence(claim):
+    result = check_grounding(
+        f"{claim} {{cite:S1}}",
+        {
+            "S1": _data_cite({
+                "start_date": "2026-08-28",
+                "end_date": "2026-08-30",
+            })
+        },
+    )
+
+    assert result is not None and result.passed
 
 
 def test_full_date_matches_yearless_schedule_row_with_same_year_context():
@@ -515,6 +736,32 @@ def test_equivalent_money_format_is_grounded():
     assert res is not None and res.passed, res.detail
 
 
+def test_schema_org_usd_price_is_grounded_from_search_evidence():
+    citation = {
+        "url": "https://example.com/events",
+        "kind": "WEB",
+        "title": "Concert listings",
+        "snippet": (
+            '{"name":"Candlelight: 90s Hip Hop on Strings",'
+            '"offers":{"lowPrice":28,"priceCurrency":"USD"}}'
+        ),
+        "provenance": {"evidence_grade": "search_excerpt"},
+    }
+
+    res = check_grounding(
+        "Tickets are listed from $28. {cite:S1}",
+        {"S1": citation},
+    )
+    citation["snippet"] = citation["snippet"].replace('"USD"', '"EUR"')
+    wrong_currency = check_grounding(
+        "Tickets are listed from $28. {cite:S1}",
+        {"S1": citation},
+    )
+
+    assert res is not None and res.passed, res.detail
+    assert wrong_currency is not None and wrong_currency.blocking
+
+
 def test_f177_map_coordinates_must_match_one_cited_record():
     citations = {
         "S1": _data_cite({"name": "Hunts Point", "latitude": "40.817656", "longitude": "-73.890358"}),
@@ -564,3 +811,20 @@ def test_nli_none_is_byte_identical_to_tier1_only():
             omitted.locations, omitted.hard_failures, omitted.soft_failures) == (
             grounded.passed, grounded.detail, grounded.blocking, grounded.checked,
             grounded.locations, grounded.hard_failures, grounded.soft_failures)
+
+
+def test_citation_can_be_persisted_without_exposing_it_in_the_current_turn():
+    citations = CitationRegistry()
+    cursor = citations.touch_cursor()
+
+    citation_id = citations.register(
+        "https://events.example/later",
+        title="Later event",
+        snippet="A saved candidate for a later turn.",
+        touch=False,
+    )
+
+    assert citation_id in citations.mapping()
+    assert citations.touched_since(cursor) == set()
+    assert citations.touch(citation_id)
+    assert citations.touched_since(cursor) == {citation_id}

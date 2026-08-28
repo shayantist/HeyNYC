@@ -216,7 +216,6 @@ def build_console_deps(*, console, model: Optional[Any] = None, data_dir: Option
             registry,
             model=selected_model,
             index=index,
-            current_awareness=current_awareness,
         )
     else:
         agent = Agent(

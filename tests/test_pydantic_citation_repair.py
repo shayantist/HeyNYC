@@ -95,7 +95,6 @@ async def legacy_matching_marker_variant_does_not_consume_an_output_retry(marker
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -152,7 +151,6 @@ async def legacy_f192_malformed_citation_marker_consumes_an_output_retry(
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -237,7 +235,6 @@ async def legacy_f215_mechanical_validator_does_not_parse_a_date_clause():
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -320,7 +317,6 @@ async def legacy_f219_mechanical_validator_does_not_parse_a_derived_amount():
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -376,7 +372,6 @@ async def legacy_f219_recovery_leaves_a_fully_supported_answer_unchanged():
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -432,7 +427,6 @@ async def legacy_mechanical_validator_does_not_semantically_parse_an_unsupported
             "guidance": Tool(
                 name="guidance",
                 description="Get the official restroom listing",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -493,7 +487,6 @@ async def legacy_orphan_citation_fragments_require_a_clean_replacement():
             "guidance": Tool(
                 name="guidance",
                 description="Get official restroom guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -572,7 +565,6 @@ async def legacy_mechanical_validator_does_not_parse_event_times():
             "guidance": Tool(
                 name="guidance",
                 description="Get official events",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -648,7 +640,6 @@ async def legacy_mechanical_validator_does_not_parse_map_coordinates():
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -711,7 +702,6 @@ async def legacy_mechanical_validator_does_not_parse_a_location_question():
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },

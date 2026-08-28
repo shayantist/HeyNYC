@@ -25,7 +25,6 @@ async def test_authoritative_web_exact_fact_retries_against_its_cited_excerpt() 
     source = Tool(
         name="fetch_contact",
         description="Fetch an official contact",
-        parameters={"type": "object", "properties": {}},
         handler=fetch,
     )
     calls = 0

@@ -20,7 +20,15 @@ from heynyc.core.pydantic_runtime.runtime import (
 )
 from heynyc.core.pydantic_runtime.safety import CrisisScreenRun, ScopeScreenRun
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
+
+
+class _SourceInput(ToolInput):
+    source: str
+
+
+class _QueryInput(ToolInput):
+    query: str
 
 
 class _CitedResult(BaseModel):
@@ -60,8 +68,10 @@ def _safety() -> CrisisScreenRun:
 async def test_high_stakes_turn_only_offers_grounded_factual_output() -> None:
     ctx = SimpleNamespace(deps=SimpleNamespace(
         current_turn_high_stakes=True,
+        loaded_capability_ids=set(),
+        tool_runs=[],
         validation_rejections=[],
-    ), messages=[])
+    ), messages=[], loaded_capability_ids=set())
     tools = [
         ToolDefinition(name="final_answer", parameters_json_schema={}),
         ToolDefinition(
@@ -70,9 +80,29 @@ async def test_high_stakes_turn_only_offers_grounded_factual_output() -> None:
         ),
     ]
 
-    prepared = await _OutputCorrectionCapability().prepare_output_tools(ctx, tools)
+    prepared = await _OutputCorrectionCapability(set(), set()).prepare_output_tools(ctx, tools)
 
     assert [tool.name for tool in prepared] == ["grounded_answer"]
+
+
+async def test_low_stakes_turn_only_offers_plain_factual_output() -> None:
+    ctx = SimpleNamespace(deps=SimpleNamespace(
+        current_turn_high_stakes=False,
+        loaded_capability_ids=set(),
+        tool_runs=[],
+        validation_rejections=[],
+    ), messages=[], loaded_capability_ids=set())
+    tools = [
+        ToolDefinition(name="final_answer", parameters_json_schema={}),
+        ToolDefinition(
+            name="grounded_answer",
+            parameters_json_schema=GroundedAnswer.model_json_schema(),
+        ),
+    ]
+
+    prepared = await _OutputCorrectionCapability(set(), set()).prepare_output_tools(ctx, tools)
+
+    assert [tool.name for tool in prepared] == ["final_answer"]
 
 
 def test_grounded_answer_does_not_reject_useful_claim_count() -> None:
@@ -86,12 +116,12 @@ def test_grounded_answer_does_not_reject_useful_claim_count() -> None:
     assert len(answer.grounded_blocks) == 13
 
 
-def test_grounded_block_schema_tells_model_not_to_copy_urls() -> None:
+def test_grounded_block_schema_allows_only_exact_tool_urls() -> None:
     description = GroundedAnswer.model_json_schema()["$defs"]["GroundedBlock"][
         "properties"
     ]["text"]["description"]
 
-    assert "Do not copy URLs" in description
+    assert "Copy a URL only when that exact URL was returned by a tool" in description
 
 
 async def test_output_guard_recovers_only_sources_returned_by_current_tools() -> None:
@@ -122,8 +152,8 @@ async def test_output_guard_recovers_only_sources_returned_by_current_tools() ->
 
     await runtime._apply_output_guard(result, deps, "en")
 
-    assert "https://www.nyc.gov/site/hpd/help.page" in result.text
-    assert "https://notify.nyc.gov/old-alert" not in result.text
+    assert "{cite:S2}" in result.text
+    assert "{cite:S1}" not in result.text
 
 
 def test_validation_recovery_excludes_prior_ordinary_sources() -> None:
@@ -148,27 +178,15 @@ def test_validation_recovery_excludes_prior_ordinary_sources() -> None:
     assert recovered == {current_id}
 
 
-async def test_scope_selected_tools_are_available_and_run_together() -> None:
-    started: set[str] = set()
-    both_started = asyncio.Event()
-
+async def test_deferred_tools_are_not_force_loaded_by_a_scope_guess() -> None:
     async def handler(args: dict, _ctx: ToolContext) -> str:
-        started.add(args["source"])
-        if len(started) == 2:
-            both_started.set()
-        await asyncio.wait_for(both_started.wait(), timeout=1)
         return args["source"]
 
-    schema = {
-        "type": "object",
-        "properties": {"source": {"type": "string"}},
-        "required": ["source"],
-    }
     tools = {
         name: Tool(
             name=name,
             description=f"Read {name}",
-            parameters=schema,
+            input_type=_SourceInput,
             handler=handler,
             module="housing",
         )
@@ -181,14 +199,8 @@ async def test_scope_selected_tools_are_available_and_run_together() -> None:
         calls += 1
         definitions = {tool.name: tool for tool in info.function_tools}
         if calls == 1:
-            assert definitions["search_311"].defer_loading is False
-            assert definitions["get_hpd"].defer_loading is False
-            return ModelResponse(
-                [
-                    ToolCallPart("search_311", {"source": "311"}, "311-1"),
-                    ToolCallPart("get_hpd", {"source": "hpd"}, "hpd-1"),
-                ]
-            )
+            assert definitions["search_311"].defer_loading is True
+            assert definitions["get_hpd"].defer_loading is True
         return ModelResponse([TextPart("Done")])
 
     result = await PydanticRuntimeAdapter(
@@ -201,13 +213,12 @@ async def test_scope_selected_tools_are_available_and_run_together() -> None:
     ).run("Check both records")
 
     assert result.text == "Done"
-    assert started == {"311", "hpd"}
     assert "load_capability" not in result.tool_calls_made
     assert result.usage["capabilities_used"] == ["housing"]
     assert result.usage["model_loaded_capabilities"] == []
 
 
-async def test_scope_selected_situation_activates_focus_tool_owners() -> None:
+async def test_scope_guess_does_not_activate_situation_tools() -> None:
     async def lookup(_args: dict, _ctx: ToolContext) -> str:
         return "record"
 
@@ -216,17 +227,9 @@ async def test_scope_selected_situation_activates_focus_tool_owners() -> None:
     async def model(_messages, info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
-        if calls <= 2:
-            definitions = {tool.name: tool for tool in info.function_tools}
-            assert definitions["search_311"].defer_loading is False
         if calls == 1:
-            return ModelResponse([
-                ToolCallPart(
-                    "load_capability",
-                    {"id": "housing-chronic-repairs"},
-                    "redundant-load",
-                )
-            ])
+            definitions = {tool.name: tool for tool in info.function_tools}
+            assert definitions["search_311"].defer_loading is True
         return ModelResponse([TextPart("Done")])
 
     await PydanticRuntimeAdapter(
@@ -246,7 +249,6 @@ async def test_scope_selected_situation_activates_focus_tool_owners() -> None:
             "search_311": Tool(
                 name="search_311",
                 description="Search 311",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 module="nyc311_status",
             )
@@ -295,7 +297,6 @@ async def test_redundant_load_of_preactivated_capability_is_a_noop() -> None:
             "lookup": Tool(
                 name="lookup",
                 description="Read a record",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 module="housing",
             )
@@ -370,11 +371,7 @@ async def test_exact_read_only_tool_call_is_reused_within_turn() -> None:
             "lookup": Tool(
                 name="lookup",
                 description="Read a record",
-                parameters={
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
+                input_type=_QueryInput,
                 handler=lookup,
             )
         },
@@ -417,11 +414,7 @@ async def test_concurrent_exact_read_only_calls_share_one_execution() -> None:
             "lookup": Tool(
                 name="lookup",
                 description="Read a record",
-                parameters={
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
+                input_type=_QueryInput,
                 handler=lookup,
             )
         },
@@ -458,11 +451,7 @@ async def test_different_tool_arguments_are_not_reused() -> None:
             "lookup": Tool(
                 name="lookup",
                 description="Read a record",
-                parameters={
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
+                input_type=_QueryInput,
                 handler=lookup,
             )
         },
@@ -503,7 +492,6 @@ async def test_cached_typed_result_keeps_citation_ownership() -> None:
             "lookup": Tool(
                 name="lookup",
                 description="Read a cited record",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 return_type=_CitedResult,
             )
@@ -531,7 +519,6 @@ async def test_preactivated_capability_remains_in_max_turns_telemetry() -> None:
             "lookup": Tool(
                 name="lookup",
                 description="Read a record",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 module="housing",
             )
@@ -544,3 +531,25 @@ async def test_preactivated_capability_remains_in_max_turns_telemetry() -> None:
 
     assert result.status == "max_turns"
     assert result.usage["capabilities_used"] == ["housing"]
+
+
+def test_tool_usage_accepts_nested_retrieval_telemetry_without_double_counting() -> None:
+    result = SimpleNamespace(usage={"executed_tool_calls": ["find_nyc_events"]})
+
+    PydanticRuntimeAdapter._merge_tool_usage(result, [
+        {
+            "operation": "event_candidate_selection",
+            "policy": "fast",
+            "selected_candidates": 3,
+        },
+        {
+            "tool": "find_nyc_events",
+            "status": "success",
+            "latency_ms": 1200,
+            "reused": False,
+        },
+    ])
+
+    assert result.usage["executed_tool_calls"] == ["find_nyc_events"]
+    assert result.usage["tool_time_ms"] == 1200
+    assert result.usage["retrieval_runs"][0]["operation"] == "event_candidate_selection"

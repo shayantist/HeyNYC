@@ -11,6 +11,12 @@ from heynyc.core.pydantic_runtime.runtime import (
     PydanticAgentSession,
     PydanticRuntimeAdapter,
 )
+
+
+def test_conversation_state_has_no_event_specific_candidate_pool():
+    assert "event_candidate_pool" not in ConversationState.model_fields
+
+
 from heynyc.core.registry import Registry
 from heynyc.core.session import Session, _decode_line, _encode_line
 from heynyc.core.tools.base import Tool, ToolContext
@@ -34,7 +40,7 @@ def test_conversation_state_is_strict_versioned_and_loadable():
     assert isinstance(session.state, ConversationState)
 
     payload = json.loads(session.dump_state())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["conversation_id"]
 
     payload["unexpected"] = True
@@ -53,14 +59,24 @@ def test_conversation_state_migrates_version_zero_and_rejects_future_versions():
     restored = runtime.conversation_from_state(json.dumps(payload).encode())
     migrated = json.loads(restored.dump_state())
 
-    assert migrated["schema_version"] == 1
+    assert migrated["schema_version"] == 2
     assert migrated["conversation_id"]
     assert migrated["citations"] == citations
     assert "pending_citations" not in migrated
 
-    migrated["schema_version"] = 2
+    migrated["schema_version"] = 3
     with pytest.raises(ValueError, match="Unsupported conversation state version"):
         runtime.conversation_from_state(json.dumps(migrated).encode())
+
+
+def test_legacy_event_candidate_pool_is_dropped_during_state_migration():
+    runtime = _runtime()
+    payload = json.loads(runtime.conversation().dump_state())
+    payload["event_candidate_pool"] = {"schema_version": 2, "candidates": []}
+
+    restored = runtime.conversation_from_state(json.dumps(payload).encode())
+
+    assert "event_candidate_pool" not in json.loads(restored.dump_state())
 
 
 def test_current_location_round_trips_with_complete_provider_payload():
@@ -114,7 +130,6 @@ async def test_tool_context_location_persists_between_native_turns():
             "remember": Tool(
                 name="remember",
                 description="Remember one resolved location",
-                parameters={"type": "object", "properties": {}},
                 handler=remember,
             )
         },

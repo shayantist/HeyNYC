@@ -48,7 +48,6 @@ async def test_missing_evidence_does_not_force_synthesis_after_six_tool_calls():
             "lookup": Tool(
                 name="lookup",
                 description="Continue looking until the required fact is found",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 idempotent=False,
             )
@@ -96,7 +95,6 @@ async def test_last_allowed_request_remains_an_ordinary_agent_step():
             "lookup": Tool(
                 name="lookup",
                 description="Look up evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 idempotent=False,
             )
@@ -140,7 +138,6 @@ async def test_valid_final_answer_skips_a_coemitted_sibling_tool():
             "lookup": Tool(
                 name="lookup",
                 description="Look up more evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
             )
         },
@@ -179,7 +176,6 @@ async def test_model_can_answer_while_function_tools_remain_available():
             "lookup": Tool(
                 name="lookup",
                 description="Look up a verified result",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
             )
         },
@@ -223,7 +219,6 @@ async def test_structured_runtime_can_answer_while_tools_remain_available():
             "lookup": Tool(
                 name="lookup",
                 description="Look up a current record",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
             )
         },
@@ -278,7 +273,6 @@ async def test_structured_answer_does_not_hide_framework_capability_tools():
             "lookup": Tool(
                 name="lookup",
                 description="Look up a current record",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
             )
         },
@@ -326,7 +320,6 @@ async def test_parallel_tools_leave_the_next_request_free_to_answer():
             "lookup": Tool(
                 name="lookup",
                 description="Look up verified evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 idempotent=False,
             )
@@ -377,7 +370,6 @@ async def test_parallel_tool_batch_can_be_followed_by_a_structured_answer():
             "lookup": Tool(
                 name="lookup",
                 description="Look up verified evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 idempotent=False,
             )
@@ -428,7 +420,6 @@ async def test_default_request_budget_does_not_reject_a_parallel_tool_batch():
             "lookup": Tool(
                 name="lookup",
                 description="Look up verified evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
                 idempotent=False,
             )
@@ -487,7 +478,6 @@ async def test_reserved_synthesis_preserves_authoritative_web_citation():
             "lookup": Tool(
                 name="lookup",
                 description="Look up official office hours",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
             )
         },
@@ -548,7 +538,6 @@ async def test_reserved_synthesis_rejects_plain_text_tool_syntax():
             "lookup": Tool(
                 name="lookup",
                 description="Look up official office hours",
-                parameters={"type": "object", "properties": {}},
                 handler=lookup,
             )
         },

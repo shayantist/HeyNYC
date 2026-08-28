@@ -48,8 +48,6 @@ def test_manifest_parses_source_tiers_and_submodule_fields(tmp_path: Path):
     manifest.write_text(
         "name: events\n"
         "category: events\n"
-        "ticketmaster_keyword: world cup\n"
-        "official_only: false\n"
         "source_tiers:\n"
         "  authoritative: [nyctourism.com, nycgovparks.org]\n"
         "  editorial: [timeout.com]\n"
@@ -58,7 +56,6 @@ def test_manifest_parses_source_tiers_and_submodule_fields(tmp_path: Path):
     module = ServiceModule.from_manifest(manifest)
     assert module.source_tiers["authoritative"] == ["nyctourism.com", "nycgovparks.org"]
     assert module.source_tiers["community"] == ["eventbrite.com"]
-    assert module.ticketmaster_keyword == "world cup"
     assert module.parent is None  # populated by the registry loader, not YAML
 
 

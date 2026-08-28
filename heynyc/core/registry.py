@@ -47,7 +47,7 @@ _SOURCE_LABELS = {
     "benefits": "NYC Benefits & Programs dataset + Screening API",
     "food_pantries": "NYC FoodHelp finder",
     "advisories": "Notify NYC / NYC Emergency Management feed",
-    "events": "Ticketmaster + NYC Parks + NYC permitted street events",
+    "events": "NYC event feeds + current organizer, venue, and editorial sources",
     "housing_connect": "NYC Open Data (vy5i-a666)",
     "wic": "NY State WIC directory (Health Data NY)",
     "childcare": "NYC Open Data (gy3q-4tzp)",
@@ -138,12 +138,17 @@ class Registry:
         return hints
 
     def allowlist(self) -> list[str]:
-        """Base allowlist plus every module's additions, deduped and sorted.
+        """Preferred domains declared directly or through source tiers, deduped and sorted.
 
         This list ranks preferred sources. It does not filter web acquisition."""
         domains = set(self.base_allowlist)
         for module in self.modules:
             domains.update(module.allowlist)
+            domains.update(
+                domain
+                for tier_domains in module.source_tiers.values()
+                for domain in tier_domains
+            )
         return sorted(domains)
 
     def news_tier(self) -> list[str]:
@@ -169,17 +174,6 @@ class Registry:
                     if current is None or TIER_RANK.get(tier, 0) > TIER_RANK.get(current[0], 0):
                         tiers[key] = (tier, module.name)
         return tiers
-
-    def allows_unverified_search_excerpts(self, module_names: set[str]) -> bool:
-        """Only a fully known, all-low-stakes module set may use unknown search excerpts."""
-        modules = {
-            module.name: module
-            for module in self.modules
-            if not module.parent and module.name in module_names
-        }
-        return bool(modules) and modules.keys() == module_names and all(
-            not module.official_only for module in modules.values()
-        )
 
     def capability_blurbs(self) -> str:
         """Capability blurbs for the system prompt, one section per module."""

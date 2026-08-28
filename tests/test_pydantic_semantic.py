@@ -11,7 +11,6 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     TextPart,
     ToolCallPart,
-    ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -31,10 +30,10 @@ from heynyc.core.pydantic_runtime.runtime import (
     PydanticRunFailure,
     _authoritative_output_tools,
     _final_answer,
+    _OutputCorrectionCapability,
     _unverified_source_links,
 )
 from heynyc.core.registry import Registry
-from heynyc.core.temporal import temporal_tools
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.runner import run_case
@@ -89,6 +88,27 @@ def test_final_answer_schema_keeps_completion_guidance_concise() -> None:
     assert "never choose transport from medical facts" in description
     assert "do not write urls" in description
     assert len(description.split()) <= 35
+
+
+async def test_loaded_high_stakes_capability_selects_grounded_output_immediately() -> None:
+    capability = _OutputCorrectionCapability({"benefits"}, set())
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            current_turn_high_stakes=False,
+            tool_runs=[],
+            validation_rejections=[],
+        ),
+        loaded_capability_ids={"benefits"},
+        messages=[],
+    )
+    tools = [
+        ToolDefinition(name="final_answer", parameters_json_schema={}),
+        ToolDefinition(name="grounded_answer", parameters_json_schema={}),
+    ]
+
+    prepared = await capability.prepare_output_tools(ctx, tools)
+
+    assert [tool.name for tool in prepared] == ["grounded_answer"]
 
 
 def test_runtime_names_the_check_for_what_it_does() -> None:
@@ -158,7 +178,6 @@ async def test_event_discovery_does_not_retry_a_supported_catalog_answer_for_sou
             "event_search": Tool(
                 name="event_search",
                 description="Find current events",
-                parameters={"type": "object", "properties": {}},
                 handler=event_search,
             )
         },
@@ -167,66 +186,6 @@ async def test_event_discovery_does_not_retry_a_supported_catalog_answer_for_sou
 
     assert calls == 2
     assert result.text == "Catalog concert. {cite:S2}"
-    assert result.diagnostics["validation_rejections"] == []
-
-
-async def test_event_discovery_accepts_a_derived_temporal_citation() -> None:
-    async def event_search(_args: dict, ctx: ToolContext) -> str:
-        citation_id = ctx.citations.register(
-            "https://example.com/editorial-events",
-            title="Latin Night",
-            snippet="Latin Night. August 20, 2026. Starts at 6:00 PM.",
-            kind="WEB",
-            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
-        )
-        return f"Latin Night at 6:00 PM. {{cite:{citation_id}}}"
-
-    calls = 0
-
-    async def model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return ModelResponse([ToolCallPart("event_search", {}, "search-1")])
-        if calls == 2:
-            return ModelResponse([ToolCallPart(
-                "evaluate_event_time",
-                {
-                    "event_name": "Latin Night",
-                    "event_date": "2026-08-20",
-                    "start_time": "6:00 PM",
-                    "citation_id": "S1",
-                },
-                "evaluate-1",
-            )])
-        evaluation = next(
-            part.content
-            for message in _messages
-            for part in message.parts
-            if isinstance(part, ToolReturnPart)
-            and part.tool_name == "evaluate_event_time"
-        )
-        assert evaluation.source_citation_id == "S1"
-        assert evaluation.status_citation_id == "S2"
-        return ModelResponse([_cited_answer("Latin Night is upcoming. {cite:S2}")])
-
-    result = await PydanticRuntimeAdapter(
-        FunctionModel(model),
-        registry=Registry([]),
-        tools={
-            "event_search": Tool(
-                name="event_search",
-                description="Find current events",
-                parameters={"type": "object", "properties": {}},
-                handler=event_search,
-            ),
-            "evaluate_event_time": temporal_tools()[0],
-        },
-        structured_grounding=True,
-    ).run("What music is happening today?")
-
-    assert calls == 3
-    assert "{cite:S2}" in result.text
     assert result.diagnostics["validation_rejections"] == []
 
 
@@ -257,7 +216,6 @@ async def test_editorial_event_excerpt_is_answer_grade_without_a_warning() -> No
             "event_search": Tool(
                 name="event_search",
                 description="Find current events",
-                parameters={"type": "object", "properties": {}},
                 handler=event_search,
             )
         },
@@ -324,7 +282,6 @@ async def test_low_stakes_editorial_claim_skips_claim_source_check() -> None:
             "event_search": Tool(
                 name="event_search",
                 description="Find current events",
-                parameters={"type": "object", "properties": {}},
                 handler=event_search,
             )
         },
@@ -401,7 +358,6 @@ async def test_low_stakes_event_answer_skips_claim_support_check() -> None:
             "event_search": Tool(
                 name="event_search",
                 description="Find current events",
-                parameters={"type": "object", "properties": {}},
                 handler=event_search,
             )
         },
@@ -514,7 +470,6 @@ async def test_structured_data_mismatch_fails_before_claim_source_check() -> Non
                 "source": Tool(
                     name="source",
                     description="Return one structured city record",
-                    parameters={"type": "object", "properties": {}},
                     handler=source,
                 )
             },
@@ -523,7 +478,7 @@ async def test_structured_data_mismatch_fails_before_claim_source_check() -> Non
 
     assert "$500" not in raised.value.partial_result.text
     assert "couldn't verify every detail" in raised.value.partial_result.text
-    assert "https://data.cityofnewyork.us/example" in raised.value.partial_result.text
+    assert "{cite:S1}" in raised.value.partial_result.text
     assert raised.value.partial_result.diagnostics["validation_rejections"] == [
         {
             "attempt": 1,
@@ -596,7 +551,6 @@ async def test_structured_street_ordinal_mismatch_retries_before_shipping() -> N
                 "source": Tool(
                     name="source",
                     description="Return one structured city record",
-                    parameters={"type": "object", "properties": {}},
                     handler=source,
                 )
             },
@@ -647,7 +601,6 @@ async def test_structured_grounding_uses_native_cited_prose() -> None:
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         output_names = {tool.name for tool in info.output_tools}
-        assert "grounded_answer" in output_names
         assert "final_answer" in output_names
         assert "clarification_request" in output_names
         assert "nonfactual_outcome" in output_names
@@ -676,14 +629,7 @@ async def test_structured_grounding_uses_native_cited_prose() -> None:
         "write ordinary conversational prose" in prompt.lower()
         for prompt in system_prompts
     )
-    assert any(
-        "place each citation marker immediately after" in prompt.lower()
-        for prompt in system_prompts
-    )
-    assert any(
-        "cite every source used by a sentence" in prompt.lower()
-        for prompt in system_prompts
-    )
+    assert any("not a citation checklist" in prompt.lower() for prompt in system_prompts)
 
 
 async def test_structured_output_accepts_an_uncited_missing_input_question() -> None:
@@ -809,7 +755,6 @@ async def test_loaded_capability_grounded_handoff_rejects_a_clarification_shortc
             "web_fetch": Tool(
                 name="web_fetch",
                 description="Fetch an official source",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -850,7 +795,6 @@ async def test_structured_answer_normalizes_matching_embedded_citation_marker() 
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -894,7 +838,6 @@ async def test_structured_answer_rejects_internal_url_markup() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -958,7 +901,6 @@ async def test_event_answer_preserves_adjacent_citations_without_rewriting() -> 
             "find_nyc_events": Tool(
                 name="find_nyc_events",
                 description="Find current NYC events",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1008,7 +950,6 @@ async def test_answer_preserves_exact_tool_action_url_without_retry() -> None:
             "find_lotteries": Tool(
                 name="find_lotteries",
                 description="Find open housing lotteries",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1049,7 +990,6 @@ async def test_location_answer_gets_a_map_when_model_omits_it() -> None:
             "find_locations": Tool(
                 name="find_locations",
                 description="Find public locations",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1106,7 +1046,6 @@ async def test_answer_accepts_an_exact_origin_address_returned_by_a_tool() -> No
             "find_locations": Tool(
                 name="find_locations",
                 description="Find public locations",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1196,7 +1135,6 @@ async def test_cited_prose_retries_an_unknown_citation_id() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1248,7 +1186,6 @@ async def test_mechanical_validator_does_not_infer_claim_ownership() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1300,7 +1237,6 @@ async def test_mechanical_validator_does_not_parse_fact_ownership() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1341,7 +1277,6 @@ async def test_citation_ownership_allows_a_name_from_the_resident() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1371,7 +1306,6 @@ async def legacy_claim_support_check_retries_complete_answer_and_accounts_for_co
     source = Tool(
         name="official_guidance",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     model_calls = 0
@@ -1471,7 +1405,6 @@ async def legacy_claim_support_check_uses_bounded_citation_chunks() -> None:
     source = Tool(
         name="official_guidance",
         description="Get current official guidance",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
     )
     verifier = _FieldVerifier()
@@ -1585,13 +1518,11 @@ async def legacy_structured_output_offers_only_authoritative_citation_ids() -> N
             "discovery": Tool(
                 name="discovery",
                 description="Search for a source",
-                parameters={"type": "object", "properties": {}},
                 handler=discovery,
             ),
             "official": Tool(
                 name="official",
                 description="Fetch an official source",
-                parameters={"type": "object", "properties": {}},
                 handler=official,
             ),
         },
@@ -1695,7 +1626,6 @@ async def legacy_claim_support_checker_bounds_total_evidence_per_claim() -> None
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=handler,
             )
         },
@@ -1785,7 +1715,6 @@ async def test_failed_claim_support_check_gets_natural_correction(
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1884,7 +1813,6 @@ async def test_cited_factual_framing_is_retried_as_a_claim() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -1954,7 +1882,6 @@ async def test_supported_source_free_framing_stays_clean_after_claim_check() -> 
             "guidance": Tool(
                 name="guidance",
                 description="Get official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2091,7 +2018,6 @@ async def legacy_claim_support_check_regenerates_instead_of_pruning_blocks() -> 
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2166,7 +2092,6 @@ async def legacy_claim_support_check_preserves_an_all_supported_answer() -> None
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2244,7 +2169,6 @@ async def legacy_claim_support_check_distinguishes_framing_from_claims() -> None
             "appointment": Tool(
                 name="appointment",
                 description="Fetch an official appointment announcement",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2300,7 +2224,6 @@ async def legacy_claim_support_check_ignores_markdown_destinations() -> None:
             "events": Tool(
                 name="events",
                 description="Get current event listings",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2352,7 +2275,6 @@ async def legacy_claim_support_check_handles_structured_data() -> None:
             "events": Tool(
                 name="events",
                 description="Get current event listings",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2416,7 +2338,6 @@ async def test_claim_support_check_preserves_sources_when_provider_is_down() -> 
             "official_guidance": Tool(
                 name="official_guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2476,7 +2397,6 @@ async def legacy_claim_support_outage_labels_cited_and_uncited_paragraphs() -> N
             "guidance": Tool(
                 name="guidance",
                 description="Get guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },
@@ -2537,7 +2457,6 @@ async def test_claim_support_outage_does_not_bypass_output_moderation() -> None:
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -2550,7 +2469,7 @@ async def test_claim_support_outage_does_not_bypass_output_moderation() -> None:
     assert result.status == "error"
     assert "blocked draft" not in result.text
     assert "Source material remains available." in result.text
-    assert "https://www.nyc.gov/example" in result.text
+    assert "{cite:S1}" in result.text
 
 
 async def legacy_claim_support_diagnostics_sanitize_errors_and_labels() -> None:
@@ -2605,7 +2524,6 @@ async def legacy_claim_support_diagnostics_sanitize_errors_and_labels() -> None:
             "guidance": Tool(
                 name="guidance",
                 description="Get current official guidance",
-                parameters={"type": "object", "properties": {}},
                 handler=source,
             )
         },

@@ -88,8 +88,6 @@ from heynyc.core.agent import (
 from heynyc.core.citations import (
     CitationRegistry,
     used_citations,
-    used_discovery_citations,
-    used_unverified_citations,
 )
 from heynyc.core.crisis_lines import (
     LL30_LANGUAGES,
@@ -144,9 +142,9 @@ from .projection import (
 )
 from .tools import (
     ResidentFactReviewCapability,
-    adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
+    runtime_tool,
     situation_capability_id,
 )
 
@@ -156,21 +154,16 @@ _NONFACTUAL_OUTPUT_TOOL = "nonfactual_outcome"
 _CLARIFICATION_OUTPUT_TOOL = "clarification_request"
 _INTERNAL_TEMPLATE_TOKEN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 _RESIDUAL_CITATION_MARKUP = re.compile(r"[{}]|\bS\d+\b", re.IGNORECASE)
-_SEMANTIC_RETRY_ITEMS = 8
 _SEMANTIC_LABELS = {"supported", "partial", "unsupported", "contradicted"}
 _GROUNDED_HANDOFF_REQUIREMENT = "requires a grounded handoff"
 _CITED_PROSE_SYSTEM_PROMPT = (
-    "Write ordinary conversational prose for the final answer. Place each citation marker "
-    "immediately after the factual or procedural text it supports, using only source IDs "
-    "returned by tools in this run, for example {cite:S1}. Cite every source used by a sentence. "
-    "Do not cite discovery-only search snippets. Explain relevant limitations and unknown fields "
-    "reported by tools instead of guessing or searching again for data the tool says it lacks. "
-    "When a structured finder returns a selected records list, cover every returned record and "
-    "the resolved origin in the final answer."
+    "Write ordinary conversational prose, not a citation checklist. Cover every selected record "
+    "and relevant limitation."
 )
 _MULTI_TOOL_SCOPE_REMINDER = (
     "Keep each tool result within that tool call's own scope. "
-    "Do not apply a location, date, audience, or filter from one tool call to another."
+    "Do not apply a location, date, audience, or filter from one tool call to another. "
+    "State every requested part that still lacks evidence or required input."
 )
 _OUTPUT_CORRECTION_REMINDER = (
     "Correct the rejected final answer now using only evidence already in the conversation. "
@@ -316,7 +309,7 @@ def _degraded_failure_text(
         for citation_id in represented
     }
     reached = [
-        citation
+        (citation_id, citation)
         for citation_id, citation in citations.mapping().items()
         if (citation_ids is None or citation_id in citation_ids)
         if citation_id not in represented
@@ -329,36 +322,23 @@ def _degraded_failure_text(
     ]
     if not reached:
         return text
-    collapsed: list[dict] = []
+    collapsed: list[tuple[str, dict]] = []
     unavailable_sites: dict[str, int] = {}
-    for citation in reached:
+    for citation_id, citation in reached:
         provenance = citation.get("provenance") or {}
         url = str(citation["url"])
         if provenance.get("evidence_grade") != "unavailable":
-            collapsed.append(citation)
+            collapsed.append((citation_id, citation))
             continue
         site = urlsplit(url).netloc.casefold()
         if site in unavailable_sites:
-            collapsed[unavailable_sites[site]] = citation
+            collapsed[unavailable_sites[site]] = (citation_id, citation)
         else:
             unavailable_sites[site] = len(collapsed)
-            collapsed.append(citation)
+            collapsed.append((citation_id, citation))
     reached = collapsed
     seen: dict[str, tuple[str, list[str]]] = {}
-    for citation in reached:
-        provenance = citation.get("provenance") or {}
-        grade = provenance.get("evidence_grade")
-        label = localize((
-            "Verified source"
-            if citation.get("kind") == "DATA"
-            else "Verified source"
-            if grade == "authoritative"
-            else "Official search excerpt"
-            if grade == "authoritative_excerpt"
-            else "Unverified search result"
-            if grade in {"discovery", "search_excerpt"}
-            else "Unverified source"
-        ), language)
+    for citation_id, citation in reached:
         detail = re.sub(
             r"\[([^\]]+)\]\([^)]+\)",
             r"\1",
@@ -378,14 +358,22 @@ def _degraded_failure_text(
         detail = " ".join(preview)
         _title, labels = seen.setdefault(
             citation["url"],
-            (citation.get("title") or citation["url"], []),
+            (citation_id, []),
         )
-        source_label = f"{label}: {detail}" if detail else label
-        if source_label not in labels:
-            labels.append(source_label)
+        title = re.sub(
+            r"\[([^\]]+)\]\([^)]+\)",
+            r"\1",
+            str(citation.get("title") or "").strip(),
+        )
+        for embedded_url in _urls_in(title):
+            title = title.replace(embedded_url, "")
+        title = " ".join(title.replace("**", "").replace("__", "").split())
+        summary = ": ".join(filter(None, (title, detail))) or citation["url"]
+        if summary not in labels:
+            labels.append(summary)
     source_lines = [
-        f"- {' '.join(labels)} ([Source](<{url}>))"
-        for url, (_title, labels) in seen.items()
+        f"- {' '.join(labels)} {{cite:{citation_id}}}"
+        for _url, (citation_id, labels) in seen.items()
     ]
     notice = localize(UNVERIFIED_DRAFT_NOTICE, language)
     if text.strip() == notice:
@@ -563,6 +551,23 @@ def _validation_citation_ids(
 def _current_turn_citation_ids(citations: CitationRegistry) -> set[str]:
     """Return sources registered by trusted tool code during the active turn."""
     return citations.touched_ids()
+
+
+def _latest_cited_text(
+    messages: Sequence[ModelMessage],
+    citations: CitationRegistry,
+) -> tuple[str, set[str]] | None:
+    mapping = citations.mapping()
+    for message in reversed(messages):
+        if not isinstance(message, ModelResponse):
+            continue
+        for part in reversed(message.parts):
+            if not isinstance(part, TextPart) or not part.content.strip():
+                continue
+            citation_ids = set(used_citations(part.content, mapping))
+            if citation_ids:
+                return part.content.strip(), citation_ids
+    return None
 
 
 class NonfactualOutcome(BaseModel):
@@ -789,22 +794,6 @@ def _typed_result_citation_ids(
     return found
 
 
-def _follow_up_awareness(awareness: str, delivered_titles: frozenset) -> str:
-    if not delivered_titles:
-        return awareness
-    titles = "; ".join(
-        line.lstrip("- ").split(": ", 1)[-1]
-        for line in awareness.splitlines()
-        if line.startswith("- ")
-    )[:400]
-    return (
-        "You already told the resident about today's Notify NYC notices earlier in "
-        "this conversation. Do NOT re-brief them. Mention one again only if it "
-        "directly bears on this new message. Current titles, for change detection "
-        f"only: {titles}"
-    )
-
-
 def _emit(
     sink: Callable[[events.Event], None] | None,
     event: events.Event,
@@ -983,6 +972,7 @@ class _BoundedMemoryCapability(AbstractCapability[ToolContext]):
         ctx.deps.evidence_token_budget = self.conversation._evidence_budget(
             request_context,
             response,
+            ctx.deps,
         )
         ctx.deps.evidence_model = self.conversation.runtime._answer_model_route
         return response
@@ -1009,7 +999,7 @@ class ConversationState(BaseModel):
         validate_assignment=True,
     )
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     conversation_id: str = Field(default_factory=lambda: str(uuid4()))
     messages: list[ModelMessage] = Field(default_factory=list)
     user_turns: tuple[str, ...] = ()
@@ -1045,14 +1035,17 @@ def _migrate_conversation_state(
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
     version = payload.get("schema_version", 0)
-    if version == 1:
-        return payload
-    if version != 0:
+    if version == 2:
+        migrated = dict(payload)
+        migrated.pop("event_candidate_pool", None)
+        return migrated
+    if version not in {0, 1}:
         raise ValueError(f"Unsupported conversation state version: {version!r}")
     migrated = dict(payload)
-    migrated["schema_version"] = 1
+    migrated["schema_version"] = 2
     migrated.setdefault("conversation_id", conversation_id or str(uuid4()))
     migrated.setdefault("current_location", None)
+    migrated.pop("event_candidate_pool", None)
     if "citations" not in migrated and "pending_citations" in migrated:
         migrated["citations"] = migrated["pending_citations"]
     migrated.pop("pending_citations", None)
@@ -1184,6 +1177,14 @@ class _PreserveToolScopesCapability(AbstractCapability[ToolContext]):
 class _OutputCorrectionCapability(AbstractCapability[ToolContext]):
     """Use bounded output retries for correction or one known-page fetch."""
 
+    def __init__(
+        self,
+        high_stakes_capability_ids: set[str],
+        high_stakes_tool_names: set[str],
+    ) -> None:
+        self.high_stakes_capability_ids = high_stakes_capability_ids
+        self.high_stakes_tool_names = high_stakes_tool_names
+
     async def prepare_tools(
         self,
         ctx: RunContext[ToolContext],
@@ -1200,9 +1201,19 @@ class _OutputCorrectionCapability(AbstractCapability[ToolContext]):
         ctx: RunContext[ToolContext],
         tool_defs: list[ToolDefinition],
     ) -> list[ToolDefinition]:
-        if ctx.deps.current_turn_high_stakes:
+        high_stakes = ctx.deps.current_turn_high_stakes or bool(
+            self.high_stakes_capability_ids.intersection(ctx.loaded_capability_ids)
+            or self.high_stakes_tool_names.intersection(
+                run.get("tool") for run in ctx.deps.tool_runs
+            )
+        )
+        if high_stakes:
             tool_defs = [
                 tool for tool in tool_defs if tool.name != _FINAL_OUTPUT_TOOL
+            ]
+        else:
+            tool_defs = [
+                tool for tool in tool_defs if tool.name != _GROUNDED_OUTPUT_TOOL
             ]
         correction_tool = _answer_correction_tool_name(ctx)
         if correction_tool is None:
@@ -1233,6 +1244,15 @@ class _OutputCorrectionCapability(AbstractCapability[ToolContext]):
                 filter(None, (request.instructions, reminder))
             )
         return request_context
+
+
+class _AnswerOnlyCapability(AbstractCapability[ToolContext]):
+    async def prepare_tools(
+        self,
+        ctx: RunContext[ToolContext],
+        tool_defs: list[ToolDefinition],
+    ) -> list[ToolDefinition]:
+        return []
 
 
 class _CoolingTerminalCapability(AbstractCapability[ToolContext]):
@@ -1318,7 +1338,6 @@ class PydanticRuntimeAdapter:
         prompt_builder: Callable[[str], str] | None = None,
         guard_grounding: bool = True,
         use_module_capabilities: bool = False,
-        current_awareness: Callable[[CitationRegistry | None], Awaitable[str]] | None = None,
         extra_capabilities: Sequence[Any] = (),
         usage_limits: UsageLimits | None = None,
         instrument: InstrumentationSettings | None = None,
@@ -1332,6 +1351,7 @@ class PydanticRuntimeAdapter:
         fact_review_model_name: str = "",
         stream_model_requests: bool = False,
         run_timeout_s: float = 180,
+        model_request_timeout_s: float = _MODEL_REQUEST_TIMEOUT_S,
         crisis_screen: Callable[[tuple[str, ...]], Awaitable[Any]] | None = None,
         scope_screen: Callable[[tuple[str, ...]], Awaitable[Any]] | None = None,
         output_guard: Callable[[str], Awaitable[frozenset[str]]] | None = None,
@@ -1350,7 +1370,6 @@ class PydanticRuntimeAdapter:
                 fact_confirmation_sources[confirmation.name] = tool
         self._fact_confirmation_names = frozenset(fact_confirmation_names)
         self.model = getattr(model, "model_name", type(model).__name__)
-        self._current_awareness = current_awareness
         self._usage_limits = usage_limits or UsageLimits(
             request_limit=8,
         )
@@ -1358,19 +1377,35 @@ class PydanticRuntimeAdapter:
         self._claim_support_checker = claim_support_checker
         self._stream_model_requests = stream_model_requests
         self._run_timeout_s = run_timeout_s
+        self._model_request_timeout_s = model_request_timeout_s
         self._crisis_screen = crisis_screen
         self._scope_screen = scope_screen
         self._output_guard = output_guard
         self._embedder = embedder
         self._retrieval_cache_path = retrieval_cache_path
         self._structured_grounding = structured_grounding
-        self._high_stakes_capability_ids = frozenset(
-            f"{module.name.replace('_', '-')}-"
-            f"{hint.name.replace('_', '-').removeprefix(module.name.replace('_', '-') + '-')}"
+        self._high_stakes_capability_ids = frozenset({
+            capability_id
             for module in registry.modules
             for hint in module.situations
             if hint.high_stakes
-        )
+            for capability_id in (
+                module.parent or module.name,
+                f"{module.name.replace('_', '-')}-"
+                f"{hint.name.replace('_', '-').removeprefix(module.name.replace('_', '-') + '-')}",
+            )
+        })
+        roots = {module.name: module.parent or module.name for module in registry.modules}
+        high_stakes_roots = {
+            roots[module.name]
+            for module in registry.modules
+            if any(hint.high_stakes for hint in module.situations)
+        }
+        self._high_stakes_tool_names = frozenset({
+            name
+            for name, tool in tools.items()
+            if roots.get(tool.module, tool.module) in high_stakes_roots
+        })
         # F154: attaching an event handler is what makes PydanticAI stream the model request
         # A structured run already DISCARDS its text deltas (`include_text` below), so when
         # nothing consumes validated text deltas, so streaming buys nothing and exposes the final
@@ -1390,7 +1425,7 @@ class PydanticRuntimeAdapter:
                 self.tools,
             )
         else:
-            adapted_tools = [adapt_tool(tool) for tool in self.tools.values()]
+            adapted_tools = [runtime_tool(tool) for tool in self.tools.values()]
             capabilities = []
         agent_model = InstrumentedModel(model, instrument) if instrument else model
         if structured_grounding:
@@ -1424,7 +1459,10 @@ class PydanticRuntimeAdapter:
                 ),
                 *capabilities,
                 *extra_capabilities,
-                _OutputCorrectionCapability(),
+                _OutputCorrectionCapability(
+                    set(self._high_stakes_capability_ids),
+                    set(self._high_stakes_tool_names),
+                ),
             ],
             system_prompt=system_prompt,
             model_settings=_native_cache_settings(model),
@@ -1544,6 +1582,9 @@ class PydanticRuntimeAdapter:
                 for part in message.parts
                 if isinstance(part, LoadCapabilityCallPart)
             )
+            or getattr(self, "_high_stakes_tool_names", frozenset()).intersection(
+                run.get("tool") for run in ctx.deps.tool_runs
+            )
         )
         if (
             isinstance(output, str)
@@ -1627,7 +1668,7 @@ class PydanticRuntimeAdapter:
                     "citation_marker",
                     "Do not write citation markers. Put source IDs in citation_ids; "
                     "the runtime renders markers.",
-                    citation_ids=sorted(set(leftover_markers))[:_SEMANTIC_RETRY_ITEMS],
+                    citation_ids=sorted(set(leftover_markers)),
                 )
             rendered = _render_grounded_answer(output)
         elif isinstance(output, ClarificationRequest):
@@ -1690,33 +1731,12 @@ class PydanticRuntimeAdapter:
         if unregistered_urls := sorted(_urls_in(rendered) - registered_urls):
             reject(
                 "unregistered_url",
-                "Do not copy URLs into the answer. Use citation markers and let the runtime "
-                "attach the exact registered links.",
+                "Remove only the URLs listed in this correction because no tool returned them. "
+                "Keep any other exact URLs returned by tools, and keep the complete answer with "
+                "its citation markers.",
                 urls=unregistered_urls,
             )
-        if discovery_ids := used_discovery_citations(rendered, mapping):
-            reject(
-                "discovery_only",
-                "Search snippets are discovery only. Fetch the relevant authoritative source "
-                "with web_fetch and cite that evidence, or clearly label the claim unverified "
-                "and retain its source.",
-                citation_ids=sorted(discovery_ids)[:_SEMANTIC_RETRY_ITEMS],
-            )
         if high_stakes:
-            non_authoritative = [
-                citation_id
-                for citation_id, citation in used_citations(rendered, mapping).items()
-                if citation.get("kind") == "WEB"
-                and (citation.get("provenance") or {}).get("source_tier")
-                != "authoritative"
-            ]
-            if non_authoritative:
-                reject(
-                    "high_stakes_source",
-                    "High-stakes guidance must cite current authoritative evidence. Omit "
-                    "editorial, news, community, and unknown sources.",
-                    citation_ids=sorted(non_authoritative)[:_SEMANTIC_RETRY_ITEMS],
-                )
             if not isinstance(output, GroundedAnswer):
                 reject(
                     "high_stakes_format",
@@ -1724,16 +1744,28 @@ class PydanticRuntimeAdapter:
                     "procedural claim in its own block with the authoritative citation IDs "
                     "that directly support it.",
                 )
-        if (
-            not ctx.deps.allow_unverified_search_excerpts
-            and (unverified_ids := used_unverified_citations(rendered, mapping))
-        ):
-            reject(
-                "unverified_source",
-                "This turn cannot use an unverified source as answer evidence. Retrieve and cite "
-                "an authoritative source, or label the claim unverified and retain the source.",
-                citation_ids=sorted(unverified_ids)[:_SEMANTIC_RETRY_ITEMS],
-            )
+            weak_claims = [
+                block
+                for block in output.grounded_blocks
+                if block.kind == "claim"
+                and block.citation_ids
+                and all(
+                    (mapping[citation_id].get("provenance") or {}).get("evidence_grade")
+                    in {"discovery", "unavailable"}
+                    for citation_id in block.citation_ids
+                )
+            ]
+            if weak_claims:
+                reject(
+                    "discovery_only",
+                    "A high-stakes claim relies only on a discovery lead. Fetch stronger evidence "
+                    "or rewrite it as an honest low-stakes lead without eligibility or procedural advice.",
+                    citation_ids=sorted({
+                        citation_id
+                        for block in weak_claims
+                        for citation_id in block.citation_ids
+                    }),
+                )
         if isinstance(output, (str, GroundedAnswer)):
             exact_fact_mapping = {
                 citation_id: citation
@@ -1741,32 +1773,43 @@ class PydanticRuntimeAdapter:
                 if citation.get("kind") in {"DATA", "DOC"}
                 or (
                     citation.get("kind") == "WEB"
-                    and (citation.get("provenance") or {}).get("source_tier")
-                    == "authoritative"
+                    and (citation.get("provenance") or {}).get("evidence_grade")
+                    in {
+                        "authoritative",
+                        "authoritative_excerpt",
+                        "evidence",
+                        "fetched",
+                        "discovery",
+                        "search_excerpt",
+                    }
                 )
             }
-            structured = check_grounding(
-                rendered,
-                exact_fact_mapping,
-                ctx.deps.query,
-            )
-            exact_failures = (
-                [
-                    mismatch
-                    for mismatch in structured.hard_failures
-                    if mismatch.kind
-                    in {
-                        "address",
-                        "date",
-                        "money",
-                        "phone",
-                        "street_ordinal",
-                        "unit_number",
-                    }
-                ]
+            structured_results = [
+                check_grounding(
+                    _render_grounded_answer(GroundedAnswer(grounded_blocks=[block])),
+                    exact_fact_mapping,
+                    ctx.deps.query,
+                )
+                for block in output.grounded_blocks
+                if block.citation_ids
+            ] if isinstance(output, GroundedAnswer) else [
+                check_grounding(rendered, exact_fact_mapping, ctx.deps.query)
+            ]
+            exact_failures = [
+                mismatch
+                for structured in structured_results
                 if structured is not None
-                else []
-            )
+                for mismatch in structured.hard_failures
+                if mismatch.kind
+                in {
+                    "address",
+                    "date",
+                    "money",
+                    "phone",
+                    "street_ordinal",
+                    "unit_number",
+                }
+            ]
             if exact_failures:
                 rejected = [
                     {
@@ -1776,7 +1819,7 @@ class PydanticRuntimeAdapter:
                         "citation_ids": mismatch.cited,
                     }
                     for mismatch in exact_failures
-                ][:_SEMANTIC_RETRY_ITEMS]
+                ]
                 reject(
                     "structured_grounding",
                     "An exact structured fact does not match its cited city record. "
@@ -1848,7 +1891,7 @@ class PydanticRuntimeAdapter:
                     for position, (item, verdict) in enumerate(
                         zip(inputs, support.verdicts, strict=True)
                     )
-                ][:_SEMANTIC_RETRY_ITEMS],
+                ],
             })
             if support_error is not None:
                 ctx.deps.validation_rejections.append({
@@ -1880,7 +1923,7 @@ class PydanticRuntimeAdapter:
                     for item, verdict in zip(inputs, support.verdicts, strict=True)
                     if not verdict.supported
                 ]
-                rejected = rejected_all[:_SEMANTIC_RETRY_ITEMS]
+                rejected = rejected_all
                 ctx.deps.validation_rejections.append({
                     "attempt": len(ctx.deps.validation_rejections) + 1,
                     "stage": "claim_support",
@@ -2013,7 +2056,7 @@ class PydanticRuntimeAdapter:
 
     @staticmethod
     def _merge_scope_usage(result: AgentResult, run: Any) -> None:
-        if run is None:
+        if run is None or not getattr(run, "usable", False):
             return
         result.usage.update({
             "scope_model": run.model,
@@ -2096,16 +2139,19 @@ class PydanticRuntimeAdapter:
 
     @staticmethod
     def _merge_tool_usage(result: AgentResult, runs: list[dict[str, Any]]) -> None:
+        tool_runs = [run for run in runs if "tool" in run]
+        retrieval_runs = [run for run in runs if "operation" in run]
         returned = list(result.usage.get("executed_tool_calls", ()))
-        timed_tools = {run["tool"] for run in runs}
+        timed_tools = {run["tool"] for run in tool_runs}
         result.usage["executed_tool_calls"] = [
             tool for tool in returned if tool not in timed_tools
-        ] + [run["tool"] for run in runs if not run.get("reused")]
+        ] + [run["tool"] for run in tool_runs if not run.get("reused")]
         result.usage["reused_tool_calls"] = [
-            run["tool"] for run in runs if run.get("reused")
+            run["tool"] for run in tool_runs if run.get("reused")
         ]
-        result.usage["tool_time_ms"] = sum(float(run["latency_ms"]) for run in runs)
-        result.usage["tool_runs"] = runs
+        result.usage["tool_time_ms"] = sum(float(run["latency_ms"]) for run in tool_runs)
+        result.usage["tool_runs"] = tool_runs
+        result.usage["retrieval_runs"] = retrieval_runs
 
     @staticmethod
     def _merge_capability_usage(
@@ -2534,6 +2580,7 @@ class PydanticRuntimeAdapter:
                 if (entry := self.registry.situation_hints().get(situation)) is not None
                 for hint in (entry[1],)
             ),
+            allow_unverified_search_excerpts=True,
             delivered_notify_titles=delivered_notify_titles,
             resident_facts=resident_facts if resident_facts is not None else {},
             response_priority_citation_ids=(
@@ -2554,54 +2601,86 @@ class PydanticRuntimeAdapter:
         reply_language = _reply_language(safety_run, user_turns)
         if reply_language:
             instructions.append(_REPLY_LANGUAGE_INSTRUCTION.format(language=reply_language))
-        if self._current_awareness is not None:
-            awareness = await self._current_awareness(None)
-            if awareness:
-                instructions.append(
-                    _follow_up_awareness(awareness, delivered_notify_titles)
-                )
+        recovered_messages: list[ModelMessage] = []
         try:
             with capture_run_messages() as captured:
                 async with asyncio.timeout(self._run_timeout_s):
-                    native = await self._agent.run(
-                        safe_user_message,
-                        conversation_id=conversation_id,
-                        message_history=message_history or None,
-                        instructions=_dynamic_instructions(instructions),
-                        deps=deps,
-                        usage_limits=self._usage_limits,
-                        event_stream_handler=(
-                            (
-                                lambda ctx, stream: _forward_events(
-                                    event_sink,
-                                    message_id,
-                                    stream,
-                                    include_text=(
+                    try:
+                        native = await self._agent.run(
+                            safe_user_message,
+                            conversation_id=conversation_id,
+                            message_history=message_history or None,
+                            instructions=_dynamic_instructions(instructions),
+                            deps=deps,
+                            usage_limits=self._usage_limits,
+                            event_stream_handler=(
+                                (
+                                    lambda ctx, stream: _forward_events(
+                                        event_sink,
+                                        message_id,
+                                        stream,
+                                        include_text=(
+                                            not self._structured_grounding
+                                            and self._output_guard is None
+                                        ),
+                                    )
+                                )
+                                if (
+                                    event_sink is not None
+                                    and (
                                         not self._structured_grounding
-                                        and self._output_guard is None
+                                        or self._stream_model_requests
+                                    )
+                                ) or self._streams_without_a_sink
+                                else None
+                            ),
+                            capabilities=(
+                                [
+                                    timing_capability,
+                                    *(
+                                        [memory_capability]
+                                        if memory_capability is not None
+                                        else []
                                     ),
-                                )
+                                ]
+                            ),
+                        )
+                    except TimeoutError:
+                        if (
+                            not timing_capability.stalled_requests
+                            or not any(
+                                run.get("status") == "success"
+                                for run in deps.tool_runs
                             )
-                            if (
-                                event_sink is not None
-                                and (
-                                    not self._structured_grounding
-                                    or self._stream_model_requests
+                        ):
+                            raise
+                        if _latest_cited_text(captured, citations):
+                            raise
+                        current_index = max(
+                            (
+                                index
+                                for index, message in enumerate(captured)
+                                if isinstance(message, ModelRequest)
+                                and any(
+                                    isinstance(part, UserPromptPart)
+                                    and part.content == safe_user_message
+                                    for part in message.parts
                                 )
-                            ) or self._streams_without_a_sink
-                            else None
-                        ),
-                        capabilities=(
-                            [
+                            ),
+                            default=len(message_history),
+                        )
+                        recovered_messages = captured[current_index:]
+                        native = await self._agent.run(
+                            conversation_id=conversation_id,
+                            message_history=recovered_messages,
+                            instructions=_dynamic_instructions(instructions),
+                            deps=deps,
+                            usage_limits=self._usage_limits,
+                            capabilities=[
                                 timing_capability,
-                                *(
-                                    [memory_capability]
-                                    if memory_capability is not None
-                                    else []
-                                ),
-                            ]
-                        ),
-                    )
+                                _AnswerOnlyCapability(),
+                            ],
+                        )
         except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
             current_index = max(
                 (
@@ -2617,6 +2696,11 @@ class PydanticRuntimeAdapter:
                 default=len(message_history),
             )
             new_messages = captured[current_index:]
+            cited_draft = (
+                _latest_cited_text(new_messages, citations)
+                if isinstance(exc, TimeoutError)
+                else None
+            )
             current_citation_ids = (
                 _current_turn_citation_ids(citations)
                 & deps.tool_result_citation_ids
@@ -2631,7 +2715,7 @@ class PydanticRuntimeAdapter:
                 if isinstance(exc, UnexpectedModelBehavior)
                 else None
             )
-            citation_ids = current_citation_ids
+            citation_ids = cited_draft[1] if cited_draft else current_citation_ids
             if validation_warning:
                 citation_ids = _validation_citation_ids(
                     deps.validation_rejections,
@@ -2656,6 +2740,7 @@ class PydanticRuntimeAdapter:
                 ),
                 text=(
                     validation_warning
+                    or (cited_draft[0] if cited_draft else None)
                     or (
                         SOURCE_RECOVERY_NOTICE
                         if citation_ids
@@ -2712,8 +2797,11 @@ class PydanticRuntimeAdapter:
             result.hit_max_iters = True
             _finish_events(event_sink, message_id, result)
             return result, new_messages, None, deps.current_location
-        result = self._result(
-            native,
+        combined_messages = [*recovered_messages, *native.new_messages()]
+        result = self._project_result(
+            combined_messages,
+            _captured_usage(combined_messages) if recovered_messages else native.usage,
+            native.output,
             citations,
             started,
             model_time_ms=timing_capability.elapsed_ms,
@@ -2727,6 +2815,8 @@ class PydanticRuntimeAdapter:
         self._merge_capability_usage(result, deps.current_turn_capability_ids)
         if timing_capability.stalled_requests:
             result.usage["stalled_model_requests"] = timing_capability.stalled_requests
+        if recovered_messages:
+            result.usage["stalled_model_recoveries"] = 1
         self._merge_fact_review_usage(result, deps.fact_review_runs)
         self._merge_claim_support_usage(result, deps.claim_support_runs)
         self._merge_tool_usage(result, deps.tool_runs)
@@ -2765,7 +2855,7 @@ class PydanticRuntimeAdapter:
         pending = (
             native.output if isinstance(native.output, DeferredToolRequests) else None
         )
-        return result, native.new_messages(), pending, deps.current_location
+        return result, combined_messages, pending, deps.current_location
 
     def _result(
         self,
@@ -3214,10 +3304,18 @@ class PydanticAgentSession:
             )
             else None
         )
-        timing_capability = _ModelTimingCapability(self.runtime.model)
+        timing_capability = _ModelTimingCapability(
+            self.runtime.model,
+            self.runtime._model_request_timeout_s,
+        )
         try:
             try:
-                result, new_messages, self.state.pending, current_location = await self.runtime._run(
+                (
+                    result,
+                    new_messages,
+                    self.state.pending,
+                    current_location,
+                ) = await self.runtime._run(
                     user_message,
                     message_history=_conversation_history(self.state.messages),
                     prior_user_turns=self.state.user_turns,
@@ -3307,7 +3405,10 @@ class PydanticAgentSession:
             events.SessionInit(session_id=message_id, model=self.runtime.model),
         )
         _emit(event_sink, events.MessageStart(message_id=message_id))
-        timing_capability = _ModelTimingCapability(self.runtime.model)
+        timing_capability = _ModelTimingCapability(
+            self.runtime.model,
+            self.runtime._model_request_timeout_s,
+        )
         timing_capability.bind(event_sink)
         try:
             with capture_run_messages() as captured:
@@ -3343,6 +3444,11 @@ class PydanticAgentSession:
                     )
         except (UsageLimitExceeded, UnexpectedModelBehavior, TimeoutError) as exc:
             new_messages = captured[len(self.state.messages):]
+            cited_draft = (
+                _latest_cited_text(new_messages, citations)
+                if isinstance(exc, TimeoutError)
+                else None
+            )
             current_citation_ids = _current_turn_citation_ids(citations)
             validation_warning = (
                 _validation_warning_text(
@@ -3354,7 +3460,7 @@ class PydanticAgentSession:
                 if isinstance(exc, UnexpectedModelBehavior)
                 else None
             )
-            citation_ids = current_citation_ids
+            citation_ids = cited_draft[1] if cited_draft else current_citation_ids
             if validation_warning:
                 citation_ids = _validation_citation_ids(
                     deps.validation_rejections,
@@ -3379,6 +3485,7 @@ class PydanticAgentSession:
                 ),
                 text=(
                     validation_warning
+                    or (cited_draft[0] if cited_draft else None)
                     or (
                         SOURCE_RECOVERY_NOTICE
                         if citation_ids
@@ -3471,10 +3578,11 @@ class PydanticAgentSession:
         self,
         request_context: ModelRequestContext,
         response: ModelResponse,
-    ) -> int:
+        deps: ToolContext,
+    ) -> int | None:
         capacity = self.runtime._context_budget
         if capacity is None:
-            return 0
+            return None
         empty_returns = ModelRequest(parts=[
             ToolReturnPart(part.tool_name, "", part.tool_call_id)
             for part in response.parts
@@ -3494,7 +3602,7 @@ class PydanticAgentSession:
             used = self.runtime._measure_context(measured, self.state.continuity)
         else:
             if self.runtime._answer_model_route is None:
-                return 0
+                return None
             used = request_tokens(
                 self.runtime._answer_model_route,
                 measured,

@@ -59,7 +59,6 @@ async def test_runtime_exposes_remaining_context_to_retrieval_tools() -> None:
             "probe": Tool(
                 name="probe",
                 description="Inspect the retrieval budget",
-                parameters={"type": "object", "properties": {}},
                 handler=probe,
             )
         },
@@ -73,6 +72,71 @@ async def test_runtime_exposes_remaining_context_to_retrieval_tools() -> None:
     await runtime.conversation().send("Find it")
 
     assert observed == [60]
+
+
+async def test_runtime_exposes_actual_remaining_capacity_without_a_magic_retrieval_target() -> None:
+    observed: list[int | None] = []
+
+    async def probe(_args: dict, ctx: ToolContext) -> str:
+        observed.append(ctx.evidence_token_budget)
+        return "retrieved evidence"
+
+    calls = 0
+
+    async def model(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("probe", {}, "probe-1")])
+        return ModelResponse([TextPart("Done")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "probe": Tool(
+                name="probe",
+                description="Inspect the retrieval budget",
+                handler=probe,
+            )
+        },
+        context_budget=100_000,
+        measure_context=lambda _history, _continuity: 10_000,
+        compact_context=lambda _history, _continuity: None,
+    )
+
+    await runtime.conversation().send("Find it")
+
+    assert observed == [90_000]
+
+
+async def test_runtime_leaves_retrieval_unbounded_when_model_capacity_is_unknown() -> None:
+    observed: list[int | None] = []
+
+    async def probe(_args: dict, ctx: ToolContext) -> str:
+        observed.append(ctx.evidence_token_budget)
+        return "retrieved evidence"
+
+    calls = 0
+
+    async def model(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse([ToolCallPart("probe", {}, "probe-1")])
+        return ModelResponse([TextPart("Done")])
+
+    runtime = PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={"probe": Tool(name="probe", description="Inspect budget", handler=probe)},
+        context_budget=None,
+        compact_context=lambda _history, _continuity: None,
+    )
+
+    await runtime.conversation().send("Find it")
+
+    assert observed == [None]
 
 
 async def test_claim_support_checker_receives_evidence_after_character_4000() -> None:
@@ -119,7 +183,6 @@ async def test_claim_support_checker_receives_evidence_after_character_4000() ->
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve the schedule",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },

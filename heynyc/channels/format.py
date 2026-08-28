@@ -33,6 +33,13 @@ _MARKDOWN = MarkdownIt(
     "commonmark",
     {"linkify": True},
 ).enable(("strikethrough", "linkify"))
+_DELIVERY_CONTROL_CHARACTERS = dict.fromkeys(
+    (*range(0, 9), 11, 12, *range(14, 32), *range(127, 160))
+)
+
+
+def _delivery_text(text: str) -> str:
+    return text.translate(_DELIVERY_CONTROL_CHARACTERS)
 
 
 def _inline_text(tokens: list[Token], *, whatsapp: bool) -> str:
@@ -180,6 +187,14 @@ def _deduplicate_delivery_urls(
     for original in text.splitlines():
         line = original
         removed = False
+        stripped = original.lstrip()
+        while stripped.startswith("> "):
+            stripped = stripped[2:].lstrip()
+        first_word = stripped.partition(" ")[0]
+        is_list_item = stripped.startswith(("- ", "* ")) or (
+            first_word.endswith((".", ")")) and first_word[:-1].isdigit()
+        )
+        line_seen = set() if is_list_item else seen
         for url in delivered:
             start = 0
             while (index := line.find(url, start)) >= 0:
@@ -193,7 +208,8 @@ def _deduplicate_delivery_urls(
                     start = after_index
                     continue
                 identity = aliases.get(url, url)
-                if identity not in seen:
+                if identity not in line_seen:
+                    line_seen.add(identity)
                     seen.add(identity)
                     start = after_index
                     continue
@@ -379,17 +395,18 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     formats SMS as plain text and WhatsApp in its native dialect, both with cited links inline.
     """
     action_links = tuple(getattr(result, "action_links", ()))
+    result_text = _delivery_text(result.text)
     if getattr(result, "status", None) == "approval_required":
-        body = result.text
+        body = result_text
     elif channel == "console":
         # The REPL is the rich surface: inline {cite:Sn} markers STAY visible (texters lose
         # them only because SMS/WhatsApp can't render them usefully), markdown stays raw for
         # rich, and the sources footer below goes one-per-line instead of the wrapped bullets.
-        body = _link_markers(result.text, result.citations)
+        body = _link_markers(result_text, result.citations)
     else:
         language = (getattr(result, "diagnostics", {}) or {}).get("safety_language")
         text = _inline_citation_links(
-            result.text,
+            result_text,
             result.citations,
             action_links,
             language,
@@ -416,7 +433,7 @@ def render(result, channel: str = "whatsapp") -> list[str]:
     }
     # SMS and WhatsApp already have exact cited links inline, so their footer is reserved for source
     # limitations and other notes.
-    cited_text = result.text if channel == "console" else _without_code_citations(result.text)
+    cited_text = result_text if channel == "console" else _without_code_citations(result_text)
     cited = used_citations(cited_text, result.citations)
     if channel == "console":
         actions_by_citation = {}
@@ -430,7 +447,8 @@ def render(result, channel: str = "whatsapp") -> list[str]:
         rows = [
             # Markdown list items: single newlines are soft breaks that Markdown() collapses
             # into spaces (observed live as one wrapped blob), list items render one per line.
-            f"- [\\[{cid}\\]](<{c.get('url', '')}>) {c.get('title') or c.get('url', '')} - <{c.get('url', '')}>"
+            f"- [\\[{cid}\\]](<{c.get('url', '')}>) "
+            f"{_delivery_text(c.get('title') or c.get('url', ''))} - <{c.get('url', '')}>"
             + (
                 f" - [{actions_by_citation[cid].label}](<{actions_by_citation[cid].url}>)"
                 if cid in actions_by_citation

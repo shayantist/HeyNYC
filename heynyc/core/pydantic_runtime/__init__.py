@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
-from litellm.main import responses_api_bridge_check
 from pydantic_ai import UsageLimits
 from pydantic_ai.models import infer_model
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.profiles.openai import openai_model_profile
 
 from heynyc.core import config
-from heynyc.core.citations import CitationRegistry
 from heynyc.core.memory import compact_memory, context_capacity, request_tokens
 from heynyc.core.prompts import build_system_prompt_tiers
 from heynyc.core.registry import Registry
@@ -34,9 +32,9 @@ from .runtime import PydanticRunFailure, PydanticRuntimeAdapter
 from .safety import build_crisis_screen, build_output_moderator, build_scope_screen
 from .tools import (
     _resident_fact_errors,
-    adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
+    runtime_tool,
 )
 
 __all__ = (
@@ -55,7 +53,7 @@ __all__ = (
     "_resident_fact_errors",
     "_resident_history",
     "_claim_support_evidence",
-    "adapt_tool",
+    "runtime_tool",
     "approval_review_text",
     "build_configured_runtime",
     "build_crisis_screen",
@@ -79,7 +77,6 @@ def build_runtime(
     tools: dict[str, Tool] | None = None,
     index: Any = None,
     use_module_capabilities: bool = False,
-    current_awareness: Callable[[CitationRegistry | None], Awaitable[str]] | None = None,
     extra_capabilities: Sequence[Any] = (),
     answer_model_route: str | None = None,
     structured_grounding: bool = True,
@@ -117,7 +114,6 @@ def build_runtime(
             include_module_guidance=not use_module_capabilities,
         )[1],
         use_module_capabilities=use_module_capabilities,
-        current_awareness=current_awareness,
         extra_capabilities=extra_capabilities,
         usage_limits=UsageLimits(
             request_limit=10 if use_module_capabilities else 8,
@@ -137,15 +133,8 @@ def build_runtime(
 
 
 def _uses_openai_responses(model: str, *, has_tools: bool = True) -> bool:
-    if not model.startswith("openai/"):
-        return False
-    model_info, _ = responses_api_bridge_check(
-        model.removeprefix("openai/"),
-        "openai",
-        tools=[{}] if has_tools else [],
-        reasoning_effort=config.HEYNYC_REASONING_EFFORT,
-    )
-    return model_info.get("mode") == "responses"
+    del has_tools
+    return model.startswith("openai/")
 
 
 def configured_model(
@@ -163,7 +152,6 @@ def configured_model(
             }.items()
             if value is not None
         }
-        model_type = OpenAIResponsesModel if _uses_openai_responses(model) else OpenAIChatModel
         model_name = model.removeprefix("openai/")
         profile = openai_model_profile(model_name)
         if model_name.startswith("gpt-5.6-luna"):
@@ -175,7 +163,7 @@ def configured_model(
                     if tool.__name__ != "ToolSearchTool"
                 ),
             }
-        return model_type(model_name, settings=settings, profile=profile)
+        return OpenAIResponsesModel(model_name, settings=settings, profile=profile)
     return infer_model(model.replace("/", ":", 1))
 
 
@@ -184,7 +172,6 @@ def build_configured_runtime(
     *,
     model: Any,
     index: Any = None,
-    current_awareness: Callable[[CitationRegistry | None], Awaitable[str]] | None = None,
     output_guard: Any = None,
     stream_model_requests: bool = False,
 ) -> PydanticRuntimeAdapter:
@@ -195,7 +182,7 @@ def build_configured_runtime(
         else type(selected_model).__name__
     )
     safety_model = (
-        configured_model(safety_model_name, reasoning_effort="low")
+        configured_model(safety_model_name, reasoning_effort="none")
         if isinstance(model, str)
         else selected_model
     )
@@ -206,7 +193,6 @@ def build_configured_runtime(
         index=index,
         retrieval_cache_path=config.HEYNYC_DATA_DIR / "catalogs.lance",
         use_module_capabilities=True,
-        current_awareness=current_awareness,
         answer_model_route=model if isinstance(model, str) else None,
         structured_grounding=True,
         fact_review_model=(
@@ -224,10 +210,6 @@ def build_configured_runtime(
             safety_model,
             model_name=safety_model_name,
         ),
-        scope_screen=build_scope_screen(
-            safety_model,
-            model_name=safety_model_name,
-            registry=registry,
-        ),
+        scope_screen=None,
         output_guard=output_guard,
     )

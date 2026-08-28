@@ -15,6 +15,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from heynyc.channels.format import render
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.localization import localize
+from heynyc.core.manifest import ServiceModule, SituationHint
 from heynyc.core.pydantic_runtime import PydanticRuntimeAdapter
 from heynyc.core.pydantic_runtime.projection import _resident_history
 from heynyc.core.pydantic_runtime.runtime import (
@@ -27,7 +28,7 @@ from heynyc.core.pydantic_runtime.runtime import (
     _validation_warning_text,
 )
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailureError
 
 
 def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
@@ -36,6 +37,44 @@ def _cited_answer(answer: str, call_id: str = "answer-1") -> ToolCallPart:
         {"answer": answer},
         call_id,
     )
+
+
+async def test_native_runtime_returns_expected_tool_failures_to_the_model() -> None:
+    async def unavailable(_args, _ctx):
+        raise ToolFailureError(
+            status="unavailable",
+            reason="The source blocked retrieval.",
+            retryable=False,
+            source_url="https://example.org/blocked",
+        )
+
+    async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        tool_returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not tool_returns:
+            return ModelResponse([ToolCallPart("unavailable", {}, "tool-1")])
+        assert "The source blocked retrieval." in str(tool_returns[-1].content)
+        return ModelResponse([_cited_answer("That source could not be opened.")])
+
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "unavailable": Tool(
+                name="unavailable",
+                description="Retrieve one source",
+                handler=unavailable,
+            )
+        },
+        structured_grounding=True,
+    ).run("Open the source")
+
+    assert result.text == "That source could not be opened."
+    assert result.usage["tool_runs"][0]["status"] == "unavailable"
 
 
 def test_validation_recovery_keeps_useful_partial_answer_without_generic_copy() -> None:
@@ -218,7 +257,6 @@ async def test_mechanical_guard_does_not_classify_uncited_prose() -> None:
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -260,7 +298,6 @@ async def test_authoritative_evidence_supports_native_cited_prose() -> None:
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -298,7 +335,6 @@ async def test_successful_answer_omits_an_unused_unavailable_source_url() -> Non
             "retrieve": Tool(
                 name="retrieve",
                 description="Try an official source",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -339,7 +375,6 @@ async def test_later_turn_does_not_show_an_unrelated_unavailable_source() -> Non
             "retrieve": Tool(
                 name="retrieve",
                 description="Try an official source",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -384,7 +419,6 @@ async def test_later_turn_omits_an_unused_unavailable_source_retried_this_turn()
             "retrieve": Tool(
                 name="retrieve",
                 description="Try an official source",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -435,13 +469,20 @@ def test_recovery_shows_one_unavailable_page_per_site() -> None:
         )
 
     text = _degraded_failure_text("Useful partial answer.", citations)
+    result = SimpleNamespace(
+        text=text,
+        citations=citations.mapping(),
+        diagnostics={},
+        action_links=(),
+    )
+    rendered = "\n".join(render(result, "sms_twilio"))
 
-    assert "https://otda.ny.gov/hearings/request/" in text
-    assert "https://otda.ny.gov/hearings/faq.asp" not in text
-    assert "https://otda.ny.gov/hearings/" not in text.replace(
+    assert "https://otda.ny.gov/hearings/request/" in rendered
+    assert "https://otda.ny.gov/hearings/faq.asp" not in rendered
+    assert "https://otda.ny.gov/hearings/" not in rendered.replace(
         "https://otda.ny.gov/hearings/request/", ""
     )
-    assert "https://www.nyc.gov/site/hra/help.page" in text
+    assert "https://www.nyc.gov/site/hra/help.page" in rendered
 
 
 async def test_grounded_answer_does_not_need_completion_metadata() -> None:
@@ -481,7 +522,6 @@ async def test_grounded_answer_does_not_need_completion_metadata() -> None:
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -663,7 +703,6 @@ async def test_mechanical_boundary_does_not_parse_phone_semantics() -> None:
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -720,7 +759,6 @@ async def test_exact_fact_guard_keeps_cited_document_evidence() -> None:
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve clinic and maintained program evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },
@@ -772,7 +810,6 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
                 "retrieve": Tool(
                     name="retrieve",
                     description="Retrieve official evidence",
-                    parameters={"type": "object", "properties": {}},
                     handler=retrieve,
                 )
             },
@@ -786,13 +823,15 @@ async def test_exhausted_output_validation_is_not_returned_as_a_successful_fallb
     assert "212-555-9999" not in raised.value.partial_result.text
     assert "Call 212-555-0100." in raised.value.partial_result.text
     assert "Structured data record" not in raised.value.partial_result.text
-    assert "Verified source" in raised.value.partial_result.text
+    assert "Official service row" in raised.value.partial_result.text
+    assert "Verified source" not in raised.value.partial_result.text
     assert "City data record" not in raised.value.partial_result.text
     assert raised.value.partial_result.text.rstrip().endswith(
         "I couldn't verify every detail in that answer. "
         "Check the linked sources before relying on it."
     )
-    assert "https://data.cityofnewyork.us/example" in raised.value.partial_result.text
+    rendered = "\n".join(render(raised.value.partial_result, "sms_twilio"))
+    assert "https://data.cityofnewyork.us/example" in rendered
     assert "311" not in raised.value.partial_result.text
     assert raised.value.partial_result.diagnostics["failure_type"] == (
         "UnexpectedModelBehavior"
@@ -869,7 +908,6 @@ async def test_exhausted_grounding_keeps_supported_sibling_and_source_fact() -> 
                 "retrieve": Tool(
                     name="retrieve",
                     description="Retrieve official evidence",
-                    parameters={"type": "object", "properties": {}},
                     handler=retrieve,
                 )
             },
@@ -882,81 +920,101 @@ async def test_exhausted_grounding_keeps_supported_sibling_and_source_fact() -> 
     assert "Call 212-555-0100." in text
 
 
-async def test_discovery_only_correction_can_fetch_the_known_source_once() -> None:
+async def test_high_stakes_authoritative_excerpt_is_preserved_when_exactly_supported() -> None:
     async def search(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/official-guidance",
             title="Search result",
             kind="WEB",
             snippet="The office is open on Mondays.",
-            provenance={"evidence_grade": "discovery"},
+            provenance={
+                "evidence_grade": "authoritative_excerpt",
+                "source_tier": "authoritative",
+            },
         )
         return f"Search result. {{cite:{citation_id}}}"
 
-    async def web_fetch(_args: dict, ctx: ToolContext) -> str:
-        citation_id = ctx.citations.register(
-            "https://www.nyc.gov/official-guidance",
-            title="Official guidance",
-            kind="WEB",
-            snippet="The office is open on Mondays.",
-            provenance={"evidence_grade": "authoritative"},
-        )
-        return f"The office is open on Mondays. {{cite:{citation_id}}}"
-
     calls = 0
+    retry_text = ""
+
+    async def high_stakes_scope(_turns: tuple[str, ...]) -> SimpleNamespace:
+        return SimpleNamespace(
+            model="test",
+            input_tokens=0,
+            output_tokens=0,
+            cached_input_tokens=0,
+            requests=0,
+            cost_usd=0.0,
+            latency_ms=0.0,
+            modules=("benefits",),
+            situations=("benefits_guidance",),
+            event_turn=None,
+        )
 
     async def model(
         messages: list[ModelMessage],
         info: AgentInfo,
     ) -> ModelResponse:
-        nonlocal calls
+        nonlocal calls, retry_text
         calls += 1
         if calls == 1:
-            return ModelResponse([ToolCallPart("search", {}, "search-1")])
+            return ModelResponse([ToolCallPart("web_search", {}, "search-1")])
         if calls == 2:
             return ModelResponse([
-                _cited_answer("The office is open on Mondays. {cite:S1}", "answer-1")
+                ToolCallPart(
+                    "grounded_answer",
+                    {"grounded_blocks": [{
+                        "text": "The office is open on Mondays.",
+                        "citation_ids": ["S1"],
+                    }]},
+                    "answer-1",
+                )
             ])
-        if calls == 3:
-            assert {tool.name for tool in info.function_tools} == {"web_fetch"}
-            return ModelResponse([ToolCallPart("web_fetch", {}, "fetch-1")])
+        retry_text = "\n".join(
+            str(getattr(part, "content", ""))
+            for message in messages
+            for part in message.parts
+        )
         return ModelResponse([
-            _cited_answer("The office is open on Mondays. {cite:S2}", "answer-2")
+            ToolCallPart(
+                "grounded_answer",
+                {"grounded_blocks": [{
+                    "text": "The office is open on Mondays.",
+                    "citation_ids": ["S1"],
+                }]},
+                "answer-2",
+            )
         ])
 
     result = await PydanticRuntimeAdapter(
         FunctionModel(model),
-        registry=Registry([]),
+        registry=Registry([
+            ServiceModule(
+                name="benefits",
+                situations=[SituationHint(
+                    name="benefits_guidance",
+                    definition="Guidance that can affect a resident's benefits.",
+                    high_stakes=True,
+                )],
+            )
+        ]),
         tools={
-            "search": Tool(
-                name="search",
+            "web_search": Tool(
+                name="web_search",
                 description="Find a source",
-                parameters={"type": "object", "properties": {}},
                 handler=search,
-            ),
-            "web_fetch": Tool(
-                name="web_fetch",
-                description="Fetch a known source",
-                parameters={"type": "object", "properties": {}},
-                handler=web_fetch,
             ),
         },
         structured_grounding=True,
+        scope_screen=high_stakes_scope,
     ).run("When is the office open?")
 
-    assert calls == 4
-    assert result.status == "success"
-    assert result.text == "The office is open on Mondays. {cite:S2}"
-    assert result.diagnostics["validation_rejections"] == [
-        {
-            "attempt": 1,
-            "stage": "discovery_only",
-            "citation_ids": ["S1"],
-        }
-    ]
+    assert result.text == "The office is open on Mondays. {cite:S1}"
+    assert calls == 2
+    assert retry_text == ""
 
 
-async def test_exhausted_discovery_validation_preserves_answer_with_specific_notice() -> None:
+async def test_low_stakes_discovery_excerpt_does_not_add_a_failure_notice() -> None:
     async def search(_args: dict, ctx: ToolContext) -> str:
         citation_id = ctx.citations.register(
             "https://www.nyc.gov/official-guidance",
@@ -981,28 +1039,22 @@ async def test_exhausted_discovery_validation_preserves_answer_with_specific_not
             _cited_answer("The office is open on Mondays. {cite:S1}", f"answer-{calls}")
         ])
 
-    with pytest.raises(PydanticRunFailure) as raised:
-        await PydanticRuntimeAdapter(
-            FunctionModel(model),
-            registry=Registry([]),
-            tools={
-                "search": Tool(
-                    name="search",
-                    description="Find a source",
-                    parameters={"type": "object", "properties": {}},
-                    handler=search,
-                )
-            },
-            structured_grounding=True,
-        ).run("When is the office open?")
+    result = await PydanticRuntimeAdapter(
+        FunctionModel(model),
+        registry=Registry([]),
+        tools={
+            "search": Tool(
+                name="search",
+                description="Find a source",
+                handler=search,
+            )
+        },
+        structured_grounding=True,
+    ).run("When is the office open?")
 
-    assert calls == 4
-    assert raised.value.partial_result.status == "error"
-    assert raised.value.partial_result.text == (
-        "The office is open on Mondays. {cite:S1}\n\n"
-        "Verification note for NYC office guidance (S1): this source is a search-result "
-        "excerpt. I could not confirm it from the full page."
-    )
+    assert calls == 2
+    assert result.status == "success"
+    assert result.text == "The office is open on Mondays. {cite:S1}"
 
 
 @pytest.mark.parametrize(

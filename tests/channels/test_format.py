@@ -138,6 +138,23 @@ def test_replaces_model_em_dashes_for_channel_copy():
     assert render(FakeResult("Free Yoga \N{EM DASH} Saturday")) == ["Free Yoga - Saturday"]
 
 
+def test_text_channels_remove_provider_control_characters():
+    assert render(FakeResult("Harry Styles with Jamie \x1b"), "sms_twilio") == [
+        "Harry Styles with Jamie"
+    ]
+
+
+def test_console_footer_removes_provider_control_characters_from_titles():
+    result = FakeResult(
+        "Harry Styles {cite:S1}.",
+        {"S1": {"url": "https://example.com/event", "title": "Harry Styles \x1b"}},
+    )
+
+    rendered = render(result, "console")[0]
+
+    assert "\x1b" not in rendered
+
+
 def test_bold_heading_has_one_whatsapp_bold_delimiter():
     assert render(FakeResult("## **Housing**")) == ["*Housing*"]
 
@@ -306,6 +323,42 @@ def test_text_channels_render_one_link_for_the_same_page_across_paragraphs():
         assert rendered.count(url) == 1
         assert "Official Summer Streets schedule:" not in rendered
         assert "()" not in rendered
+
+
+def test_text_channels_repeat_a_shared_source_for_distinct_list_items():
+    url = "https://secretnyc.co/august-concerts"
+    result = FakeResult(
+        "- Vivaldi on Thursday {cite:S1}.\n- Fleetwood Mac on Saturday {cite:S1}.",
+        {"S1": {"id": "S1", "url": url, "title": "August concerts"}},
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count(url) == 2
+
+
+def test_text_channels_repeat_a_shared_source_for_distinct_ordered_items():
+    url = "https://secretnyc.co/august-concerts"
+    result = FakeResult(
+        "1. Vivaldi on Thursday {cite:S1}.\n2. Fleetwood Mac on Saturday {cite:S1}.",
+        {"S1": {"id": "S1", "url": url, "title": "August concerts"}},
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count(url) == 2
+
+
+def test_text_channels_repeat_a_shared_source_for_distinct_quoted_list_items():
+    url = "https://secretnyc.co/august-concerts"
+    result = FakeResult(
+        "> - Vivaldi on Thursday {cite:S1}.\n> - Fleetwood Mac on Saturday {cite:S1}.",
+        {"S1": {"id": "S1", "url": url, "title": "August concerts"}},
+    )
+
+    rendered = render(result, "sms_twilio")[0]
+
+    assert rendered.count(url) == 2
 
 
 def test_text_channels_remove_a_dangling_colon_with_a_repeated_inline_url():
