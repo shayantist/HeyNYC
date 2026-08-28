@@ -58,10 +58,10 @@ async def test_utility_shutoff_guidance_returns_source_scoped_evidence():
     calls: list[dict] = []
 
     async def fetch(args: dict, _ctx: ToolContext) -> str:
-        if "customer service phone" in args["query"]:
+        if "Con Edison" in args["find"]:
             await asyncio.sleep(0.01)
         calls.append(args)
-        return f"evidence for {args['query']} {{cite:S{len(calls)}}}"
+        return f"evidence for {args['find']} {{cite:S{len(calls)}}}"
 
     ctx = ToolContext(
         citations=CitationRegistry(),
@@ -70,7 +70,6 @@ async def test_utility_shutoff_guidance_returns_source_scoped_evidence():
             "web_fetch": Tool(
                 name="web_fetch",
                 description="Fetch one page",
-                parameters={"type": "object", "properties": {}},
                 handler=fetch,
             )
         },
@@ -87,18 +86,15 @@ async def test_utility_shutoff_guidance_returns_source_scoped_evidence():
         "https://dps.ny.gov/your-rights-residential-gas-electric-or-steam-customer-under-hefpa",
         "https://dps.ny.gov/electric-utilities",
     }
-    assert any("Con Edison" in call["query"] for call in calls)
-    assert {call["evidence_scope"] for call in calls} == {
-        "UTILITY CONTACT", "SHUTOFF PROTECTIONS", "DPS EMERGENCY COMPLAINT",
-    }
+    assert any("Con Edison" in call["find"] for call in calls)
     assert out.index("UTILITY CONTACT") < out.index("SHUTOFF PROTECTIONS")
     assert out.index("SHUTOFF PROTECTIONS") < out.index("DPS EMERGENCY COMPLAINT")
-    assert "UTILITY CONTACT\nevidence for Con Edison customer service phone" in out
-    assert "phone and contact information {cite:S1}" in out
+    assert "UTILITY CONTACT\nevidence for Con Edison" in out
+    assert "{cite:S1}" in out
     assert "SHUTOFF PROTECTIONS\nevidence" in out
-    assert "prevent utility shutoff {cite:S2}" in out
+    assert "payment agreement {cite:S2}" in out
     assert "DPS EMERGENCY COMPLAINT\nevidence" in out
-    assert "48 72 hours {cite:S3}" in out
+    assert "emergency {cite:S3}" in out
     assert "Use each section only for the claim named by its heading" in out
 
 
@@ -786,19 +782,27 @@ def test_get_tools_gates_screener_on_creds(monkeypatch):
 
 def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
     tool = btools.screen_access_nyc_eligibility_tool()
-    schema = tool.parameters
-    household = schema["properties"]["household"]
-    assert household["properties"]["cashOnHand"]["type"] == "string"
+    assert tool.input_type is screening.ScreeningRequest
+    schema = tool._input_schema()
+    def resolved(node: dict) -> dict:
+        candidates = node.get("anyOf", [node])
+        target = next((item for item in candidates if item.get("type") != "null"), node)
+        if "$ref" in target:
+            return schema["$defs"][target["$ref"].rsplit("/", 1)[-1]]
+        return target
+
+    household = resolved(schema["properties"]["household"])
+    assert resolved(household["properties"]["cashOnHand"])["type"] == "string"
     assert household["additionalProperties"] is False
     assert set(household["properties"]) == set(screening.HOUSEHOLD_FIELDS)
     assert {"livingStayingWithFriend", "livingHotel", "livingPreferNotToSay"} <= set(
         household["properties"]
     )
-    person = schema["properties"]["persons"]["items"]["properties"]
+    person_schema = resolved(schema["properties"]["persons"]["items"])
+    person = person_schema["properties"]
     assert set(person) == set(screening.PERSON_FIELDS)
     assert schema["properties"]["persons"]["minItems"] == 1
     assert schema["properties"]["persons"]["maxItems"] == 8
-    assert schema["properties"]["persons"]["minContains"] == 1
     assert {"studentFulltime", "blind", "benefitsMedicaid", "livingRentalOnLease"} <= set(person)
     assert "HeadOfHousehold" in person["householdMemberType"]["enum"]
     assert "Whether the person is pregnant" in person["pregnant"]["description"]
@@ -817,18 +821,22 @@ def test_screen_tool_uses_city_wire_type_for_cash_on_hand():
         in field["description"]
         for field in boolean_fields
     )
-    assert person["incomes"]["minItems"] == 1
+    incomes = resolved(person["incomes"])
+    assert incomes["minItems"] == 1
     assert "zero placeholder" in person["incomes"]["description"]
-    income = person["incomes"]["items"]
+    income = resolved(incomes["items"])
     assert set(income["properties"]) == set(screening.MONEY_ITEM_FIELDS)
     assert income["required"] == ["amount", "frequency", "type"]
     assert income["additionalProperties"] is False
     assert "Wages" in income["properties"]["type"]["enum"]
     assert "Monthly" in income["properties"]["frequency"]["enum"]
-    assert "Medical" in person["expenses"]["items"]["properties"]["type"]["enum"]
-    assert schema["properties"]["interested_programs"]["items"]["pattern"] == r"^S2R\d{3}$"
-    assert schema["properties"]["goal"]["type"] == "string"
-    assert schema["properties"]["show_all"]["type"] == "boolean"
+    expenses = resolved(person["expenses"])
+    expense = resolved(expenses["items"])
+    assert "Medical" in expense["properties"]["type"]["enum"]
+    programs = resolved(schema["properties"]["interested_programs"])
+    assert programs["items"]["pattern"] == r"^S2R\d{3}$"
+    assert resolved(schema["properties"]["goal"])["type"] == "string"
+    assert resolved(schema["properties"]["show_all"])["type"] == "boolean"
     assert "explicitly supplied boolean as true or false" in tool.description
 
 
@@ -840,12 +848,19 @@ def test_get_tools_gates_forms_on_flag(monkeypatch):
     assert "prepare_snap_application" in {t.name for t in btools.get_tools()}
 
 
+def test_prepare_application_uses_pydantic_input_contract():
+    tool = btools.prepare_application_tool()
+
+    assert tool.input_type is btools.SnapApplicationInput
+    assert tool._input_schema() == btools.SnapApplicationInput.model_json_schema()
+
+
 # --- prepare_snap_application (Task 5) — the paths that don't need reportlab -------------
 
 async def test_prepare_application_reviews_before_filling(tmp_path):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
                       output_dir=tmp_path)
-    out = await btools._prepare_application_handler({"slots": {       # confirmed omitted → false
+    out = await btools.prepare_application_tool().invoke({"slots": {       # confirmed omitted → false
         "legal_name": "Ana Diaz", "residence_street": "1 Main St",
         "residence_city": "Bronx", "residence_zip": "10453"}}, ctx)
     assert out.startswith("REVIEW")
@@ -856,7 +871,7 @@ async def test_prepare_application_reviews_before_filling(tmp_path):
 async def test_prepare_application_asks_when_required_missing(tmp_path):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
                       output_dir=tmp_path)
-    out = await btools._prepare_application_handler({"slots": {"legal_name": "Ana"}}, ctx)
+    out = await btools.prepare_application_tool().invoke({"slots": {"legal_name": "Ana"}}, ctx)
     assert out.startswith("NEED_MORE") and "Home street address" in out
     assert not list(tmp_path.glob("*.pdf"))          # never fabricates the missing fields
 
@@ -866,7 +881,7 @@ async def test_prepare_application_degrades_on_form_drift(tmp_path, monkeypatch)
     monkeypatch.setattr(appmod, "verify_template_integrity", lambda *a, **k: False)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
                       output_dir=tmp_path)
-    out = await btools._prepare_application_handler({"slots": {
+    out = await btools.prepare_application_tool().invoke({"slots": {
         "legal_name": "Ana Diaz", "residence_street": "1 Main St",
         "residence_city": "Bronx", "residence_zip": "10453"}, "confirmed": True}, ctx)
     assert out.startswith("CANNOT_FILL") and "otda.ny.gov" in out    # degrade, never fill-wrong
@@ -880,8 +895,8 @@ async def test_prepare_application_uses_persistent_draft_not_llm_memory(tmp_path
     drafts = DraftStore(tmp_path).for_user("ukey")
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
                       output_dir=tmp_path, drafts=drafts)
-    await btools._prepare_application_handler({"slots": {"legal_name": "Ana Diaz"}}, ctx)  # turn 1
-    out = await btools._prepare_application_handler({"slots": {                            # turn 2
+    await btools.prepare_application_tool().invoke({"slots": {"legal_name": "Ana Diaz"}}, ctx)  # turn 1
+    out = await btools.prepare_application_tool().invoke({"slots": {                            # turn 2
         "residence_street": "1 Main St", "residence_city": "Bronx", "residence_zip": "10453"}}, ctx)
     assert out.startswith("REVIEW")                         # required complete via the merged draft
     assert "Ana Diaz" in out                                # turn-1 name survived structurally
@@ -902,9 +917,9 @@ async def test_prepare_application_confirmation_cannot_change_reviewed_fields(tm
         "residence_city": "Bronx",
         "residence_zip": "10453",
     }
-    await btools._prepare_application_handler({"slots": reviewed, "confirmed": False}, ctx)
+    await btools.prepare_application_tool().invoke({"slots": reviewed, "confirmed": False}, ctx)
 
-    out = await btools._prepare_application_handler(
+    out = await btools.prepare_application_tool().invoke(
         {"slots": {"legal_name": "Changed Name"}, "confirmed": True}, ctx
     )
 
@@ -918,7 +933,7 @@ async def test_prepare_application_confirmed_writes_a_pdf(tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=None,
                       output_dir=tmp_path)
-    out = await btools._prepare_application_handler({"slots": {
+    out = await btools.prepare_application_tool().invoke({"slots": {
         "legal_name": "Ana Diaz", "residence_street": "1 Main St",
         "residence_city": "Bronx", "residence_zip": "10453",
         "ssn": "078-05-1120"}, "confirmed": True}, ctx)

@@ -17,17 +17,46 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+from pydantic import ConfigDict, Field, create_model
 
 from heynyc.core import config
 from heynyc.core.citations import api_provenance, data_provenance
 from heynyc.core.freshness import staleness_caveat
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
 from heynyc.core.tools.datasets import query_dataset, row_url
 from heynyc.modules.benefits import application as appmod
 from heynyc.modules.benefits import screening
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
+
+
+SnapSlotsInput = create_model(
+    "SnapSlotsInput",
+    __config__=ConfigDict(extra="forbid"),
+    **{
+        slot.key: (
+            str | None,
+            Field(
+                default=None,
+                description=slot.label + (
+                    "; read back for confirmation" if slot.high_stakes else ""
+                ),
+            ),
+        )
+        for slot in appmod.SLOTS
+    },
+)
+
+
+class SnapApplicationInput(ToolInput):
+    slots: SnapSlotsInput = Field(
+        description="Resident-provided answers; empty on final confirmation of a saved draft."
+    )
+    confirmed: bool = Field(
+        default=False,
+        description="True only after the resident reviewed and confirmed the saved draft.",
+    )
 
 
 def _clean(value) -> str:
@@ -133,6 +162,19 @@ CATEGORIES = [
 ]
 OFFICIAL = "the official screener at https://access.nyc.gov or call 311"
 
+
+class BenefitSearchInput(ToolInput):
+    query: str = Field(description="Resident need")
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        description="Resident-requested program count",
+    )
+
+
+class UtilityGuidanceInput(ToolInput):
+    provider: str | None = Field(default=None, description="Utility provider")
+
 # Fields whose text we match the user's need against (cleaned of HTML, then embedded).
 _SEARCH_FIELDS = (
     "program_name", "plain_language_program_name", "program_acronym", "brief_excerpt",
@@ -227,7 +269,7 @@ def _citation_snippet(record: dict) -> str:
         "get_help_summary",
         "get_help_online",
     )
-    return " | ".join(filter(None, (_clean(record.get(field)) for field in fields)))[:1000]
+    return " | ".join(filter(None, (_clean(record.get(field)) for field in fields)))
 
 
 def _block(record: dict, cite: str, as_of: str, today: str) -> str:
@@ -265,11 +307,11 @@ def _block(record: dict, cite: str, as_of: str, today: str) -> str:
     return "\n".join(parts)
 
 
-async def _handler(args: dict, ctx: ToolContext) -> str:
+async def _handler(args: BenefitSearchInput, ctx: ToolContext) -> str:
     query = (args.get("query") or "").strip()
     category = (args.get("category") or "").strip()
-    lang = (args.get("lang") or "").strip() or None
-    limit = int(args.get("limit") or 8)
+    lang = (args.get("lang") or ctx.language or "").strip() or None
+    limit = int(args.get("max_results") or args.get("limit") or 8)
 
     # Allowlist the category before it reaches the SoQL $where clause. The JSON-schema enum
     # is advisory only; this is the actual SoQL-injection guard.
@@ -353,7 +395,7 @@ _ESTIMATE = ("an estimate from NYC's official screener (ACCESS NYC), not a deter
 _ACCESS_NYC = "https://access.nyc.gov/eligibility/"
 
 
-async def _screen_handler(args: dict, ctx: ToolContext) -> str:
+async def _screen_handler(args: screening.ScreeningRequest, ctx: ToolContext) -> str:
     try:
         screening.validate_arguments(args)
         household = dict(args.get("household") or {})
@@ -509,7 +551,7 @@ def screen_access_nyc_eligibility_tool() -> Tool:
             "or address. Returns a "
             "likely-eligible estimate (NOT a determination); a program's absence is never proof of "
             "ineligibility."),
-        parameters=screening.request_schema(),
+        input_type=screening.ScreeningRequest,
         handler=_screen_handler,
         open_world=True,
         resident_fact_scope=("/household", "/persons"),
@@ -520,12 +562,12 @@ def _forms_enabled() -> bool:
     return os.getenv("HEYNYC_FORMS", "").lower() in ("1", "true", "yes")
 
 
-async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
+async def _prepare_application_handler(args: SnapApplicationInput, ctx: ToolContext) -> str:
     """Prepare a draft LDSS-4826 from CONFIRMED, user-provided answers. Two steps:
     confirmed=false → return the field-level review + two-tier attestation (no PDF produced);
     confirmed=true → render the PDF and hand it back. Fills only provided slots, never invents,
     never logs PII, and degrades if the official form has drifted (integrity guard)."""
-    incoming = dict(args.get("slots") or {})
+    incoming = args.slots.model_dump(mode="python", exclude_none=True)
     confirmed = bool(args.get("confirmed"))
     if getattr(ctx, "drafts", None) is not None:
         if confirmed:
@@ -568,10 +610,6 @@ async def _prepare_application_handler(args: dict, ctx: ToolContext) -> str:
 
 
 def prepare_application_tool() -> Tool:
-    props = {s.key: {"type": "string",
-                     "description": s.label + (", read back for the user to re-confirm"
-                                               if s.high_stakes else "")}
-             for s in appmod.SLOTS}
     return Tool(
         name="prepare_snap_application",
         description=(
@@ -583,24 +621,7 @@ def prepare_application_tool() -> Tool:
             "high-stakes fields (name, DOB, SSN, income) in their own words; (2) only AFTER they "
             "confirm, call again with confirmed=true to get the draft. If the tool returns NEED_MORE / "
             "NEED_FIX / CANNOT_FILL, follow it. Never promise approval."),
-        parameters={
-            "type": "object",
-            "properties": {
-                "slots": {
-                    "type": "object",
-                    "description": ("Answers the user gave, keyed by field name. PII only, never "
-                                    "logged or sent anywhere but the user's own draft. With a "
-                                    "persisted reviewed draft, pass an empty object when confirmed=true."),
-                    "properties": props,
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": ("False (or omit) to get the review first; true ONLY after the "
-                                    "user has reviewed and confirmed their answers."),
-                },
-            },
-            "required": ["slots"],
-        },
+        input_type=SnapApplicationInput,
         handler=_prepare_application_handler,
         read_only=False, idempotent=False,    # writes a file
         requires_approval=True,                # side-effecting: produces a signable artifact
@@ -612,32 +633,31 @@ _UTILITY_GUIDANCE_SOURCES = (
     (
         "UTILITY CONTACT",
         "https://dps.ny.gov/electric-utilities",
-        "{provider} customer service phone and contact information",
+        "{provider}",
     ),
     (
         "SHUTOFF PROTECTIONS",
         "https://dps.ny.gov/your-rights-residential-gas-electric-or-steam-customer-under-hefpa",
-        "payment agreement and certified medical emergency conditions that prevent utility shutoff",
+        "payment agreement",
     ),
     (
         "DPS EMERGENCY COMPLAINT",
         "https://dps.ny.gov/file-complaint",
-        "utility shutoff emergency complaint phone hours final disconnection 48 72 hours",
+        "emergency",
     ),
 )
 
 
-async def _utility_shutoff_guidance_handler(args: dict, ctx: ToolContext) -> str:
+async def _utility_shutoff_guidance_handler(args: UtilityGuidanceInput, ctx: ToolContext) -> str:
     fetch = (ctx.toolbox or {}).get("web_fetch")
     if fetch is None:
         return "ERROR: web_fetch is unavailable; do not answer from memory"
-    provider = str(args.get("provider") or "the resident's utility provider").strip()
+    provider = str(args.get("provider") or "utility").strip()
     results = [
         await fetch.handler(
             {
                 "url": url,
-                "query": query.format(provider=provider),
-                "evidence_scope": heading,
+                "find": query.format(provider=provider),
             },
             ctx,
         )
@@ -662,17 +682,7 @@ def utility_shutoff_guidance_tool() -> Tool:
             "emergency-complaint evidence in one source-scoped result. Use when a resident has "
             "a final disconnection notice, imminent shutoff, or disconnected service."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "provider": {
-                    "type": "string",
-                    "description": (
-                        "Utility provider named by the resident, such as Con Edison; omit when unknown"
-                    ),
-                },
-            },
-        },
+        input_type=UtilityGuidanceInput,
         handler=_utility_shutoff_guidance_handler,
         open_world=True,
     )
@@ -686,40 +696,13 @@ def get_tools() -> list[Tool]:
             description=(
                 "Search NYC benefit/assistance programs (SNAP, Fair Fares, HEAP, SCRIE/DRIE, "
                 "IDNYC, WIC, Cash Assistance, child care, etc.) in the city's live Benefits & "
-                "Programs dataset. Pass `query` as the user's need in plain words; optionally "
-                "filter by `category`. Returns grounded program info, rough eligibility, apply "
-                "steps, and an 'as of' date. Use for benefit/eligibility questions; it does NOT "
+                "Programs dataset. Pass `query` as the user's need in plain words. Returns "
+                "grounded program info, rough eligibility, apply "
+                "steps, and an 'as of' date. Omit `max_results` unless the resident requested a "
+                "specific count. Use for benefit/eligibility questions; it does NOT "
                 "make personalized eligibility determinations (route those to the official screener)."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The user's need in plain words (e.g. 'help paying rent', 'food stamps', 'child care costs').",
-                    },
-                    "category": {
-                        "type": "string",
-                        "enum": CATEGORIES,
-                        "description": "Optional category filter.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "default": 8,
-                        "description": "Maximum benefit programs to return",
-                    },
-                    "lang": {
-                        "type": "string",
-                        "description": "Optional language NAME (e.g. 'Spanish'), pass the language "
-                        "the user is writing in. When the dataset carries an official translation of "
-                        "a program, the matching-language row is returned; English by default and as "
-                        "the fallback. Program names, apply links, and 'as of' dates stay as given.",
-                    },
-                },
-                "required": ["query"],
-            },
+            input_type=BenefitSearchInput,
             handler=_handler,
             open_world=True,  # hits the live Socrata dataset
         )

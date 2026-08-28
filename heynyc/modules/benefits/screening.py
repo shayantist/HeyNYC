@@ -5,10 +5,12 @@ from __future__ import annotations
 import copy
 import re
 import time
-from typing import Optional
+from typing import Annotated, Literal, Optional, Self
 
 import httpx
-from jsonschema import Draft202012Validator
+from pydantic import Field, ValidationError, model_validator
+
+from heynyc.core.tools.base import ToolInput
 
 _TOKEN_TTL = 3300.0  # 55 min (the API token expires at 3600s)
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}  # base -> (token, expires_at)
@@ -87,186 +89,168 @@ PERSON_BOOLEAN_DESCRIPTIONS = {
 }
 
 
-def _money_item_schema(
-    types: tuple[str, ...],
-    max_length: int,
-    max_whole_digits: int,
-    description: str,
-) -> dict:
-    return {
-        "type": "object",
-        "description": description,
-        "additionalProperties": False,
-        "properties": {
-            "amount": {
-                "type": "string",
-                "maxLength": max_length,
-                "pattern": rf"^\d{{1,{max_whole_digits}}}(?:\.\d{{1,2}})?$",
-                "description": "Numeric USD amount encoded as a string",
-            },
-            "frequency": {
-                "type": "string",
-                "enum": list(FREQUENCIES),
-                "description": "How often this amount is received or paid",
-            },
-            "type": {
-                "type": "string",
-                "enum": list(types),
-                "description": "Official City category for this amount",
-            },
-        },
-        "required": ["amount", "frequency", "type"],
-    }
+class _ScreeningModel(ToolInput):
+    pass
+
+
+class IncomeItem(_ScreeningModel):
+    amount: str = Field(pattern=r"^\d{1,12}(?:\.\d{1,2})?$", max_length=15)
+    frequency: Literal[*FREQUENCIES]
+    type: Literal[*INCOME_TYPES]
+
+
+class ExpenseItem(_ScreeningModel):
+    amount: str = Field(pattern=r"^\d{1,6}(?:\.\d{1,2})?$", max_length=9)
+    frequency: Literal[*FREQUENCIES]
+    type: Literal[*EXPENSE_TYPES]
+
+
+class Household(_ScreeningModel):
+    cashOnHand: str | None = Field(default=None, pattern=r"^\d{1,7}(?:\.\d{1,2})?$")
+    livingRentalType: Literal[*RENTAL_TYPES] | None = None
+    livingRenting: bool | None = Field(
+        default=None,
+        description=f'{HOUSEHOLD_BOOLEAN_DESCRIPTIONS["livingRenting"]} {_BOOLEAN_FACT_RULE}',
+    )
+    livingOwner: bool | None = Field(
+        default=None,
+        description=f'{HOUSEHOLD_BOOLEAN_DESCRIPTIONS["livingOwner"]} {_BOOLEAN_FACT_RULE}',
+    )
+    livingStayingWithFriend: bool | None = Field(
+        default=None,
+        description=(
+            f'{HOUSEHOLD_BOOLEAN_DESCRIPTIONS["livingStayingWithFriend"]} '
+            f"{_BOOLEAN_FACT_RULE}"
+        ),
+    )
+    livingHotel: bool | None = Field(
+        default=None,
+        description=f'{HOUSEHOLD_BOOLEAN_DESCRIPTIONS["livingHotel"]} {_BOOLEAN_FACT_RULE}',
+    )
+    livingShelter: bool | None = Field(
+        default=None,
+        description=f'{HOUSEHOLD_BOOLEAN_DESCRIPTIONS["livingShelter"]} {_BOOLEAN_FACT_RULE}',
+    )
+    livingPreferNotToSay: bool | None = Field(
+        default=None,
+        description=(
+            f'{HOUSEHOLD_BOOLEAN_DESCRIPTIONS["livingPreferNotToSay"]} '
+            f"{_BOOLEAN_FACT_RULE}"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def consistent_housing_disclosure(self) -> Self:
+        if self.livingPreferNotToSay and any((
+            self.livingRenting,
+            self.livingOwner,
+            self.livingStayingWithFriend,
+            self.livingHotel,
+            self.livingShelter,
+        )):
+            raise ValueError("livingPreferNotToSay conflicts with a specific housing flag")
+        return self
+
+
+class Person(_ScreeningModel):
+    age: float = Field(ge=0, le=999)
+    householdMemberType: Literal[*HOUSEHOLD_MEMBER_TYPES]
+    student: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["student"]} {_BOOLEAN_FACT_RULE}',
+    )
+    studentFulltime: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["studentFulltime"]} {_BOOLEAN_FACT_RULE}',
+    )
+    pregnant: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["pregnant"]} {_BOOLEAN_FACT_RULE}',
+    )
+    unemployed: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["unemployed"]} {_BOOLEAN_FACT_RULE}',
+    )
+    unemployedWorkedLast18Months: bool | None = Field(
+        default=None,
+        description=(
+            f'{PERSON_BOOLEAN_DESCRIPTIONS["unemployedWorkedLast18Months"]} '
+            f"{_BOOLEAN_FACT_RULE}"
+        ),
+    )
+    blind: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["blind"]} {_BOOLEAN_FACT_RULE}',
+    )
+    disabled: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["disabled"]} {_BOOLEAN_FACT_RULE}',
+    )
+    veteran: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["veteran"]} {_BOOLEAN_FACT_RULE}',
+    )
+    benefitsMedicaid: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["benefitsMedicaid"]} {_BOOLEAN_FACT_RULE}',
+    )
+    benefitsMedicaidDisability: bool | None = Field(
+        default=None,
+        description=(
+            f'{PERSON_BOOLEAN_DESCRIPTIONS["benefitsMedicaidDisability"]} '
+            f"{_BOOLEAN_FACT_RULE}"
+        ),
+    )
+    livingOwnerOnDeed: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["livingOwnerOnDeed"]} {_BOOLEAN_FACT_RULE}',
+    )
+    livingRentalOnLease: bool | None = Field(
+        default=None,
+        description=f'{PERSON_BOOLEAN_DESCRIPTIONS["livingRentalOnLease"]} {_BOOLEAN_FACT_RULE}',
+    )
+    incomes: list[IncomeItem] | None = Field(
+        default=None,
+        min_length=1,
+        description="Known income items only; do not add a zero placeholder.",
+    )
+    expenses: list[ExpenseItem] | None = None
+
+
+ProgramCode = Annotated[str, Field(pattern=PROGRAM_CODE_PATTERN)]
+
+
+class ScreeningRequest(_ScreeningModel):
+    household: Household | None = Field(default=None, description="Household facts")
+    persons: list[Person] = Field(
+        min_length=1,
+        max_length=8,
+        description="Household members; one must be HeadOfHousehold.",
+    )
+    interested_programs: set[ProgramCode] | None = Field(
+        default=None,
+        description="Official program codes the resident asked to screen",
+    )
+    lang: str | None = Field(default=None, description="Requested response language")
+    goal: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Resident-stated priority for ranking likely matches",
+    )
+    show_all: bool | None = Field(
+        default=None,
+        description="True only when the resident asks for every likely match",
+    )
+
+    @model_validator(mode="after")
+    def has_head_of_household(self) -> Self:
+        if not any(person.householdMemberType == "HeadOfHousehold" for person in self.persons):
+            raise ValueError("at least one person must have householdMemberType HeadOfHousehold")
+        return self
 
 
 def request_schema() -> dict:
-    """The one screening contract used by both model tools and runtime validation."""
-    specific_housing_flags = (
-        "livingRenting",
-        "livingOwner",
-        "livingStayingWithFriend",
-        "livingHotel",
-        "livingShelter",
-    )
-    household_flags = {
-        name: {
-            "type": "boolean",
-            "description": f"{description} {_BOOLEAN_FACT_RULE}",
-        }
-        for name, description in HOUSEHOLD_BOOLEAN_DESCRIPTIONS.items()
-    }
-    household_flags["livingPreferNotToSay"]["description"] += (
-        " True only when every specific housing flag is false or omitted."
-    )
-    person_flags = {
-        name: {
-            "type": "boolean",
-            "description": f"{description} {_BOOLEAN_FACT_RULE}",
-        }
-        for name, description in PERSON_BOOLEAN_DESCRIPTIONS.items()
-    }
-    household_properties = {
-        "cashOnHand": {
-            "type": "string", "maxLength": 10,
-            "pattern": r"^\d{1,7}(?:\.\d{1,2})?$",
-            "description": "Numeric USD amount encoded as a string, for example '500'.",
-        },
-        "livingRentalType": {
-            "type": "string",
-            "enum": list(RENTAL_TYPES),
-            "description": "Official City rental or ownership category",
-        },
-        **household_flags,
-    }
-    person_properties = {
-        "age": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 999,
-            "description": "Person's age in completed years",
-        },
-        "householdMemberType": {
-            "type": "string",
-            "enum": list(HOUSEHOLD_MEMBER_TYPES),
-            "description": "Person's official City household relationship category",
-        },
-        "incomes": {
-            "type": "array",
-            "minItems": 1,
-            "items": _money_item_schema(
-                INCOME_TYPES,
-                15,
-                12,
-                "One income amount reported for this person",
-            ),
-            "description": (
-                "Reported income items only. Omit when the resident reports no income or the "
-                "amount is unknown; never add a zero placeholder."
-            ),
-        },
-        "expenses": {
-            "type": "array",
-            "items": _money_item_schema(
-                EXPENSE_TYPES,
-                9,
-                6,
-                "One expense amount reported for this person",
-            ),
-            "description": "Reported expense items for this person",
-        },
-        **person_flags,
-    }
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "household": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": "Household-level housing and cash-on-hand fields. PII-free.",
-                "properties": household_properties,
-                "allOf": [
-                    {
-                        "if": {
-                            "properties": {"livingPreferNotToSay": {"const": True}},
-                            "required": ["livingPreferNotToSay"],
-                        },
-                        "then": {
-                            "properties": {
-                                name: {"const": False}
-                                for name in specific_housing_flags
-                            }
-                        },
-                    }
-                ],
-            },
-            "persons": {
-                "type": "array", "minItems": 1, "maxItems": 8,
-                "contains": {
-                    "type": "object",
-                    "properties": {"householdMemberType": {"const": "HeadOfHousehold"}},
-                    "required": ["householdMemberType"],
-                },
-                "minContains": 1,
-                "description": "1-8 people; at least one must be HeadOfHousehold.",
-                "items": {
-                    "type": "object",
-                    "description": "One PII-free household member profile",
-                    "additionalProperties": False,
-                    "properties": person_properties,
-                    "required": ["age", "householdMemberType"],
-                },
-            },
-            "interested_programs": {
-                "type": "array", "uniqueItems": True,
-                "items": {
-                    "type": "string",
-                    "pattern": PROGRAM_CODE_PATTERN,
-                    "description": "One official City program code",
-                },
-                "description": (
-                    "Optional official program-code filter such as S2R007. Never pass a program "
-                    "name such as SNAP; omit this field when the exact code is unknown."
-                ),
-            },
-            "lang": {
-                "type": "string",
-                "description": "Optional language name, for example Spanish.",
-            },
-            "goal": {
-                "type": "string", "maxLength": 200,
-                "description": (
-                    "Optional local-only need the resident explicitly stated, such as help buying "
-                    "food. Used to shortlist results and never sent to the City API."
-                ),
-            },
-            "show_all": {
-                "type": "boolean",
-                "description": "True only when the resident explicitly asks to see every match.",
-            },
-        },
-        "required": ["persons"],
-    }
+    return ScreeningRequest.model_json_schema()
 
 
 def clear_token(base: str) -> None:
@@ -360,21 +344,15 @@ def _canonical(value: object, allowed: tuple[str, ...]) -> object:
 
 
 def validate_arguments(request: object) -> None:
-    """Validate a complete tool payload against the exact model-facing schema."""
-    error = next(iter(Draft202012Validator(request_schema()).iter_errors(request)), None)
-    if error is None:
-        return
-    path = ".".join(str(part) for part in error.absolute_path) or "request"
-    if error.validator == "contains":
-        detail = "at least one person must have householdMemberType HeadOfHousehold"
-    elif error.validator == "const" and "allOf" in error.absolute_schema_path:
-        detail = (
-            "livingPreferNotToSay cannot be true with a specific housing flag; "
-            "omit it when the resident supplied a housing situation"
-        )
-    else:
-        detail = error.message
-    raise ValueError(f"invalid screening profile at {path}: {detail}")
+    """Validate a complete tool payload with the model-facing Pydantic contract."""
+    try:
+        ScreeningRequest.model_validate(request)
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        path = ".".join(str(part) for part in error["loc"]) or "request"
+        raise ValueError(
+            f"invalid screening profile at {path}: {error['msg']}"
+        ) from None
 
 
 def validate_request(household: dict, persons: list[dict], interested: Optional[list[str]] = None) -> None:

@@ -27,7 +27,7 @@ from time import monotonic
 from zoneinfo import ZoneInfo
 
 from heynyc.core.citations import CitationRegistry, data_provenance
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import EmptyToolInput, Tool, ToolContext, ToolFailure
 from heynyc.core.tools.notify_nyc import (
     RECENT_MESSAGES_URL,
     RSS_URL,
@@ -503,9 +503,9 @@ def _render_recent_delta(
     return rendered
 
 
-async def _handler(args: dict, ctx: ToolContext) -> str:
+async def _handler(args: EmptyToolInput, ctx: ToolContext) -> str | ToolFailure:
     near = (args.get("near") or "").strip()
-    lang = (args.get("lang") or "").strip() or None
+    lang = (args.get("lang") or ctx.language or "").strip() or None
     delivered = frozenset() if args.get("full_text") else ctx.delivered_notify_titles
     now = datetime.now(timezone.utc)
 
@@ -599,6 +599,12 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if delivered and not new_caps and not new_additions:
             return _ALREADY_SHARED.format(titles="; ".join(old_mentions()))
         parts = []
+        if feed.status == "partial":
+            noun = "notice" if feed.dropped_count == 1 else "notices"
+            parts.append(
+                "Source completeness: partial; "
+                f"{feed.dropped_count} CAP {noun} could not be read."
+            )
         if new_caps:
             parts.append(_render_cap(ctx, new_caps, near))
         if new_additions:
@@ -628,6 +634,13 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             delivered,
             lambda context, notes: _render_recent(context, notes, near),
         )
+    if feed.status == recent.status == "unavailable":
+        return ToolFailure(
+            status="unavailable",
+            reason="Neither official Notify NYC feed could be reached or read.",
+            retryable=True,
+            source_url=NOTIFY_NYC_URL,
+        )
     return COULD_NOT_CONFIRM                                    # both sources degraded -> fail safe
 
 
@@ -640,78 +653,15 @@ def get_tools() -> list[Tool]:
                 "Notify NYC / NYC Emergency Management feed (extreme heat, air quality, boil-water, "
                 "beach/pool closures, transit disruptions, and more). Use this for 'are there any "
                 "advisories/alerts right now', 'is it safe outside today', a heat or air-quality "
-                "warning, 'is <beach> open', or a boil-water question. Optional `near` = the user's "
-                "NYC address/neighborhood (the feed's geography is usually citywide, so results are "
-                "NOT filtered by it). Returns each active advisory with its headline, severity, "
+                "warning, 'is <beach> open', or a boil-water question. The application uses the "
+                "resident's current language and prior delivered notices automatically. Returns "
+                "each active advisory with its headline, severity, "
                 "event, 'in effect until <expires>', and area, every one carrying a DATA citation. "
                 "If none are active it says so plainly, it NEVER invents an advisory, severity, or "
                 "expiry."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "near": {
-                        "type": "string",
-                        "description": "Optional NYC address/neighborhood for context (results are "
-                        "not geo-filtered, the feed is usually citywide).",
-                    },
-                    "lang": {
-                        "type": "string",
-                        "description": "Optional language NAME for the advisory text (e.g. 'Spanish', "
-                        "'Chinese'), pass the language the user is writing in. The feed carries "
-                        "official city translations for ~12 languages; defaults to English, and "
-                        "uses the English feed only when the requested language is absent.",
-                    },
-                    "notice_ids": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "description": "One stable notice ID from `list_notify_nyc`.",
-                        },
-                        "description": "Stable notice IDs returned by `list_notify_nyc`. For a "
-                        "specific-alert question, pass only the semantically relevant IDs, or an "
-                        "empty list when none match. Omit only for a broad request for all current "
-                        "advisories.",
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "The resident's requested alert topic, in their language. "
-                        "Required with notice_ids so an empty or changed selection has an honest "
-                        "search receipt. This documents the selection and does not perform string "
-                        "matching.",
-                    },
-                    "full_text": {
-                        "type": "boolean",
-                        "description": "Set true ONLY when the resident explicitly asks to see "
-                        "again details you already shared in this conversation; otherwise "
-                        "already-shared advisories return as a compact unchanged marker.",
-                    },
-                },
-            },
+            input_type=EmptyToolInput,
             handler=_handler,
             open_world=True,  # hits the live Notify NYC / Everbridge feed
-        ),
-        Tool(
-            name="list_notify_nyc",
-            description=(
-                "List the compact current Notify NYC candidates, with stable notice IDs and "
-                "source text but no answer citations. Use this first for a question about one "
-                "kind of alert, select relevant records by meaning, then call check_notify_nyc "
-                "with those notice_ids. Pass `lang` so Notify NYC supplies its official "
-                "translation where available."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "lang": {
-                        "type": "string",
-                        "description": "Optional language NAME or code matching the resident's "
-                        "language. Uses that official language feed when present, or the English "
-                        "feed when the requested language is absent.",
-                    },
-                },
-            },
-            handler=_list_handler,
-            open_world=True,
         ),
     ]

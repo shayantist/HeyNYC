@@ -3,17 +3,26 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from typing import Annotated
 
 import httpx
+from pydantic import Field
 
 from heynyc.core.citations import data_provenance
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailure, ToolInput
 
 _OUTAGES_URL = (
     "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/"
     "nyct%2Fnyct_ene.json"
 )
 _STATUS_PAGE = "https://www.mta.info/elevator-escalator-status"
+
+
+class ElevatorStatusInput(ToolInput):
+    stations: list[Annotated[str, Field(description="MTA subway station")]] = Field(
+        min_length=1,
+        description="MTA subway stations",
+    )
 
 
 def _station_key(value: str) -> str:
@@ -37,12 +46,15 @@ def _matches(requested: str, station: str, lines: str) -> bool:
     return requested_lines <= actual_lines
 
 
-async def _mta_elevator_status(args: dict, ctx: ToolContext) -> str:
+async def _mta_elevator_status(
+    args: ElevatorStatusInput,
+    ctx: ToolContext,
+) -> str | ToolFailure:
     stations = list(dict.fromkeys(
         str(value).strip()
         for value in args.get("stations", [])
         if str(value).strip()
-    ))[:6]
+    ))
     if not stations:
         return "Give one or more MTA station names to check."
 
@@ -55,15 +67,11 @@ async def _mta_elevator_status(args: dict, ctx: ToolContext) -> str:
         if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
             raise ValueError("unexpected MTA outage response")
     except (httpx.HTTPError, ValueError):
-        status_cite = ctx.citations.register(
-            _STATUS_PAGE,
-            snippet="Official MTA elevator and escalator status page",
-            title="MTA elevator and escalator status",
-            kind="WEB",
-        )
-        return (
-            "I could not verify current MTA elevator status. Check the official status page "
-            f"before leaving: {_STATUS_PAGE} {{cite:{status_cite}}}"
+        return ToolFailure(
+            status="unavailable",
+            reason="The current MTA elevator and escalator outage feed could not be read.",
+            retryable=True,
+            source_url=_STATUS_PAGE,
         )
     finally:
         if own_client:
@@ -132,29 +140,14 @@ def get_tools() -> list[Tool]:
         Tool(
             name="check_mta_elevators",
             description=(
-                "Check the current MTA subway elevator and escalator outage feed for up to six "
-                "named stations. Call this once after identifying the stations an accessible "
+                "Check the current MTA subway elevator and escalator outage feed for named "
+                "stations. Call this once after identifying the stations an accessible "
                 "route depends on. Add slash-separated lines after the station name, such as "
                 "'86 St-4/5/6', when multiple stations share a name. A station absent from the "
                 "outage feed is not guaranteed to "
                 "have every elevator working, so preserve the tool's recheck warning."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "stations": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "description": "One MTA subway station name",
-                        },
-                        "minItems": 1,
-                        "maxItems": 6,
-                        "description": "MTA subway stations to check",
-                    }
-                },
-                "required": ["stations"],
-            },
+            input_type=ElevatorStatusInput,
             handler=_mta_elevator_status,
             open_world=True,
         )

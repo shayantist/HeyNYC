@@ -75,7 +75,7 @@ async def _run(
     *,
     today="2026-07-11",
     borough=None,
-    limit=None,
+    max_results=None,
     status=200,
     captured=None,
 ):
@@ -84,8 +84,8 @@ async def _run(
     client = _client(rows, status=status, captured=captured)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
     args = {} if borough is None else {"borough": borough}
-    if limit is not None:
-        args["limit"] = limit
+    if max_results is not None:
+        args["max_results"] = max_results
     out = await get_tools()[0].handler(args, ctx)
     await client.aclose()
     return out, citations
@@ -169,7 +169,9 @@ async def test_finder_borough_filter_narrows_query(monkeypatch):
     assert "Bronx" in out
 
 
-async def test_finder_defaults_to_five_results_and_honors_requested_limit(monkeypatch):
+async def test_finder_retrieves_every_open_lottery_before_applying_presentation_count(
+    monkeypatch,
+):
     rows = [
         {**_ROW_SMALL, "lottery_id": str(index), "lottery_name": f"Lottery {index}"}
         for index in range(1, 8)
@@ -177,18 +179,19 @@ async def test_finder_defaults_to_five_results_and_honors_requested_limit(monkey
     default_requests: list = []
     requested_requests: list = []
 
-    default, _ = await _run(monkeypatch, rows[:5], captured=default_requests)
+    default, _ = await _run(monkeypatch, rows, captured=default_requests)
     requested, _ = await _run(
         monkeypatch,
         rows,
-        limit=7,
+        max_results=7,
         captured=requested_requests,
     )
 
-    assert default_requests[0].params["$limit"] == "5"
-    assert requested_requests[0].params["$limit"] == "7"
+    assert default_requests[0].params["$limit"] == "1000"
+    assert requested_requests[0].params["$limit"] == "1000"
     assert default.count("- Lottery ") == 5
     assert requested.count("- Lottery ") == 7
+    assert "Showing 5 of 7" in default
 
 
 # --- 4. reachability failure: point to the portal, fabricate nothing --------

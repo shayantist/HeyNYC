@@ -6,11 +6,11 @@ from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
 
 
-def test_build_toolbox_includes_module_and_websearch_tools():
+def test_build_toolbox_uses_shared_web_tools_for_events():
     registry = Registry.discover(config.MODULES_DIR)
     tools = build_toolbox(registry)
-    # geo + web_search always present; events ships a module tool
-    assert {"geocode", "nearest", "distance", "web_search", "find_nyc_events"} <= set(tools)
+    assert {"geocode", "nearest", "distance", "web_search", "web_fetch"} <= set(tools)
+    assert "find_nyc_events" not in tools
 
 
 def test_build_toolbox_keeps_the_local_index_out_of_the_model_tool_surface():
@@ -32,7 +32,6 @@ def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names(monk
     assert {
         "web_search",
         "web_fetch",
-        "find_nyc_events",
         "check_notify_nyc",
         "find_cool_options",
         "find_child_care_connect_programs",
@@ -53,13 +52,15 @@ def test_toolbox_exposes_only_the_refactored_search_fetch_and_service_names(monk
     }.isdisjoint(tools)
 
 
-def test_events_module_discovered_and_tool_loads():
+def test_events_module_exposes_only_the_evidence_extractor():
     registry = Registry.discover(config.MODULES_DIR)
     events = next((m for m in registry.modules if m.name == "events"), None)
     assert events is not None
     assert "authoritative" in events.source_tiers
+    assert events.tools == "extraction.py"
     tool_names = {t.name for t in registry.load_module_tools()}
-    assert "find_nyc_events" in tool_names
+    assert "extract_events" in tool_names
+    assert "find_nyc_events" not in tool_names
 
 
 def test_events_eval_cases_load():
@@ -74,8 +75,8 @@ def test_world_cup_is_submodule_of_events():
     wc = next((m for m in registry.modules if m.name == "world_cup"), None)
     assert wc is not None
     assert wc.parent == "events"
-    assert wc.ticketmaster_keyword == "world cup"
-    # Submodule reuses the parent tool — it ships no tools.py of its own.
+    assert "ticketmaster_keyword" not in type(wc).model_fields
+    # Submodule reuses the parent's shared web-research capability.
     assert wc.tools is None
     # Its seeds are aggregated for index-build:
     assert any("nynjfwc26.com" in s for s in registry.seeds())

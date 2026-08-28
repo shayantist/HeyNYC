@@ -14,10 +14,17 @@ pages before editing any fact.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
-from heynyc.core.tools.base import Tool, ToolContext
+from pydantic import Field
+
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
 
 VERIFIED_ON = "2026-07-12"
+
+
+class WorkerRightsInput(ToolInput):
+    topic: Literal["tips"] = Field(description="Worker-rights topic")
 
 
 @dataclass(frozen=True)
@@ -86,7 +93,7 @@ def _resolve_topic(raw: str) -> str | None:
     return key if key in _GUIDANCE else None
 
 
-async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
+async def _guidance_handler(args: WorkerRightsInput, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded guidance for that worker-rights topic. Use "
@@ -117,17 +124,7 @@ def get_tools() -> list[Tool]:
                 "of Consumer and Worker Protection via 311). Use topic `tips`. Use web search and "
                 "fetch for every other worker-rights question."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "enum": ["tips"],
-                        "description": "The supported worker-rights topic: tips",
-                    },
-                },
-                "required": ["topic"],
-            },
+            input_type=WorkerRightsInput,
             handler=_guidance_handler,
             open_world=False,  # static official facts baked in + cited; no network call
         ),

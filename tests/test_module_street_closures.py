@@ -53,7 +53,7 @@ def test_module_loads_custom_tool():
 
 
 def test_street_closure_date_is_typed_in_the_tool_schema():
-    properties = closures.get_tools()[0].parameters["properties"]
+    properties = closures.get_tools()[0]._input_schema()["properties"]
     assert {"format": "date", "type": "string"} in properties["visit_date"]["anyOf"]
     assert "on" not in properties
     assert "limit" not in properties
@@ -145,6 +145,30 @@ async def test_closures_near_filters_by_geo_and_date_and_cites_each(monkeypatch)
     # full-row snapshot keyed on the row's own uniqueid, not a hand-picked subset
     assert cite["provenance"]["record_id"] == _closure_row()["uniqueid"]
     assert cite["provenance"]["snapshot"]["purpose"] == "DOT IN-HOUSE MILLING"
+
+
+@pytest.mark.asyncio
+async def test_closure_count_comes_from_every_source_page(monkeypatch):
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7365, -73.9260, "Sunnyside, Queens")
+
+    async def fake_qd(_dataset_id, **kwargs):
+        offset = kwargs["offset"]
+        if offset == 0:
+            return [{**_closure_row(), "uniqueid": "first"}]
+        if offset == 1:
+            return [{**_closure_row(), "uniqueid": "second"}]
+        return []
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    monkeypatch.setattr(closures, "query_dataset", fake_qd)
+    monkeypatch.setattr(closures, "_PAGE_SIZE", 1)
+
+    out = await closures.get_tools()[0].handler(
+        {"near": "Sunnyside", "max_results": 1}, _ctx()
+    )
+
+    assert "(2 found)" in out
 
 
 @pytest.mark.asyncio

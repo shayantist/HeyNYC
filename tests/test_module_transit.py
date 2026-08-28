@@ -5,7 +5,7 @@ import httpx
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.modules.transit.tools import get_tools
 
 
@@ -118,9 +118,24 @@ async def test_mta_elevator_status_fails_closed_when_feed_is_unavailable():
     output = await get_tools()[0].handler({"stations": ["86 St"]}, ctx)
     await client.aclose()
 
-    assert "could not verify" in output.lower()
-    assert "mta.info/elevator-escalator-status" in output
-    assert "{cite:S1}" in output
-    assert ctx.citations.mapping()["S1"]["url"] == (
-        "https://www.mta.info/elevator-escalator-status"
+    assert isinstance(output, ToolFailure)
+    assert output.status == "unavailable"
+    assert output.retryable is True
+    assert str(output.source_url) == "https://www.mta.info/elevator-escalator-status"
+    assert len(ctx.citations) == 0
+
+
+async def test_mta_elevator_status_checks_every_requested_station():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=[]))
     )
+    citations = CitationRegistry()
+    ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
+    stations = [f"Station {index}" for index in range(1, 8)]
+
+    output = await get_tools()[0].handler({"stations": stations}, ctx)
+    await client.aclose()
+
+    assert all(station in output for station in stations)
+    assert citations.mapping()["S1"]["provenance"]["derivation"]["requested_stations"] == stations
+    assert "maxItems" not in get_tools()[0]._input_schema()["properties"]["stations"]

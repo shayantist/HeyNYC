@@ -1,7 +1,7 @@
-"""Tool abstraction shared by all modules.
+"""Typed tool contract shared by all modules.
 
-A Tool wraps an async handler with a JSON-Schema parameter spec. It serializes to
-two standard, open formats so HeyNYC tools are portable across agent frameworks:
+A Tool wraps an async handler with a Pydantic input model. It serializes to two
+standard, open formats so HeyNYC tools are portable across agent frameworks:
 
 - `schema()` → the OpenAI / Anthropic / litellm function-calling shape (what the
   agent passes to the model). We inject `additionalProperties: false` so the model
@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Optional
+
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, TypeAdapter
 
 from ..citations import CitationRegistry
 from ..registry import Registry
@@ -47,11 +49,13 @@ class ToolContext:
     user_history: str = ""  # resident-authored turns only; validates model-supplied tool arguments
     user_turns: tuple[str, ...] = ()  # structured resident turns; avoids stale-location substring matches
     current_location: Optional["GeoPoint"] = None
+    event_retrieval_policy: Literal["fast", "deep"] = "fast"
     toolbox: Optional[dict[str, Any]] = None  # existing sibling tools for bounded module coordinators
     http: Optional[Any] = None  # httpx.AsyncClient; None → tools create their own
     embedder: Optional[Any] = None  # index Embedder; tools that retrieve reuse the production default
     retrieval_cache_path: Optional[Any] = None  # persistent Lance cache for live structured catalogs
     evidence_token_budget: int | None = None  # model-specific input capacity left for one retrieval
+    evidence_tokens_used: int = 0  # ranked retrieval evidence already added in this resident turn
     evidence_model: str | None = None
     output_dir: Optional[Any] = None  # tools that emit a file (e.g. a filled PDF) write here; the channel sends it
     drafts: Optional[Any] = None  # per-user structured draft accessor (UserDrafts); persists in-progress form slots
@@ -82,15 +86,72 @@ class ToolContext:
     cooling_terminal_synthesis: bool = False
 
 
-ToolHandler = Callable[[dict, ToolContext], Awaitable[Any]]
+ToolHandler = Callable[[BaseModel, ToolContext], Awaitable[Any]]
+
+
+class ToolInput(BaseModel):
+    """Model-facing tool input. Unknown arguments are always errors."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def items(self):
+        return self.model_dump(mode="python", exclude_none=True).items()
+
+    def keys(self):
+        return self.model_dump(mode="python", exclude_none=True).keys()
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        return len(self.keys())
+
+
+class EmptyToolInput(ToolInput):
+    pass
+
+
+class ToolFailure(BaseModel):
+    """Expected operational failure returned to the agent."""
+
+    status: Literal["unavailable", "partial", "rejected"]
+    reason: str
+    retryable: bool
+    source_url: AnyHttpUrl | None = None
+
+
+class ToolFailureError(RuntimeError):
+    """Expected failure raised inside nested tool helpers."""
+
+    def __init__(
+        self,
+        *,
+        status: Literal["unavailable", "partial", "rejected"],
+        reason: str,
+        retryable: bool,
+        source_url: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.failure = ToolFailure(
+            status=status,
+            reason=reason,
+            retryable=retryable,
+            source_url=source_url,
+        )
 
 
 @dataclass
 class Tool:
     name: str
     description: str
-    parameters: dict  # JSON Schema for the arguments object
     handler: ToolHandler
+    input_type: type[BaseModel] = EmptyToolInput
     # MCP annotation hints (https://modelcontextprotocol.io/...): behavioral
     # metadata clients use to decide auto-approval, parallelism, caching, etc.
     read_only: bool = True       # readOnlyHint , doesn't modify state
@@ -98,11 +159,12 @@ class Tool:
     idempotent: bool = True      # idempotentHint, safe to retry with same args
     open_world: bool = False     # openWorldHint , hits external/open-ended data
     requires_approval: bool = False  # gate side-effecting tools behind user approval
-    strict: bool = False         # emit `strict: true` (all params required) for constrained decoding
+    strict: bool | None = None   # let the provider enforce strictness when the schema supports it
     title: str = ""              # human-readable label
     module: str = ""             # owning service module; "" = core, always exposed (diet block 4)
     resident_fact_scope: tuple[str, ...] = ()  # JSON-pointer roots that must match trusted resident facts
     return_type: Any = None       # declared Pydantic-serializable result; None keeps legacy strings
+    result_handler: ToolHandler | None = None  # internal normalized results before model rendering
 
     def __post_init__(self) -> None:
         if (not self.read_only or self.destructive) and not self.requires_approval:
@@ -110,9 +172,16 @@ class Tool:
 
     def _input_schema(self) -> dict:
         """Parameter schema with `additionalProperties: false` (strict-schema best practice)."""
-        params = dict(self.parameters)
+        params = TypeAdapter(self.input_type).json_schema()
         params.setdefault("additionalProperties", False)
         return params
+
+    async def invoke(self, raw_args: object, ctx: ToolContext) -> Any:
+        request = TypeAdapter(self.input_type).validate_python(raw_args, extra="forbid")
+        try:
+            return await self.handler(request, ctx)
+        except ToolFailureError as exc:
+            return exc.failure
 
     def schema(self) -> dict:
         """OpenAI / Anthropic / litellm function-calling schema."""

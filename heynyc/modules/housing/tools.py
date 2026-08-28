@@ -19,15 +19,17 @@ from __future__ import annotations
 import collections
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Literal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import httpx
+from pydantic import Field
 
 from heynyc.core.citations import data_provenance
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailure, ToolInput
 from heynyc.core.tools.datasets import dataset_url, query_dataset
-from heynyc.core.tools.geo import geocode
+from heynyc.core.tools.geo import strict_geocode as geocode
 
 COMPLAINTS_ID = "ygpa-z7cr"   # HPD Housing Maintenance Code Complaints
 VIOLATIONS_ID = "wvxf-dwi5"   # HPD Housing Maintenance Code Violations
@@ -42,6 +44,21 @@ HEAT_CATEGORIES = ("HEAT/HOT WATER", "HEATING")
 HEAT_CASETYPE = "Heat and Hot Water"   # the 59kj-x8nc casetype for a housing-court heat case
 HARASSMENT_FINDINGS = ("AFTER INQUEST", "AFTER TRIAL")  # findingofharassment values = a positive finding
 NYC_TZ = ZoneInfo("America/New_York")
+
+
+class BuildingAddressInput(ToolInput):
+    address: str = Field(description="NYC street address")
+
+
+class HousingGuidanceInput(ToolInput):
+    topic: Literal[
+        "right_to_counsel",
+        "no_heat",
+        "no_water",
+        "shelter",
+        "bronx_housing_court",
+        "source_of_income",
+    ] = Field(description="Housing situation")
 
 
 def _filtered_url(dataset_id: str, where: str) -> str:
@@ -94,7 +111,7 @@ def _register(ctx: ToolContext, dataset_id: str, where: str, *, title: str, snip
     )
 
 
-async def _handler(args: dict, ctx: ToolContext) -> str:
+async def _handler(args: BuildingAddressInput, ctx: ToolContext) -> str | ToolFailure:
     address = (args.get("address") or "").strip()
     if not address:
         return ("Ask the user for a specific NYC street address (building number + street) before "
@@ -116,14 +133,27 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     complaints_where = f"bbl='{bbl}' AND complaint_status='OPEN'"
     violations_where = (f"boroid='{boro}' AND block='{block}' AND lot='{lot}' "
                         f"AND violationstatus='Open'")
+    complaints_error = False
+    violations_error = False
     try:
         complaints = await query_dataset(COMPLAINTS_ID, where=complaints_where, limit=1000,
                                          client=ctx.http)
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        complaints = []
+        complaints_error = True
+    try:
         violations = await query_dataset(VIOLATIONS_ID, where=violations_where, limit=1000,
                                          client=ctx.http)
-    except httpx.HTTPError:
-        return (f"I couldn't reach the city's HPD data right now, don't guess whether the building "
-                f"has complaints or violations. Point the user to {OFFICIAL} and hpdonline.nyc.gov.")
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        violations = []
+        violations_error = True
+    if complaints_error and violations_error:
+        return ToolFailure(
+            status="unavailable",
+            reason="Neither NYC HPD building-record dataset could be reached.",
+            retryable=True,
+            source_url=dataset_url(COMPLAINTS_ID),
+        )
 
     cat_counts = _counts(complaints, "major_category")
     heat_records = [
@@ -140,7 +170,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     class_c = class_counts.get("C", 0)
     violations_truncated = len(violations) == 1000
     violations_recent = _most_recent(violations, "novissueddate")
-    if not complaints and not violations:
+    if not complaints_error and not violations_error and not complaints and not violations:
         # Say so plainly, DON'T imply the building is trouble-free beyond what the data covers.
         cite_c = _register(ctx, COMPLAINTS_ID, complaints_where,
                            title="HPD Housing Maintenance Code Complaints (open)",
@@ -165,7 +195,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"{NYC311_REPORT_URL} {{cite:{cite_311}}}."
         )
 
-    cite_c = _register(
+    cite_c = None if complaints_error else _register(
         ctx, COMPLAINTS_ID, complaints_where,
         title="HPD Housing Maintenance Code Complaints (open)",
         snippet=f"BBL {bbl}: {_reported_count(complaint_total, complaints_incomplete)} open HPD complaints "
@@ -184,7 +214,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                   "by_major_category": dict(cat_counts)},
         valid_as_of=complaints_recent,
     )
-    cite_v = _register(
+    cite_v = None if violations_error else _register(
         ctx, VIOLATIONS_ID, violations_where,
         title="HPD Housing Maintenance Code Violations (open)",
         snippet=f"BBL {bbl}: {_reported_count(len(violations), violations_truncated)} open HPD violations "
@@ -213,31 +243,38 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f"citations below prove the records returned for BBL {bbl}.",
     ]
 
-    lines.append(f"- Open HPD complaints: {_reported_count(complaint_total, complaints_incomplete)} total"
-                 + (f", including {_reported_count(heat_complaints, bool(missing_heat_ids))} "
-                    "heat/hot-water" if heat_records else "")
-                 + f" {{cite:{cite_c}}}")
-    if complaints:
-        lines.append(f"  By category (problem rows): {_summary_line(cat_counts)}")
-    if complaints_truncated:
-        lines.append("  The complaints result was limited to 1,000 rows, so the total is a lower bound.")
-    if missing_complaint_ids:
-        rows = "row" if missing_complaint_ids == 1 else "rows"
-        lines.append(f"  {missing_complaint_ids} problem {rows} lacked a complaint ID and could not "
-                     "be included in the distinct complaint count.")
-    if complaints_recent:
-        lines.append(f"  Most recent complaint received: {complaints_recent}")
+    if complaints_error or violations_error:
+        missing = "complaints" if complaints_error else "violations"
+        lines.append(
+            f"Source completeness: partial; the HPD {missing} data could not be reached."
+        )
 
-    lines.append(f"- Open HPD violations: {_reported_count(len(violations), violations_truncated)} total"
-                 + (f", including {class_c} class C"
-                    if class_c else "")
-                 + f" {{cite:{cite_v}}}")
-    if violations:
-        lines.append(f"  By class: {_summary_line(class_counts)}")
-    if violations_truncated:
-        lines.append("  The violations result was limited to 1,000 rows, so the total is a lower bound.")
-    if violations_recent:
-        lines.append(f"  Most recent violation issued: {violations_recent}")
+    if cite_c is not None:
+        lines.append(f"- Open HPD complaints: {_reported_count(complaint_total, complaints_incomplete)} total"
+                     + (f", including {_reported_count(heat_complaints, bool(missing_heat_ids))} "
+                        "heat/hot-water" if heat_records else "")
+                     + f" {{cite:{cite_c}}}")
+        if complaints:
+            lines.append(f"  By category (problem rows): {_summary_line(cat_counts)}")
+        if complaints_truncated:
+            lines.append("  The complaints result was limited to 1,000 rows, so the total is a lower bound.")
+        if missing_complaint_ids:
+            rows = "row" if missing_complaint_ids == 1 else "rows"
+            lines.append(f"  {missing_complaint_ids} problem {rows} lacked a complaint ID and could not "
+                         "be included in the distinct complaint count.")
+        if complaints_recent:
+            lines.append(f"  Most recent complaint received: {complaints_recent}")
+
+    if cite_v is not None:
+        lines.append(f"- Open HPD violations: {_reported_count(len(violations), violations_truncated)} total"
+                     + (f", including {class_c} class C" if class_c else "")
+                     + f" {{cite:{cite_v}}}")
+        if violations:
+            lines.append(f"  By class: {_summary_line(class_counts)}")
+        if violations_truncated:
+            lines.append("  The violations result was limited to 1,000 rows, so the total is a lower bound.")
+        if violations_recent:
+            lines.append(f"  Most recent violation issued: {violations_recent}")
 
     lines.append(
         f"Tell the tenant these are the building's OPEN records only (issues already reported/cited). "
@@ -248,7 +285,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
+async def _litigation_handler(args: BuildingAddressInput, ctx: ToolContext) -> str:
     """A building's HPD Housing Litigations (59kj-x8nc): whether HPD or a tenant has taken the
     landlord to Housing Court, keyed by BBL. Calls out 'Heat and Hot Water' cases (and how many are
     still pending) plus any finding of harassment. Empty is stated plainly, never spun into
@@ -271,10 +308,13 @@ async def _litigation_handler(args: dict, ctx: ToolContext) -> str:
     where = f"bbl='{bbl}'"
     try:
         cases = await query_dataset(LITIGATIONS_ID, where=where, limit=1000, client=ctx.http)
-    except httpx.HTTPError:
-        return (f"I couldn't reach the city's HPD housing-court data right now, so don't guess whether "
-                f"the landlord has been taken to court. Point the user to {OFFICIAL} and "
-                f"hpdonline.nyc.gov.")
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return ToolFailure(
+            status="unavailable",
+            reason="The NYC HPD housing-litigation dataset could not be read.",
+            retryable=True,
+            source_url=dataset_url(LITIGATIONS_ID),
+        )
 
     if not cases:
         # Say so plainly; DON'T imply the landlord is trouble-free beyond what the data covers.
@@ -549,7 +589,7 @@ def _resolve_topic(raw: str) -> str | None:
     return key if key in _GUIDANCE else None
 
 
-async def _guidance_handler(args: dict, ctx: ToolContext) -> str:
+async def _guidance_handler(args: HousingGuidanceInput, ctx: ToolContext) -> str:
     topic = _resolve_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded guidance for that topic. Use get_housing_guidance with topic = "
@@ -596,17 +636,7 @@ def get_tools() -> list[Tool]:
                 "'problem-free'. Use for 'does my building have heat/violations, is my landlord in "
                 "trouble', to FILE a new complaint, route the user to 311."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "address": {
-                        "type": "string",
-                        "description": "A specific NYC street address (building number + street), "
-                                       "e.g. '617 Courtlandt Ave, Bronx'.",
-                    },
-                },
-                "required": ["address"],
-            },
+            input_type=BuildingAddressInput,
             handler=_handler,
             open_world=True,  # hits the live Socrata HPD datasets + geocoder
         ),
@@ -625,17 +655,7 @@ def get_tools() -> list[Tool]:
                 "heat/hot-water court case or a harassment finding'. Complements get_hpd_building_records "
                 "(open complaints + violations); to FILE a new complaint, route the user to 311."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "address": {
-                        "type": "string",
-                        "description": "A specific NYC street address (building number + street), "
-                                       "e.g. '617 Courtlandt Ave, Bronx'.",
-                    },
-                },
-                "required": ["address"],
-            },
+            input_type=BuildingAddressInput,
             handler=_litigation_handler,
             open_world=True,  # hits the live Socrata HPD Housing Litigations dataset + geocoder
         ),
@@ -658,17 +678,7 @@ def get_tools() -> list[Tool]:
                 "address, phone number, temperature standard, or eligibility figure from your own "
                 "knowledge, report only what it returns, cited."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "enum": list(_GUIDANCE),
-                        "description": "High-stakes housing situation to retrieve",
-                    },
-                },
-                "required": ["topic"],
-            },
+            input_type=HousingGuidanceInput,
             handler=_guidance_handler,
             open_world=False,  # static official facts baked in + cited; no network call
         ),

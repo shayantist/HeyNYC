@@ -23,7 +23,6 @@ def _tool(name: str) -> Tool:
     return Tool(
         name=name,
         description=name,
-        parameters={"type": "object", "properties": {}},
         handler=_handler,
     )
 
@@ -56,6 +55,19 @@ def test_loaded_module_uses_native_prepare_to_hide_unfocused_shared_tools():
 
     assert prepared["nearest"] is not None
     assert prepared["distance"] is None
+
+
+async def test_scope_guess_does_not_force_load_a_deferred_capability():
+    registry = Registry([ServiceModule(name="transit", description="Accessible trips")])
+    _adapted, capabilities = build_module_capabilities(registry, {})
+    transit = next(capability for capability in capabilities if capability.id == "transit")
+    context = SimpleNamespace(
+        deps=SimpleNamespace(current_turn_capability_ids=frozenset({"transit"}))
+    )
+
+    prepared = await transit.for_run(context)
+
+    assert prepared.defer_loading is True
 
 
 def test_cross_module_capabilities_do_not_narrow_shared_tools():

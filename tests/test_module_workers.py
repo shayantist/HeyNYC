@@ -99,7 +99,7 @@ def test_workers_module_loads_with_tool_and_eval():
 
 
 def test_worker_guidance_schema_exposes_only_the_supported_topic():
-    topic = _tool().parameters["properties"]["topic"]
+    topic = _tool()._input_schema()["properties"]["topic"]
 
-    assert topic["enum"] == ["tips"]
+    assert topic["const"] == "tips"
     assert "free text" not in topic["description"].lower()

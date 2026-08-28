@@ -23,7 +23,7 @@ from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.grounding import check_grounding
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.housing import tools as housing
 from heynyc.modules.housing.tools import (
@@ -217,6 +217,46 @@ async def test_hpd_lookup_counts_heating_category_as_heat(monkeypatch):
     snapshot = citations.mapping()["S1"]["provenance"]["snapshot"]
     assert snapshot["heat_hot_water"] == 2
     assert snapshot["heat_hot_water_problem_rows"] == 3
+
+
+async def test_hpd_lookup_preserves_complaints_when_violations_are_unavailable(monkeypatch) -> None:
+    origin = GeoPoint(lat=40.8195, lon=-73.9160, label=LABEL, bbl=BBL)
+    monkeypatch.setattr(housing, "geocode", _fixed_geocode(origin))
+    calls = 0
+
+    async def partial_query(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _COMPLAINTS
+        raise ValueError("malformed violations response")
+
+    monkeypatch.setattr(housing, "query_dataset", partial_query)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    output = await get_tools()[0].handler({"address": LABEL}, ctx)
+
+    assert "Open HPD complaints: 4 total" in output
+    assert "violations data could not be reached" in output
+    assert "Source completeness: partial" in output
+    assert len(ctx.citations) == 2
+
+
+async def test_hpd_lookup_returns_typed_failure_when_both_datasets_are_unavailable(monkeypatch) -> None:
+    origin = GeoPoint(lat=40.8195, lon=-73.9160, label=LABEL, bbl=BBL)
+    monkeypatch.setattr(housing, "geocode", _fixed_geocode(origin))
+
+    async def unavailable(*args, **kwargs):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(housing, "query_dataset", unavailable)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    output = await get_tools()[0].handler({"address": LABEL}, ctx)
+
+    assert isinstance(output, ToolFailure)
+    assert output.status == "unavailable"
+    assert output.retryable is True
 
 
 async def test_hpd_complaint_total_deduplicates_ids_but_categories_count_problem_rows(monkeypatch):

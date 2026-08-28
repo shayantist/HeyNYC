@@ -29,10 +29,11 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import httpx
+from pydantic import Field
 
 from heynyc.core.citations import data_provenance
-from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.datasets import dataset_url, query_dataset
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
+from heynyc.core.tools.datasets import dataset_url, query_dataset_pages
 
 DATASET_ID = "vy5i-a666"  # Advertised Lotteries on Housing Connect by Lottery
 PORTAL = "https://housingconnect.nyc.gov/PublicWeb/"
@@ -77,6 +78,15 @@ _SET_ASIDES = (
     ("lottery_community_board_percent", "community-board residents"),
     ("lottery_62_percent", "seniors 62+"),
 )
+
+
+class HousingConnectInput(ToolInput):
+    borough: str | None = Field(default=None, description="NYC borough")
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        description="Resident-requested listing count",
+    )
 
 
 def _today() -> str:
@@ -139,9 +149,9 @@ def _handoff(no_listing: bool = False) -> str:
     )
 
 
-async def _handler(args: dict, ctx: ToolContext) -> str:
+async def _handler(args: HousingConnectInput, ctx: ToolContext) -> str:
     borough_arg = (args.get("borough") or "").strip()
-    limit = int(args.get("limit", 5))
+    max_results = int(args.get("max_results") or 5)
     today = _today()
     where = f"lottery_status='Active' AND lottery_end_date >= '{today}'"
 
@@ -151,11 +161,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     boro_note = f" in {_BOROUGH_NAME.get(boro_code, borough_arg)}" if boro_code else ""
 
     try:
-        rows = await query_dataset(
+        result = await query_dataset_pages(
             DATASET_ID,
             where=where,
             order="lottery_end_date",
-            limit=limit,
             client=ctx.http,
         )
     except httpx.HTTPError:
@@ -165,6 +174,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"{PORTAL} , or call 311."
         )
 
+    rows = result.records
     if not rows:
         # State the absence plainly and STILL hand off; ground the "none open" claim in the
         # (empty) filtered query so it is auditable, and never fabricate a listing.
@@ -185,7 +195,18 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         f"Affordable-housing lotteries currently open on NYC Housing Connect{boro_note} "
         f"(as of the city's last data refresh):"
     ]
-    for row in rows:
+    shown_rows = rows[:max_results]
+    if len(shown_rows) < len(rows):
+        lines.append(
+            f"Showing {len(shown_rows)} of {len(rows)} matching lotteries. Ask for more to see "
+            "the rest."
+        )
+    if not result.complete:
+        lines.append(
+            f"The city dataset returned only a partial page set after {result.pages_fetched} "
+            "page(s), so more matching lotteries may exist."
+        )
+    for row in shown_rows:
         lottery_id = str(row.get("lottery_id") or "").strip()
         name = str(row.get("lottery_name") or "a listing").strip()
         boro = _BOROUGH_NAME.get(str(row.get("borough") or "").strip(),
@@ -248,27 +269,7 @@ def get_tools() -> list[Tool]:
                 "affordable housing lotteries are open, how do I apply for an apartment / the housing "
                 "lottery / Housing Connect'."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "borough": {
-                        "type": "string",
-                        "description": ("Optional NYC borough to filter to (Bronx, Brooklyn, Manhattan, "
-                                        "Queens, Staten Island). Omit to list all open lotteries citywide."),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "default": 5,
-                        "description": (
-                            "Maximum listings to return, ordered by nearest application deadline. "
-                            "Default 5. Use the resident's requested count when they give one."
-                        ),
-                    },
-                },
-                "required": [],
-            },
+            input_type=HousingConnectInput,
             handler=_handler,
             open_world=True,  # hits the live Socrata Housing Connect dataset
         ),

@@ -28,7 +28,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
@@ -98,6 +98,8 @@ class AdvisoryFeed:
     """
     confirmed: bool
     advisories: list[Advisory]
+    status: Literal["available", "empty", "partial", "unavailable"] = "available"
+    dropped_count: int = 0
 
 
 # The item <author> tags language in brackets: "NYCEM [English]", "NYCEM [Spanish]", … We key on
@@ -377,15 +379,34 @@ async def fetch_advisories(
             return_exceptions=True,
         )
     except Exception:
-        return AdvisoryFeed(confirmed=False, advisories=[])
+        return AdvisoryFeed(
+            confirmed=False,
+            advisories=[],
+            status="unavailable",
+        )
     finally:
         if own_client:
             await client.aclose()
 
     advisories = _dedupe(results)
+    dropped_count = sum(
+        not isinstance(result, Advisory)
+        for result in results
+    )
     # confirmed iff we read at least one real advisory: an empty body / all-failed CAPs / zero
     # parseable items all collapse to []  → confirmed=False → the caller fails safe.
-    return AdvisoryFeed(confirmed=bool(advisories), advisories=advisories)
+    return AdvisoryFeed(
+        confirmed=bool(advisories),
+        advisories=advisories,
+        status=(
+            "partial"
+            if dropped_count
+            else "available"
+            if advisories
+            else "empty"
+        ),
+        dropped_count=dropped_count,
+    )
 
 
 def _sent_key(advisory: Advisory) -> datetime:
@@ -445,6 +466,8 @@ async def active_advisories(
     return AdvisoryFeed(
         confirmed=feed.confirmed and inventory_observed,
         advisories=active,
+        status=feed.status,
+        dropped_count=feed.dropped_count,
     )
 
 
@@ -483,6 +506,8 @@ class RecentFeed:
     """
     confirmed: bool
     notes: list[RecentNote]
+    status: Literal["available", "empty", "partial", "unavailable"] = "available"
+    dropped_count: int = 0
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -562,13 +587,34 @@ async def fetch_recent_advisories(
         response.raise_for_status()
         records = response.json()
     except Exception:
-        return RecentFeed(confirmed=False, notes=[])
+        return RecentFeed(
+            confirmed=False,
+            notes=[],
+            status="unavailable",
+        )
     finally:
         if own_client:
             await client.aclose()
 
     if not isinstance(records, list):
-        return RecentFeed(confirmed=False, notes=[])
-    notes = [n for n in (_parse_recent_note(r) for r in records if isinstance(r, dict)) if n]
+        return RecentFeed(confirmed=False, notes=[], status="unavailable")
+    notes = [
+        note
+        for record in records
+        if isinstance(record, dict)
+        and (note := _parse_recent_note(record)) is not None
+    ]
+    dropped_count = len(records) - len(notes)
     notes.sort(key=lambda n: n.issued, reverse=True)  # newest first; unparseable ("") sorts last
-    return RecentFeed(confirmed=bool(notes), notes=notes)
+    return RecentFeed(
+        confirmed=bool(notes),
+        notes=notes,
+        status=(
+            "partial"
+            if dropped_count
+            else "available"
+            if notes
+            else "empty"
+        ),
+        dropped_count=dropped_count,
+    )

@@ -31,7 +31,7 @@ from pydantic import Field, ValidationError
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
 from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.datasets import dataset_url, query_dataset
+from heynyc.core.tools.datasets import dataset_url, query_dataset, query_dataset_pages
 from heynyc.core.tools.geo import maps_link, resolve_location
 
 # ponytail: single source for the dataset id; the manifest declares the matching
@@ -39,7 +39,7 @@ from heynyc.core.tools.geo import maps_link, resolve_location
 DATASET_ID = "i6b5-j7bu"
 _NYC_TZ = ZoneInfo("America/New_York")
 _RADIUS_M = 800   # ~0.5 mile, the bound handed to Socrata within_circle
-_MAX_ROWS = 200   # cap the query; the geo+date filter already narrows hard
+_PAGE_SIZE = 200
 
 _ROUTE = (
     "This is DOT's planned construction-closure schedule, so it will not show a sudden crash, a "
@@ -54,7 +54,7 @@ class StreetClosureQuery(LocationRequest):
         default=None, description="Date to check; omit to use today's New York date."
     )
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum closures requested; omit for the default 5."
+        default=None, ge=1, description="Maximum closures requested; omit for the default 5."
     )
 
 
@@ -130,7 +130,7 @@ def _closure_line(index: int, record: dict, cite: str) -> str:
     return "\n".join(parts)
 
 
-async def _street_closures(args: dict, ctx: ToolContext) -> str:
+async def _street_closures(args: StreetClosureQuery, ctx: ToolContext) -> str:
     if not str(args.get("near", "") or "").strip():
         return (
             "Tell me an NYC address or landmark and I'll check for scheduled street closures near "
@@ -141,7 +141,7 @@ async def _street_closures(args: dict, ctx: ToolContext) -> str:
     except ValidationError:
         return (
             "The requested date or result count is invalid. Ask for a date in YYYY-MM-DD format "
-            "and a count from 1 to 10."
+            "and a positive result count."
         )
     near = query.near.strip()
 
@@ -162,9 +162,15 @@ async def _street_closures(args: dict, ctx: ToolContext) -> str:
         f"within_circle(the_geom, {origin.lat}, {origin.lon}, {_RADIUS_M}) "
         f"AND work_start_date <= '{on}T23:59:59' AND work_end_date >= '{on}T00:00:00'"
     )
-    rows = await query_dataset(
-        DATASET_ID, where=where, order="work_start_date", limit=_MAX_ROWS, client=ctx.http
+    result = await query_dataset_pages(
+        DATASET_ID,
+        where=where,
+        order="work_start_date",
+        page_size=_PAGE_SIZE,
+        client=ctx.http,
+        _query=query_dataset,
     )
+    rows = result.records
 
     if not rows:
         return (
@@ -180,6 +186,10 @@ async def _street_closures(args: dict, ctx: ToolContext) -> str:
     ]
     for index, record in enumerate(rows[:max_results], 1):
         lines.append(_closure_line(index, record, _closure_citation(ctx, record)))
+    if not result.complete:
+        lines.append(
+            f"The city source stopped after {len(rows)} records, so that count is a lower bound."
+        )
     lines.append(_ROUTE)
     return "\n".join(lines)
 
@@ -198,7 +208,7 @@ def get_tools() -> list[Tool]:
                 "it does not cover a crash, a parade, a police closure, alternate-side-parking "
                 "suspensions, or live traffic. Read-only."
             ),
-            parameters=StreetClosureQuery.model_json_schema(),
+            input_type=StreetClosureQuery,
             handler=_street_closures,
             open_world=True,  # hits live Socrata
             title="Check NYC street closures",

@@ -20,13 +20,14 @@ from typing import Annotated, Self
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
+import httpx
 from pydantic import AwareDatetime, Field, ValidationError, model_validator
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailure, ToolInput
 from heynyc.core.tools.datasets import dataset_url, query_dataset
-from heynyc.core.tools.geo import GeoPoint, maps_link, resolve_location
+from heynyc.core.tools.geo import GeoPoint, resolve_location
 
 # ponytail: single source for the dataset id; the manifest declares the matching binding
 # (category service_request_311) only so the capability table / grounding label read it.
@@ -60,18 +61,16 @@ class ComplaintSearchQuery(LocationRequest):
         ]
     ] = Field(
         min_length=1,
-        max_length=3,
         description=(
-            "One to three short, dataset-facing alternative terms matched independently against "
+            "Short, dataset-facing alternative terms matched independently against "
             "complaint type and descriptor. Prefer a stable category word, such as ['rodent'] for "
             "rats. Do not pass a sentence, combine alternatives into one string, or use a 2-3 "
             "letter fragment."
         ),
     )
-    max_results: int = Field(
-        default=5,
+    max_results: int | None = Field(
+        default=None,
         ge=1,
-        le=10,
         description=(
             "Only set when the resident explicitly requests a number of complaints to list; "
             "otherwise omit it to use the default."
@@ -129,6 +128,10 @@ class ComplaintSearchQuery(LocationRequest):
         return self
 
 
+class ServiceRequestInput(ToolInput):
+    sr_number: str = Field(description="311 service request number")
+
+
 def _nyc_now() -> datetime:
     return datetime.now(_NYC_TZ)
 
@@ -171,7 +174,10 @@ def _sr_citation(ctx: ToolContext, record: dict) -> str:
         kind="DATA",
         valid_as_of=_valid_as_of(record),
         # Full-row snapshot: the whole record the model may describe, hashed and re-fetchable.
-        provenance=data_provenance(record, record_id=key, field_pointer="/"),
+        provenance={
+            **data_provenance(record, record_id=key, field_pointer="/"),
+            "navigable": False,
+        },
     )
 
 
@@ -214,17 +220,18 @@ def _area_citation(
     scope: str,
     rows: list[dict],
     counts: Counter,
-    max_results: int,
+    max_results: int | None,
     origin: GeoPoint | None,
 ) -> str:
     checked_at = _nyc_now().isoformat()
     breakdown = ", ".join(f"{n} {status}" for status, n in counts.most_common())
     total = sum(counts.values())
+    example_label = "example" if len(rows) == 1 else "examples"
     return ctx.citations.register(
         _area_query_url(where),
         snippet=(
             f"{total} 311 rows for {scope}; {total} total matches; "
-            f"{len(rows)} most recent examples shown; status: {breakdown}"
+            f"{len(rows)} most recent {example_label} shown; status: {breakdown}"
         ),
         title="NYC 311 Service Requests search",
         kind="DATA",
@@ -285,7 +292,7 @@ def _approximate_miles(radius_meters: int) -> str:
     return f"about {amount} {'mile' if miles <= 1 else 'miles'}"
 
 
-async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
+async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str | ToolFailure:
     # PII/injection boundary: reduce to digits, so ONLY the number reaches Socrata and a stray
     # quote can never alter the SoQL. NYC SR numbers are all digits (verified live).
     key = re.sub(r"\D", "", sr_number)
@@ -294,7 +301,20 @@ async def _lookup_sr(sr_number: str, ctx: ToolContext) -> str:
             "That does not look like a 311 service request number. It is all digits, like 69741503. "
             "You can find it on your 311 confirmation, or check status at portal.311.nyc.gov."
         )
-    rows = await query_dataset(DATASET_ID, where=f"unique_key='{key}'", limit=1, client=ctx.http)
+    try:
+        rows = await query_dataset(
+            DATASET_ID,
+            where=f"unique_key='{key}'",
+            limit=1,
+            client=ctx.http,
+        )
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return ToolFailure(
+            status="unavailable",
+            reason="The NYC 311 service-request dataset could not be reached.",
+            retryable=True,
+            source_url=dataset_url(DATASET_ID),
+        )
     if not rows:
         return (
             f"I could not find a NYC 311 service request with number {key}. Double-check the number "
@@ -341,7 +361,7 @@ async def _lookup_area(
     created_before: datetime | None,
     radius_meters: int,
     ctx: ToolContext,
-) -> str:
+) -> str | ToolFailure:
     if created_after is not None and created_before is not None:
         start = created_after.astimezone(_NYC_TZ)
         end = created_before.astimezone(_NYC_TZ)
@@ -393,21 +413,31 @@ async def _lookup_area(
         )
 
     where = " AND ".join(clauses)
-    aggregate_rows = await query_dataset(
-        DATASET_ID,
-        where=where,
-        select=_AREA_SELECT,
-        group="status",
-        limit=None,
-        exclude_system_fields=None,
-        client=ctx.http,
-    )
+    try:
+        aggregate_rows = await query_dataset(
+            DATASET_ID,
+            where=where,
+            select=_AREA_SELECT,
+            group="status",
+            limit=None,
+            exclude_system_fields=None,
+            client=ctx.http,
+        )
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return ToolFailure(
+            status="unavailable",
+            reason="The NYC 311 complaints dataset could not be reached.",
+            retryable=True,
+            source_url=_area_query_url(where),
+        )
     counts = Counter()
+    dropped_count = 0
     for row in aggregate_rows:
         status = str(row.get("status", "") or "").strip() or "Unknown"
         try:
             count = int(row.get("count", 0))
         except (TypeError, ValueError):
+            dropped_count += 1
             continue
         if count > 0:
             counts[status] += count
@@ -422,6 +452,16 @@ async def _lookup_area(
         if origin
         else "in that area"
     )
+    if not counts and dropped_count:
+        return ToolFailure(
+            status="partial",
+            reason=(
+                f"All {dropped_count} NYC 311 aggregate count rows were malformed; "
+                "zero complaints could not be established."
+            ),
+            retryable=True,
+            source_url=_area_query_url(where),
+        )
     if not counts:
         cite = _empty_area_citation(
             ctx,
@@ -436,13 +476,25 @@ async def _lookup_area(
             "new problem or check official status, use portal.311.nyc.gov or call 311."
         )
 
-    rows = await query_dataset(
-        DATASET_ID,
-        where=where,
-        order=_AREA_ORDER,
-        limit=max_results,
-        client=ctx.http,
-    )
+    retrieve_limit = max_results or 1
+    try:
+        rows = await query_dataset(
+            DATASET_ID,
+            where=where,
+            order=_AREA_ORDER,
+            limit=retrieve_limit,
+            client=ctx.http,
+        )
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return ToolFailure(
+            status="partial",
+            reason=(
+                "NYC 311 aggregate counts were retrieved, but recent example records "
+                "could not be reached."
+            ),
+            retryable=True,
+            source_url=_area_query_url(where),
+        )
     breakdown = ", ".join(f"{n} {status}" for status, n in counts.most_common())
     area_cite = _area_citation(
         ctx,
@@ -450,7 +502,7 @@ async def _lookup_area(
         f"{scope}{where_label} {time_label}".strip(),
         rows,
         counts,
-        max_results,
+        retrieve_limit,
         origin,
     )
     total = sum(counts.values())
@@ -459,7 +511,7 @@ async def _lookup_area(
         f"- Of the {total} I found, status is: {breakdown} {{cite:{area_cite}}}",
         "Most recent:",
     ]
-    for index, record in enumerate(rows[:max_results], 1):
+    for index, record in enumerate(rows[: max_results or 1], 1):
         key = str(record.get("unique_key", "") or "").strip()
         status = str(record.get("status", "") or "").strip() or "Unknown"
         opened = str(record.get("created_date", "") or "")[:10]
@@ -468,30 +520,24 @@ async def _lookup_area(
             f"{index}. SR {key}: {_complaint_label(record) or 'complaint'}, status {status}, "
             f"opened {opened} {{cite:{cite}}}"
         )
-        try:
-            lat, lon = float(record["latitude"]), float(record["longitude"])
-        except (KeyError, TypeError, ValueError):
-            pass
-        else:
-            lines.append(f"   Map: {maps_link(lat, lon)}")
     return "\n".join(lines)
 
 
-async def _check_311_request(args: dict, ctx: ToolContext) -> str:
+async def _check_311_request(args: ServiceRequestInput, ctx: ToolContext) -> str:
     return await _lookup_sr(str(args.get("sr_number", "") or "").strip(), ctx)
 
 
-async def _search_311_complaints(args: dict, ctx: ToolContext) -> str:
+async def _search_311_complaints(args: ComplaintSearchQuery, ctx: ToolContext) -> str:
     raw_terms = [
         str(term).strip()
-        for term in (args.get("complaint_terms") or [])[:3]
+        for term in (args.get("complaint_terms") or [])
         if str(term).strip()
     ]
     complaint_terms = [
         term for term in raw_terms if 4 <= len(term) <= 40
     ]
     if raw_terms and len(complaint_terms) != len(raw_terms):
-        return "Use one to three complaint-type or descriptor terms of at least 4 characters each."
+        return "Use complaint-type or descriptor terms of at least 4 characters each."
     near = str(args.get("near", "") or "").strip()
     if not complaint_terms and not near:
         return (
@@ -528,16 +574,7 @@ def get_tools() -> list[Tool]:
                 "Check one existing NYC 311 service request by its number. Send only the number. "
                 "Read-only: reports status and cannot file, update, or close a request."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "sr_number": {
-                        "type": "string",
-                        "description": "The resident's 311 service request number (digits only).",
-                    },
-                },
-                "required": ["sr_number"],
-            },
+            input_type=ServiceRequestInput,
             handler=_check_311_request,
             open_world=True,  # hits live Socrata
             title="Check 311 request status",
@@ -548,7 +585,7 @@ def get_tools() -> list[Tool]:
                 "Search NYC 311 complaints by problem, time window, and optional NYC location. "
                 "Use for area activity, not for checking one known service request. Read-only."
             ),
-            parameters=ComplaintSearchQuery.model_json_schema(),
+            input_type=ComplaintSearchQuery,
             handler=_search_311_complaints,
             open_world=True,
             title="Search 311 complaints",

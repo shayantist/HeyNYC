@@ -18,7 +18,7 @@ from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
 from heynyc.core.tools import notify_nyc
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.core.tools.notify_nyc import (
     RECENT_MESSAGES_URL,
     active_advisories,
@@ -460,12 +460,29 @@ async def test_malformed_cap_is_skipped_not_fatal():
     )
     caps = {"good.xml": CAP_ACTIVE, "bad.xml": "<alert><info>oops truncated"}
     client = _client(rss, caps)
-    advisories = (await fetch_advisories(client)).advisories
+    feed = await fetch_advisories(client)
     await client.aclose()
 
-    assert [a.guid for a in advisories] == [
+    assert [a.guid for a in feed.advisories] == [
         "NYC-ACTIVE-1"
-    ]  # malformed one silently dropped
+    ]
+    assert feed.status == "partial"
+    assert feed.dropped_count == 1
+
+
+async def test_check_notify_nyc_exposes_partial_cap_inventory() -> None:
+    rss = _rss(
+        _item("Good (English)", "NYCEM [English]", "g-good", "good.xml"),
+        _item("Bad (English)", "NYCEM [English]", "g-bad", "bad.xml"),
+    )
+    client = _client(rss, {"good.xml": CAP_ACTIVE, "bad.xml": "<alert>"})
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    output = await get_tools()[0].handler({}, ctx)
+    await client.aclose()
+
+    assert "Source completeness: partial" in output
+    assert "1 CAP notice could not be read" in output
 
 
 async def test_fetch_advisories_returns_empty_on_rss_failure():
@@ -477,6 +494,7 @@ async def test_fetch_advisories_returns_empty_on_rss_failure():
     assert (
         feed.confirmed is False
     )  # a failed fetch is DEGRADED, not a confirmed all-clear
+    assert feed.status == "unavailable"
     await client.aclose()
 
 
@@ -602,13 +620,10 @@ async def test_check_notify_nyc_failsafe_on_fetch_error():
     out = await get_tools()[0].handler({}, ctx)
     await client.aclose()
 
-    low = out.lower()
-    assert "no active notify nyc advisories" not in low
-    assert "no advisories" not in low
-    assert "could not confirm" in low
-    assert "nyc.gov/notifynyc" in low
-    assert "311" in low
-    assert "911" in low
+    assert isinstance(out, ToolFailure)
+    assert out.status == "unavailable"
+    assert out.retryable is True
+    assert str(out.source_url) == "https://www.nyc.gov/notifynyc"
 
 
 async def test_active_advisories_flags_confirmed_vs_degraded():
@@ -768,6 +783,7 @@ async def test_fetch_recent_advisories_failsafe_on_error():
     await client.aclose()
     assert feed.confirmed is False
     assert feed.notes == []
+    assert feed.status == "unavailable"
 
 
 async def test_fetch_recent_advisories_empty_array_is_degraded():
@@ -776,6 +792,17 @@ async def test_fetch_recent_advisories_empty_array_is_degraded():
     feed = await fetch_recent_advisories(client)
     await client.aclose()
     assert feed.confirmed is False
+    assert feed.status == "empty"
+
+
+async def test_fetch_recent_advisories_reports_dropped_rows() -> None:
+    client = _recent_client('[{}, {"title": "Heat advisory", "pubDate": "08/27/2026 12:00:00"}]')
+    feed = await fetch_recent_advisories(client)
+    await client.aclose()
+
+    assert [note.title for note in feed.notes] == ["Heat advisory"]
+    assert feed.status == "partial"
+    assert feed.dropped_count == 1
 
 
 async def test_current_awareness_reuses_a_recent_snapshot(monkeypatch):
@@ -1101,8 +1128,7 @@ async def test_notify_nyc_lists_candidates_without_registering_citations():
     )
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
 
-    tools = {tool.name: tool for tool in get_tools()}
-    out = await tools["list_notify_nyc"].handler({"lang": "English"}, ctx)
+    out = await advisory_tools._list_handler({"lang": "English"}, ctx)
     await client.aclose()
 
     assert "notice_id=" in out
@@ -1123,14 +1149,13 @@ async def test_check_notify_nyc_registers_only_selected_notice_ids():
     client = _combo_client(rss=RSS_MAIN, recent_json=recent_json, caps=CAPS_MAIN)
     ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
 
-    tools = {tool.name: tool for tool in get_tools()}
-    candidates = await tools["list_notify_nyc"].handler({}, ctx)
+    candidates = await advisory_tools._list_handler({}, ctx)
     selected_id = next(
         line.split("notice_id=", 1)[1].split(")", 1)[0]
         for line in candidates.splitlines()
         if "Air Quality Health Advisory" in line
     )
-    out = await tools["check_notify_nyc"].handler(
+    out = await advisory_tools._handler(
         {"notice_ids": [selected_id], "query": "air quality"}, ctx
     )
     await client.aclose()
@@ -1168,15 +1193,10 @@ async def test_check_notify_nyc_empty_selection_returns_a_compact_receipt():
 def test_notify_nyc_tools_use_selection_not_alert_type_filtering():
     tools = {tool.name: tool for tool in get_tools()}
 
-    assert {"check_notify_nyc", "list_notify_nyc"} <= set(tools)
-    check_schema = tools["check_notify_nyc"].parameters["properties"]
-    assert "notice_ids" in check_schema
-    assert "query" in check_schema
+    assert set(tools) == {"check_notify_nyc"}
+    check_schema = tools["check_notify_nyc"]._input_schema()["properties"]
+    assert check_schema == {}
     assert "alert_type" not in check_schema
-    assert "requested language is absent" in check_schema["lang"]["description"]
-    assert "requested language is absent" in (
-        tools["list_notify_nyc"].parameters["properties"]["lang"]["description"]
-    )
 
 
 async def test_check_notify_nyc_combines_cap_and_recent_without_exact_duplicates():
@@ -1245,7 +1265,7 @@ async def test_check_notify_nyc_reports_borough_notices_alongside_citywide():
 
     assert "Air Quality Health Advisory" in out
     assert "Three Alarm Fire" in out
-    schema = get_tools()[0].parameters["properties"]
+    schema = get_tools()[0]._input_schema()["properties"]
     assert "citywide_only" not in schema
 
 
@@ -1285,16 +1305,16 @@ def test_advisories_module_loads_with_tool_and_eval():
     air_quality = next(c for c in cases if c.id == "adv_air_quality")
     assert "unrelated notices" in module.prompt.lower()
     assert "emergency may still" not in module.prompt.lower()
-    assert "english feed when it is absent" in module.prompt.lower()
-    assert air_quality.expect_tools == ["list_notify_nyc", "check_notify_nyc"]
+    assert "uses the english feed" in module.prompt.lower()
+    assert air_quality.expect_tools == ["check_notify_nyc"]
     assert not air_quality.invariants.get("must_ground")
     assert "cite it" in air_quality.utility_criterion.lower()
-    assert "hydrate only" in air_quality.utility_criterion.lower()
+    assert "call check_notify_nyc once" in air_quality.utility_criterion.lower()
     assert "could not confirm" in air_quality.utility_criterion.lower()
     assert "unrelated" in air_quality.utility_criterion.lower()
     assert "unspecified emergency" in air_quality.utility_criterion.lower()
     spanish = next(c for c in cases if c.id == "adv_air_quality_es")
-    assert spanish.expect_tools == ["list_notify_nyc", "check_notify_nyc"]
+    assert spanish.expect_tools == ["check_notify_nyc"]
     assert spanish.language == "es"
     assert "spanish" in spanish.utility_criterion.lower()
     spanish_broad = next(c for c in cases if c.id == "adv_any_active_es")

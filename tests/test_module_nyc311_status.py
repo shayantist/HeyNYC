@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.nyc311_status import tools as nyc311
 
@@ -59,7 +59,7 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
 
     assert issubclass(nyc311.ComplaintSearchQuery, LocationRequest)
 
-    assert set(tool.parameters["properties"]) == {
+    assert set(tool._input_schema()["properties"]) == {
         "complaint_terms",
         "near",
         "max_results",
@@ -68,19 +68,19 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
         "created_before",
         "radius_meters",
     }
-    assert tool.parameters["required"] == ["complaint_terms"]
-    terms = tool.parameters["properties"]["complaint_terms"]
+    assert tool._input_schema()["required"] == ["complaint_terms"]
+    terms = tool._input_schema()["properties"]["complaint_terms"]
     assert terms["type"] == "array"
     assert terms["minItems"] == 1
-    assert terms["maxItems"] == 3
+    assert "maxItems" not in terms
     assert terms["items"]["minLength"] == 4
     assert "dataset-facing" in terms["description"]
     assert "rodent" in terms["description"]
-    max_results = tool.parameters["properties"]["max_results"]
+    max_results = tool._input_schema()["properties"]["max_results"]
     assert "only set" in max_results["description"].lower()
     assert "explicitly requests" in max_results["description"].lower()
     assert "otherwise omit" in max_results["description"].lower()
-    lookback = tool.parameters["properties"]["lookback_days"]
+    lookback = tool._input_schema()["properties"]["lookback_days"]
     assert lookback["default"] is None
     assert lookback["anyOf"][0] == {
         "type": "integer",
@@ -88,10 +88,10 @@ def test_area_search_uses_typed_terms_and_project_wide_result_count_name():
         "maximum": 365,
     }
     for name in ("created_after", "created_before"):
-        field = tool.parameters["properties"][name]
+        field = tool._input_schema()["properties"][name]
         assert field["default"] is None
         assert field["anyOf"][0] == {"format": "date-time", "type": "string"}
-    assert tool.parameters["properties"]["radius_meters"] == {
+    assert tool._input_schema()["properties"]["radius_meters"] == {
         "type": "integer",
         "minimum": 100,
         "maximum": 50_000,
@@ -161,6 +161,7 @@ async def test_sr_lookup_reports_status_resolution_and_cites_full_row(monkeypatc
     assert cite["kind"] == "DATA"
     assert cite["valid_as_of"] == "2026-07-17T02:04:22.000"
     assert cite["provenance"]["record_id"] == "69741503"
+    assert cite["provenance"]["navigable"] is False
     # full-row snapshot, not a hand-picked subset
     assert cite["provenance"]["snapshot"]["complaint_type"] == "Noise - Residential"
     assert cite["provenance"]["snapshot"]["status"] == "Closed"
@@ -234,7 +235,7 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
                 {"status": "In Progress", "count": "1"},
                 {"status": "Closed", "count": "1"},
             ]
-        return [
+        rows = [
             {
                 ":id": "r1", "unique_key": "1", "created_date": "2026-07-17T00:16:55.000",
                 "complaint_type": "Noise - Residential", "descriptor": "Loud Music/Party",
@@ -248,6 +249,7 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
                 "latitude": "40.7333", "longitude": "-73.9898",
             },
         ]
+        return rows[: kwargs["limit"]]
 
     monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
     monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
@@ -323,6 +325,55 @@ async def test_area_lookup_filters_by_type_and_geo_and_cites_each(monkeypatch):
     assert "%24select=status%2C+count%28%2A%29+as+count" in aggregate["url"]
     assert "%24group=status" in aggregate["url"]
     assert "200" not in out
+
+
+@pytest.mark.asyncio
+async def test_area_lookup_defaults_to_one_example_without_directions(monkeypatch):
+    captured: list[dict] = []
+
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(40.7359, -73.9911, "Union Square, Manhattan")
+
+    async def fake_qd(dataset_id, **kwargs):
+        captured.append(kwargs)
+        if kwargs.get("group") == "status":
+            return [{"status": "In Progress", "count": "2"}]
+        rows = [
+            {
+                "unique_key": "1",
+                "created_date": "2026-08-19T12:00:00.000",
+                "complaint_type": "Rodent",
+                "descriptor": "Rat Sighting",
+                "status": "In Progress",
+                "latitude": "40.7392",
+                "longitude": "-73.9841",
+            },
+            {
+                "unique_key": "2",
+                "created_date": "2026-08-18T12:00:00.000",
+                "complaint_type": "Rodent",
+                "descriptor": "Rat Sighting",
+                "status": "In Progress",
+                "latitude": "40.7333",
+                "longitude": "-73.9898",
+            },
+        ]
+        return rows[: kwargs["limit"]]
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
+
+    ctx = _ctx()
+    out = await nyc311.get_tools()[1].handler(
+        {"complaint_terms": ["rodent"], "near": "Union Square"}, ctx
+    )
+
+    assert "SR 1" in out
+    assert "SR 2" not in out
+    assert "Map:" not in out
+    assert captured[1]["limit"] == 1
+    assert "1 most recent example shown" in ctx.citations.mapping()["S1"]["snippet"]
+    assert len(ctx.citations.mapping()) == 2
 
 
 @pytest.mark.asyncio
@@ -470,6 +521,36 @@ async def test_area_lookup_rejects_short_fragments_before_querying(monkeypatch):
     )
 
     assert "at least 4 characters" in out
+
+
+@pytest.mark.asyncio
+async def test_area_lookup_does_not_turn_malformed_counts_into_zero(monkeypatch) -> None:
+    async def fake_qd(dataset_id, **kwargs):
+        return [{"status": "Open", "count": "not a number"}]
+
+    monkeypatch.setattr(nyc311, "query_dataset", fake_qd)
+
+    output = await nyc311.get_tools()[1].handler(
+        {"complaint_terms": ["rodent"]}, _ctx()
+    )
+
+    assert isinstance(output, ToolFailure)
+    assert output.status == "partial"
+    assert "aggregate" in output.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_sr_lookup_returns_typed_failure_when_dataset_is_unavailable(monkeypatch) -> None:
+    async def unavailable(*args, **kwargs):
+        raise ValueError("malformed provider payload")
+
+    monkeypatch.setattr(nyc311, "query_dataset", unavailable)
+
+    output = await nyc311.get_tools()[0].handler({"sr_number": "70124526"}, _ctx())
+
+    assert isinstance(output, ToolFailure)
+    assert output.status == "unavailable"
+    assert output.retryable is True
 
 
 @pytest.mark.asyncio

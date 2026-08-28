@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .. import config
-from .base import Tool, ToolContext
+from .base import EmptyToolInput, Tool, ToolContext
 
 # The running service's own files are the source of truth for self-description
 _PRIVACY = config.PROJECT_ROOT / "PRIVACY.md"
@@ -60,7 +60,7 @@ def _read(path: Path) -> str:
 
 
 def about_tools() -> list[Tool]:
-    async def _handler(args: dict, ctx: ToolContext) -> str:
+    async def _handler(args: EmptyToolInput, ctx: ToolContext) -> str:
         if not _DOCS_BASE:
             return "HeyNYC's own documentation could not be linked right now."
 
@@ -92,7 +92,7 @@ def about_tools() -> list[Tool]:
                 "data' so the reply quotes the running service's real documents instead of memory. "
                 "Returns document (DOC) sources to cite."
             ),
-            parameters={"type": "object", "properties": {}},
+            input_type=EmptyToolInput,
             handler=_handler,
         )
     ]

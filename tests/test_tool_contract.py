@@ -16,19 +16,18 @@ from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.pydantic_runtime import build_runtime
 from heynyc.core.pydantic_runtime.tools import (
-    adapt_tool,
     build_module_capabilities,
     resident_fact_confirmation_tool,
+    runtime_tool,
 )
 from heynyc.core.registry import Registry
 from heynyc.core.tools import build_toolbox
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailure, ToolInput
 from heynyc.modules.benefits.tools import screen_access_nyc_eligibility_tool
 
 EAGER_TOOL_NAMES = {
     "about_heynyc",
     "distance",
-    "evaluate_event_time",
     "geocode",
     "nearest",
     "web_fetch",
@@ -36,7 +35,7 @@ EAGER_TOOL_NAMES = {
 }
 
 CAPABILITY_TOOLS = {
-    "advisories": {"check_notify_nyc", "list_notify_nyc"},
+    "advisories": {"check_notify_nyc"},
     "benefits": {
         "search_benefits",
         "confirm_screen_access_nyc_eligibility_facts",
@@ -46,7 +45,7 @@ CAPABILITY_TOOLS = {
     "clinics": {"find_clinics", "get_health_coverage_guidance"},
     "cooling_centers": {"find_cool_options"},
     "drinking_fountains": set(),
-    "events": {"find_nyc_events"},
+    "events": {"extract_events"},
     "food_pantries": {"find_foodhelp_locations"},
     "housing": {
         "get_housing_guidance",
@@ -103,6 +102,58 @@ def _missing_descriptions(schema: dict, path: str = "") -> list[str]:
     return missing
 
 
+async def test_typed_confirmation_records_scoped_resident_facts() -> None:
+    class ProfileInput(ToolInput):
+        age: int
+
+    async def lookup(request: ProfileInput, _ctx: ToolContext) -> str:
+        return f"age {request.age}"
+
+    source = Tool(
+        name="lookup",
+        description="Lookup",
+        input_type=ProfileInput,
+        handler=lookup,
+        resident_fact_scope=("/age",),
+    )
+    confirmation = resident_fact_confirmation_tool(source)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), user_turns=("I am 42",),
+    )
+
+    assert await confirmation.invoke({"age": 42}, ctx) == "age 42"
+    assert ctx.resident_facts["/age"].value == 42
+    assert ctx.resident_facts["/age"].status == "confirmed"
+
+
+def test_module_confirmation_keeps_native_typed_contract() -> None:
+    class ProfileInput(ToolInput):
+        age: int
+        note: str | None = None
+
+    async def lookup(request: ProfileInput, _ctx: ToolContext) -> str:
+        return f"age {request.age}"
+
+    source = Tool(
+        name="lookup",
+        description="Lookup",
+        input_type=ProfileInput,
+        handler=lookup,
+        resident_fact_scope=("/age",),
+        module="benefits",
+    )
+    confirmation = resident_fact_confirmation_tool(source)
+    confirmation.module = "benefits"
+    _, capabilities = build_module_capabilities(
+        _registry(),
+        {source.name: source, confirmation.name: confirmation},
+    )
+    capability = next(item for item in capabilities if item.id == "benefits")
+    adapted = capability.get_toolset().tools[confirmation.name]
+
+    assert adapted.function.__annotations__["request"] is ProfileInput
+
+
 async def test_adapter_preserves_declared_nested_pydantic_result() -> None:
     class ResultRow(BaseModel):
         name: str
@@ -130,7 +181,6 @@ async def test_adapter_preserves_declared_nested_pydantic_result() -> None:
     source = Tool(
         name="typed_lookup",
         description="Return one typed provider result",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         return_type=ProviderResult,
     )
@@ -152,7 +202,7 @@ async def test_adapter_preserves_declared_nested_pydantic_result() -> None:
     await Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
     ).run("Find it", deps=context)
 
     assert len(seen) == 1
@@ -173,6 +223,66 @@ async def test_adapter_preserves_declared_nested_pydantic_result() -> None:
     assert context.tool_runs[0]["latency_ms"] >= 0
 
 
+def test_tool_failure_is_a_compact_typed_outcome() -> None:
+    failure = ToolFailure(
+        status="unavailable",
+        reason="The page blocked both retrieval methods.",
+        retryable=False,
+        source_url="https://www.nyc.gov/example",
+    )
+
+    assert failure.model_dump(mode="json") == {
+        "status": "unavailable",
+        "reason": "The page blocked both retrieval methods.",
+        "retryable": False,
+        "source_url": "https://www.nyc.gov/example",
+    }
+
+
+async def test_web_fetch_registers_only_public_links_found_in_fetched_evidence(
+    monkeypatch,
+) -> None:
+    async def resolve(url: str, *, allow_local: bool):
+        assert allow_local is False
+        assert url == "https://www.nyc.gov/example/application"
+
+    monkeypatch.setattr(
+        "heynyc.core.pydantic_runtime.tools.validate_and_resolve_url",
+        resolve,
+    )
+
+    async def handler(_args: dict, _ctx: ToolContext) -> str:
+        return (
+            "SOURCE S1: Official page\n"
+            "Apply here: https://www.nyc.gov/example/application\n"
+            "Ignore this unsafe link: http://127.0.0.1/private"
+        )
+
+    source = Tool(
+        name="web_fetch",
+        description="Fetch one official page",
+        handler=handler,
+    )
+
+    async def model(messages: list[ModelMessage], _info) -> ModelResponse:
+        if not any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            return ModelResponse([ToolCallPart("web_fetch", {}, "fetch-1")])
+        return ModelResponse([TextPart("Done")])
+
+    context = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+    await Agent(
+        FunctionModel(model),
+        deps_type=ToolContext,
+        tools=[runtime_tool(source)],
+    ).run("Find the official application", deps=context)
+
+    assert context.tool_result_urls == {"https://www.nyc.gov/example/application"}
+
+
 async def test_adapter_reports_invalid_declared_result_as_terminal_tool_failure() -> None:
     class ProviderResult(BaseModel):
         count: int
@@ -183,7 +293,6 @@ async def test_adapter_reports_invalid_declared_result_as_terminal_tool_failure(
     source = Tool(
         name="typed_lookup",
         description="Return one typed provider result",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         return_type=ProviderResult,
     )
@@ -205,7 +314,7 @@ async def test_adapter_reports_invalid_declared_result_as_terminal_tool_failure(
     result = await Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
     ).run("Find it", deps=context)
 
     assert result.output == "The provider result was unavailable."
@@ -224,7 +333,6 @@ async def test_adapter_rejects_invalid_structured_action_url_before_model_use() 
     source = Tool(
         name="typed_lookup",
         description="Return one typed provider result",
-        parameters={"type": "object", "properties": {}},
         handler=handler,
         return_type=ProviderResult,
     )
@@ -246,7 +354,7 @@ async def test_adapter_rejects_invalid_structured_action_url_before_model_use() 
     result = await Agent(
         FunctionModel(model),
         deps_type=ToolContext,
-        tools=[adapt_tool(source)],
+        tools=[runtime_tool(source)],
     ).run(
         "Find it",
         deps=context,
@@ -327,11 +435,12 @@ def test_tool_parameters_are_described_and_self_consistent():
             f"{tool.name}{path}: missing description"
             for path in _missing_descriptions(schema)
         )
+        validator = Draft202012Validator(schema)
         for name, parameter in schema.get("properties", {}).items():
             if "default" not in parameter:
                 continue
             default_errors = list(
-                Draft202012Validator(parameter).iter_errors(parameter["default"])
+                validator.descend(parameter["default"], parameter, schema_path=name)
             )
             errors.extend(
                 f"{tool.name}/{name}: invalid default {error.message}"
@@ -339,6 +448,54 @@ def test_tool_parameters_are_described_and_self_consistent():
             )
 
     assert errors == []
+
+
+def test_model_facing_tools_expose_resident_constraints_not_runtime_controls():
+    tools = _runtime_tools(_registry())
+
+    assert "find_nyc_events" not in tools
+    assert set(tools["geocode"]._input_schema()["properties"]) == {"text"}
+    assert set(tools["web_fetch"]._input_schema()["properties"]) == {
+        "url",
+        "find",
+    }
+    assert set(tools["web_search"]._input_schema()["properties"]) == {
+        "queries",
+        "domains",
+        "published_after",
+        "published_before",
+    }
+    assert set(tools["find_foodhelp_locations"]._input_schema()["properties"]) == {
+        "near",
+        "max_results",
+        "starts_after",
+        "starts_before",
+        "active_at",
+        "site",
+        "service_type",
+    }
+    assert set(tools["find_cool_options"]._input_schema()["properties"]) == {
+        "near",
+        "max_results",
+        "active_at",
+        "site",
+        "exclude_sites",
+        "kind",
+        "audience",
+    }
+    assert set(tools["search_benefits"]._input_schema()["properties"]) == {
+        "query",
+        "max_results",
+    }
+    assert set(tools["check_notify_nyc"]._input_schema()["properties"]) == set()
+    assert "list_notify_nyc" not in tools
+
+
+def test_tools_leave_provider_strictness_unset_by_default():
+    tools = _runtime_tools(_registry())
+
+    assert all(tool.strict is None for tool in tools.values())
+    assert all(runtime_tool(tool).strict is None for tool in tools.values())
 
 
 def test_output_tool_parameters_are_described():
@@ -391,14 +548,10 @@ def test_final_answer_tool_is_one_concise_terminal_prose_contract():
 def test_known_schema_contracts_match_handler_behavior():
     tools = _runtime_tools(_registry())
 
-    benefits_limit = tools["search_benefits"]._input_schema()["properties"]["limit"]
-    assert benefits_limit == {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 10,
-        "default": 8,
-        "description": "Maximum benefit programs to return",
-    }
+    benefits_limit = tools["search_benefits"]._input_schema()["properties"]["max_results"]
+    assert benefits_limit["anyOf"][0] == {"minimum": 1, "type": "integer"}
+    assert benefits_limit["default"] is None
+    assert "resident-requested program count" in benefits_limit["description"].lower()
 
     health = tools["get_health_coverage_guidance"]
     assert health._input_schema()["properties"]["topic"]["enum"] == [
@@ -410,42 +563,24 @@ def test_known_schema_contracts_match_handler_behavior():
     assert "four high-stakes health coverage situations" in health.description
 
     housing = tools["get_housing_guidance"]
-    assert housing._input_schema()["properties"]["topic"]["enum"] == [
+    assert set(housing._input_schema()["properties"]["topic"]["enum"]) == {
         "right_to_counsel",
         "bronx_housing_court",
         "no_water",
         "no_heat",
         "shelter",
         "source_of_income",
-    ]
+    }
     assert "six high-stakes housing situations" in housing.description
 
     street_closures = tools["find_street_closures"]._input_schema()
     assert street_closures["required"] == ["near"]
 
 
-def test_foodhelp_service_window_is_one_complete_input():
+def test_foodhelp_uses_one_absolute_service_window():
     schema = _runtime_tools(_registry())["find_foodhelp_locations"]._input_schema()
-    assert "service_window_start" not in schema["properties"]
-    assert "service_window_end" not in schema["properties"]
-    window = schema["properties"]["service_window"]
-    assert window["required"] == ["start", "end"]
-    assert window["additionalProperties"] is False
-
-    validator = Draft202012Validator(schema)
-    assert not list(
-        validator.iter_errors(
-            {
-                "near": "Union Square",
-                "service_window": {"start": "17:00", "end": "23:59"},
-            }
-        )
-    )
-    assert list(
-        validator.iter_errors(
-            {"near": "Union Square", "service_window": {"start": "17:00"}}
-        )
-    )
+    assert "service_window" not in schema["properties"]
+    assert {"starts_after", "starts_before", "active_at"} <= set(schema["properties"])
 
 
 def test_311_operations_do_not_accept_each_others_inputs():
