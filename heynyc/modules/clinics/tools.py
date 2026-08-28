@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
 from heynyc.core.tools.arcgis import feature_query_url, query_feature_service_page
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
 from heynyc.core.tools.geo import (
     GeoPoint,
     maps_link,
@@ -78,8 +78,17 @@ VERIFIED_ON = "2026-07-04"
 class ClinicQuery(LocationRequest):
     near: str = Field(description="NYC address, neighborhood, or ZIP to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum clinics requested; omit for the default 5."
+        default=None, ge=1, description="Maximum clinics requested; omit for the default 5."
     )
+
+
+class HealthCoverageInput(ToolInput):
+    topic: Literal[
+        "emergency_care",
+        "nyc_care",
+        "emergency_medicaid",
+        "public_charge",
+    ] = Field(description="Health coverage situation")
 
 
 class HrsaClinicSource(BaseModel):
@@ -618,7 +627,7 @@ def _source_date(value: str) -> date | None:
         return None
 
 
-async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
+async def _handler(args: ClinicQuery, ctx: ToolContext) -> ClinicResult:
     query = ClinicQuery.model_validate(args)
     near = query.near.strip()
     if not near:
@@ -664,22 +673,23 @@ async def _handler(args: dict, ctx: ToolContext) -> ClinicResult:
     else:
         parsed = [clinic for clinic in (_fqhc_from_record(row) for row in hrsa_result.records)
                   if clinic is not None]
+        hrsa_complete = hrsa_result.complete and len(parsed) == len(hrsa_result.records)
         hrsa_source = HrsaClinicSource(
-            status="ok" if hrsa_result.complete else "partial",
+            status="ok" if hrsa_complete else "partial",
             fetched_at=fetched_at,
             returned_count=len(hrsa_result.records),
             usable_count=len(parsed),
-            complete=hrsa_result.complete,
+            complete=hrsa_complete,
             pages_fetched=hrsa_result.pages_fetched,
             next_offset=hrsa_result.next_offset,
             pagination_token=hrsa_result.pagination_token,
             error=hrsa_result.error,
         )
-        fqhcs = parsed if hrsa_result.complete else []
+        fqhcs = parsed
 
     catalog = _load_nyc_care_seed()
     nyc_care_source = _nyc_care_source(catalog)
-    clinics = fqhcs + (catalog.clinics if catalog.complete else [])
+    clinics = fqhcs + catalog.clinics
     sources = ClinicSources(hrsa=hrsa_source, nyc_care=nyc_care_source)
     if not clinics:
         return ClinicResult(
@@ -893,7 +903,7 @@ def _resolve_coverage_topic(raw: str) -> str | None:
     return key if key in _COVERAGE else None
 
 
-async def _coverage_handler(args: dict, ctx: ToolContext) -> str:
+async def _coverage_handler(args: HealthCoverageInput, ctx: ToolContext) -> str:
     topic = _resolve_coverage_topic(args.get("topic", ""))
     if topic is None:
         return ("I don't have grounded coverage guidance for that. Use get_health_coverage_guidance with "
@@ -946,7 +956,7 @@ def get_tools() -> list[Tool]:
                 "646-NYC-CARE. The eligibility/immigration-safety text comes only from the program "
                 "citation, never invented per-site."
             ),
-            parameters=ClinicQuery.model_json_schema(),
+            input_type=ClinicQuery,
             handler=_handler,
             return_type=ClinicResult,
             open_world=True,  # hits the live HRSA ArcGIS service + geocoder (NYC Care seed is bundled)
@@ -968,17 +978,7 @@ def get_tools() -> list[Tool]:
                 "non-emergency care. Never state a coverage rule or a public-charge conclusion from "
                 "your own knowledge; report only what it returns, cited."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "enum": list(_COVERAGE),
-                        "description": "Health coverage situation to retrieve",
-                    },
-                },
-                "required": ["topic"],
-            },
+            input_type=HealthCoverageInput,
             handler=_coverage_handler,
             open_world=False,  # static official facts baked in + cited; no network call
         ),

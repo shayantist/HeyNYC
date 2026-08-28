@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from heynyc.core import config
 from heynyc.core.tools import geocoder
-from heynyc.core.tools.geocoder import _confidence, forgiving_geocode
+from heynyc.core.tools.geocoder import (
+    GeocoderUnavailable,
+    _confidence,
+    forgiving_geocode,
+)
 
 
 class _FakeLocation:
@@ -49,6 +53,12 @@ async def test_forgiving_geocode_none_and_error_are_safe():
 
     assert await forgiving_geocode("x", geocode_fn=none_fn) is None
     assert await forgiving_geocode("x", geocode_fn=boom_fn) is None  # errors degrade to None, not crash
+    try:
+        await forgiving_geocode("x", geocode_fn=boom_fn, raise_on_unavailable=True)
+    except GeocoderUnavailable:
+        pass
+    else:
+        raise AssertionError("strict geocoding must expose provider unavailability")
 
 
 async def test_nominatim_reuses_an_in_process_result(monkeypatch):

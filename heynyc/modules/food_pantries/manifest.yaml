@@ -17,13 +17,8 @@ allowlist:
 prompt: |
   For food-help questions (food pantry, soup kitchen, free groceries, "I'm hungry / can't
   afford food right now"), call find_foodhelp_locations(near=<the user's NYC address or neighborhood>).
-  Pass the resident's exact location phrase to the tool. If an authoritative source retrieved in
-  this turn resolves that resident-named place to an exact address, pass the exact address with its
-  citation ID as near_source_citation and the resident's exact named place as near_source_place.
-  Never expand a named area from a discovery snippet or your own inference.
-  If a follow-up asks about "that place", "the place you gave me", or otherwise refers to one
-  previously returned site, pass that site's FoodHelp citation ID as site_citation. Do not rerank
-  nearby sites or silently answer about a different location.
+  Pass the resident's exact location phrase to the tool. Never expand a named area from a discovery
+  snippet or your own inference.
   If the resident has not supplied an NYC address or neighborhood, ask for one before calling.
   Exception: for a broad citywide starting-point question such as "where do I start?" with no
   location, first call web_fetch for https://finder.nyc.gov/foodhelp/ or the official NYC
@@ -32,16 +27,12 @@ prompt: |
   Never substitute "New York City", a borough, or a location inferred from the service request.
   Pass service_type=pantry when the resident asks for a food pantry, soup_kitchen when they ask
   for a soup kitchen, or any for general food help.
-  When the resident asks about a future day or date, pass visit_date=YYYY-MM-DD and describe returned
-  hours as scheduled weekly hours for that date, not confirmed or guaranteed availability.
-  When the resident gives a specific visit time, pass `visit_time` as 24-hour New York local time.
-  The tool applies that time to the source's structured weekly schedule.
-  Pass urgent=true whenever the resident needs food now, today, or tonight. This is a typed
-  urgency signal for the existing pantry tool, not a separate workflow or capability. Whenever
-  urgent=true, also pass service_window with start and end as 24-hour NYC-local HH:MM values: now
-  is the current NYC minute, today runs from the current NYC time through 23:59, and tonight is
-  17:00-23:59 unless the resident gives a narrower window. Do not silently substitute a different
-  timeframe.
+  For a follow-up about one site already named in the conversation, pass that exact name as `site`
+  so the tool does not silently switch to another nearby location.
+  When the resident asks about a date or time, pass an absolute New York `active_at` value or a
+  complete `starts_after` and `starts_before` service window. Describe returned hours as scheduled,
+  not confirmed or guaranteed availability. The tool applies the requested time to the source's
+  structured weekly schedule and derives urgency itself.
   Report ONLY the sites the tool returns and cite each {cite:Sn}. Each site carries a full address,
   current-day scheduled-open status or requested-date weekly hours, a phone number, any
   dietary/access flag (Halal / Kosher / HIV / Mobile), and a Google Maps directions link, pass
@@ -51,7 +42,7 @@ prompt: |
       food availability now or later today. The source has no holiday or temporary exception
       fields, so tell the user to call before leaving. If the tool says "hours not listed", say so
       and never invent hours.
-    - For urgent=true, the first answer paragraph must give the immediate 311 or FoodHelp route.
+    - For an urgent current-day request, the first answer paragraph must give the immediate 311 or FoodHelp route.
       The second paragraph may give one returned site as a dated call-before-travel lead. State
       its exact as-of date, and never describe weekly hours as current service today. Never reverse
       that order. If the nearest candidates are closed but the feed contains a farther

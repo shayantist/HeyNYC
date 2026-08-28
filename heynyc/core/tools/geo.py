@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from pydantic import Field
@@ -21,9 +21,20 @@ from .. import config
 from ..citations import data_provenance
 from ..config import GEOSEARCH_BASE, OSRM_BASE
 from ..location import LocationRequest
-from .arcgis import feature_query_url, query_feature_service
-from .base import Tool, ToolContext
-from .datasets import dataset_url, normalize, query_dataset, row_url
+from .arcgis import (
+    feature_query_url,
+)
+from .arcgis import (
+    query_feature_service_result as query_feature_service,
+)
+from .base import Tool, ToolContext, ToolFailure, ToolInput
+from .datasets import (
+    dataset_url,
+    normalize,
+    query_dataset,
+    query_dataset_pages,
+    row_url,
+)
 
 _INTERSECTION_RE = re.compile(r"(?:\band\b|\by\b|&|/)", re.IGNORECASE)
 _NUMBERED_AT_RE = re.compile(r"\bat\b", re.IGNORECASE)
@@ -107,11 +118,23 @@ class NearestQuery(LocationRequest):
     max_results: int | None = Field(
         default=None,
         ge=1,
-        le=10,
         description=(
             "Maximum locations requested by the resident. Set only when the resident explicitly "
             "asks for a number; otherwise omit it and the server returns three."
         ),
+    )
+
+
+class GeocodeInput(ToolInput):
+    text: str = Field(description="NYC address or place")
+
+
+class DistanceInput(ToolInput):
+    origin: str = Field(description="Starting NYC place")
+    destination: str = Field(description="Destination NYC place")
+    mode: Literal["driving", "walking", "cycling", "transit"] = Field(
+        default="driving",
+        description="Travel mode",
     )
 
 
@@ -842,7 +865,23 @@ async def geocode(
 async def resolve_location(near: str, ctx: ToolContext) -> Optional[GeoPoint]:
     """Reuse a matching conversation location, or geocode a new spatial anchor."""
     current = current_resolved_location(near, ctx)
-    return current or await geocode(near, client=ctx.http)
+    if current is not None:
+        return current
+    return await strict_geocode(near, client=ctx.http)
+
+
+async def strict_geocode(
+    text: str,
+    *,
+    client: Optional[httpx.AsyncClient] = None,
+) -> Optional[GeoPoint]:
+    """Geocode while preserving an all-provider outage as an expected tool failure."""
+    from .geocoder import forgiving_geocode
+
+    async def provider(value: str):
+        return await forgiving_geocode(value, raise_on_unavailable=True)
+
+    return await geocode(text, client=client, forgiving=provider)
 
 
 async def travel_distance(
@@ -927,8 +966,27 @@ def resolved_location_citation(ctx: ToolContext, point: GeoPoint) -> str:
     )
 
 
-async def _geocode_handler(args: dict, ctx: ToolContext) -> GeoPoint | None:
-    point = await geocode(args["text"], client=ctx.http)
+async def _geocode_handler(
+    args: GeocodeInput,
+    ctx: ToolContext,
+) -> GeoPoint | ToolFailure | None:
+    from .geocoder import GeocoderUnavailable, forgiving_geocode
+
+    async def visible_failure_geocode(text: str):
+        return await forgiving_geocode(text, raise_on_unavailable=True)
+
+    try:
+        point = await geocode(
+            args["text"],
+            client=ctx.http,
+            forgiving=visible_failure_geocode,
+        )
+    except GeocoderUnavailable:
+        return ToolFailure(
+            status="unavailable",
+            reason="Every configured geocoder failed.",
+            retryable=True,
+        )
     if args.get("as_current_location"):
         ctx.current_location = point if point is not None and not point.low_confidence else None
     return point
@@ -978,7 +1036,7 @@ def _place_citation(
     )
 
 
-async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
+async def _nearest_handler(args: NearestQuery, ctx: ToolContext) -> str:
     query = NearestQuery.model_validate(args)
     category = query.category
     binding = ctx.registry.dataset_bindings().get(category)
@@ -995,10 +1053,23 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         return _clarify_message(query.near)
 
     if binding.source == "arcgis":
-        records = await query_feature_service(binding.url, where=binding.where or "1=1", client=ctx.http)
+        result = await query_feature_service(
+            binding.url,
+            where=binding.where or "1=1",
+            client=ctx.http,
+        )
+        records = result if isinstance(result, list) else result.records
         url = binding.url
+        complete = True if isinstance(result, list) else result.complete
     else:
-        records = await query_dataset(binding.id, where=binding.where, limit=2000, client=ctx.http)
+        result = await query_dataset_pages(
+            binding.id,
+            where=binding.where,
+            client=ctx.http,
+            _query=query_dataset,
+        )
+        records = result.records
+        complete = result.complete
         url = dataset_url(binding.id)
     places = normalize(records, binding.field_map, source_url=url, record_id_field=binding.record_id_field)
     if not places:
@@ -1039,12 +1110,14 @@ async def _nearest_handler(args: dict, ctx: ToolContext) -> str:
         lines[0] += f" {{cite:{origin_cite}}}"
     if binding.limitations:
         lines.append(f"Source limit: {binding.limitations}")
+    if not complete:
+        lines.append("The city dataset returned only a partial page set, so closer sites may exist.")
     return "\n".join(lines)
 
 
-async def _distance_handler(args: dict, ctx: ToolContext) -> str:
-    origin = await geocode(args["origin"], client=ctx.http)
-    dest = await geocode(args["destination"], client=ctx.http)
+async def _distance_handler(args: DistanceInput, ctx: ToolContext) -> str:
+    origin = await strict_geocode(args["origin"], client=ctx.http)
+    dest = await strict_geocode(args["destination"], client=ctx.http)
     if origin is None or dest is None:
         missing = args["origin"] if origin is None else args["destination"]
         return f"Could not locate '{missing}' in NYC."
@@ -1094,25 +1167,11 @@ def geo_tools() -> list[Tool]:
     return [
         Tool(
             name="geocode",
-            description=(
-                "Resolve an NYC address or place name to a typed location. Set "
-                "`as_current_location` only when the resident identifies it as where they are."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "An NYC address or place name."},
-                    "as_current_location": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Store this as the resident's current location.",
-                    },
-                },
-                "required": ["text"],
-            },
+            description="Resolve an NYC address or place name to a typed location.",
+            input_type=GeocodeInput,
             open_world=True,  # external geocoders (GeoSearch/Mapbox)
             handler=_geocode_handler,
-            return_type=GeoPoint | None,
+            return_type=GeoPoint | ToolFailure | None,
         ),
         Tool(
             name="nearest",
@@ -1120,7 +1179,7 @@ def geo_tools() -> list[Tool]:
                 "Find the nearest NYC locations of a given category (e.g. cooling_center) to an "
                 "address, ranked by distance. NEVER guess locations, always use this."
             ),
-            parameters=NearestQuery.model_json_schema(),
+            input_type=NearestQuery,
             open_world=True,  # external dataset (Socrata) + geocoder
             handler=_nearest_handler,
         ),
@@ -1130,26 +1189,7 @@ def geo_tools() -> list[Tool]:
                 "Travel distance and time between two NYC places and return a grounded Directions "
                 "link. NEVER estimate distances yourself."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "origin": {
-                        "type": "string",
-                        "description": "Starting NYC address or place name",
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "Destination NYC address or place name",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["driving", "walking", "cycling", "transit"],
-                        "default": "driving",
-                        "description": "Requested travel mode",
-                    },
-                },
-                "required": ["origin", "destination"],
-            },
+            input_type=DistanceInput,
             open_world=True,  # external routing (OSRM) + geocoder
             handler=_distance_handler,
         ),

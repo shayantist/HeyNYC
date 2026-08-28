@@ -1,13 +1,13 @@
 """Shared typed request fields for location-based tools."""
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from .tools.base import ToolInput
 
 
-class LocationRequest(BaseModel):
+class LocationRequest(ToolInput):
     """Common spatial anchor for a location-aware lookup."""
-
-    model_config = ConfigDict(extra="forbid")
 
     near: str | None = Field(
         default=None,
@@ -21,7 +21,6 @@ class LocationRequest(BaseModel):
         ge=1,
         description=(
             "Maximum choices requested by the resident. Set only when the resident explicitly "
-            "asks for a number; otherwise omit it and use the tool default. Each tool sets its "
-            "own maximum when it returns a list."
+            "asks for a number; otherwise omit it."
         ),
     )

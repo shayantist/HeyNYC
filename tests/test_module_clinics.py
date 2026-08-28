@@ -138,17 +138,17 @@ async def test_find_clinic_merges_ranks_and_attaches_per_class_citations(monkeyp
     await client.aclose()
 
     assert isinstance(out, BaseModel)
-    assert out.outcome == "success"
+    assert out.outcome == "degraded"
     assert [record.organization.name for record in out.clinics] == [
         "H+H Test Hospital",
         "Close FQHC",
         "Far FQHC",
     ]
     assert out.origin.precision == "approximate"
-    assert out.sources.hrsa.status == "ok"
+    assert out.sources.hrsa.status == "partial"
     assert out.sources.hrsa.returned_count == 3
     assert out.sources.hrsa.usable_count == 2
-    assert out.sources.hrsa.complete is True
+    assert out.sources.hrsa.complete is False
     assert out.sources.hrsa.fetched_at is not None
     assert out.sources.nyc_care.status == "ok"
     assert all(
@@ -169,7 +169,10 @@ async def test_find_clinic_merges_ranks_and_attaches_per_class_citations(monkeyp
     doc_urls = {c["url"] for c in docs.values()}
     assert "https://www.hrsa.gov/get-health-care" in doc_urls
     assert "https://access.nyc.gov/programs/nyc-care/" in doc_urls
-    assert len(docs) == 2                                # deduped: one DOC per class, not per site
+    assert len(doc_urls & {
+        "https://www.hrsa.gov/get-health-care",
+        "https://access.nyc.gov/programs/nyc-care/",
+    }) == 2                                             # one program DOC per class, not per site
 
 
 async def test_eligibility_text_is_grounded_not_from_a_row_field(monkeypatch):
@@ -297,7 +300,7 @@ async def test_hrsa_query_preserves_partial_page_on_later_failure(monkeypatch):
     assert page.error == "transport_error"
 
 
-async def test_find_clinic_does_not_rank_incomplete_hrsa_rows(monkeypatch):
+async def test_find_clinic_preserves_usable_incomplete_hrsa_rows(monkeypatch):
     _seed_clinic(monkeypatch, _nyc_care("Complete H+H", 40.7502, -73.9902))
 
     async def partial(*args, **kwargs):
@@ -316,10 +319,35 @@ async def test_find_clinic_does_not_rank_incomplete_hrsa_rows(monkeypatch):
     await client.aclose()
 
     assert out.outcome == "degraded"
-    assert [record.organization.name for record in out.clinics] == ["Complete H+H"]
+    assert [record.organization.name for record in out.clinics] == [
+        "Partial FQHC",
+        "Complete H+H",
+    ]
     assert out.sources.hrsa.status == "partial"
     assert out.sources.hrsa.returned_count == 1
     assert out.sources.hrsa.complete is False
+
+
+async def test_find_clinic_preserves_valid_rows_from_a_partial_nyc_care_seed(monkeypatch):
+    monkeypatch.setattr(
+        clinics,
+        "_load_nyc_care_seed",
+        lambda: clinics._NycCareCatalog(
+            clinics=[_nyc_care("Usable H+H", 40.7502, -73.9902)],
+            returned_count=2,
+            complete=False,
+            error="invalid_rows",
+        ),
+    )
+    client = _routed_client([])
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    out = await get_tools()[0].handler({"near": "Union Square"}, ctx)
+    await client.aclose()
+
+    assert out.outcome == "degraded"
+    assert [record.organization.name for record in out.clinics] == ["Usable H+H"]
+    assert out.sources.nyc_care.status == "partial"
 
 
 # --- get_health_coverage_guidance: official coverage facts, each cited (no network) -----

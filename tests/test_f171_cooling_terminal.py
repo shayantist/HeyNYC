@@ -85,7 +85,7 @@ async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_tu
         return "web result"
 
     cooling_tool = cooling.get_tools()[0]
-    web_tool = Tool("web_search", "Search", {"type": "object", "properties": {}}, web_search)
+    web_tool = Tool("web_search", "Search", web_search)
 
     async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
         latest_user = max(
@@ -102,7 +102,7 @@ async def test_definitive_indoor_no_open_terminates_retrieval_and_resets_next_tu
                     {
                         "near": "Times Square",
                         "kind": "indoor",
-                        "open_now_only": True,
+                        "active_at": "2026-08-07T13:00:00-04:00",
                     },
                     f"cool-{len(calls)}",
                 )
@@ -183,13 +183,11 @@ async def test_f201_cooling_absence_does_not_discard_another_tools_result():
         "find_cool_options": Tool(
             "find_cool_options",
             "Check cooling",
-            {"type": "object", "properties": {}},
             cooling_handler,
         ),
         "nearest_fountain": Tool(
             "nearest_fountain",
             "Find water",
-            {"type": "object", "properties": {}},
             fountain_handler,
         ),
     }
@@ -240,7 +238,6 @@ async def test_cooling_terminal_ignores_capability_discovery_returns():
     tool = Tool(
         "find_cool_options",
         "Check cooling",
-        {"type": "object", "properties": {}},
         cooling_handler,
         module="cooling_centers",
     )
@@ -288,8 +285,8 @@ async def test_cooling_center_no_open_allows_indoor_fallback(monkeypatch):
     tool = Tool(
         "find_cool_options",
         "Find cooling options",
-        cooling.get_tools()[0].parameters,
         cooling_handler,
+        input_type=cooling.get_tools()[0].input_type,
     )
 
     async def model(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
@@ -385,13 +382,11 @@ async def test_selected_unavailable_site_gets_one_output_only_synthesis():
         "find_cool_options": Tool(
             "find_cool_options",
             "Check cooling",
-            {"type": "object", "properties": {}},
             cooling_handler,
         ),
         "web_search": Tool(
             "web_search",
             "Search",
-            {"type": "object", "properties": {}},
             web_handler,
         ),
     }
@@ -462,7 +457,6 @@ async def test_resumed_approval_preserves_chinese_safety_language():
     approval_tool = Tool(
         "approved_lookup",
         "Approved lookup",
-        {"type": "object", "properties": {}},
         handler,
         read_only=False,
         requires_approval=True,

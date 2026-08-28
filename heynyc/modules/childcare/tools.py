@@ -60,7 +60,7 @@ _PROGRAM_LABELS = {"PRESCHOOL": "preschool", "INFANT TODDLER": "infant/toddler"}
 class ChildCareQuery(LocationRequest):
     near: str = Field(description="NYC address or neighborhood to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum programs requested; omit for the default 5."
+        default=None, ge=1, description="Maximum programs requested; omit for the default 5."
     )
 
 
@@ -471,7 +471,7 @@ def _source_date(value: str) -> date | None:
         return None
 
 
-async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
+async def _handler(args: ChildCareQuery, ctx: ToolContext) -> ChildCareResult:
     query = ChildCareQuery.model_validate(args)
     near = query.near.strip()
     if not near:
@@ -514,35 +514,22 @@ async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
         )
 
     sites = [s for s in (_to_site(row) for row in page.rows) if s is not None]
-    if not page.complete:
-        return ChildCareResult(
-            outcome="source_partial",
-            origin=_origin_result(origin, near),
-            origin_citation_id=resolved_location_citation(ctx, origin),
-            source=ChildCareSource(
-                status="partial",
-                fetched_at=fetched_at,
-                returned_count=len(page.rows),
-                usable_count=len(sites),
-                complete=False,
-                pages_fetched=page.pages_fetched,
-                next_offset=len(page.rows),
-                error=page.error,
-            ),
-            directory_route=_directory_route(ctx),
-        )
+    source_complete = page.complete and len(sites) == len(page.rows)
     if not sites:
         return ChildCareResult(
-            outcome="no_results",
+            outcome="no_results" if source_complete else "source_partial",
             origin=_origin_result(origin, near),
             origin_citation_id=resolved_location_citation(ctx, origin),
             source=ChildCareSource(
-                status="ok",
+                status="ok" if source_complete else "partial",
                 fetched_at=fetched_at,
                 returned_count=len(page.rows),
                 usable_count=0,
-                complete=page.complete,
+                complete=source_complete,
                 pages_fetched=page.pages_fetched,
+                next_offset=None if source_complete else len(page.rows),
+                excluded_row_count=len(page.rows),
+                error=page.error,
             ),
             directory_route=_directory_route(ctx),
         )
@@ -598,17 +585,20 @@ async def _handler(args: dict, ctx: ToolContext) -> ChildCareResult:
             action_url=directions_link(site.lat, site.lon),
         ))
     return ChildCareResult(
-        outcome="success",
+        outcome="success" if source_complete else "source_partial",
         origin=_origin_result(origin, near),
         origin_citation_id=resolved_location_citation(ctx, origin),
         primary_citation_id=programs[0].citation_id,
         source=ChildCareSource(
-            status="ok",
+            status="ok" if source_complete else "partial",
             fetched_at=fetched_at,
             returned_count=len(page.rows),
             usable_count=len(sites),
-            complete=page.complete,
+            complete=source_complete,
             pages_fetched=page.pages_fetched,
+            next_offset=None if source_complete else len(page.rows),
+            excluded_row_count=len(page.rows) - len(sites),
+            error=page.error,
         ),
         programs=programs,
         directory_route=_directory_route(ctx),
@@ -631,7 +621,7 @@ def get_tools() -> list[Tool]:
                 "is a MAX, not open spots; the source has NO hours, cost, or availability - tell the "
                 "user to call. It does NOT cover home/family child care or free 3-K/Pre-K seats."
             ),
-            parameters=ChildCareQuery.model_json_schema(),
+            input_type=ChildCareQuery,
             handler=_handler,
             return_type=ChildCareResult,
             open_world=True,  # hits the live NYC Open Data Socrata dataset + geocoder

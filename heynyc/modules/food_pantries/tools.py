@@ -16,18 +16,23 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
 from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
-from heynyc.core.tools.arcgis import feature_query_url, query_feature_service_page
+from heynyc.core.tools.arcgis import (
+    feature_query_url,
+)
+from heynyc.core.tools.arcgis import (
+    query_feature_service_result as query_feature_service,
+)
 from heynyc.core.tools.base import Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
@@ -76,7 +81,7 @@ class FoodHelpWindow(BaseModel):
 class FoodHelpQuery(LocationRequest):
     near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum food-help sites requested; omit for the default 5."
+        default=None, ge=1, description="Maximum food-help sites requested; omit for the default 5."
     )
     visit_date: date | None = Field(default=None, description="Requested New York visit date.")
     visit_time: time | None = Field(default=None, description="Requested New York visit time.")
@@ -114,6 +119,45 @@ class FoodHelpQuery(LocationRequest):
     )
 
 
+class FoodHelpLookupQuery(LocationRequest):
+    near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum food-help sites explicitly requested; omit when no count was requested.",
+    )
+    starts_after: AwareDatetime | None = Field(
+        default=None,
+        description="Inclusive start of a requested New York service window.",
+    )
+    starts_before: AwareDatetime | None = Field(
+        default=None,
+        description="Exclusive end of a requested New York service window.",
+    )
+    active_at: AwareDatetime | None = Field(
+        default=None,
+        description="Time when the food-help site must be scheduled open.",
+    )
+    site: str | None = Field(
+        default=None,
+        description="Exact food-help site name from an earlier result when asking a follow-up.",
+    )
+    service_type: Literal["pantry", "soup_kitchen", "any"] = Field(
+        default="any",
+        description="Source service type requested by the resident.",
+    )
+
+    @model_validator(mode="after")
+    def ordered_window(self) -> "FoodHelpLookupQuery":
+        if bool(self.starts_after) != bool(self.starts_before):
+            raise ValueError("starts_after and starts_before must be supplied together")
+        if self.starts_after and self.starts_before and self.starts_before <= self.starts_after:
+            raise ValueError("starts_before must be after starts_after")
+        if self.active_at and (self.starts_after or self.starts_before):
+            raise ValueError("active_at cannot be combined with a service window")
+        return self
+
+
 def _food_help_query_schema() -> dict:
     schema = FoodHelpQuery.model_json_schema()
     window = schema.pop("$defs")["FoodHelpWindow"]
@@ -125,7 +169,7 @@ def _food_help_query_schema() -> dict:
 class FoodHelpSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["not_called", "ok", "unavailable"]
+    status: Literal["not_called", "ok", "partial", "unavailable"]
     url: str
     fetched_at: datetime | None
     returned_count: int | None
@@ -133,6 +177,7 @@ class FoodHelpSource(BaseModel):
     complete: bool | None
     requested_limit: int
     next_cursor: str | None = None
+    excluded_row_count: int | None = None
     error: Literal["transport_error", "invalid_response"] | None = None
 
 
@@ -256,6 +301,7 @@ FoodHelpOutcome = Literal[
     "location_not_found",
     "location_ambiguous",
     "source_unavailable",
+    "source_partial",
     "no_results",
     "prior_site_missing",
 ]
@@ -287,13 +333,14 @@ def _result(
     *,
     service_type: str | None = None,
     urgent: bool = False,
-    source_status: Literal["not_called", "ok", "unavailable"] = "not_called",
+    source_status: Literal["not_called", "ok", "partial", "unavailable"] = "not_called",
     fetched_at: datetime | None = None,
     returned_count: int | None = None,
     usable_count: int | None = None,
     source_complete: bool | None = None,
     source_next_cursor: str | None = None,
     source_error: Literal["transport_error", "invalid_response"] | None = None,
+    excluded_row_count: int | None = None,
     **updates,
 ) -> FoodHelpResult:
     return FoodHelpResult(
@@ -309,6 +356,7 @@ def _result(
             complete=source_complete,
             requested_limit=FOODHELP_PAGE_SIZE,
             next_cursor=source_next_cursor,
+            excluded_row_count=excluded_row_count,
             error=(
                 source_error
                 or ("transport_error" if source_status == "unavailable" else None)
@@ -892,6 +940,7 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
         return _result("missing_origin", urgent=args.get("urgent") is True)
     site_citation = str(args.get("site_citation") or "").strip()
     site_record_id = ""
+    site_name = str(args.get("site_name") or "").strip()
     if site_citation:
         citation = ctx.citations.mapping().get(site_citation, {})
         provenance = citation.get("provenance") or {}
@@ -1036,7 +1085,7 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
         escaped_site_id = site_record_id.replace("'", "''")
         query_where = f"{WHERE_OPEN} AND GlobalID='{escaped_site_id}'"
     try:
-        page = await query_feature_service_page(
+        page = await query_feature_service(
             FOODHELP_URL,
             where=query_where,
             result_record_count=FOODHELP_PAGE_SIZE,
@@ -1062,16 +1111,25 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
             origin=_origin_result(origin, near),
         )
 
-    records = page.records
+    records = page if isinstance(page, list) else page.records
+    page_complete = True if isinstance(page, list) else page.complete
+    page_token = None if isinstance(page, list) else page.pagination_token
+    page_offset = None if isinstance(page, list) else page.next_offset
     source_returned_count = len(records)
-    source_next_cursor = (
-        page.pagination_token
-        or (f"offset:{page.next_offset}" if page.next_offset is not None else None)
+    source_next_cursor = page_token or (
+        str(page_offset) if page_offset is not None else None
     )
     pantries = [p for p in (_to_pantry(r) for r in records) if p is not None]
+    excluded_row_count = len(records) - len(pantries)
+    source_complete = page_complete and excluded_row_count == 0
     if service_type != "any":
         expected_prefix = "fp" if service_type == "pantry" else "sk"
         pantries = [pantry for pantry in pantries if _prefix(pantry.raw) == expected_prefix]
+    if site_name:
+        pantries = [
+            pantry for pantry in pantries
+            if pantry.name.strip().casefold() == site_name.casefold()
+        ]
     if not pantries:
         cite = _availability_citation(
             ctx,
@@ -1093,15 +1151,16 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
         else:
             immediate_route = None
         return _result(
-            "no_results",
+            "no_results" if source_complete else "source_partial",
             service_type=service_type,
             urgent=urgent,
-            source_status="ok",
+            source_status="ok" if source_complete else "partial",
             fetched_at=now,
             returned_count=source_returned_count,
             usable_count=0,
-            source_complete=page.complete,
+            source_complete=source_complete,
             source_next_cursor=source_next_cursor,
+            excluded_row_count=excluded_row_count,
             origin=_origin_result(origin, near),
             origin_citation_id=resolved_location_citation(ctx, origin),
             source_origin_citation_id=source_id or None,
@@ -1131,15 +1190,16 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
         ]
         if not referenced:
             return _result(
-                "prior_site_missing",
+                "prior_site_missing" if source_complete else "source_partial",
                 service_type=service_type,
                 urgent=urgent,
-                source_status="ok",
+                source_status="ok" if source_complete else "partial",
                 fetched_at=now,
                 returned_count=source_returned_count,
                 usable_count=len(unique),
-                source_complete=page.complete,
+                source_complete=source_complete,
                 source_next_cursor=source_next_cursor,
+                excluded_row_count=excluded_row_count,
                 origin=_origin_result(origin, near),
                 origin_citation_id=resolved_location_citation(ctx, origin),
                 referenced_site_citation_id=site_citation,
@@ -1242,15 +1302,16 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
         for pantry in displayed
     ]
     return _result(
-        "success",
+        "success" if source_complete else "source_partial",
         service_type=service_type,
         urgent=urgent,
-        source_status="ok",
+        source_status="ok" if source_complete else "partial",
         fetched_at=now,
         returned_count=source_returned_count,
         usable_count=len(unique),
-        source_complete=page.complete,
+        source_complete=source_complete,
         source_next_cursor=source_next_cursor,
+        excluded_row_count=excluded_row_count,
         origin=_origin_result(origin, near),
         origin_citation_id=origin_citation,
         primary_citation_id=(
@@ -1274,6 +1335,42 @@ async def _handler(args: dict, ctx: ToolContext) -> FoodHelpResult:
     )
 
 
+async def _public_handler(args: FoodHelpLookupQuery, ctx: ToolContext) -> FoodHelpResult:
+    legacy = {
+        "visit_date", "visit_time", "near_source_citation", "near_source_place",
+        "site_citation", "urgent", "service_window",
+    }
+    if set(args) & legacy:
+        return await _handler(args, ctx)
+    query = FoodHelpLookupQuery.model_validate(args)
+    internal: dict[str, object] = {
+        "near": query.near,
+        "max_results": query.max_results,
+        "service_type": query.service_type,
+    }
+    if query.site:
+        internal["site_name"] = query.site
+    if query.active_at:
+        active_at = query.active_at.astimezone(_NYC_TZ)
+        internal.update({
+            "visit_date": active_at.date(),
+            "visit_time": active_at.time().replace(tzinfo=None),
+            "urgent": active_at.date() <= datetime.now(_NYC_TZ).date(),
+        })
+    elif query.starts_after or query.starts_before:
+        start = (query.starts_after or query.starts_before).astimezone(_NYC_TZ)
+        end = (query.starts_before or query.starts_after).astimezone(_NYC_TZ)
+        if query.starts_before:
+            end -= timedelta(microseconds=1)
+        internal["visit_date"] = start.date()
+        internal["service_window"] = {
+            "start": start.strftime("%H:%M"),
+            "end": end.strftime("%H:%M"),
+        }
+        internal["urgent"] = start.date() <= datetime.now(_NYC_TZ).date()
+    return await _handler(internal, ctx)
+
+
 def get_tools() -> list[Tool]:
     return [
         Tool(
@@ -1284,24 +1381,17 @@ def get_tools() -> list[Tool]:
                 "user's NYC address or neighborhood. If they have not supplied one, ask before "
                 "calling and never invent a broad origin. Pass `service_type=pantry` for a pantry "
                 "request, `soup_kitchen` for a soup-kitchen request, or `any` for general food "
-                "help. Pass `visit_date` for a requested date and `visit_time` for a specific "
-                "New York local time; `max_results` defaults to 5. Returns "
+                "help. Pass an absolute New York service window or `active_at` when the resident "
+                "asks about a specific time. Omit `max_results` unless the resident requested a "
+                "count. Returns "
                 "each site's name, full address, requested-date weekly hours or current-day "
                 "scheduled-open status, phone, dietary/access type "
                 "(Halal/Kosher/HIV/Mobile), and a Google Maps directions link, every site cited. "
-                "Set `urgent=true` when the resident needs food now, today, or tonight so the "
-                "result leads with the immediate fallback and does not overstate weekly hours. "
-                "Whenever `urgent=true`, also pass `service_window` with start and end as 24-hour "
-                "NYC-local HH:MM values: now is the current NYC minute, today runs from the current "
-                "NYC time through 23:59, and tonight is 17:00-23:59 unless the resident gives a "
-                "narrower window. "
-                "When a follow-up refers to one site returned earlier, pass that site's citation "
-                "ID as `site_citation` so the lookup does not silently switch locations. "
                 "NEVER guess a pantry: if geocoding fails or none are near, say so and point to 311. "
                 "The source has no language or eligibility data, so do not infer either."
             ),
-            parameters=_food_help_query_schema(),
-            handler=_handler,
+            input_type=FoodHelpLookupQuery,
+            handler=_public_handler,
             open_world=True,  # hits the live ArcGIS FoodHelp service + geocoder
             return_type=FoodHelpResult,
         )

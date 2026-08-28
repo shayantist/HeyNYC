@@ -5,12 +5,17 @@ from datetime import UTC, date, datetime, time
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from heynyc.core.citations import content_hash, data_provenance
 from heynyc.core.location import LocationRequest
 from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
-from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
+from heynyc.core.tools.arcgis import (
+    feature_query_url,
+)
+from heynyc.core.tools.arcgis import (
+    query_feature_service_result as query_feature_service,
+)
 from heynyc.core.tools.base import ResidentFact, Tool, ToolContext
 from heynyc.core.tools.geo import (
     GeoPoint,
@@ -51,7 +56,7 @@ class CoolingQuery(LocationRequest):
 
     near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum Cool Options requested; omit for the default 3."
+        default=None, ge=1, description="Maximum Cool Options requested; omit for the default 3."
     )
     visit_date: date | None = Field(default=None, description="Requested New York visit date.")
     visit_time: time | None = Field(default=None, description="Requested New York visit time.")
@@ -75,6 +80,36 @@ class CoolingQuery(LocationRequest):
     open_now_only: bool = Field(
         default=False,
         description="True only when the resident explicitly asks for a place open right now.",
+    )
+
+
+class CoolingLookupQuery(LocationRequest):
+    near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum Cool Options explicitly requested; omit when no count was requested.",
+    )
+    active_at: AwareDatetime | None = Field(
+        default=None,
+        description="Time when the facility must be scheduled open, with a UTC offset.",
+    )
+    site: str | None = Field(
+        default=None,
+        description="Exact facility name explicitly selected by the resident.",
+    )
+    exclude_sites: list[Annotated[str, Field(description="Exact rejected facility name.")]] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Exact facility names explicitly rejected by the resident.",
+    )
+    kind: Literal["all", "indoor", "cooling_center"] = Field(
+        default="all",
+        description="Type of Cool Option requested by the resident.",
+    )
+    audience: Literal["any", "not_age_restricted"] = Field(
+        default="any",
+        description="Whether to exclude City rows marked as age-restricted.",
     )
 
 
@@ -381,7 +416,7 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         ctx.current_location = origin
 
     try:
-        records = await query_feature_service(
+        page = await query_feature_service(
             COOL_OPTIONS_URL,
             where="Finder_status='OPEN'",
             result_record_count=2000,
@@ -389,6 +424,8 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         )
     except Exception:
         return "The NYC Cool Options finder was unavailable, so I cannot safely list locations."
+    records = page if isinstance(page, list) else page.records
+    page_complete = True if isinstance(page, list) else page.complete
 
     kind = query.kind
     audience = query.audience
@@ -744,7 +781,27 @@ async def _find_cool_options(args: dict, ctx: ToolContext) -> str:
         "Weekly hours, holiday schedules, one-off closures, and access policies can change. "
         "Call ahead before visiting."
     )
+    if not page_complete:
+        lines.append(
+            "The NYC Cool Options finder returned a partial page set, so additional sites may exist."
+        )
     return "\n".join(lines)
+
+
+async def _public_find_cool_options(args: CoolingLookupQuery, ctx: ToolContext) -> str:
+    if set(args) & {"visit_date", "visit_time", "open_now_only"}:
+        return await _find_cool_options(args, ctx)
+    query = CoolingLookupQuery.model_validate(args)
+    internal = query.model_dump(exclude={"active_at"}, exclude_none=True)
+    if query.active_at:
+        active_at = query.active_at.astimezone(_NYC_TZ)
+        now = _nyc_now()
+        if active_at.replace(second=0, microsecond=0) == now.replace(second=0, microsecond=0):
+            internal["open_now_only"] = True
+        else:
+            internal["visit_date"] = active_at.date()
+            internal["visit_time"] = active_at.time().replace(tzinfo=None)
+    return await _find_cool_options(internal, ctx)
 
 
 def get_tools() -> list[Tool]:
@@ -754,15 +811,13 @@ def get_tools() -> list[Tool]:
             description=(
                 "Find live NYC Cool Options. Use kind='cooling_center' for activated centers, "
                 "kind='indoor' for indoor A/C options, or kind='all' for any heat-relief option. "
-                "Pass `visit_date` when the resident asks about a specific day or date; the result will "
-                "rank and report that date's City-listed weekly schedule instead of today's status. "
-                "Pass `visit_time` when the resident names a visit time; the tool computes scheduled "
-                "status in America/New_York. "
+                "Pass `active_at` when the resident asks about a specific New York date or time; "
+                "the tool computes scheduled status rather than asking the model to do time math. "
                 "Use audience='not_age_restricted' when the resident needs options without a City "
                 "age restriction, including when asking for children."
             ),
-            parameters=CoolingQuery.model_json_schema(),
-            handler=_find_cool_options,
+            input_type=CoolingLookupQuery,
+            handler=_public_find_cool_options,
             open_world=True,
             title="Find Cool Options",
         )

@@ -15,15 +15,15 @@ from heynyc.modules.wic import tools as wic
 
 def test_location_tools_share_request_vocabulary():
     schemas = {
-        "cooling": cooling.get_tools()[0].parameters,
-        "childcare": childcare.get_tools()[0].parameters,
-        "clinics": clinics.get_tools()[0].parameters,
-        "events": events.get_tools()[0].parameters,
-        "food": food.get_tools()[0].parameters,
-        "libraries": libraries.get_tools()[0].parameters,
-        "restrooms": restrooms.get_tools()[0].parameters,
-        "street_closures": street_closures.get_tools()[0].parameters,
-        "wic": wic.get_tools()[0].parameters,
+        "cooling": cooling.get_tools()[0]._input_schema(),
+        "childcare": childcare.get_tools()[0]._input_schema(),
+        "clinics": clinics.get_tools()[0]._input_schema(),
+        "events": events.get_tools()[0]._input_schema(),
+        "food": food.get_tools()[0]._input_schema(),
+        "libraries": libraries.get_tools()[0]._input_schema(),
+        "restrooms": restrooms.get_tools()[0]._input_schema(),
+        "street_closures": street_closures.get_tools()[0]._input_schema(),
+        "wic": wic.get_tools()[0]._input_schema(),
     }
 
     for schema in schemas.values():
@@ -32,7 +32,10 @@ def test_location_tools_share_request_vocabulary():
         assert not {"k", "limit", "on", "window_start", "window_start_time"} & properties.keys()
 
     for name in ("cooling", "events", "food", "restrooms"):
-        assert {"visit_date", "visit_time"} <= schemas[name]["properties"].keys()
+        assert "active_at" in schemas[name]["properties"]
+        assert not {"visit_date", "visit_time"} & schemas[name]["properties"].keys()
+    for name in ("events", "food"):
+        assert {"starts_after", "starts_before"} <= schemas[name]["properties"].keys()
     assert "visit_date" in schemas["street_closures"]["properties"]
     assert "visit_time" not in schemas["street_closures"]["properties"]
     for name in ("childcare", "clinics", "libraries", "wic"):
@@ -41,7 +44,6 @@ def test_location_tools_share_request_vocabulary():
     for name in ("childcare", "clinics", "cooling", "food", "libraries", "restrooms", "street_closures", "wic"):
         assert "near" in schemas[name]["required"]
     assert "near" not in schemas["events"].get("required", [])
-    assert "only when" in schemas["events"]["properties"]["visit_time"]["description"].lower()
 
 
 def test_shared_location_fields_have_one_definition():
@@ -64,31 +66,19 @@ def test_shared_location_fields_have_one_definition():
     assert issubclass(wic.WicQuery, LocationRequest)
 
 
-def test_each_location_tool_owns_its_result_ceiling():
-    def maximum(tool) -> int:
-        field = tool.parameters["properties"]["max_results"]
-        return next(choice["maximum"] for choice in field["anyOf"] if "maximum" in choice)
+def test_location_tools_do_not_reject_a_resident_requested_count():
+    tools = (
+        childcare.get_tools()[0],
+        clinics.get_tools()[0],
+        cooling.get_tools()[0],
+        events.get_tools()[0],
+        food.get_tools()[0],
+        libraries.get_tools()[0],
+        restrooms.get_tools()[0],
+        street_closures.get_tools()[0],
+        wic.get_tools()[0],
+    )
 
-    maxima = {
-        "childcare": maximum(childcare.get_tools()[0]),
-        "clinics": maximum(clinics.get_tools()[0]),
-        "cooling": maximum(cooling.get_tools()[0]),
-        "events": maximum(events.get_tools()[0]),
-        "food": maximum(food.get_tools()[0]),
-        "libraries": maximum(libraries.get_tools()[0]),
-        "restrooms": maximum(restrooms.get_tools()[0]),
-        "street_closures": maximum(street_closures.get_tools()[0]),
-        "wic": maximum(wic.get_tools()[0]),
-    }
-
-    assert maxima == {
-        "childcare": 10,
-        "clinics": 10,
-        "cooling": 10,
-        "events": 10,
-        "food": 10,
-        "libraries": 8,
-        "restrooms": 10,
-        "street_closures": 10,
-        "wic": 10,
-    }
+    for tool in tools:
+        field = tool._input_schema()["properties"]["max_results"]
+        assert all("maximum" not in choice for choice in field["anyOf"])

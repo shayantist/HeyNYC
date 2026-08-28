@@ -1222,7 +1222,7 @@ async def test_older_adult_centers_annotated_and_all_ages_note(monkeypatch):
     assert "spray showers" not in output.lower()
     assert "Morningside Library" in output
     assert (
-        cooling.get_tools()[0].parameters["properties"]["audience"]["enum"]
+        cooling.get_tools()[0]._input_schema()["properties"]["audience"]["enum"]
         == ["any", "not_age_restricted"]
     )
 
@@ -1355,12 +1355,12 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
     assert "one-off closures" in output
     assert "scheduled open now" not in output
 
-    schema = cooling.get_tools()[0].parameters
-    assert {item.get("format") for item in schema["properties"]["visit_date"]["anyOf"]} == {
-        "date",
+    schema = cooling.get_tools()[0]._input_schema()
+    assert {item.get("format") for item in schema["properties"]["active_at"]["anyOf"]} == {
+        "date-time",
         None,
     }
-    assert "visit_date" not in schema["required"]
+    assert "active_at" not in schema["required"]
     assert "limit" not in schema["properties"]
     max_results = next(
         item
@@ -1368,4 +1368,4 @@ async def test_lookup_uses_requested_date_instead_of_current_day(monkeypatch):
         if item.get("type") == "integer"
     )
     assert max_results["minimum"] == 1
-    assert max_results["maximum"] == 10
+    assert "maximum" not in max_results

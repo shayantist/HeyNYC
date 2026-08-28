@@ -300,7 +300,7 @@ async def test_wic_query_preserves_partial_page_failure_metadata():
     assert result.error == "transport_error"
 
 
-async def test_wic_tool_does_not_rank_an_incomplete_citywide_result(monkeypatch):
+async def test_wic_tool_preserves_ranked_rows_from_an_incomplete_result(monkeypatch):
     async def partial(*_args, **_kwargs):
         return wic._WicQueryPage(
             rows=[_record(**{":id": "row-1"})],
@@ -320,7 +320,9 @@ async def test_wic_tool_does_not_rank_an_incomplete_citywide_result(monkeypatch)
     assert result.source.status == "partial"
     assert result.source.complete is False
     assert result.source.next_offset == 1
-    assert result.records == []
+    assert len(result.records) == 1
+    assert result.records[0].organization.name == "Test WIC Center"
+    assert result.primary_citation_id == result.records[0].citation_id
 
 
 async def test_nearest_wic_site_flags_temporary_site():

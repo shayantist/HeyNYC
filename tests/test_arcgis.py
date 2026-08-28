@@ -14,6 +14,7 @@ from heynyc.core.tools.arcgis import (
     feature_query_url,
     query_feature_service,
     query_feature_service_page,
+    query_feature_service_result,
 )
 
 
@@ -136,6 +137,32 @@ async def test_query_feature_service_uses_provider_pagination_token_without_offs
     assert [record["OBJECTID"] for record in records] == [1, 2]
 
 
+async def test_query_feature_service_result_preserves_records_when_a_later_page_fails():
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            payload = _fc(_point_feature(-73.99, 40.75, OBJECTID=1))
+            payload["exceededTransferLimit"] = True
+            return httpx.Response(200, json=payload)
+        return httpx.Response(503)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await query_feature_service_result(
+        "https://arcgis.example/FeatureServer/0",
+        result_record_count=1,
+        client=client,
+    )
+    await client.aclose()
+
+    assert [record["OBJECTID"] for record in result.records] == [1]
+    assert result.complete is False
+    assert result.pages_fetched == 1
+    assert result.error == "transport_error"
+
+
 async def test_query_feature_service_rejects_an_empty_incomplete_page():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -157,20 +184,40 @@ async def test_query_feature_service_rejects_an_empty_incomplete_page():
     await client.aclose()
 
 
-async def test_query_feature_service_rejects_a_repeated_incomplete_page():
+async def test_query_feature_service_wrapper_rejects_a_partial_result():
     def handler(request: httpx.Request) -> httpx.Response:
         payload = _fc(_point_feature(-73.99, 40.75, OBJECTID=1))
         payload["exceededTransferLimit"] = True
         return httpx.Response(200, json=payload)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    with pytest.raises(ValueError, match="repeated incomplete page"):
+    with pytest.raises(ValueError, match="partial records"):
         await query_feature_service(
             "https://arcgis.example/FeatureServer/0",
             result_record_count=1,
             client=client,
         )
     await client.aclose()
+
+
+async def test_query_feature_service_result_preserves_records_on_repeated_page() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = _fc(_point_feature(-73.99, 40.75, OBJECTID=1))
+        payload["exceededTransferLimit"] = True
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await query_feature_service_result(
+        "https://arcgis.example/FeatureServer/0",
+        result_record_count=1,
+        client=client,
+    )
+    await client.aclose()
+
+    assert [record["OBJECTID"] for record in result.records] == [1]
+    assert result.complete is False
+    assert result.pages_fetched == 1
+    assert result.error == "invalid_response"
 
 
 async def test_query_feature_service_page_rejects_missing_features():

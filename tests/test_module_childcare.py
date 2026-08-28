@@ -150,7 +150,7 @@ async def test_find_child_care_connect_programs_ranks_grounds_and_links():
     await client.aclose()
 
     assert isinstance(out, BaseModel)
-    assert out.outcome == "success"
+    assert out.outcome == "source_partial"
     assert len(out.programs) == 2
     assert out.programs[0].organization.name == "Close Care"
     assert out.programs[1].organization.name == "Far Care"
@@ -168,10 +168,10 @@ async def test_find_child_care_connect_programs_ranks_grounds_and_links():
     assert out.programs[0].phone.number == "(718) 555-0002"
     assert out.programs[0].action_url.endswith("40.69010,-73.96010")
     assert out.programs[0].citation_id == "S1"
-    assert out.source.complete is True
+    assert out.source.complete is False
     assert out.source.query_filter == childcare.WHERE_HAS_COORDS
     assert out.source.includes_rows_without_coordinates is False
-    assert out.source.excluded_row_count is None
+    assert out.source.excluded_row_count == 1
     mapping = citations.mapping()
     assert mapping["S1"]["kind"] == "DATA"
     # citation is a row-addressed permalink into the NYC Open Data dataset
@@ -217,7 +217,7 @@ async def test_childcare_query_preserves_partial_rows_when_later_page_fails(monk
     assert page.error == "transport_error"
 
 
-async def test_childcare_handler_does_not_rank_an_incomplete_citywide_page(monkeypatch):
+async def test_childcare_handler_preserves_ranked_rows_from_an_incomplete_page(monkeypatch):
     async def partial_page(_client):
         return childcare._ChildCareQueryPage(
             rows=[_record()],
@@ -238,7 +238,9 @@ async def test_childcare_handler_does_not_rank_an_incomplete_citywide_page(monke
     assert out.source.complete is False
     assert out.source.page_size == childcare.CHILDCARE_PAGE_SIZE
     assert out.source.next_offset == 1
-    assert out.programs == []
+    assert len(out.programs) == 1
+    assert out.programs[0].organization.name == "Billy Martin Child Development Center"
+    assert out.primary_citation_id == out.programs[0].citation_id
 
 
 async def test_childcare_query_rejects_repeated_provider_page(monkeypatch):

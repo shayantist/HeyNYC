@@ -34,11 +34,9 @@ prompt: |
   before ranking nearby sites.
   For heat-relief questions, call find_cool_options. Use kind="cooling_center" when the user
   specifically requests an activated cooling center, kind="indoor" when they need indoor A/C,
-  and kind="all" for a general place to cool off. Pass `visit_date` as an ISO date whenever the resident
-  names a day or date; omit it when no specific date was requested. Pass `visit_time` as 24-hour
-  New York local time whenever the resident names a visit time. The tool, not the model, computes
-  scheduled status for that time. Set `open_now_only=true` only when the resident explicitly asks
-  for a place open right now. Pass `max_results` only when the resident explicitly requests a
+  and kind="all" for a general place to cool off. Pass `active_at` as an absolute New York datetime
+  whenever the resident names a date or time, including right now. The tool, not the model,
+  computes scheduled status for that time. Pass `max_results` only when the resident explicitly requests a
   count; otherwise omit it and let the tool use its default. Use
   audience="not_age_restricted" when the resident needs options without a City-listed age
   restriction, including when asking for children. This field does not prove child-specific

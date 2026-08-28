@@ -56,8 +56,8 @@
   expect_tools: [find_foodhelp_locations]
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   utility_criterion: >-
-    Resolve the follow-up against the exact FoodHelp site cited in the prior turn by passing its
-    citation ID as site_citation. Do not silently rerank and answer about a different nearby site.
+    Resolve the follow-up against the exact FoodHelp site named in the prior turn by passing its
+    name as site. Do not silently rerank and answer about a different nearby site.
   notes: F199 pins the referent switch found in Maria's live multi-turn trace.
 
 - id: food_requested_day
@@ -81,7 +81,7 @@
   expect_tools: [find_foodhelp_locations]
   invariants: {must_ground: true, must_cite_if_asserting: true, must_not_fabricate: true}
   utility_criterion: >-
-    Pass today's New York date and `visit_time="13:00"` to `find_foodhelp_locations`. Return only
+    Pass today's 1 PM New York instant as `active_at` to `find_foodhelp_locations`. Return only
     source records whose structured weekly schedule overlaps that time, describe the result as
     scheduled rather than confirmed service, and preserve the call-before-travel limitation.
 

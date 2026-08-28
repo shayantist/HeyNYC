@@ -111,4 +111,4 @@ async def test_f182_distance_handler_returns_grounded_directions_link(monkeypatc
         GeoPoint(40.78328, -73.83521),
         mode="cycling",
     )
-    assert "transit" in geo.geo_tools()[2].parameters["properties"]["mode"]["enum"]
+    assert "transit" in geo.geo_tools()[2]._input_schema()["properties"]["mode"]["enum"]

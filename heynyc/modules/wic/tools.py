@@ -56,7 +56,7 @@ WIC_QUERY_URL = f"{WIC_URL}?" + urlencode({
 class WicQuery(LocationRequest):
     near: str = Field(description="NYC address or neighborhood to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum WIC sites requested; omit for the default 5."
+        default=None, ge=1, description="Maximum WIC sites requested; omit for the default 5."
     )
 
 
@@ -72,6 +72,7 @@ class WicSource(BaseModel):
     pages_fetched: int = 0
     page_size: int = WIC_LIMIT
     next_offset: int | None = None
+    excluded_row_count: int | None = None
     error: Literal["transport_error", "invalid_response"] | None = None
 
 
@@ -458,7 +459,7 @@ def _site_citation(ctx: ToolContext, site: WicSite, *,
     )
 
 
-async def _handler(args: dict, ctx: ToolContext) -> WicResult:
+async def _handler(args: WicQuery, ctx: ToolContext) -> WicResult:
     query = WicQuery.model_validate(args)
     near = query.near.strip()
     if not near:
@@ -501,35 +502,22 @@ async def _handler(args: dict, ctx: ToolContext) -> WicResult:
         )
 
     sites = [s for s in (_to_site(row) for row in page.rows) if s is not None]
-    if not page.complete:
-        return WicResult(
-            outcome="source_partial",
-            origin=_origin_result(origin, near),
-            origin_citation_id=resolved_location_citation(ctx, origin),
-            source=WicSource(
-                status="partial",
-                fetched_at=fetched_at,
-                returned_count=len(page.rows),
-                usable_count=len(sites),
-                complete=False,
-                pages_fetched=page.pages_fetched,
-                next_offset=len(page.rows),
-                error=page.error,
-            ),
-            application_route=_application_route(ctx),
-        )
+    source_complete = page.complete and len(sites) == len(page.rows)
     if not sites:
         return WicResult(
-            outcome="no_results",
+            outcome="no_results" if source_complete else "source_partial",
             origin=_origin_result(origin, near),
             origin_citation_id=resolved_location_citation(ctx, origin),
             source=WicSource(
-                status="ok",
+                status="ok" if source_complete else "partial",
                 fetched_at=fetched_at,
                 returned_count=len(page.rows),
                 usable_count=0,
-                complete=page.complete,
+                complete=source_complete,
                 pages_fetched=page.pages_fetched,
+                next_offset=None if source_complete else len(page.rows),
+                excluded_row_count=len(page.rows),
+                error=page.error,
             ),
             application_route=_application_route(ctx),
         )
@@ -588,17 +576,20 @@ async def _handler(args: dict, ctx: ToolContext) -> WicResult:
             action_url=directions_link(site.lat, site.lon),
         ))
     return WicResult(
-        outcome="success",
+        outcome="success" if source_complete else "source_partial",
         origin=_origin_result(origin, near),
         origin_citation_id=resolved_location_citation(ctx, origin),
         primary_citation_id=typed_records[0].citation_id,
         source=WicSource(
-            status="ok",
+            status="ok" if source_complete else "partial",
             fetched_at=fetched_at,
             returned_count=len(page.rows),
             usable_count=len(sites),
-            complete=page.complete,
+            complete=source_complete,
             pages_fetched=page.pages_fetched,
+            next_offset=None if source_complete else len(page.rows),
+            excluded_row_count=len(page.rows) - len(sites),
+            error=page.error,
         ),
         records=typed_records,
         application_route=application_route,
@@ -619,7 +610,7 @@ def get_tools() -> list[Tool]:
                 "fails or none are near, say so and point to the state WIC info / 311. The source has "
                 "NO hours and NO eligibility detail - tell the user to call; don't invent either."
             ),
-            parameters=WicQuery.model_json_schema(),
+            input_type=WicQuery,
             handler=_handler,
             return_type=WicResult,
             open_world=True,  # hits the live Health Data NY Socrata dataset + geocoder

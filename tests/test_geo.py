@@ -6,7 +6,7 @@ from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import DatasetBinding, ServiceModule
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.core.tools.geo import (
     GeoPoint,
     _borough_rect,
@@ -667,7 +667,7 @@ async def test_geocode_tool_returns_and_stores_the_typed_provider_result(monkeyp
 
     assert result is point
     assert ctx.current_location is point
-    assert geo_tools()[0].return_type == GeoPoint | None
+    assert geo_tools()[0].return_type == GeoPoint | ToolFailure | None
 
 
 async def test_geocode_tool_does_not_replace_origin_with_a_destination(monkeypatch):
@@ -692,6 +692,22 @@ async def test_geocode_tool_does_not_replace_origin_with_a_destination(monkeypat
 
     assert result is destination
     assert ctx.current_location is origin
+
+
+async def test_geocode_tool_exposes_provider_unavailability(monkeypatch):
+    from heynyc.core.tools.geocoder import GeocoderUnavailable
+
+    async def unavailable(_text, **_kwargs):
+        raise GeocoderUnavailable("all providers failed")
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", unavailable)
+    ctx = ToolContext(citations=CitationRegistry(), registry=_registry_with_cooling())
+
+    result = await _geocode_handler({"text": "Rockefeller Center"}, ctx)
+
+    assert isinstance(result, ToolFailure)
+    assert result.status == "unavailable"
+    assert result.retryable is True
 
 
 async def test_location_resolver_reuses_matching_context_and_geocodes_a_new_anchor(monkeypatch):
@@ -868,13 +884,13 @@ async def test_nearest_handler_uses_typed_max_results_or_defaults_to_three():
 
     assert len([line for line in out.splitlines() if line.startswith("- ")]) == 5
 
-    schema = geo_tools()[1].parameters["properties"]
+    schema = geo_tools()[1]._input_schema()["properties"]
     assert "k" not in schema
     max_results = next(
         item for item in schema["max_results"]["anyOf"] if item.get("type") == "integer"
     )
     assert max_results["minimum"] == 1
-    assert max_results["maximum"] == 10
+    assert "maximum" not in max_results
 
 
 def _registry_with_arcgis_cooling() -> Registry:

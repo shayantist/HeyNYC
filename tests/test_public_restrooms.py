@@ -10,8 +10,9 @@ import pytest
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.core.tools.geo import GeoPoint
+from heynyc.core.tools.geocoder import GeocoderUnavailable
 from heynyc.modules.public_restrooms import tools as restrooms
 
 
@@ -26,7 +27,7 @@ def test_public_restrooms_module_loads_custom_lookup():
 def test_public_restrooms_scope_accessibility_and_311_claims():
     registry = Registry.discover(config.MODULES_DIR)
     module = next(item for item in registry.modules if item.name == "public_restrooms")
-    properties = restrooms.get_tools()[0].parameters["properties"]
+    properties = restrooms.get_tools()[0]._input_schema()["properties"]
     parameter = properties["fully_accessible"]
     prompt = " ".join(module.prompt.split())
 
@@ -383,7 +384,7 @@ async def test_lookup_uses_named_city_record_and_keeps_closer_partial_match(monk
     assert "Official page resolves the missing site-accessibility field" in output
     assert fetched == [{
         "url": "https://library.example/branch",
-        "query": "site wheelchair accessibility",
+        "find": "site wheelchair accessibility",
     }]
     assert output.index("- Neighborhood Library") < output.index("- Neighborhood Plaza APT")
     assert output.index("Neighborhood Library") < output.index("Far Library")
@@ -618,6 +619,96 @@ async def test_lookup_asks_for_a_better_location_when_geocoding_fails(monkeypatc
     output = await restrooms.get_tools()[0].handler({"near": "somewhere"}, ctx)
 
     assert "specific NYC address or landmark" in output
+
+
+@pytest.mark.asyncio
+async def test_lookup_exposes_geocoder_provider_outage(monkeypatch) -> None:
+    async def unavailable(*args, **kwargs):
+        raise GeocoderUnavailable
+
+    async def city_rows(*args, **kwargs):
+        return SimpleNamespace(
+            records=[{
+                ":id": "1",
+                "facility_name": "City Restroom",
+                "latitude": "40.001",
+                "longitude": "-73.0",
+                "status": "Operational",
+            }],
+            complete=True,
+        )
+
+    async def cool_rows(*args, **kwargs):
+        return SimpleNamespace(records=[], complete=True)
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", unavailable)
+    monkeypatch.setattr(restrooms, "query_dataset_pages", city_rows)
+    monkeypatch.setattr(restrooms, "query_feature_service", cool_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await restrooms.get_tools()[0].invoke({"near": "somewhere"}, ctx)
+
+    assert isinstance(output, ToolFailure)
+    assert output.status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_lookup_exposes_geocoder_outage_when_city_feed_is_empty(monkeypatch) -> None:
+    async def unavailable(*args, **kwargs):
+        raise GeocoderUnavailable
+
+    async def city_rows(*args, **kwargs):
+        return SimpleNamespace(records=[], complete=True)
+
+    async def cool_rows(*args, **kwargs):
+        return SimpleNamespace(records=[], complete=True)
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", unavailable)
+    monkeypatch.setattr(restrooms, "query_dataset_pages", city_rows)
+    monkeypatch.setattr(restrooms, "query_feature_service", cool_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    output = await restrooms.get_tools()[0].invoke({"near": "somewhere"}, ctx)
+
+    assert isinstance(output, ToolFailure)
+    assert output.status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_lookup_propagates_unexpected_geocoder_error_with_exact_dataset_match(
+    monkeypatch,
+) -> None:
+    async def broken(*args, **kwargs):
+        raise RuntimeError("programming error")
+
+    async def city_rows(*args, **kwargs):
+        return SimpleNamespace(
+            records=[{
+                ":id": "1",
+                "facility_name": "City Restroom",
+                "latitude": "40.001",
+                "longitude": "-73.0",
+                "status": "Operational",
+            }],
+            complete=True,
+        )
+
+    async def cool_rows(*args, **kwargs):
+        return SimpleNamespace(records=[], complete=True)
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", broken)
+    monkeypatch.setattr(restrooms, "query_dataset_pages", city_rows)
+    monkeypatch.setattr(restrooms, "query_feature_service", cool_rows)
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry.discover(config.MODULES_DIR)
+    )
+
+    with pytest.raises(RuntimeError, match="programming error"):
+        await restrooms.get_tools()[0].invoke({"near": "City Restroom"}, ctx)
 
 
 @pytest.mark.asyncio

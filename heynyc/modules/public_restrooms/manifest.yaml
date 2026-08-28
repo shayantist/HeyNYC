@@ -25,8 +25,8 @@ tools: tools.py
 prompt: |
   For public-restroom questions, call find_public_restrooms(near=<user's location>). Pass max_results
   when the user requests a result count; otherwise use the tool default. Pass fully_accessible or
-  changing_station only when the resident requests that feature. Pass `visit_date` or `visit_time`
-  only when the resident names one; the tool applies source schedules deterministically. Nearest means distance, and
+  changing_station only when the resident requests that feature. Pass an absolute New York
+  `active_at` only when the resident names a time; the tool applies source schedules deterministically. Nearest means distance, and
   schedule evidence is context rather than a reason to hide a closer result. For
   several locations, call the tool once per location. Preserve the tool's ranking, citations, record date, scheduled hours,
   access details, and distinction between site access and restroom condition. Never turn

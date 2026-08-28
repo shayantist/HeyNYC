@@ -14,7 +14,7 @@ Ref: https://developers.arcgis.com/rest/services-reference/enterprise/query-feat
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
 import httpx
@@ -30,6 +30,16 @@ class ArcGISQueryPage:
     @property
     def complete(self) -> bool:
         return self.exceeded_transfer_limit is not True
+
+
+@dataclass(frozen=True)
+class ArcGISQueryResult:
+    records: list[dict]
+    complete: bool
+    pages_fetched: int
+    next_offset: int | None = None
+    pagination_token: str | None = None
+    error: Literal["transport_error", "invalid_response"] | None = None
 
 
 def _feature_to_record(feature: dict) -> dict:
@@ -117,15 +127,15 @@ async def query_feature_service_page(
             await client.aclose()
 
 
-async def query_feature_service(
+async def query_feature_service_result(
     url: str,
     *,
     where: str = "1=1",
     out_fields: str = "*",
     result_record_count: int = 2000,
     client: Optional[httpx.AsyncClient] = None,
-) -> list[dict]:
-    """Return flat records only after exhausting the provider's typed page boundary.
+) -> ArcGISQueryResult:
+    """Return all available records and explicit pagination completeness.
 
     Continue with a provider-returned pagination token; otherwise use offset paging. This does not
     initiate token mode on services that require an explicit capability handshake.
@@ -133,33 +143,75 @@ async def query_feature_service(
     records: list[dict] = []
     previous_page: list[dict] | None = None
     offset = 0
+    pages_fetched = 0
     pagination_token: str | None = None
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=20.0)
     try:
         while True:
-            page = await query_feature_service_page(
-                url,
-                where=where,
-                out_fields=out_fields,
-                result_record_count=result_record_count,
-                result_offset=offset,
-                pagination_token=pagination_token,
-                client=client,
-            )
+            try:
+                page = await query_feature_service_page(
+                    url,
+                    where=where,
+                    out_fields=out_fields,
+                    result_record_count=result_record_count,
+                    result_offset=offset,
+                    pagination_token=pagination_token,
+                    client=client,
+                )
+            except httpx.HTTPError:
+                if not records:
+                    raise
+                return ArcGISQueryResult(
+                    records=records,
+                    complete=False,
+                    pages_fetched=pages_fetched,
+                    next_offset=None if pagination_token else offset,
+                    pagination_token=pagination_token,
+                    error="transport_error",
+                )
+            except (ValueError, TypeError, AttributeError):
+                if not records:
+                    raise
+                return ArcGISQueryResult(
+                    records=records,
+                    complete=False,
+                    pages_fetched=pages_fetched,
+                    next_offset=None if pagination_token else offset,
+                    pagination_token=pagination_token,
+                    error="invalid_response",
+                )
             if page.complete:
-                return [*records, *page.records]
-            if not page.records:
-                raise ValueError("ArcGIS returned an empty incomplete page")
-            if page.records == previous_page:
-                raise ValueError("ArcGIS returned a repeated incomplete page")
-            if pagination_token is not None and page.pagination_token is None:
-                raise ValueError("ArcGIS incomplete token page lacks a next token")
-            if page.pagination_token is not None and page.pagination_token == pagination_token:
-                raise ValueError("ArcGIS returned a repeated pagination token")
-            if page.pagination_token is None and page.next_offset is None:
-                raise ValueError("ArcGIS incomplete page lacks a next offset")
+                return ArcGISQueryResult(
+                    records=[*records, *page.records],
+                    complete=True,
+                    pages_fetched=pages_fetched + 1,
+                    pagination_token=page.pagination_token or pagination_token,
+                )
+            try:
+                if not page.records:
+                    raise ValueError("ArcGIS returned an empty incomplete page")
+                if page.records == previous_page:
+                    raise ValueError("ArcGIS returned a repeated incomplete page")
+                if pagination_token is not None and page.pagination_token is None:
+                    raise ValueError("ArcGIS incomplete token page lacks a next token")
+                if page.pagination_token is not None and page.pagination_token == pagination_token:
+                    raise ValueError("ArcGIS returned a repeated pagination token")
+                if page.pagination_token is None and page.next_offset is None:
+                    raise ValueError("ArcGIS incomplete page lacks a next offset")
+            except ValueError:
+                if not records:
+                    raise
+                return ArcGISQueryResult(
+                    records=records,
+                    complete=False,
+                    pages_fetched=pages_fetched,
+                    next_offset=None if pagination_token else offset,
+                    pagination_token=pagination_token,
+                    error="invalid_response",
+                )
             records.extend(page.records)
+            pages_fetched += 1
             previous_page = page.records
             if page.pagination_token is not None:
                 pagination_token = page.pagination_token
@@ -168,3 +220,24 @@ async def query_feature_service(
     finally:
         if own_client:
             await client.aclose()
+
+
+async def query_feature_service(
+    url: str,
+    *,
+    where: str = "1=1",
+    out_fields: str = "*",
+    result_record_count: int = 2000,
+    client: Optional[httpx.AsyncClient] = None,
+) -> list[dict]:
+    """Return records only when the provider page set is complete."""
+    result = await query_feature_service_result(
+        url,
+        where=where,
+        out_fields=out_fields,
+        result_record_count=result_record_count,
+        client=client,
+    )
+    if not result.complete:
+        raise ValueError(f"ArcGIS query stopped after {len(result.records)} partial records")
+    return result.records

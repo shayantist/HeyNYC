@@ -262,7 +262,7 @@ async def test_foodhelp_tool_types_a_malformed_provider_response():
     assert result.source.complete is None
 
 
-async def test_foodhelp_tool_preserves_arcgis_truncation_metadata():
+async def test_foodhelp_tool_exhausts_arcgis_pages_before_ranking():
     feature = _pantry_feature(
         -73.9910,
         40.7510,
@@ -272,9 +272,13 @@ async def test_foodhelp_tool_preserves_arcgis_truncation_metadata():
         GlobalID="paged-pantry",
     )
 
+    calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
-        payload = _geojson(feature)
-        payload["exceededTransferLimit"] = True
+        nonlocal calls
+        calls += 1
+        payload = _geojson(feature) if calls == 1 else _geojson()
+        payload["exceededTransferLimit"] = calls == 1
         return httpx.Response(200, json=payload)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -294,9 +298,10 @@ async def test_foodhelp_tool_preserves_arcgis_truncation_metadata():
     await client.aclose()
 
     assert result.outcome == "success"
-    assert result.source.complete is False
-    assert result.source.next_cursor == "offset:1"
+    assert result.source.complete is True
+    assert result.source.next_cursor is None
     assert result.source.returned_count == 1
+    assert calls == 2
 
 
 def _routed_client(features) -> httpx.AsyncClient:
@@ -807,7 +812,10 @@ async def test_find_foodhelp_locations_ranks_grounds_and_links(monkeypatch):
     out = await get_tools()[0].handler({"near": "Union Square", "max_results": 5}, ctx)
     await client.aclose()
 
-    assert out.outcome == "success"
+    assert out.outcome == "source_partial"
+    assert out.source.status == "partial"
+    assert out.source.complete is False
+    assert out.source.excluded_row_count == 1
     assert len(out.records) == 2                        # bad-coords row dropped
     assert [record.service.name for record in out.records] == [
         "Close Halal Pantry",
@@ -917,13 +925,11 @@ async def test_f108_urgent_food_result_leads_with_fallback_and_lists_today_hours
         == "weekly_schedule"
     )
 
-    schema = get_tools()[0].parameters
-    assert schema["properties"]["urgent"]["type"] == "boolean"
-    assert {"format": "date", "type": "string"} in schema["properties"]["visit_date"]["anyOf"]
-    assert "urgent" not in schema["required"]
+    schema = get_tools()[0]._input_schema()
+    assert "urgent" not in schema["properties"]
+    assert {"format": "date-time", "type": "string"} in schema["properties"]["active_at"]["anyOf"]
     description = get_tools()[0].description
-    assert "Whenever `urgent=true`, also pass `service_window`" in description
-    assert "today runs from the current NYC time through 23:59" in description
+    assert "absolute New York service window" in description
     route = next(
         citation
         for citation in ctx.citations.mapping().values()
@@ -1030,10 +1036,10 @@ async def test_urgent_food_respects_the_requested_service_window(monkeypatch):
     assert out.records[0].schedule.availability_confirmed is False
     assert out.immediate_route is not None
     assert out.immediate_route.phone == "311"
-    schema = get_tools()[0].parameters["properties"]
-    assert schema["service_window"]["properties"]["start"]["pattern"] == r"^\d{2}:\d{2}$"
-    assert schema["service_window"]["properties"]["end"]["pattern"] == r"^\d{2}:\d{2}$"
-    assert "For `tonight`, pass 17:00-23:59" in schema["service_window"]["description"]
+    schema = get_tools()[0]._input_schema()["properties"]
+    assert "service_window" not in schema
+    assert {"format": "date-time", "type": "string"} in schema["starts_after"]["anyOf"]
+    assert {"format": "date-time", "type": "string"} in schema["starts_before"]["anyOf"]
 
 
 async def test_find_foodhelp_locations_does_not_present_closed_candidates_as_open_now(monkeypatch):
@@ -1294,7 +1300,7 @@ async def test_find_foodhelp_locations_filters_source_service_type():
 
     assert [record.service.name for record in out.records] == ["Food Pantry"]
     assert out.records[0].service.service_type == "pantry"
-    assert get_tools()[0].parameters["properties"]["service_type"]["enum"] == [
+    assert get_tools()[0]._input_schema()["properties"]["service_type"]["enum"] == [
         "pantry",
         "soup_kitchen",
         "any",

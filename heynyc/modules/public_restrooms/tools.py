@@ -6,14 +6,25 @@ import re
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
 from heynyc.core.temporal import parse_clock_minutes, weekly_open_status
-from heynyc.core.tools.arcgis import feature_query_url, query_feature_service
-from heynyc.core.tools.base import Tool, ToolContext
-from heynyc.core.tools.datasets import dataset_url, normalize, query_dataset, row_url
+from heynyc.core.tools.arcgis import (
+    feature_query_url,
+)
+from heynyc.core.tools.arcgis import (
+    query_feature_service_result as query_feature_service,
+)
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailureError
+from heynyc.core.tools.datasets import (
+    dataset_url,
+    normalize,
+    query_dataset,
+    query_dataset_pages,
+    row_url,
+)
 from heynyc.core.tools.geo import (
     GeoPoint,
     format_distance,
@@ -41,10 +52,34 @@ _LOCATION_SUFFIX_TOKENS = {
 class PublicRestroomQuery(LocationRequest):
     near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum restrooms requested; omit for the default 3."
+        default=None, ge=1, description="Maximum restrooms requested; omit for the default 3."
     )
     visit_date: date | None = Field(default=None, description="Requested New York visit date.")
     visit_time: time | None = Field(default=None, description="Requested New York visit time.")
+    fully_accessible: bool = Field(
+        default=False,
+        description=(
+            "Set true when the resident requests accessibility. This filters the City listing's "
+            "site accessibility field; it does not prove restroom fixture accessibility."
+        ),
+    )
+    changing_station: bool = Field(
+        default=False,
+        description="Set true only when the resident requests a changing station.",
+    )
+
+
+class PublicRestroomLookupQuery(LocationRequest):
+    near: str = Field(description="NYC address, neighborhood, or landmark to search near.")
+    max_results: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum restrooms explicitly requested; omit when no count was requested.",
+    )
+    active_at: AwareDatetime | None = Field(
+        default=None,
+        description="Time when the restroom must be scheduled open, with a UTC offset.",
+    )
     fully_accessible: bool = Field(
         default=False,
         description=(
@@ -203,7 +238,12 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
         return "The NYC public-restroom dataset is not configured."
     origin_result, city_result, cool_result = await asyncio.gather(
         resolve_location(near, ctx),
-        query_dataset(binding.id, where=binding.where, limit=2000, client=ctx.http),
+        query_dataset_pages(
+            binding.id,
+            where=binding.where,
+            client=ctx.http,
+            _query=query_dataset,
+        ),
         query_feature_service(
             COOL_OPTIONS_URL,
             where="1=1" if schedule_requested else "Finder_status='OPEN'",
@@ -214,16 +254,33 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     )
     if isinstance(city_result, BaseException):
         return "The NYC public-restroom feed is unavailable, so I cannot safely list locations."
-    city_records = city_result
+    city_records = city_result.records
+    city_complete = city_result.complete
     cool_failed = isinstance(cool_result, BaseException)
-    cool_records = [] if cool_failed else cool_result
+    cool_records = (
+        []
+        if cool_failed
+        else cool_result
+        if isinstance(cool_result, list)
+        else cool_result.records
+    )
+    cool_partial = (
+        not cool_failed
+        and not isinstance(cool_result, list)
+        and not cool_result.complete
+    )
     places = normalize(city_records, binding.field_map, source_url=dataset_url(binding.id))
     if not places:
+        if isinstance(origin_result, BaseException):
+            raise origin_result
         return "No public restrooms were found in the NYC dataset."
     exact_origin = next(
         (place for place in places if _is_named_origin(place.name, near)),
         None,
     )
+    if isinstance(origin_result, BaseException):
+        if not isinstance(origin_result, ToolFailureError) or exact_origin is None:
+            raise origin_result
     origin = (
         GeoPoint(
             exact_origin.lat,
@@ -334,7 +391,7 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
             )
             partial_evidence[place.record_id or place.name] = await ctx.toolbox[
                 "web_fetch"
-            ].handler({"url": place.website, "query": query}, ctx)
+            ].handler({"url": place.website, "find": query}, ctx)
     classified_partial = []
     for item in closer_partial:
         _unresolved, _missing_count, _distance_m, place, missing = item
@@ -487,7 +544,29 @@ async def _public_restroom_lookup(args: dict, ctx: ToolContext) -> str:
     )
     if cool_failed:
         lines.append("The NYC Cool Options cross-check was unavailable for this lookup.")
+    elif cool_partial:
+        lines.append(
+            "The NYC Cool Options cross-check returned a partial page set, so some schedule "
+            "matches may be missing."
+        )
+    if not city_complete:
+        lines.append(
+            "The city restroom dataset returned only a partial page set, so a closer listing "
+            "may exist."
+        )
     return "\n".join(lines)
+
+
+async def _public_handler(args: PublicRestroomLookupQuery, ctx: ToolContext) -> str:
+    if set(args) & {"visit_date", "visit_time"}:
+        return await _public_restroom_lookup(args, ctx)
+    query = PublicRestroomLookupQuery.model_validate(args)
+    internal = query.model_dump(exclude={"active_at"}, exclude_none=True)
+    if query.active_at:
+        active_at = query.active_at.astimezone(_NYC_TZ)
+        internal["visit_date"] = active_at.date()
+        internal["visit_time"] = active_at.time().replace(tzinfo=None)
+    return await _public_restroom_lookup(internal, ctx)
 
 
 def get_tools() -> list[Tool]:
@@ -498,8 +577,8 @@ def get_tools() -> list[Tool]:
                 "Find useful public restrooms near one NYC location. Cross-checks official "
                 "Cool Options access and hours when the same site appears there."
             ),
-            parameters=PublicRestroomQuery.model_json_schema(),
-            handler=_public_restroom_lookup,
+            input_type=PublicRestroomLookupQuery,
+            handler=_public_handler,
             open_world=True,
             title="Find public restrooms",
         )

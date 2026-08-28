@@ -5,7 +5,7 @@ import httpx
 from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import ToolContext
+from heynyc.core.tools.base import ToolContext, ToolFailure
 from heynyc.core.tools.geo import GeoPoint
 from heynyc.modules.libraries import tools as library_tools
 
@@ -58,7 +58,7 @@ async def test_find_bpl_branches_ranks_the_official_feed_by_resident_location(mo
         },
     ]
 
-    async def fake_geocode(text, *, client=None):
+    async def fake_geocode(text, **kwargs):
         assert text == "Sunset Park"
         return GeoPoint(
             lat=40.6460,
@@ -97,3 +97,44 @@ async def test_find_bpl_branches_ranks_the_official_feed_by_resident_location(mo
     assert "Closed today because of a building problem." in citation["snippet"]
     assert citation["provenance"]["derivation"]["origin"] == [40.646, -74.0136]
     assert citation["provenance"]["derivation"]["point"] == [40.6459117, -74.0136256]
+
+
+async def test_find_bpl_branches_reports_dropped_feed_rows(monkeypatch) -> None:
+    rows = [
+        {"title": "Broken branch", "position": "not coordinates"},
+        {"title": "Central Library", "position": "40.67250, -73.96810", "branchid": "1"},
+    ]
+
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(lat=40.67, lon=-73.97, label=text, confidence=1.0)
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=rows))
+    )
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    output = await library_tools.get_tools()[0].handler({"near": "Prospect Heights"}, ctx)
+    await client.aclose()
+
+    assert "Central Library" in output
+    assert "partial" in output.lower()
+    assert "1 malformed branch record was dropped" in output
+
+
+async def test_find_bpl_branches_returns_typed_failure_when_feed_is_unavailable(monkeypatch) -> None:
+    async def fake_geocode(text, **kwargs):
+        return GeoPoint(lat=40.67, lon=-73.97, label=text, confidence=1.0)
+
+    monkeypatch.setattr("heynyc.core.tools.geo.geocode", fake_geocode)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(503))
+    )
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]), http=client)
+
+    output = await library_tools.get_tools()[0].handler({"near": "Prospect Heights"}, ctx)
+    await client.aclose()
+
+    assert isinstance(output, ToolFailure)
+    assert output.status == "unavailable"
+    assert output.retryable is True

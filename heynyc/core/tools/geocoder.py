@@ -20,6 +20,7 @@ from collections import OrderedDict
 from typing import Awaitable, Callable, Optional
 
 from .. import config
+from .base import ToolFailureError
 
 logger = logging.getLogger("heynyc.geocoder")
 
@@ -30,6 +31,17 @@ _NOMINATIM_CACHE: OrderedDict[str, object] = OrderedDict()
 _NOMINATIM_LOCK = asyncio.Lock()
 _NOMINATIM_LAST_REQUEST = 0.0
 _NOMINATIM_CACHE_SIZE = 512
+
+
+class GeocoderUnavailable(ToolFailureError):
+    """Every configured geocoder failed before returning a valid response."""
+
+    def __init__(self, reason: str = "Every configured geocoder failed.") -> None:
+        super().__init__(
+            status="unavailable",
+            reason=reason,
+            retryable=True,
+        )
 
 
 def _confidence(provider: str, raw: dict) -> float:
@@ -136,7 +148,12 @@ async def _provider_geocode(
         return location
 
 
-async def forgiving_geocode(text: str, *, geocode_fn: Optional[GeocodeFn] = None):
+async def forgiving_geocode(
+    text: str,
+    *,
+    geocode_fn: Optional[GeocodeFn] = None,
+    raise_on_unavailable: bool = False,
+):
     """Geocode via the configured provider, returning a GeoPoint or None.
 
     `geocode_fn` is injectable for offline tests (no network)."""
@@ -147,12 +164,14 @@ async def forgiving_geocode(text: str, *, geocode_fn: Optional[GeocodeFn] = None
     if geocode_fn is None and primary == "nominatim" and config.MAPBOX_TOKEN:
         providers.append(("mapbox", _build_geocode_fn("mapbox"), True))
 
+    failures = 0
     for provider, fn, apply_public_policy in providers:
         try:
             loc = await _provider_geocode(
                 provider, text, fn, apply_public_policy=apply_public_policy
             )
         except Exception:
+            failures += 1
             logger.exception("geocoder '%s' failed for %r", provider, text)
             continue
         if loc is None:
@@ -174,4 +193,6 @@ async def forgiving_geocode(text: str, *, geocode_fn: Optional[GeocodeFn] = None
             provider_id=str(raw.get("place_id") or raw.get("id") or ""),
             provider_payload=raw,
         )
+    if raise_on_unavailable and failures == len(providers):
+        raise GeocoderUnavailable
     return None

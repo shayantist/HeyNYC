@@ -8,7 +8,7 @@ from pydantic import Field
 
 from heynyc.core.citations import data_provenance
 from heynyc.core.location import LocationRequest
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolFailure
 from heynyc.core.tools.datasets import Place
 from heynyc.core.tools.geo import miles, rank_nearby, resolve_location
 
@@ -18,7 +18,7 @@ _BPL_LOCATIONS_URL = "https://www.bklynlibrary.org/api/locations/v1/map"
 class LibraryQuery(LocationRequest):
     near: str = Field(description="NYC place to search near.")
     max_results: int | None = Field(
-        default=None, ge=1, le=8, description="Maximum branches requested; omit for the default 5."
+        default=None, ge=1, description="Maximum branches requested; omit for the default 5."
     )
 
 
@@ -52,7 +52,7 @@ def _branch(row: dict) -> Place | None:
     )
 
 
-async def _find_bpl_branches(args: dict, ctx: ToolContext) -> str:
+async def _find_bpl_branches(args: LibraryQuery, ctx: ToolContext) -> str | ToolFailure:
     query = LibraryQuery.model_validate(args)
     origin = await resolve_location(query.near, ctx)
     if origin is None or origin.low_confidence:
@@ -67,13 +67,26 @@ async def _find_bpl_branches(args: dict, ctx: ToolContext) -> str:
         if not isinstance(payload, list) or not all(isinstance(row, dict) for row in payload):
             raise ValueError("unexpected BPL locations response")
     except (httpx.HTTPError, ValueError):
-        return "Could not verify current Brooklyn Public Library branch information from its live feed."
+        return ToolFailure(
+            status="unavailable",
+            reason="The current Brooklyn Public Library branch feed could not be read.",
+            retryable=True,
+            source_url=_BPL_LOCATIONS_URL,
+        )
     finally:
         if own_client:
             await client.aclose()
 
     max_results = query.max_results or 5
     branches = [branch for row in payload if (branch := _branch(row)) is not None]
+    dropped_count = len(payload) - len(branches)
+    if not branches and dropped_count:
+        return ToolFailure(
+            status="partial",
+            reason=f"All {dropped_count} branch records in the live feed were malformed.",
+            retryable=True,
+            source_url=_BPL_LOCATIONS_URL,
+        )
     ranked = rank_nearby(
         origin,
         branches,
@@ -81,6 +94,11 @@ async def _find_bpl_branches(args: dict, ctx: ToolContext) -> str:
         limit=max_results,
     )
     lines = [f"Nearest BPL branches to {origin.label} from the current official branch feed:"]
+    if dropped_count:
+        noun = "record was" if dropped_count == 1 else "records were"
+        lines.append(
+            f"Source completeness: partial; {dropped_count} malformed branch {noun} dropped."
+        )
     for branch, distance_m in ranked:
         row = branch.raw
         distance_miles = miles(distance_m)
@@ -129,7 +147,7 @@ def get_tools() -> list[Tool]:
                 "unconfirmed whenever the same row also has a notice. The feed does not prove that an unlisted service is "
                 "unavailable; use the official branch page or web search for extra details."
             ),
-            parameters=LibraryQuery.model_json_schema(),
+            input_type=LibraryQuery,
             handler=_find_bpl_branches,
             open_world=True,
             title="Find BPL branches",
