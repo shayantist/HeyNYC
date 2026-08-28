@@ -239,15 +239,12 @@ def _record_agent_turn(session_id: str, model: str, result) -> None:
 async def _cmd_chat(question: str, model: str | None = None) -> None:
     # CLI --model wins when given; otherwise .env ALWAYS decides (owner rule 2026-07-21).
     from heynyc.core.pydantic_runtime import build_configured_runtime
-    from heynyc.modules.advisories.tools import current_awareness
-
     registry = Registry.discover(config.MODULES_DIR, config.BASE_ALLOWLIST, config.NEWS_ALLOWLIST)
     selected_model = model or config.HEYNYC_MODEL
     agent = build_configured_runtime(
         registry,
         model=selected_model,
         index=_load_retriever(required=False),
-        current_awareness=current_awareness,
     )
     result = await agent.run(question, reminders=_default_reminders())
     print(result.text)
@@ -744,10 +741,13 @@ async def _cmd_eval(
     from datetime import timezone
     from pathlib import Path
 
+    from pydantic_ai import Agent as PydanticAgent
+
     from heynyc.eval import evaluate, load_cases, run_all, run_repeated, write_run
     from heynyc.eval.bench import build_eval_agent
     from heynyc.eval.cases import select_cases
     from heynyc.eval.report import progress_writer, write_channel_previews
+    from heynyc.eval.trace import eval_otel_exporter
 
     if repeat < 1:
         raise ValueError("repeat must be at least 1")
@@ -774,12 +774,17 @@ async def _cmd_eval(
 
     selected_model = model or config.HEYNYC_MODEL
 
-    def factory():
-        return build_eval_agent(registry, selected_model, retriever)
-
     run_dir = Path(out) if out else (
         config.HEYNYC_DATA_DIR / "eval" / datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
     )
+    instrumentation, tracer_provider, trace_stream = eval_otel_exporter(
+        run_dir / "otel-traces.jsonl"
+    )
+    PydanticAgent.instrument_all(instrumentation)
+
+    def factory():
+        return build_eval_agent(registry, selected_model, retriever)
+
     results = await run_all(
         factory,
         cases,
@@ -884,6 +889,10 @@ async def _cmd_eval(
             results,
             preview_channels,
         ))
+    tracer_provider.force_flush()
+    tracer_provider.shutdown()
+    trace_stream.close()
+    PydanticAgent.instrument_all(False)
     print(f"\nRun written to {run_dir}")
     raise SystemExit(0 if report.promotion_ready and repeat_gate_passed else 1)
 

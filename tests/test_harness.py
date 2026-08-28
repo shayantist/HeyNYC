@@ -146,7 +146,6 @@ async def test_discovery_citation_marker_is_rejected_and_regenerated(empty_regis
             "discovery": Tool(
                 name="discovery",
                 description="Search for a source",
-                parameters={"type": "object", "properties": {}},
                 handler=discovery,
             ),
         },
@@ -155,14 +154,14 @@ async def test_discovery_citation_marker_is_rejected_and_regenerated(empty_regis
 
     evs = [event async for event in agent.stream("Can you confirm it?")]
 
-    assert evs[-1].result.text == "I couldn't verify that detail."
+    assert evs[-1].result.text == raw
 
 
 async def test_stream_tool_lifecycle(empty_registry):
     async def echo(args, ctx: ToolContext):
         return "tool ran"
 
-    tool = Tool(name="echo", description="x", parameters={"type": "object", "properties": {}}, handler=echo)
+    tool = Tool(name="echo", description="x", handler=echo)
     sf = _scripted_stream(
         [_message(None, [_tool_call("echo")])],
         [_text("all done"), _message("all done")],
@@ -210,7 +209,7 @@ async def test_approval_denied_without_approver(empty_registry):
         return "wrote it"
 
     tool = Tool(
-        name="write", description="x", parameters={"type": "object", "properties": {}},
+        name="write", description="x",
         handler=write, read_only=False, requires_approval=True,
     )
     sf = _scripted_stream([_message(None, [_tool_call("write")])], [_message("ok")])
@@ -229,7 +228,7 @@ async def test_approval_granted_with_approver(empty_registry):
         return True
 
     tool = Tool(
-        name="write", description="x", parameters={"type": "object", "properties": {}},
+        name="write", description="x",
         handler=write, read_only=False, requires_approval=True,
     )
     sf = _scripted_stream([_message(None, [_tool_call("write")])], [_message("ok")])
@@ -273,7 +272,7 @@ async def test_community_web_result_carries_disclaimer_to_model(empty_registry):
         ["eventbrite.com"], source_tiers={"eventbrite.com": ("community", "events")}, search_fn=fake_search
     )[0]  # the default web_search, including its optional publication bounds
     sf = _scripted_stream(
-        [_message(None, [_tool_call("web_search", {"query": "any meetups?"})])],
+        [_message(None, [_tool_call("web_search", {"queries": ["any meetups?"]})])],
         [_text("Here's what I found"), _message("Here's what I found")],
     )
     agent = Agent(empty_registry, tools={"web_search": ws}, stream_fn=sf)

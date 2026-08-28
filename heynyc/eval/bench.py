@@ -29,7 +29,6 @@ def build_eval_agent(registry, model: str, retriever):
                 registry,
                 model=model,
                 index=retriever,
-                current_awareness=current_awareness,
                 stream_model_requests=True,
             )
         )

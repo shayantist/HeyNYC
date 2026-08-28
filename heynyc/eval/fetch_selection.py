@@ -5,7 +5,6 @@ import argparse
 import asyncio
 import json
 import re
-import time
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -13,7 +12,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from ..core import config
-from ..core.tools.web_fetch import _fetch_page_with_browser, _relevant_chunks
+from ..core.tools.web_fetch import _fetch_page_with_browser
 
 ExtractFn = Callable[[str, str], Awaitable[list[str]]]
 
@@ -78,22 +77,7 @@ def compare_case(
     required = [str(passage) for passage in case.get("required_passages", ())]
     full_tokens = _tokens(text, model)
     full_eligible = full_tokens <= full_token_budget
-    started = time.perf_counter()
-    focused = _relevant_chunks(text, str(case["query"]))
-    focused_ms = (time.perf_counter() - started) * 1_000
     candidates = {
-        "current": _measure(
-            focused,
-            required,
-            model,
-            selection_ms=focused_ms,
-        ),
-        "adaptive": _measure(
-            [text] if full_eligible else focused,
-            required,
-            model,
-            selection_ms=0.0 if full_eligible else focused_ms,
-        ),
         "full": _measure(
             [text] if full_eligible else [],
             required,
@@ -138,16 +122,16 @@ async def collect_cases(source: Path, output: Path) -> None:
     specs = json.loads(source.read_text())
 
     async def collect(spec: dict[str, Any]) -> dict[str, Any]:
-        final_url, title, text = await _fetch_page_with_browser(
+        page = await _fetch_page_with_browser(
             str(spec["url"]),
             None,
-            str(spec["query"]),
+            None,
         )
         return {
             **spec,
-            "url": final_url,
-            "title": title,
-            "text": text,
+            "url": page.final_url,
+            "title": page.title,
+            "text": page.text,
         }
 
     cases = await asyncio.gather(*(collect(spec) for spec in specs))
@@ -165,7 +149,6 @@ async def _tavily_extract(url: str, query: str) -> list[str]:
             json={
                 "urls": [url],
                 "query": query,
-                "chunks_per_source": 5,
                 "extract_depth": "basic",
                 "format": "markdown",
                 "include_usage": True,

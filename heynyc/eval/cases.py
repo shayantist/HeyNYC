@@ -16,6 +16,7 @@ class EvalCase:
     module: str
     query: str
     expect_tools: list[str] = field(default_factory=list)
+    expect_any_tools: list[str] = field(default_factory=list)
     forbid_tools: list[str] = field(default_factory=list)
     expect_cite_kinds: list[str] = field(default_factory=list)
     expect_contains: list[str] = field(default_factory=list)
@@ -93,6 +94,7 @@ def load_cases(registry: Registry, global_path: Optional[Path] = None) -> list[E
                     query=entry.get("query") or (turns[-1] if turns else ""),
                     turns=turns,
                     expect_tools=entry.get("expect_tools", []),
+                    expect_any_tools=entry.get("expect_any_tools", []),
                     forbid_tools=entry.get("forbid_tools", []),
                     expect_cite_kinds=entry.get("expect_cite_kinds", []),
                     expect_contains=entry.get("expect_contains", []),

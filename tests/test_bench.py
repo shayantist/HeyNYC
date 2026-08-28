@@ -50,8 +50,8 @@ def test_build_eval_agent_uses_configured_runtime(monkeypatch):
 
     calls = []
 
-    def fake_pydantic(registry, *, model, index, current_awareness, stream_model_requests):
-        calls.append((registry, model, index, current_awareness, stream_model_requests))
+    def fake_pydantic(registry, *, model, index, stream_model_requests):
+        calls.append((registry, model, index, stream_model_requests))
         return "pydantic-agent"
 
     monkeypatch.setattr(config, "HEYNYC_AGENT_RUNTIME", "pydantic")
@@ -65,7 +65,7 @@ def test_build_eval_agent_uses_configured_runtime(monkeypatch):
     assert isinstance(agent, PydanticEvalAgent)
     assert agent.runtime == "pydantic-agent"
     assert calls[0][:3] == ("registry", "model", "index")
-    assert calls[0][4] is True
+    assert calls[0][3] is True
 
 
 def test_build_eval_agent_keeps_legacy_rollback(monkeypatch):

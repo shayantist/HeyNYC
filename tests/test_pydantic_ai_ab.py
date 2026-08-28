@@ -29,16 +29,16 @@ def test_comparison_model_matches_litellm_responses_bridge(
     )
 
 
-def test_responses_bridge_requires_tools(monkeypatch) -> None:
+def test_openai_models_use_responses_with_or_without_tools(monkeypatch) -> None:
     monkeypatch.setattr(pydantic_ai_ab.config, "HEYNYC_REASONING_EFFORT", "medium")
 
-    assert not pydantic_ai_ab._uses_openai_responses(
+    assert pydantic_ai_ab._uses_openai_responses(
         "openai/gpt-5.4-mini",
         has_tools=False,
     )
 
 
-def test_build_factories_gives_both_arms_the_same_live_awareness(
+def test_build_factories_does_not_inject_awareness_into_pydantic(
     monkeypatch,
 ) -> None:
     built = []
@@ -84,7 +84,6 @@ def test_build_factories_gives_both_arms_the_same_live_awareness(
                 "answer_model_route": "openai/gpt-test",
                 "index": "retriever",
                 "use_module_capabilities": True,
-                "current_awareness": pydantic_ai_ab.current_awareness,
                 "fact_review_model": (
                     f"chat:{pydantic_ai_ab.config.HEYNYC_FACT_REVIEW_MODEL}"
                 ),
@@ -172,7 +171,7 @@ def test_summarize_arm_counts_every_turn_once_and_marks_unpriced() -> None:
         "arm": "pydantic_ai",
         "runtime": "PydanticRuntimeAdapter",
         "answer_model": "openai/gpt-test",
-        "runtime_route": "pydantic-ai:openai-chat:gpt-test",
+        "runtime_route": "pydantic-ai:openai-responses:gpt-test",
         "case_ids": ["multi"],
         "passed": 1,
         "mechanical_passed": 1,

@@ -18,7 +18,11 @@ from heynyc.core.events import (
 )
 from heynyc.core.pydantic_runtime import build_configured_runtime
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
+
+
+class _BranchInput(ToolInput):
+    branch: str
 from heynyc.eval.cases import EvalCase
 from heynyc.eval.report import event_writer
 from heynyc.eval.runner import run_case
@@ -100,11 +104,7 @@ async def test_configured_runtime_forwards_exact_tool_payloads(monkeypatch) -> N
     tool = Tool(
         name="lookup_library",
         description="Look up one library branch",
-        parameters={
-            "type": "object",
-            "properties": {"branch": {"type": "string"}},
-            "required": ["branch"],
-        },
+        input_type=_BranchInput,
         handler=lookup,
     )
     calls = 0

@@ -219,7 +219,7 @@ def inv_faithfulness(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
     fabricated specifics still fail. The agent-as-judge catches subtler cases."""
     if not case.invariants.get("must_not_fabricate"):
         return None
-    unbacked = _unbacked_citations(trace)
+    unbacked = _unbacked_citations(trace, _surfaced_citation_ids(trace.final_text))
     passed = not unbacked
     return CheckResult("faithfulness", passed=passed,
                        detail="" if passed else f"citation(s) under-supported by fetched output: {unbacked}")
@@ -394,6 +394,7 @@ def inv_resident_outcome(trace: Trace, case: EvalCase) -> Optional[CheckResult]:
 _ALL = [
     inv_grounding,
     inv_attribution,
+    inv_faithfulness,
     inv_harm_routing,
 ]
 

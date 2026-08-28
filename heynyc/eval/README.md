@@ -7,7 +7,7 @@ How HeyNYC tests the complete resident path before it ships. Verified factual cl
 Groundedness gets a *semantic* verdict on top of the deterministic gate, and there are **two distinct ways** to get it, don't conflate them:
 
 - **Agent judge, DEFAULT, free.** The interactive coding agent you're already running (Claude
-  Code on the subscription, or Codex / Gemini CLI / Qwen Coder) reads the run's traces and renders the verdict against the [rubric below](#the-agent-judge-rubric). **No per-call API cost.** The harness supports it simply by writing rich, reviewable OpenInference traces, there is *no* automated in-harness call for it. This is the primary internal judge.
+  Code on the subscription, or Codex / Gemini CLI / Qwen Coder) reads the run's native OpenTelemetry trace and renders the verdict against the [rubric below](#the-agent-judge-rubric). **No per-call API cost.** There is *no* automated in-harness call for it. This is the primary internal judge.
 - **API judge, opt-in with `--api-judge`, PAID.** A programmatic `litellm` call to a cross-family
   model (`judges.py`), for reproducibility / parity / CI / the paper. It **costs money per call** and emits one `api_grounded` check per case. Use it when you need a reproducible, machine-run number; skip it for day-to-day work, where the Agent judge is enough.
 
@@ -29,7 +29,7 @@ The structural floor also supports opt-in resident-outcome contracts in `eval.ya
 
 These checks are deliberately narrow. Script matching is not full language identification, result counts use cited resident-visible list items, and title uniqueness does not decide whether two similarly named events are genuinely different. Requested-location checks require the named place in grounding tool output, while the shared geocoder separately validates intersection street identity. The semantic judge still reviews the whole trace. Add an outcome contract only when the case states the resident-visible requirement precisely.
 
-**2. Agent-as-judge, the semantic verdict. Portable; run pre-deploy or interactively.** The squishy calls code can't make reliably, *did it abstain for the right reason? is the answer grounded **and** useful? was the refusal appropriate?*, are graded by a coding agent reading the run's traces against the **rubric below**. Because traces are standard OpenInference JSON and verdicts are plain files, **the judge can be any coding agent you already run**, Claude Code, Codex, Gemini CLI, GLM, Qwen Coder. No extra API key, and you can chat with the verdicts. (A coarse keyword refusal-detector remains only as a never-blocking fallback for fully unattended runs, string matching is too brittle to be the authority. Method: "Agent-as-a-Judge," arXiv 2410.10934.)
+**2. Agent-as-judge, the semantic verdict. Portable; run pre-deploy or interactively.** The squishy calls code can't make reliably, *did it abstain for the right reason? is the answer grounded **and** useful? was the refusal appropriate?*, are graded by a coding agent reading the run's native OpenTelemetry trace against the **rubric below**. The judge can be any coding agent you already run, Claude Code, Codex, Gemini CLI, GLM, or Qwen Coder. No extra API key is required, and you can chat with the verdicts. (A coarse keyword refusal-detector remains only as a never-blocking fallback for fully unattended runs, string matching is too brittle to be the authority. Method: "Agent-as-a-Judge," arXiv 2410.10934.)
 
 ## Running it
 
@@ -45,7 +45,7 @@ uv run python -m heynyc.eval.redteam --model openai/gpt-5.4-mini --case MC01  # 
 uv run python -m heynyc.eval.redteam --model openai/gpt-5.4-mini --api-judge  # adds a PAID judge
 ```
 
-Needs an LLM API key (it runs the real agent); the web-search cases also need `TAVILY_API_KEY`. Output lands in `.data/eval/run-<ts>/`: `report.json` (gate), `report.txt`, and OpenInference `traces/`. The report metadata records the selected case IDs, model, measured tokens, model and tool call counts, latency, and priced cost so a phased run can stop before its next batch.
+Needs an LLM API key (it runs the real agent); the web-search cases also need `TAVILY_API_KEY`. Output lands in `.data/eval/run-<ts>/`: `report.json` (gate), `report.txt`, compact invariant summaries under `traces/`, and [Pydantic AI's native OpenTelemetry spans](https://pydantic.dev/docs/ai/integrations/logfire/#otel-without-logfire) in `otel-traces.jsonl`. The native trace contains the ordered model inputs and outputs, system instructions, tool definitions, tool calls and results, and the complete agent message history. It is local, gitignored, and intended for approved diagnostic evals because [OpenTelemetry warns that GenAI message and tool content may contain sensitive data](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/). The report metadata records the selected case IDs, model, measured tokens, model and tool call counts, latency, and priced cost so a phased run can stop before its next batch.
 With `--repeat K`, the initial run counts as run one instead of being billed twice. Every repeated
 trace is retained under `repeats/<case-id>/run-NN/`, and the top-level usage metadata includes all
 K runs so a qualitative reviewer can inspect variance against the complete observed spend. Any
@@ -121,8 +121,9 @@ hosted checker against it remains an owner-approved paid eval.
 
 To get the semantic verdict, point your coding agent at a finished run:
 
-> Read every trace in `.data/eval/run-<ts>/traces/*.json` (OpenInference JSON: the user query, the
-> tool calls + arguments, the retrieved spans, and the final answer). Grade each case against the
+> Read `.data/eval/run-<ts>/otel-traces.jsonl` (native Pydantic AI OpenTelemetry spans containing
+> the complete agent, model, and tool loop) and the corresponding compact case summary under
+> `traces/*.json`. Grade each case against the
 > rubric in `heynyc/eval/README.md` and write `verdicts.json` + `verdicts.md` into the run directory.
 
 The judge reads the **whole trace**, not just the final text, whether each asserted fact traces to a span the agent actually retrieved is the core call.

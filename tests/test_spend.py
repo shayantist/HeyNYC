@@ -73,7 +73,7 @@ def _tool(name="noop"):
     async def handler(args, ctx):
         return "ok"
 
-    return Tool(name=name, description="x", parameters={"type": "object", "properties": {}}, handler=handler)
+    return Tool(name=name, description="x", handler=handler)
 
 
 async def test_agent_halts_further_model_calls_when_cap_exceeded():

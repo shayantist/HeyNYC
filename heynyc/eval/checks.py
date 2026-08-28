@@ -115,14 +115,20 @@ def _all_tool_calls(cr: CaseResult) -> list[str]:
 
 
 def check_expected_tools(cr: CaseResult) -> Optional[CheckResult]:
-    if not cr.case.expect_tools:
+    if not cr.case.expect_tools and not cr.case.expect_any_tools:
         return None
     called = _all_tool_calls(cr)
     missing = [t for t in cr.case.expect_tools if t not in called]
+    any_missing = bool(cr.case.expect_any_tools) and not any(
+        tool in called for tool in cr.case.expect_any_tools
+    )
     return CheckResult(
         "expected_tools",
-        passed=not missing,
-        detail="" if not missing else f"missing {missing}; called {called}",
+        passed=not missing and not any_missing,
+        detail=(
+            "" if not missing and not any_missing
+            else f"missing {missing}; expected any {cr.case.expect_any_tools}; called {called}"
+        ),
     )
 
 

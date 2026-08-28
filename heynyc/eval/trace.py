@@ -1,14 +1,15 @@
-"""Traces built from a CaseResult's transcript, persisted in OpenInference form.
+"""Compact eval summaries built from the resident-facing result projection.
 
-We don't re-instrument the agent: AgentResult already retains the full message
-list, so a trace is a transform of that plus the citation registry.
+These summaries support deterministic eval invariants. They are not the full agent
+loop. Live evals also export Pydantic AI's native OpenTelemetry spans, including
+model inputs, outputs, tool definitions, calls, results, and agent message history.
 
 In-memory, `Span` keeps ergonomic fields (kind/name/input/output) so the
 invariant checks read cleanly. On serialization, spans are emitted using the
 **OpenInference semantic conventions**, `openinference.span.kind` plus the
 canonical dotted attribute keys (`tool.name`, `tool_call.function.arguments`,
 `retrieval.documents.<i>.document.content`, `llm.output_messages.<i>...`), so a
-trace file can be loaded into Arize Phoenix / Langfuse without re-instrumentation.
+summary file can be loaded into Arize Phoenix / Langfuse.
 Ref: https://github.com/Arize-ai/openinference/blob/main/spec/semantic_conventions.md
 """
 from __future__ import annotations
@@ -16,8 +17,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_core import to_jsonable_python
 
 from heynyc.core.pii_redaction import redact_sensitive_identifiers
@@ -29,6 +33,32 @@ RETRIEVER_TOOLS: set[str] = {"index_search"}
 
 # Our ergonomic span kind -> the OpenInference `openinference.span.kind` value.
 _SPAN_KIND = {"llm": "LLM", "tool": "TOOL", "retriever": "RETRIEVER"}
+
+
+def eval_otel_exporter(
+    path: Path,
+) -> tuple[InstrumentationSettings, TracerProvider, IO[str]]:
+    """Export Pydantic AI's native, content-bearing OTel spans as JSON lines."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stream = path.open("w", encoding="utf-8")
+    provider = TracerProvider()
+    provider.add_span_processor(
+        SimpleSpanProcessor(
+            ConsoleSpanExporter(
+                out=stream,
+                formatter=lambda span: span.to_json(indent=None) + "\n",
+            )
+        )
+    )
+    return (
+        InstrumentationSettings(
+            tracer_provider=provider,
+            include_content=True,
+            include_binary_content=False,
+        ),
+        provider,
+        stream,
+    )
 
 def classify_outcome(text: str, status: str, grounded: bool = False) -> str:
     """Record only mechanically known completion status.

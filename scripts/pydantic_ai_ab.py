@@ -236,7 +236,6 @@ def build_factories(
         "answer_model_route": model,
         "index": retriever,
         "use_module_capabilities": True,
-        "current_awareness": current_awareness,
         "fact_review_model": _comparison_model(config.HEYNYC_FACT_REVIEW_MODEL),
         "fact_review_model_name": config.HEYNYC_FACT_REVIEW_MODEL,
         "structured_grounding": structured_grounding,

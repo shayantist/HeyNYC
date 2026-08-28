@@ -50,7 +50,6 @@ def test_release_gate_does_not_grade_resident_prose_with_string_matching():
 
     assert invariant_names.isdisjoint(
         {
-            "faithfulness",
             "abstain_or_redirect",
             "forbid_compliance",
             "currentness",

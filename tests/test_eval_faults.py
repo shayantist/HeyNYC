@@ -48,7 +48,6 @@ async def test_verification_fallback_probe_is_not_triggered_by_semantic_string_m
             "retrieve": Tool(
                 name="retrieve",
                 description="Retrieve official evidence",
-                parameters={"type": "object", "properties": {}},
                 handler=retrieve,
             )
         },

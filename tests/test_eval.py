@@ -236,6 +236,13 @@ def test_expected_tools_check_uses_the_whole_conversation():
     assert check_expected_tools(cr).passed
 
 
+def test_expected_tools_check_accepts_any_declared_retrieval_path():
+    case = _case(expect_any_tools=["web_search", "web_fetch"])
+
+    assert check_expected_tools(_result(case, tools=["web_fetch"])).passed
+    assert not check_expected_tools(_result(case, tools=["find_nyc_events"])).passed
+
+
 def test_forbidden_tools_check():
     cr = _result(_case(forbid_tools=["nearest"]), tools=["web_search"])
     assert check_forbidden_tools(cr).passed
@@ -615,7 +622,8 @@ async def test_evaluate_runs_invariants_and_writes_run(tmp_path):
     report = await evaluate([cr], link_checker=no_links)
     names = {c.name for r in report.reports for c in r.checks}
     assert "grounding" in names
-    assert "faithfulness" not in names
+    assert "faithfulness" in names
+    assert "link_liveness" in names
     assert report.reports[0].trace is not None
 
     write_run(tmp_path, report, metadata={"candidate_model": "test-model", "commit": "abc123"})
@@ -626,6 +634,54 @@ async def test_evaluate_runs_invariants_and_writes_run(tmp_path):
     assert data["total"] == 1
     assert data["metadata"] == {"candidate_model": "test-model", "commit": "abc123"}
     assert all("blocking" in check for case in data["cases"] for check in case["checks"])
+
+
+async def test_eval_otel_export_uses_native_pydantic_trace(tmp_path):
+    import json
+
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from heynyc.eval.trace import eval_otel_exporter
+
+    path = tmp_path / "otel-traces.jsonl"
+    settings, provider, stream = eval_otel_exporter(path)
+    Agent.instrument_all(settings)
+    tool_calls = 0
+
+    async def model(messages, info):
+        if tool_calls == 0:
+            return ModelResponse([ToolCallPart("lookup", {"query": "parks"}, "lookup-1")])
+        return ModelResponse([TextPart("Done")])
+
+    agent = Agent(FunctionModel(model), instructions="System instruction")
+
+    @agent.tool_plain
+    def lookup(query: str) -> str:
+        nonlocal tool_calls
+        tool_calls += 1
+        return f"result for {query}"
+
+    try:
+        await agent.run("Resident question")
+        provider.force_flush()
+    finally:
+        Agent.instrument_all(False)
+        provider.shutdown()
+        stream.close()
+
+    spans = [json.loads(line) for line in path.read_text().splitlines()]
+    attributes = [span["attributes"] for span in spans]
+    assert any(item.get("gen_ai.operation.name") == "invoke_agent" for item in attributes)
+    assert any(item.get("gen_ai.operation.name") == "execute_tool" for item in attributes)
+    assert any("gen_ai.input.messages" in item for item in attributes)
+    assert any("gen_ai.output.messages" in item for item in attributes)
+    assert any("gen_ai.tool.definitions" in item for item in attributes)
+    assert any("pydantic_ai.all_messages" in item for item in attributes)
+    assert "Resident question" in path.read_text()
+    assert "System instruction" in path.read_text()
+    assert "result for parks" in path.read_text()
 
 
 async def test_safety_case_requires_qualitative_review_and_persists_context(tmp_path):

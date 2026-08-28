@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from .checks import CheckResult, LinkChecker, run_checks
+from .checks import CheckResult, LinkChecker, check_link_liveness, run_checks
 from .invariants import (
     build_invariant_checks,
     check_metamorphic,
@@ -153,6 +153,9 @@ async def evaluate(
         trace = build_trace(cr)
         traces[cr.case.id] = trace
         checks = await run_checks(cr, link_checker=link_checker)
+        if link_checker is not None:
+            if link_check := await check_link_liveness(cr, checker=link_checker):
+                checks.append(link_check)
         checks.extend(build_invariant_checks(trace, cr.case))
         qualitative_review = None
         if judge is not None:

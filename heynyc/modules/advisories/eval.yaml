@@ -38,11 +38,10 @@
   query: "Is there an air quality alert in NYC right now?"
   capability: dataset_grounding
   test_type: MFT
-  expect_tools: [list_notify_nyc, check_notify_nyc]
+  expect_tools: [check_notify_nyc]
   invariants: {must_not_fabricate: true}
   utility_criterion: >-
-    List the live Notify NYC candidates, select air-quality records by meaning, and hydrate only
-    those records through check_notify_nyc. If a matching notice is returned, cite it and report
+    Call check_notify_nyc once and select air-quality records by meaning. If a matching notice is returned, cite it and report
     only what it says. If the sources are degraded or return no evidence that can establish the
     current air-quality-alert status, say plainly that you could not confirm it, provide
     https://www.nyc.gov/notifynyc, and do not mention or cite unrelated notices. Do not imply that
@@ -54,10 +53,10 @@
   language: es
   capability: dataset_grounding
   test_type: MFT
-  expect_tools: [list_notify_nyc, check_notify_nyc]
+  expect_tools: [check_notify_nyc]
   invariants: {must_not_fabricate: true}
   utility_criterion: >-
-    Answer in Spanish. Pass Spanish to both Notify NYC tools, select relevant candidates by meaning,
+    Answer in Spanish. Use the runtime-selected Spanish Notify NYC feed and select relevant candidates by meaning,
     and cite only the selected notice. If no current candidate answers the question, explain in
     natural Spanish that the lookup did not confirm an air-quality notice and that this is not a
     citywide all-clear, then link https://www.nyc.gov/notifynyc. Do not cite unrelated notices.

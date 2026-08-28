@@ -32,20 +32,14 @@ def test_compare_case_reports_recall_noise_duplicates_and_tokens() -> None:
 
     assert result["case_id"] == "library-hours"
     assert set(result["candidates"]) == {
-        "current",
-        "adaptive",
         "full",
         "tavily_basic",
     }
-    assert result["candidates"]["adaptive"]["required_passage_recall"] == 1.0
-    assert result["candidates"]["current"]["required_passage_recall"] == 1.0
     assert result["candidates"]["full"]["eligible"] is False
     assert result["candidates"]["tavily_basic"]["required_passage_recall"] == 1.0
     assert result["candidates"]["tavily_basic"]["required_text_density"] > 0.5
     assert result["candidates"]["tavily_basic"]["duplicate_ratio"] == 0.0
     assert result["candidates"]["tavily_basic"]["tokens"] > 0
-    assert result["candidates"]["current"]["selection_ms"] >= 0
-    assert result["candidates"]["current"]["external_cost_usd"] == 0.0
 
 
 def test_compare_case_normalizes_extracted_line_breaks_for_recall() -> None:
@@ -103,7 +97,11 @@ async def test_collect_cases_preserves_cleaned_preselection_text(
 
     async def fetch(url, client, query):
         assert client is None
-        return url, "Library", "Navigation. Open until 8 PM."
+        return type("Page", (), {
+            "final_url": url,
+            "title": "Library",
+            "text": "Navigation. Open until 8 PM.",
+        })()
 
     monkeypatch.setattr(
         "heynyc.eval.fetch_selection._fetch_page_with_browser",

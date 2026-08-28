@@ -7,15 +7,14 @@
   turns:
     - "any street fairs or markets this weekend?"
     - "which of those are in brooklyn?"
-  expect_tools: [find_nyc_events]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: conversation
   tags: [conversation, general-chat, must-win]
   utility_criterion: >-
-    The second turn narrows the FIRST turn's listings: it must answer from the events catalog
-    (the same lane that produced the shortlist), filtered to Brooklyn, keeping cited listings
-    with dates and links. It must not restart discovery through generic web search, re-ask what
-    the resident means, or lose the thread's subject.
+    The second turn narrows the FIRST turn's listings to Brooklyn, keeping cited listings with
+    dates and links. Reuse prior evidence when it is sufficient and search again only when needed.
+    Do not re-ask what the resident means or lose the thread's subject.
   notes: >-
     Rewritten 2026-07-21 to a date-durable subject. The original WC-game phrasing expired with
     the tournament and started failing on temporal reality rather than thread-keeping.
@@ -25,7 +24,7 @@
   turns:
     - "whats happening tomorrow"
     - "free stuff in brooklyn"
-  expect_tools: [find_nyc_events]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: conversation
   tags: [F052, conversation, general-chat, must-win]
@@ -109,7 +108,7 @@
   turns:
     - "who will win the 2030 world cup final"
     - "ok where could i watch it in nyc when it happens"
-  expect_tools: [find_nyc_events]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: conversation
   tags: [F047, F050, conversation, general-chat, must-win]
@@ -311,7 +310,7 @@
 
 - id: global_f225_queens_weekend_event_no_match
   query: "what free music or outdoor movies are happening in Queens this weekend?"
-  expect_tools: [find_nyc_events]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: general-chat
   invariants: {must_ground: true, must_not_fabricate: true}
@@ -426,7 +425,7 @@
 - id: convo_incidental_empty_check_stays_silent
   turns:
     - "what to prepare for tomorrows parade"
-  expect_tools: [find_nyc_events]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: conversation
   tags: [F067, conversation, general-chat, must-win]
@@ -502,7 +501,8 @@
 
 - id: cross_module_events_and_cooling_keep_separate_constraints
   query: "taking my friends out in queens on saturday, any free events, and if it hits 95 again where can we duck in somewhere cool near flushing?"
-  expect_tools: [find_nyc_events, find_cool_options]
+  expect_tools: [find_cool_options]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: multi-intent
   tags: [F090, F091, F263, cross-module, multi-intent, current-information, must-win]
@@ -518,7 +518,8 @@
 
 - id: cross_module_family_events_and_cooling_preserve_evidence
   query: "taking my niece and her friends out in queens on saturday, any free events for kids, and if it hits 95 again where can we duck in somewhere cool near flushing?"
-  expect_tools: [find_nyc_events, find_cool_options]
+  expect_tools: [find_cool_options]
+  expect_any_tools: [web_search, web_fetch]
   abstain: false
   capability: multi-intent
   tags: [F104, cross-module, multi-intent, current-information, must-win]
