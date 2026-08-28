@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import textwrap
 from dataclasses import dataclass, field
 
 from heynyc.channels import analytics
@@ -13,6 +16,30 @@ class FakeResult:
     tool_calls_made: list = field(default_factory=list)
     usage: dict = field(default_factory=lambda: {"input_tokens": 5, "output_tokens": 9, "latency_ms": 12.0})
     diagnostics: dict = field(default_factory=dict)
+
+
+def test_runtime_analytics_import_does_not_require_opentelemetry_sdk():
+    script = textwrap.dedent("""
+        import importlib.abc
+        import sys
+        import typing
+
+        class BlockSdk(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.startswith("opentelemetry.sdk"):
+                    raise ModuleNotFoundError(fullname)
+                return None
+
+        sys.meta_path.insert(0, BlockSdk())
+        import heynyc.channels.app
+        from heynyc.eval.trace import eval_otel_exporter
+
+        typing.get_type_hints(eval_otel_exporter)
+    """)
+
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_record_turn_merges_extra(tmp_path):

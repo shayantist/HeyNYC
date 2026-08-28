@@ -19,8 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+from opentelemetry.trace import TracerProvider
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_core import to_jsonable_python
 
@@ -39,9 +38,12 @@ def eval_otel_exporter(
     path: Path,
 ) -> tuple[InstrumentationSettings, TracerProvider, IO[str]]:
     """Export Pydantic AI's native, content-bearing OTel spans as JSON lines."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
+    from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+
     path.parent.mkdir(parents=True, exist_ok=True)
     stream = path.open("w", encoding="utf-8")
-    provider = TracerProvider()
+    provider = SdkTracerProvider()
     provider.add_span_processor(
         SimpleSpanProcessor(
             ConsoleSpanExporter(
