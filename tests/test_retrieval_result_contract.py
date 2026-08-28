@@ -10,7 +10,7 @@ from heynyc.core.tools.web_search import web_search_tools
 async def test_web_fetch_labels_full_page_evidence(monkeypatch):
     url = "https://example.com/enrollment"
 
-    async def fetched(_url, _client, _query, *, render=False):
+    async def fetched(_url, _client, *, render=False):
         assert render is False
         return web_fetch_module._FetchedPage(
             final_url=url,
@@ -24,26 +24,25 @@ async def test_web_fetch_labels_full_page_evidence(monkeypatch):
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
 
     result = await web_fetch_tools()[0].handler(
-        {"url": url, "query": "Queens enrollment phone hours"},
+        {"url": url},
         ctx,
     )
 
-    assert "CONTENT SCOPE: full extracted page" in result
+    assert "CONTENT SCOPE: numbered extracted page" in result
 
 
 def test_retrieval_tools_explain_constraint_and_refetch_boundaries():
     search = web_search_tools([])[0]
     fetch = web_fetch_tools()[0]
 
-    query_description = search.parameters["properties"]["query"]["description"]
-    assert "one fact-finding objective" in query_description
-    assert "constraints that change that fact" in query_description
-    assert "multiple independent facts" in query_description
-    assert "parallel" in query_description
-    assert "full extracted page" in fetch.description
-    assert "same URL" in fetch.description
+    query_description = search._input_schema()["properties"]["queries"]["description"]
+    assert "independent focused searches" in query_description.lower()
+    assert set(fetch._input_schema()["properties"]) == {"url", "find"}
+    assert "numbered evidence" in fetch.description
 
 
 def test_answer_contract_requires_hours_or_an_explicit_limit():
     assert "calling or visiting at a particular time" in BASE_SYSTEM_PROMPT
     assert "say that plainly" in BASE_SYSTEM_PROMPT
+    assert "systemwide statement supports a location only" in BASE_SYSTEM_PROMPT
+    assert "current high-stakes fact" in BASE_SYSTEM_PROMPT

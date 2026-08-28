@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 from ..registry import Registry
-from .base import Tool, ToolContext, ToolHandler
+from .base import Tool, ToolContext, ToolFailure, ToolHandler, ToolInput
 
-__all__ = ["Tool", "ToolContext", "ToolHandler", "build_toolbox"]
+__all__ = [
+    "Tool",
+    "ToolContext",
+    "ToolFailure",
+    "ToolHandler",
+    "ToolInput",
+    "build_toolbox",
+]
 
 
 def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
@@ -14,7 +21,6 @@ def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
     behind the application boundary rather than exposed as a competing tool.
     The geo tools self-report when a requested category has no dataset.
     """
-    from ..temporal import temporal_tools
     from .about import about_tools
     from .geo import geo_tools
     from .web_fetch import web_fetch_tools
@@ -30,8 +36,6 @@ def build_toolbox(registry: Registry, index=None) -> dict[str, Tool]:
     for tool in web_fetch_tools():
         tools[tool.name] = tool
     for tool in about_tools():
-        tools[tool.name] = tool
-    for tool in temporal_tools():
         tools[tool.name] = tool
     # Module-specific tools (the extensibility headline): a module may ship tools.py.
     for tool in registry.load_module_tools():

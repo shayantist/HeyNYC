@@ -138,6 +138,14 @@ class CitationRegistry:
         current = self.mapping()
         return {citation_id for citation_id in self._touch_log[cursor:] if citation_id in current}
 
+    def touch(self, citation_id: str) -> bool:
+        """Mark one persisted citation as used again without changing its identity."""
+        if citation_id not in self.mapping():
+            return False
+        self._touched.add(citation_id)
+        self._touch_log.append(citation_id)
+        return True
+
     def register(
         self,
         url: str,
@@ -147,6 +155,7 @@ class CitationRegistry:
         kind: CiteKind = "WEB",
         valid_as_of: str = "",
         provenance: dict | None = None,
+        touch: bool = True,
     ) -> str:
         """Register a source, returning its semantic id (S1, S2, ...).
 
@@ -162,8 +171,9 @@ class CitationRegistry:
         key = (kind, url, snippet, evidence_grade, data_hash)
         existing = self._by_key.get(key)
         if existing is not None:
-            self._touched.add(existing.id)
-            self._touch_log.append(existing.id)
+            if touch:
+                self._touched.add(existing.id)
+                self._touch_log.append(existing.id)
             return existing.id
         self._counter += 1
         cite_id = f"S{self._counter}"
@@ -173,8 +183,9 @@ class CitationRegistry:
         )
         self._by_key[key] = citation
         self._ordered.append(citation)
-        self._touched.add(cite_id)
-        self._touch_log.append(cite_id)
+        if touch:
+            self._touched.add(cite_id)
+            self._touch_log.append(cite_id)
         return cite_id
 
     def discard(self, ids: set[str]) -> None:

@@ -42,7 +42,8 @@ def chunk_text(text: str, max_chars: int = 1200, overlap: int = 150) -> list[str
     while start < len(text):
         end = min(start + max_chars, len(text))
         if end < len(text):
-            space = text.rfind(" ", start + max_chars - overlap, end)
+            boundary_start = start if overlap == 0 else start + max_chars - overlap
+            space = text.rfind(" ", boundary_start, end)
             if space > start:
                 end = space
         chunks.append(text[start:end].strip())

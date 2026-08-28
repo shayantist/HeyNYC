@@ -44,7 +44,7 @@ async def test_pydantic_plain_output_accepts_registered_citation_id():
     assert await runtime._validate_grounding(context, output) == output
 
 
-async def test_pydantic_plain_output_rejects_discovery_citation_id():
+async def test_pydantic_high_stakes_plain_output_requires_grounded_format():
     citations = CitationRegistry()
     citation_id = citations.register(
         "https://www.nyc.gov/example",
@@ -56,10 +56,14 @@ async def test_pydantic_plain_output_rejects_discovery_citation_id():
     runtime = object.__new__(PydanticRuntimeAdapter)
     runtime._claim_support_checker = None
     context = SimpleNamespace(
-        deps=ToolContext(citations=citations, registry=None)
+        deps=ToolContext(
+            citations=citations,
+            registry=None,
+            current_turn_high_stakes=True,
+        )
     )
 
-    with pytest.raises(ModelRetry, match="authoritative source"):
+    with pytest.raises(ModelRetry, match="grounded_answer"):
         await runtime._validate_grounding(
             context,
             f"An unsupported completion of the snippet. {{cite:{citation_id}}}",

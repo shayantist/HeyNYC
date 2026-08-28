@@ -12,15 +12,25 @@ from heynyc.core import config
 from heynyc.core.citations import CitationRegistry
 from heynyc.core.manifest import ServiceModule
 from heynyc.core.registry import Registry
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import ToolContext
 from heynyc.core.tools.web_fetch import (
-    _evidence_chunks,
     _extract_response,
-    _relevant_chunks,
     _route_public_request,
     web_fetch_tools,
 )
 from heynyc.core.tools.web_search import web_search_tools
+
+
+def test_web_fetch_preserves_json_ld_as_generic_structured_data():
+    html = """
+    <html><head><script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Event","name":"Jazz night"}
+    </script></head><body><main>Jazz night is Thursday.</main></body></html>
+    """
+
+    assert web_fetch_module._json_ld(html) == [
+        {"@context": "https://schema.org", "@type": "Event", "name": "Jazz night"},
+    ]
 
 
 class _Response:
@@ -80,6 +90,109 @@ def _assert_fetch_provenance(citation: dict, evidence_grade: str, source_tier: s
     assert provenance["acquisition"]["final_url"] == citation["url"]
 
 
+def test_page_links_normalize_child_urls_and_anchor_text() -> None:
+    html = """
+    <a href="/events/indie-night">Indie Night at Public Records</a>
+    <a href="https://guide.example/events/indie-night#tickets">Tickets</a>
+    <a href="mailto:hello@example.com">Email us</a>
+    """
+
+    assert web_fetch_module._page_links(html, "https://guide.example/week") == [
+        {
+            "url": "https://guide.example/events/indie-night",
+            "title": "Indie Night at Public Records",
+        }
+    ]
+
+
+def test_page_links_prefer_article_links_over_site_navigation() -> None:
+    html = """
+    <header><a href="/things-to-do">Things to do in New York City</a></header>
+    <main>
+      <article><a href="/events/indie-night">Indie Night at Public Records</a></article>
+    </main>
+    <footer><a href="/about">About New York City</a></footer>
+    """
+
+    assert web_fetch_module._page_links(html, "https://guide.example/week") == [{
+        "url": "https://guide.example/events/indie-night",
+        "title": "Indie Night at Public Records",
+    }]
+
+
+async def test_web_fetch_returns_event_pages_as_generic_numbered_text() -> None:
+    url = "https://guide.example/indie-night"
+    html = """
+    <html><head><title>Indie Night</title>
+    <script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"MusicEvent","name":"Indie Night",
+       "startDate":"2099-08-21T18:00:00-04:00","endDate":"2099-08-21T21:00:00-04:00"}
+    </script></head><body><main>Indie Night is a neighborhood music event with doors at six.
+    Check the organizer page for current admission information and venue policies.</main></body></html>
+    """
+    ctx = ToolContext(
+        citations=CitationRegistry(), registry=Registry([]), http=_Client({url: html}),
+    )
+
+    output = await web_fetch_tools()[0].handler({"url": url}, ctx)
+
+    assert "Indie Night is a neighborhood music event" in output
+    assert "Normalized event:" not in output
+    assert "temporal_status" not in output
+
+
+async def test_web_fetch_returns_all_direct_links_from_selected_guide(
+    monkeypatch,
+) -> None:
+    url = "https://guide.example/week"
+    target_url = "https://organizer.example/events/accordion-night"
+    other_url = "https://organizer.example/events/october-fair"
+    page = web_fetch_module._FetchedPage(
+        final_url=url,
+        title="This week",
+        text=(
+            "Accordion Night is Friday August 28 at 7 PM. "
+            + ("Unrelated archive material. " * 180)
+            + "October Street Fair is October 3."
+        ),
+        child_links=[
+            {"url": target_url, "title": "Accordion Night"},
+            {"url": other_url, "title": "October Street Fair"},
+        ],
+        acquisition=web_fetch_module.WebFetchAcquisition(
+            requested_url=url,
+            final_url=url,
+            citation_url=url,
+            route="http",
+            fetched_at=datetime.now().astimezone(),
+        ),
+    )
+
+    async def fetch(*_args, **_kwargs):
+        return page
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fetch)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        evidence_token_budget=100_000,
+    )
+
+    output = await web_fetch_tools()[0].handler(
+        {"url": url, "query": "Accordion Night Friday August 28"},
+        ctx,
+    )
+
+    assert f"Related URL only, not event evidence: Accordion Night: {target_url}" in output
+    assert f"Related URL only, not event evidence: October Street Fair: {other_url}" in output
+    citation = ctx.citations.mapping()["S1"]
+    assert target_url not in citation["snippet"]
+    assert citation["provenance"]["links"] == [
+        {"url": target_url, "title": "Accordion Night"},
+        {"url": other_url, "title": "October Street Fair"},
+    ]
+
+
 class _BrowserRoute:
     def __init__(self):
         self.action = ""
@@ -101,79 +214,7 @@ def _stub_public_url_validation(monkeypatch):
     async def validate(url: str) -> None:
         return None
 
-    async def empty_search(_args, _ctx):
-        return "No results from the live web search."
-
     monkeypatch.setattr(web_fetch_module, "_validate_public_url", validate)
-    monkeypatch.setattr(
-        web_fetch_module,
-        "web_search_tools",
-        lambda *_args, **_kwargs: [
-            Tool(
-                name="web_search",
-                description="Search",
-                parameters={"type": "object", "properties": {}},
-                handler=empty_search,
-            )
-        ],
-    )
-
-
-def test_relevant_chunks_put_strongest_evidence_first():
-    text = (
-        "Kitchen navigation. "
-        + ("Navigation services programs contact us. " * 60)
-        + "Kitchen cooks are not eligible for a tip credit and must receive the full minimum wage."
-    )
-
-    chunks = _relevant_chunks(text, "kitchen cooks tip credit full minimum wage", limit=2)
-
-    assert "full minimum wage" in chunks[0]
-
-
-def test_focused_retrieval_stops_when_selected_chunks_cover_the_scope():
-    text = (
-        ("Tenant program history without contact details. " * 120)
-        + "For other questions, call 311 and ask for the Tenant Helpline."
-    )
-
-    chunks = _relevant_chunks(text, "call 311 ask Tenant Helpline", limit=None)
-
-    assert len(chunks) == 1
-    assert "Tenant Helpline" in chunks[0]
-
-
-def test_evidence_chunks_use_the_token_budget_instead_of_a_fixed_count(monkeypatch):
-    text = "\n\n".join(
-        f"Target section {index}. " + ("context " * 210)
-        for index in range(6)
-    )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value) // 4)
-    budget = 2_000
-
-    chunks = _evidence_chunks(text, "target section", token_budget=budget)
-
-    assert len(chunks) > 2
-    assert len("\n\n".join(chunks)) // 4 <= budget
-
-
-def test_evidence_chunks_expand_with_available_context(monkeypatch):
-    text = "\n\n".join(
-        f"Target section {index}. " + ("context " * 210)
-        for index in range(6)
-    )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value) // 4)
-
-    smaller = _evidence_chunks(text, "target section", token_budget=900)
-    larger = _evidence_chunks(text, "target section", token_budget=2_000)
-
-    assert len(larger) > len(smaller)
-
-
-def test_evidence_chunks_emit_nothing_when_no_context_remains(monkeypatch):
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value))
-
-    assert _evidence_chunks("Target evidence.", "target", token_budget=0) == []
 
 
 async def test_web_fetch_preserves_the_source_when_no_page_text_fits(
@@ -208,6 +249,49 @@ async def test_web_fetch_preserves_the_source_when_no_page_text_fits(
     assert ctx.citations.mapping()["S1"]["provenance"]["evidence_grade"] == "unavailable"
 
 
+async def test_web_fetch_preserves_page_text_when_model_capacity_is_unknown(
+    monkeypatch,
+) -> None:
+    url = "https://www.nyc.gov/example"
+
+    async def fetched(*_args, **_kwargs):
+        return _rendered_result(url, "Official page", "The requested detail is present.")
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fetched)
+    monkeypatch.setattr("heynyc.core.memory.context_capacity", lambda *_args: 0)
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([ServiceModule(name="benefits", seeds=[url])]),
+        evidence_model="unknown/model",
+    )
+
+    out = await web_fetch_tools()[0].handler({"url": url}, ctx)
+
+    assert "The requested detail is present." in out
+    assert "did not fit" not in out
+
+
+async def test_web_fetch_labels_budget_truncated_page_text(monkeypatch) -> None:
+    url = "https://www.nyc.gov/example"
+
+    async def fetched(*_args, **_kwargs):
+        return _rendered_result(url, "Official page", "First line.\nSecond line.")
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", fetched)
+    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda value, *_: len(value))
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([ServiceModule(name="benefits", seeds=[url])]),
+        evidence_token_budget=20,
+        evidence_model="test/model",
+    )
+
+    out = await web_fetch_tools()[0].handler({"url": url}, ctx)
+
+    assert "CONTENT SCOPE: partial numbered page" in out
+    assert ctx.citations.mapping()["S1"]["provenance"]["content_complete"] is False
+
+
 async def test_browser_blocks_private_subresources(monkeypatch):
     async def validate(url: str) -> None:
         if url == "http://127.0.0.1/private":
@@ -219,36 +303,6 @@ async def test_browser_blocks_private_subresources(monkeypatch):
     await _route_public_request(route, _BrowserRequest("http://127.0.0.1/private"))
 
     assert route.action == "abort"
-
-
-def test_relevant_chunks_fail_closed_when_the_page_has_no_query_overlap():
-    chunks = _relevant_chunks(
-        "Official page with only unrelated navigation text. " * 80,
-        "quantum banana eligibility",
-        limit=2,
-    )
-
-    assert chunks == []
-
-
-def test_relevant_chunks_support_non_latin_query_terms():
-    chunks = _relevant_chunks(
-        "সহায়তা সম্পর্কে অন্য তথ্য। স্ন্যাপ সুবিধা নবায়নের সরকারি নির্দেশনা এখানে আছে।",
-        "স্ন্যাপ সুবিধা নবায়ন",
-    )
-
-    assert chunks == [
-        "সহায়তা সম্পর্কে অন্য তথ্য। স্ন্যাপ সুবিধা নবায়নের সরকারি নির্দেশনা এখানে আছে।"
-    ]
-
-
-def test_relevant_chunks_keep_short_non_ascii_terms():
-    chunks = _relevant_chunks(
-        "官方福利更新说明。",
-        "福利 更新",
-    )
-
-    assert chunks == ["官方福利更新说明。"]
 
 
 def test_html_extraction_uses_one_canonical_result(monkeypatch):
@@ -330,35 +384,6 @@ def test_html_extraction_uses_last_resort_fallback_when_main_text_is_empty(
     assert text == "Fallback page text."
 
 
-def test_short_page_returns_full_extracted_text_without_keyword_filtering(
-    monkeypatch,
-):
-    text = "SNAP applications and case management are available through ACCESS HRA."
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 400)
-
-    assert _evidence_chunks(text, "como solicito ayuda para comprar comida") == [text]
-
-
-def test_medium_page_keeps_its_lead_instead_of_dropping_context(monkeypatch):
-    text = "Service is available at every location.\n" + ("Instructions and details. " * 250)
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 1_577)
-
-    assert _evidence_chunks(text, "instructions details") == [text]
-
-
-def test_long_page_keeps_query_focused_selection(monkeypatch):
-    text = (
-        "Navigation and unrelated material. " * 120
-        + "Food service workers must receive the full minimum wage."
-    )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 3_001)
-
-    chunks = _evidence_chunks(text, "food service full minimum wage")
-
-    assert len(chunks) <= 2
-    assert "full minimum wage" in "\n".join(chunks)
-
-
 async def test_web_fetch_uses_the_resident_turn_when_query_is_omitted(monkeypatch):
     url = "https://www.nyc.gov/site/hra/help/snap-application-faq.page"
     text = (
@@ -414,8 +439,23 @@ def test_web_fetch_schema_accepts_one_public_url():
     tool = web_fetch_tools()[0]
 
     assert tool.name == "web_fetch"
-    assert set(tool.parameters["properties"]) == {"url", "query", "render", "evidence_scope"}
-    assert tool.parameters["required"] == ["url"]
+    assert set(tool._input_schema()["properties"]) == {"url", "find"}
+    assert tool._input_schema()["required"] == ["url"]
+
+
+async def test_web_fetch_reports_when_find_text_is_absent() -> None:
+    url = "https://example.com/current-guidance"
+    ctx = ToolContext(
+        citations=CitationRegistry(),
+        registry=Registry([]),
+        http=_Client({url: "First fact.\nSecond fact."}),
+    )
+
+    out = await web_fetch_tools()[0].handler({"url": url, "find": "missing phrase"}, ctx)
+
+    assert out.status == "partial"
+    assert "was not found on the fetched page" in out.reason
+    assert str(out.source_url) == url
 
 
 def test_rendered_fetch_uses_the_browser_native_user_agent():
@@ -456,72 +496,17 @@ async def test_web_fetch_labels_the_source_before_its_evidence():
     assert out.endswith("{cite:S1}")
 
 
-async def test_web_fetch_preserves_caller_evidence_scope():
-    url = "https://example.com/utility-rights"
+async def test_web_fetch_returns_line_addressable_page_text():
+    url = "https://example.com/current-guidance"
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([]),
-        http=_Client({url: "A payment agreement may prevent service shutoff."}),
+        http=_Client({url: "First fact.\nSecond fact."}),
     )
 
-    out = await web_fetch_tools()[0].handler(
-        {
-            "url": url,
-            "query": "payment agreement shutoff",
-            "evidence_scope": "SHUTOFF PROTECTIONS",
-        },
-        ctx,
-    )
+    out = await web_fetch_tools()[0].handler({"url": url}, ctx)
 
-    assert out.startswith("EVIDENCE SCOPE: SHUTOFF PROTECTIONS\n")
-    assert "SOURCE S1:" in out
-
-
-async def test_web_fetch_evidence_scope_limits_full_page_output(monkeypatch):
-    url = "https://example.com/tenant-help"
-    text = (
-        "Unrelated program history and partner directory. " * 80
-        + "For other questions, call 311 and ask for the Tenant Helpline."
-    )
-    monkeypatch.setattr(web_fetch_module, "_text_tokens", lambda _text, *_: 2_000)
-    ctx = ToolContext(
-        citations=CitationRegistry(),
-        registry=Registry([]),
-        http=_Client({url: text}),
-    )
-
-    out = await web_fetch_tools()[0].handler(
-        {
-            "url": url,
-            "query": "call 311 ask Tenant Helpline",
-            "evidence_scope": "Tenant Helpline route",
-        },
-        ctx,
-    )
-
-    assert "Tenant Helpline" in out
-    assert out.count("Unrelated program history") < 80
-    assert "CONTENT SCOPE: query-selected excerpts" in out
-
-
-def test_relevant_web_excerpts_do_not_start_inside_a_word():
-    words = [f"distinctword{index}" for index in range(500)]
-    text = " ".join(words)
-
-    chunks = web_fetch_module._relevant_chunks(text, "distinctword300")
-
-    assert all(chunk.split()[0] in words for chunk in chunks)
-
-
-def test_relevant_web_excerpts_start_at_a_complete_sentence():
-    text = (
-        "Background " + ("context " * 230) + ". "
-        "For organizing questions, call 311 and ask for the Tenant Helpline."
-    )
-
-    chunks = web_fetch_module._relevant_chunks(text, "call 311 Tenant Helpline")
-
-    assert chunks[0].startswith("For organizing questions")
+    assert "L1: First fact. Second fact." in out
 
 
 async def test_web_fetch_rejects_userinfo_before_network():
@@ -534,7 +519,7 @@ async def test_web_fetch_rejects_userinfo_before_network():
         {"url": "https://user:password@example.com/private"}, ctx,
     )
 
-    assert "could not be fetched" in out.lower()
+    assert out.status == "rejected"
     assert client.urls == []
 
 
@@ -555,7 +540,7 @@ async def test_web_fetch_rejects_plain_http_before_network():
         {"url": url, "query": "current official guidance"}, ctx,
     )
 
-    assert "could not be fetched" in out.lower()
+    assert out.status == "rejected"
     assert client.urls == []
     assert ctx.citations.mapping() == {}
 
@@ -584,7 +569,7 @@ async def test_web_fetch_validates_dns_before_using_an_injected_client(monkeypat
 
     assert checked == [url]
     assert client.urls == []
-    assert "could not be fetched" in out.lower()
+    assert out.status == "rejected"
 
 
 async def test_web_fetch_uses_pydantic_ssrf_download_without_an_injected_client(
@@ -747,46 +732,6 @@ async def test_web_fetch_uses_browser_after_a_production_403(monkeypatch):
     assert "October 20" in out
 
 
-async def test_web_fetch_uses_browser_after_a_production_javascript_shell(
-    monkeypatch,
-):
-    url = "https://www.nba.com/knicks/schedule"
-    browser_calls: list[str] = []
-
-    async def shell_download(_requested_url, **_kwargs):
-        return _Response(
-            "<title>Schedule | New York Knicks</title>"
-            "<div id='__next'>" + ("Teams Tickets Schedule Shop " * 30) + "</div>"
-            "<script>window.pageData={date:'October 20',time:'7 PM',"
-            "opponent:'Philadelphia'}</script>"
-        )
-
-    async def rendered(requested_url):
-        browser_calls.append(requested_url)
-        return _rendered_result(
-            requested_url,
-            "Knicks schedule",
-            "The Knicks next game date and time is Tuesday October 20 at 7:00 PM EDT. "
-            "The opponent is Philadelphia.",
-        )
-
-    monkeypatch.setattr(web_fetch_module, "safe_download", shell_download)
-    monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
-    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
-
-    out = await web_fetch_tools()[0].handler(
-        {
-            "url": url,
-            "query": "next Knicks game date time opponent",
-            "render": True,
-        },
-        ctx,
-    )
-
-    assert browser_calls == [url]
-    assert "October 20" in out
-
-
 async def test_web_fetch_keeps_usable_static_text_without_inferring_a_visual_gap(
     monkeypatch,
 ):
@@ -821,7 +766,7 @@ async def test_web_fetch_keeps_usable_static_text_without_inferring_a_visual_gap
     assert "Wednesday 10 am - 6 pm" in out
 
 
-async def test_web_fetch_renders_when_static_text_misses_the_query_target(monkeypatch):
+async def test_web_fetch_does_not_render_again_for_a_usable_static_page(monkeypatch):
     url = "https://www.queenslibrary.org/about-us/locations/corona"
     browser_calls: list[str] = []
 
@@ -844,11 +789,11 @@ async def test_web_fetch_renders_when_static_text_misses_the_query_target(monkey
         {"url": url, "query": "site wheelchair accessibility"}, ctx,
     )
 
-    assert browser_calls == [url]
-    assert "Wheelchair accessible" in out
+    assert browser_calls == []
+    assert "Branch hours" in out
 
 
-async def test_web_fetch_renders_a_static_calendar_that_reports_zero_events(monkeypatch):
+async def test_web_fetch_does_not_apply_event_heuristics_to_generic_pages(monkeypatch):
     url = "https://www.example.com/calendar"
     browser_calls: list[str] = []
 
@@ -872,13 +817,10 @@ async def test_web_fetch_renders_a_static_calendar_that_reports_zero_events(monk
     monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
 
-    out = await web_fetch_tools()[0].handler(
-        {"url": url, "query": "music events NYC Monday August 17 2026"},
-        ctx,
-    )
+    out = await web_fetch_tools()[0].handler({"url": url}, ctx)
 
-    assert browser_calls == [url]
-    assert "Joe Hisaishi" in out
+    assert browser_calls == []
+    assert "Showing 0 Events" in out
 
 
 async def test_web_fetch_can_explicitly_render_a_page_with_usable_static_text(
@@ -909,26 +851,6 @@ async def test_web_fetch_can_explicitly_render_a_page_with_usable_static_text(
 
     assert browser_calls == [url]
     assert "Philadelphia" in out
-
-
-async def test_web_fetch_renders_the_same_url_at_most_once_per_turn(monkeypatch):
-    url = "https://example.com/schedule"
-    browser_calls: list[str] = []
-
-    async def rendered(requested_url):
-        browser_calls.append(requested_url)
-        raise RuntimeError("browser failed")
-
-    monkeypatch.setattr(web_fetch_module, "_fetch_rendered_page", rendered)
-    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
-    tool = web_fetch_tools()[0]
-
-    first = await tool.handler({"url": url, "render": True}, ctx)
-    second = await tool.handler({"url": url, "render": True}, ctx)
-
-    assert "could not be fetched" in first
-    assert "already attempted" in second
-    assert browser_calls == [url]
 
 
 async def test_web_fetch_fetches_only_seeded_pages_and_returns_relevant_citations():
@@ -976,10 +898,8 @@ async def test_web_fetch_rejects_access_wall_content():
         ctx,
     )
 
-    assert "could not be fetched" in out
-    assert ctx.citations.mapping()["S1"]["provenance"] == {
-        "evidence_grade": "unavailable"
-    }
+    assert out.status == "unavailable"
+    assert ctx.citations.mapping() == {}
 
 
 async def test_web_fetch_uses_browser_after_an_access_wall(monkeypatch):
@@ -1135,9 +1055,7 @@ def test_rendered_page_prefers_visible_text_over_hidden_responsive_markup():
         "Tuesday Oct 20 7:00 PM EDT Philadelphia 76ers Madison Square Garden",
     )
 
-    chunks = _relevant_chunks(text, "Knicks 76ers game date time", limit=1)
-
-    assert "7:00 PM EDT" in chunks[0]
+    assert "7:00 PM EDT" in text
     assert "PDT" not in text
 
 
@@ -1267,16 +1185,16 @@ async def test_web_fetch_calls_are_atomic_when_one_url_fails():
     client = _Client({approved: "Official cash assistance guidance."})
     ctx = ToolContext(citations=CitationRegistry(), registry=registry, http=client)
 
-    failed = await web_fetch_tools()[0].handler(
-        {"url": rejected, "query": "cash assistance guidance"}, ctx,
-    )
+    with pytest.raises(KeyError):
+        await web_fetch_tools()[0].handler(
+            {"url": rejected, "query": "cash assistance guidance"}, ctx,
+        )
     out = await web_fetch_tools()[0].handler(
         {"url": approved, "query": "cash assistance guidance"}, ctx,
     )
 
     assert client.urls == [rejected, approved]
     assert "Official cash assistance guidance" in out
-    assert "could not be fetched" in failed
 
 
 async def test_web_fetch_keeps_editorial_source_tier_on_fetched_evidence():
@@ -1284,7 +1202,6 @@ async def test_web_fetch_keeps_editorial_source_tier_on_fetched_evidence():
     registry = Registry([
         ServiceModule(
             name="events",
-            official_only=False,
             allowlist=["timeout.com"],
             source_tiers={"editorial": ["timeout.com"]},
         )
@@ -1306,7 +1223,6 @@ async def test_web_fetch_trust_metadata_overrides_a_gov_suffix():
     registry = Registry([
         ServiceModule(
             name="events",
-            official_only=False,
             allowlist=["sub.events.example.gov"],
             source_tiers={"editorial": ["events.example.gov"]},
         )
@@ -1328,7 +1244,6 @@ async def test_web_fetch_marks_an_editorial_seed_as_fetched():
     registry = Registry([
         ServiceModule(
             name="events",
-            official_only=False,
             seeds=[url],
             allowlist=["worldcup.example"],
             source_tiers={"editorial": ["worldcup.example"]},
@@ -1352,7 +1267,6 @@ async def test_web_fetch_accepts_explicit_authoritative_domain():
     registry = Registry([
         ServiceModule(
             name="events",
-            official_only=False,
             allowlist=["nycgovparks.org"],
             source_tiers={"authoritative": ["nycgovparks.org"]},
         )
@@ -1464,39 +1378,19 @@ async def test_failed_source_fetch_preserves_official_excerpt_history():
         ctx,
     )
 
-    assert "could not be fetched" in out
-    assert "preserve other verified results" not in out.lower()
-    assert "do not guess" not in out.lower()
+    assert out.status == "unavailable"
     assert ctx.citations.mapping()["S1"]["provenance"] == {
         "evidence_grade": "authoritative_excerpt",
         "source_tier": "authoritative",
     }
 
 
-async def test_failed_fetch_fallback_search_preserves_the_page_identity(monkeypatch):
+async def test_failed_fetch_preserves_the_page_identity_for_the_agent(monkeypatch):
     url = "https://www.nyc.gov/content/organize/pages/talk-to-tenants-nav"
-    captured = {}
-
     async def unavailable(*_args, **_kwargs):
         raise ValueError("blocked")
 
-    async def search(args, _ctx):
-        captured.update(args)
-        return "Alternate official source"
-
     monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", unavailable)
-    monkeypatch.setattr(
-        web_fetch_module,
-        "web_search_tools",
-        lambda *_args, **_kwargs: [
-            Tool(
-                name="web_search",
-                description="Search",
-                parameters={"type": "object", "properties": {}},
-                handler=search,
-            )
-        ],
-    )
     ctx = ToolContext(
         citations=CitationRegistry(),
         registry=Registry([ServiceModule(name="housing", allowlist=["nyc.gov"])]),
@@ -1507,9 +1401,19 @@ async def test_failed_fetch_fallback_search_preserves_the_page_identity(monkeypa
         ctx,
     )
 
-    assert captured["query"] == f"{url} tenant organizing resources"
-    assert captured["prefer"] == ["www.nyc.gov"]
-    assert "Alternate official source" in out
+    assert str(out.source_url) == url
+    assert out.status == "unavailable"
+
+
+async def test_unexpected_fetch_programming_error_is_not_hidden(monkeypatch):
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("programming bug")
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_page_with_browser", broken)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        await web_fetch_tools()[0].handler({"url": "https://example.com/page"}, ctx)
 
 
 async def test_failed_source_fetch_preserves_canonical_city_discovery_history():
@@ -1534,7 +1438,7 @@ async def test_failed_source_fetch_preserves_canonical_city_discovery_history():
         ctx,
     )
 
-    assert "could not be fetched" in out
+    assert out.status == "unavailable"
     assert ctx.citations.mapping()["S1"] == {
         "id": "S1",
         "url": canonical_url,
@@ -1586,7 +1490,7 @@ async def test_web_fetch_does_not_follow_a_redirect_off_curated_domains():
 
     assert client.urls == [url]
     assert client.requests[0][1]["follow_redirects"] is False
-    assert "could not be fetched" in out
+    assert out.status == "unavailable"
 
 
 async def test_web_fetch_rejects_unsafe_url_shapes_before_network():
@@ -1604,7 +1508,7 @@ async def test_web_fetch_rejects_unsafe_url_shapes_before_network():
 
         out = await tool.handler({"url": url, "query": "SNAP"}, ctx)
 
-        assert "could not be fetched" in out
+        assert out.status == "rejected"
         assert client.urls == []
 
 
@@ -1627,7 +1531,7 @@ async def test_web_fetch_validates_each_redirect_target():
 
     assert client.urls == [start, second]
     assert all(request["follow_redirects"] is False for _, request in client.requests)
-    assert "could not be fetched" in out
+    assert out.status == "unavailable"
 
 
 async def test_web_fetch_attributes_redirected_evidence_to_final_url():
@@ -1679,8 +1583,8 @@ async def test_redirected_fetch_reuses_prior_authoritative_evidence():
     )
 
     assert old_id in ctx.citations.mapping()
-    assert "{cite:S1}" in out
-    assert list(ctx.citations.mapping()) == ["S1"]
+    assert "{cite:S2}" in out
+    assert list(ctx.citations.mapping()) == ["S1", "S2"]
 
 
 async def test_duplicate_redirect_targets_reuse_one_citation_across_atomic_calls():
@@ -1714,9 +1618,8 @@ async def test_duplicate_redirect_targets_reuse_one_citation_across_atomic_calls
 def test_web_fetch_schema_explains_acquisition_is_not_trust():
     tool = web_fetch_tools()[0]
 
-    assert "trust is graded separately" in tool.description
-    assert "same URL once with render=true" in tool.description
-    assert "Public HTTPS" in tool.parameters["properties"]["url"]["description"]
+    assert "numbered evidence" in tool.description
+    assert "Public HTTPS" in tool._input_schema()["properties"]["url"]["description"]
 
 
 async def test_web_fetch_accepts_only_a_trailing_slash_variant():

@@ -2,32 +2,27 @@
 from __future__ import annotations
 
 import ipaddress
-import re
-import unicodedata
+import json
 from datetime import datetime
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
-from zoneinfo import ZoneInfo
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from playwright.async_api import Error as PlaywrightError
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 from pydantic_ai._ssrf import safe_download, validate_and_resolve_url
 from pypdf import PdfReader
 from trafilatura import extract, html2txt
 
 from .. import config
 from ..citations import canonical_source_url
-from ..index.corpus import chunk_text, clean_html
-from .base import Tool, ToolContext
-from .web_search import archive_warning, web_search_tools
+from ..index.corpus import clean_html
+from .base import Tool, ToolContext, ToolFailure, ToolInput
+from .web_search import archive_warning
 
-_STOPWORDS = {
-    "and", "are", "can", "current", "for", "from", "how", "new", "nyc", "official",
-    "site", "the", "their", "this", "what", "with", "york",
-}
 _ACCESS_WALL_MARKERS = (
     "access denied",
     "complete the security challenge",
@@ -67,6 +62,11 @@ class WebFetchAcquisition(BaseModel):
     response_date: str | None = None
 
 
+class WebFetchInput(ToolInput):
+    url: AnyHttpUrl = Field(description="Public HTTPS URL")
+    find: str | None = Field(default=None, description="Text to locate")
+
+
 class _FetchedPage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -74,145 +74,102 @@ class _FetchedPage(BaseModel):
     title: str
     text: str
     acquisition: WebFetchAcquisition
-    structured_events: list[dict] = Field(default_factory=list)
+    child_links: list[dict[str, str]] = Field(default_factory=list)
+    structured_data: list[dict] = Field(default_factory=list)
 
 
-class _EventMicrodataParser(HTMLParser):
-    _VOID_ELEMENTS = {
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
-        "param", "source", "track", "wbr",
-    }
-
+class _LinkParser(HTMLParser):
     def __init__(self, base_url: str) -> None:
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
-        self.depth = 0
-        self.event_depth: int | None = None
-        self.place_depth: int | None = None
-        self.blocked_scope_depth: int | None = None
-        self.event: dict[str, str] = {}
-        self.capture: tuple[int, str, list[str]] | None = None
-        self.events: list[dict[str, str]] = []
-
-    @staticmethod
-    def _attrs(attrs) -> dict[str, str]:
-        return {key: value or "" for key, value in attrs}
-
-    def _read(self, attrs: dict[str, str], *, allow_capture: bool) -> None:
-        itemtype = attrs.get("itemtype", "").rstrip("/").casefold()
-        itemprop = attrs.get("itemprop", "")
-        if self.event_depth is None and itemtype.endswith("schema.org/event"):
-            self.event_depth = self.depth
-            categories = [
-                token.partition("category-")[2].replace("-", " ")
-                for token in attrs.get("class", "").split()
-                if "category-" in token
-            ]
-            self.event = {"category": " ".join(categories)}
-        if self.event_depth is None:
-            return
-        if self.blocked_scope_depth is not None:
-            return
-        if "itemscope" in attrs and self.depth > self.event_depth and not (
-            itemtype.endswith("schema.org/place")
-            or itemtype.endswith("schema.org/postaladdress")
-        ):
-            self.blocked_scope_depth = self.depth
-            return
-        if itemprop == "location" and itemtype.endswith("schema.org/place"):
-            self.place_depth = self.depth
-        field = {
-            "startDate": "start",
-            "endDate": "end",
-            "addressLocality": "borough",
-            "keywords": "category",
-            "eventType": "category",
-        }.get(itemprop)
-        if field:
-            value = attrs.get("content") or attrs.get("datetime")
-            if value:
-                self.event[field] = value.strip()
-        elif itemprop == "url":
-            value = attrs.get("href") or attrs.get("content")
-            if value and (self.place_depth is None or self.depth <= self.place_depth):
-                self.event.setdefault("url", urljoin(self.base_url, value.strip()))
-        elif itemprop == "name":
-            field = "venue" if self.place_depth is not None else "name"
-            value = attrs.get("content")
-            if value:
-                self.event[field] = value.strip()
-            elif allow_capture:
-                self.capture = (self.depth, field, [])
+        self.current: tuple[str, list[str]] | None = None
+        self.links: list[dict[str, str]] = []
+        self.content_links: list[dict[str, str]] = []
+        self.blocked_depth = 0
+        self.content_depth = 0
+        self.current_is_content = False
 
     def handle_starttag(self, tag: str, attrs) -> None:
-        self._read(self._attrs(attrs), allow_capture=True)
-        if tag not in self._VOID_ELEMENTS:
-            self.depth += 1
-
-    def handle_startendtag(self, tag: str, attrs) -> None:
-        self._read(self._attrs(attrs), allow_capture=False)
+        tag = tag.casefold()
+        if tag in {"header", "nav", "footer", "aside"}:
+            self.blocked_depth += 1
+        if tag in {"main", "article"} and self.blocked_depth == 0:
+            self.content_depth += 1
+        if tag != "a" or self.blocked_depth:
+            return
+        href = dict(attrs).get("href")
+        self.current = (href, []) if href else None
+        self.current_is_content = self.content_depth > 0
 
     def handle_data(self, data: str) -> None:
-        if self.capture is not None:
-            self.capture[2].append(data)
+        if self.current is not None:
+            self.current[1].append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        self.depth = max(0, self.depth - 1)
-        if self.blocked_scope_depth == self.depth:
-            self.blocked_scope_depth = None
+        tag = tag.casefold()
+        if tag != "a" or self.current is None:
+            if tag in {"main", "article"} and self.blocked_depth == 0:
+                self.content_depth = max(0, self.content_depth - 1)
+            if tag in {"header", "nav", "footer", "aside"}:
+                self.blocked_depth = max(0, self.blocked_depth - 1)
             return
-        if self.capture is not None and self.capture[0] == self.depth:
-            _depth, field, chunks = self.capture
-            value = " ".join("".join(chunks).split())
-            if value:
-                self.event[field] = value
-            self.capture = None
-        if self.place_depth == self.depth:
-            self.place_depth = None
-        if self.event_depth == self.depth:
-            if self.event.get("name") and self.event.get("start"):
-                self.events.append(dict(self.event))
-            self.event_depth = None
-            self.place_depth = None
-            self.event = {}
-            self.capture = None
+        href, chunks = self.current
+        url = urljoin(self.base_url, href)
+        parts = urlsplit(url)
+        title = " ".join("".join(chunks).split())
+        if parts.scheme == "https" and parts.hostname and title:
+            link = {
+                "url": urlunsplit(parts._replace(fragment="")),
+                "title": title,
+            }
+            self.links.append(link)
+            if self.current_is_content:
+                self.content_links.append(link)
+        self.current = None
+        self.current_is_content = False
 
 
-def _schema_datetime(value: str) -> tuple[str, str]:
-    raw = value.strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
-        return raw, ""
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return "", ""
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(ZoneInfo("America/New_York"))
-    return parsed.date().isoformat(), parsed.strftime("%H:%M")
-
-
-def _schema_events(html: str, base_url: str) -> list[dict[str, str]]:
-    """Extract standard Schema.org Event microdata without provider-specific selectors."""
-    parser = _EventMicrodataParser(base_url)
+def _page_links(html: str, base_url: str) -> list[dict[str, str]]:
+    parser = _LinkParser(base_url)
     parser.feed(html)
-    normalized = []
-    for event in parser.events:
-        start_date, start_time = _schema_datetime(event.get("start", ""))
-        if not start_date:
-            continue
-        end_date, end_time = _schema_datetime(event.get("end", ""))
-        normalized.append({
-            "name": event["name"],
-            "url": event.get("url", base_url),
-            "venue": event.get("venue", ""),
-            "borough": event.get("borough", ""),
-            "category": event.get("category", ""),
-            "start_date": start_date,
-            "start_time": start_time,
-            "end_date": end_date,
-            "end_time": end_time,
-        })
-    return normalized
+    links = parser.content_links or parser.links
+    return list({link["url"]: link for link in reversed(links)}.values())[::-1]
+
+
+class _JsonLdParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.current: list[str] | None = None
+        self.values: list[dict] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.casefold() == "script" and dict(attrs).get("type", "").casefold() == (
+            "application/ld+json"
+        ):
+            self.current = []
+
+    def handle_data(self, data: str) -> None:
+        if self.current is not None:
+            self.current.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() != "script" or self.current is None:
+            return
+        try:
+            value = json.loads("".join(self.current))
+        except (TypeError, ValueError):
+            value = None
+        if isinstance(value, dict):
+            self.values.append(value)
+        elif isinstance(value, list):
+            self.values.extend(item for item in value if isinstance(item, dict))
+        self.current = None
+
+
+def _json_ld(html: str) -> list[dict]:
+    parser = _JsonLdParser()
+    parser.feed(html)
+    return parser.values
 
 
 def _acquisition(
@@ -283,124 +240,45 @@ def _extract_html(html: str, url: str = "") -> tuple[str, str]:
     return title, text or html2txt(html).strip() or cleaned.strip()
 
 
-def _words(text: str) -> list[str]:
-    words: list[str] = []
-    current: list[str] = []
-    for char in text:
-        if char.isalnum() or (
-            current and unicodedata.category(char).startswith("M")
-        ):
-            current.append(char)
-        elif current:
-            words.append("".join(current))
-            current = []
-    if current:
-        words.append("".join(current))
-    return words
-
-
-def _terms(text: str) -> set[str]:
-    return {
-        word.lower()
-        for word in _words(text)
-        if len(word) > 2 or not word.isascii()
-    } - _STOPWORDS
-
-
-def _relevant_chunks(text: str, query: str, limit: int | None = 2) -> list[str]:
-    wanted = _terms(query)
-    chunks = []
-    for index, chunk in enumerate(chunk_text(text, max_chars=1800, overlap=180)):
-        if index:
-            boundary = re.search(r'[.!?]["\'’”]?\s+', chunk)
-            if boundary:
-                tail = chunk[boundary.end():]
-                lost_terms = (wanted & _terms(chunk[:boundary.end()])) - _terms(tail)
-                chunk = chunk.partition(" ")[2] or chunk if lost_terms else tail
-            else:
-                chunk = chunk.partition(" ")[2] or chunk
-        chunks.append(chunk)
-    scored = [
-        (
-            index,
-            chunk,
-            sum(
-                term in _terms(chunk)
-                or (not term.isascii() and term in chunk.lower())
-                for term in wanted
-            ),
-        )
-        for index, chunk in enumerate(chunks)
-    ]
-    ranked = sorted(
-        (item for item in scored if item[2] > 0),
-        key=lambda item: (item[2], -item[0]),
-        reverse=True,
-    )
-    if limit is None:
-        target = set().union(*(_terms(chunk) & wanted for _, chunk, _ in ranked))
-        covered: set[str] = set()
-        selected = []
-        for item in ranked:
-            overlap = _terms(item[1]) & wanted
-            if not selected or overlap - covered:
-                selected.append(item)
-                covered.update(overlap)
-            if covered == target:
-                break
-        ranked = selected
-    else:
-        ranked = ranked[:limit]
-    return [chunk for _, chunk, _score in ranked]
-
-
 def _text_tokens(text: str, model: str | None = None) -> int:
     import litellm
 
     return int(litellm.token_counter(model=model or config.HEYNYC_MODEL, text=text))
 
 
-def _evidence_chunks(
+def _line_addressable(
     text: str,
-    query: str,
     *,
-    force_focus: bool = False,
-    token_budget: int | None = None,
-    model: str | None = None,
-) -> list[str]:
-    count_tokens = (
-        _text_tokens
-        if model is None
-        else lambda value: _text_tokens(value, model)
-    )
-    if token_budget is not None and token_budget <= 0:
-        return []
-    if force_focus and query:
-        candidates = _relevant_chunks(text, query, limit=None)
-        if token_budget is None:
-            return candidates
-    elif token_budget is None:
-        return [text]
-    elif count_tokens(text) <= token_budget:
-        return [text]
-    else:
-        candidates = (
-            _relevant_chunks(text, query, limit=len(text))
-            if query
-            else chunk_text(text)
+    find: str | None = None,
+) -> str | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first = 1
+    if find:
+        needle = find.casefold()
+        match = next(
+            (number for number, line in enumerate(lines, 1) if needle in line.casefold()),
+            None,
         )
+        if match is None:
+            return None
+        first = match
+    return "\n".join(
+        f"L{number}: {line}"
+        for number, line in enumerate(lines, 1)
+        if number >= first
+    )
+
+
+def _fit_text(text: str, token_budget: int | None, model: str) -> str:
+    if token_budget is None or _text_tokens(text, model) <= token_budget:
+        return text
     selected: list[str] = []
-    for chunk in candidates:
-        candidate = "\n\n".join([*selected, chunk])
-        if count_tokens(candidate) <= token_budget:
-            selected.append(chunk)
-    return selected
-
-
-def _approval_key(url: str) -> str:
-    parts = urlsplit(canonical_source_url(url))
-    path = parts.path[:-1] if parts.path.endswith("/") else parts.path
-    return urlunsplit(parts._replace(path=path))
+    for line in text.splitlines():
+        candidate = "\n".join([*selected, line])
+        if _text_tokens(candidate, model) > token_budget:
+            break
+        selected.append(line)
+    return "\n".join(selected)
 
 
 def _host_matches(host: str, domains: set[str]) -> bool:
@@ -453,7 +331,6 @@ async def _route_public_request(route, request) -> None:
 async def _fetch_rendered_page(
     url: str,
 ) -> _FetchedPage:
-    from playwright.async_api import Error as PlaywrightError
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     from playwright.async_api import async_playwright
 
@@ -499,7 +376,8 @@ async def _fetch_rendered_page(
         final_url=final_url,
         title=title,
         text=text,
-        structured_events=_schema_events(html, final_url),
+        child_links=_page_links(html, final_url),
+        structured_data=_json_ld(html),
         acquisition=_acquisition(
             url,
             final_url,
@@ -550,8 +428,13 @@ async def _fetch_page(
             final_url=final_url,
             title=title,
             text=text,
-            structured_events=(
-                _schema_events(response.text, final_url)
+            child_links=(
+                _page_links(response.text, final_url)
+                if "html" in response.headers.get("content-type", "").lower()
+                else []
+            ),
+            structured_data=(
+                _json_ld(response.text)
                 if "html" in response.headers.get("content-type", "").lower()
                 else []
             ),
@@ -595,8 +478,13 @@ async def _fetch_page(
             final_url=final_url,
             title=title,
             text=text,
-            structured_events=(
-                _schema_events(response.text, final_url)
+            child_links=(
+                _page_links(response.text, final_url)
+                if "html" in response.headers.get("content-type", "").lower()
+                else []
+            ),
+            structured_data=(
+                _json_ld(response.text)
                 if "html" in response.headers.get("content-type", "").lower()
                 else []
             ),
@@ -626,7 +514,6 @@ def _extract_response(url: str, response) -> tuple[str, str, str]:
 async def _fetch_page_with_browser(
     url: str,
     client,
-    query: str,
     *,
     render: bool = False,
 ) -> _FetchedPage:
@@ -642,16 +529,11 @@ async def _fetch_page_with_browser(
         return await _fetch_rendered_page(url)
     if client is None and len(fetched.text.strip()) < _MIN_STATIC_TEXT_CHARS:
         return await _fetch_rendered_page(url)
-    if "showing 0 events" in fetched.text.lower():
-        return await _fetch_rendered_page(url)
-    wanted = _terms(query)
-    if wanted and not wanted & _terms(fetched.text):
-        return await _fetch_rendered_page(url)
     return fetched
 
 
 def web_fetch_tools() -> list[Tool]:
-    async def _handler(args: dict, ctx: ToolContext) -> str:
+    async def _handler(args: WebFetchInput, ctx: ToolContext) -> str | ToolFailure:
         url = str(args["url"]).strip()
         try:
             safe_shape = _url_safe_shape(url)
@@ -659,75 +541,40 @@ def web_fetch_tools() -> list[Tool]:
         except ValueError:
             safe_shape = False
         if not safe_shape:
-            return "The page could not be fetched."
-        query = str(args.get("query") or ctx.query).strip()
-        evidence_scope = str(args.get("evidence_scope") or "").strip()
-        render = bool(args.get("render", False))
-        render_key = _approval_key(url)
-        if render and render_key in ctx.rendered_fetch_urls:
-            return "Rendered acquisition was already attempted for this URL in this turn."
-        if render:
-            ctx.rendered_fetch_urls.add(render_key)
+            return ToolFailure(status="rejected", reason="URL must be public HTTPS.", retryable=False)
         try:
-            fetched = await _fetch_page_with_browser(
-                url,
-                ctx.http,
-                query,
-                render=render,
-            )
+            fetched = await _fetch_page_with_browser(url, ctx.http)
         except _UnsafePublicUrl:
-            return "The page could not be fetched."
-        except Exception:
-            cite = ctx.citations.register(
-                url,
-                snippet="No page content was retrieved.",
-                title="Unavailable source",
-                kind="WEB",
-                provenance={"evidence_grade": "unavailable"},
+            return ToolFailure(status="rejected", reason="URL must be public HTTPS.", retryable=False)
+        except (httpx.HTTPError, PlaywrightError, ValueError):
+            return ToolFailure(
+                status="unavailable",
+                reason="The page could not be retrieved by HTTP or browser.",
+                retryable=False,
+                source_url=url,
             )
-            failure = (
-                f"The page could not be fetched: {url}\n"
-                "No page content was retrieved. Any claim attributed only to this source is "
-                f"unverified; preserve the URL so the resident can check it. {{cite:{cite}}}\n"
+        final_url, title = fetched.final_url, fetched.title
+        text = _line_addressable(
+            fetched.text,
+            find=args.get("find"),
+        )
+        if text is None:
+            return ToolFailure(
+                status="partial",
+                reason=f"The requested text was not found on the fetched page: {args['find']}",
+                retryable=False,
+                source_url=final_url,
             )
-            fallback_query = " ".join(part for part in (url, evidence_scope or query) if part)
-            if not fallback_query:
-                return failure
-            host = urlsplit(url).hostname or ""
-            try:
-                search = web_search_tools(
-                    ctx.registry.allowlist(),
-                    ctx.registry.source_tiers(),
-                    ctx.registry.news_tier(),
-                )[0]
-                fallback = await search.handler(
-                    {
-                        "query": fallback_query,
-                        "prefer": [host],
-                        "count": 5,
-                    },
-                    ctx,
-                )
-            except Exception:
-                return failure
-            if not fallback or fallback.startswith("No results from the live web"):
-                return failure
-            return f"{failure}\nFocused search fallback:\n{fallback}"
-        final_url, title, text = fetched.final_url, fetched.title, fetched.text
         model = ctx.evidence_model or config.HEYNYC_MODEL
         available = ctx.evidence_token_budget
         if available is None:
             from ..memory import context_capacity
 
-            available = context_capacity(model, None, True) or 0
-        chunks = _evidence_chunks(
-            text,
-            query,
-            force_focus=bool(evidence_scope),
-            token_budget=available,
-            model=model,
-        )
-        if not chunks:
+            available = context_capacity(model, None, True) or None
+        fitted_text = _fit_text(text, available, model)
+        truncated = fitted_text != text
+        text = fitted_text
+        if not text:
             cite = ctx.citations.register(
                 final_url,
                 snippet="The page was fetched, but no page text fit in the model context.",
@@ -746,8 +593,16 @@ def web_fetch_tools() -> list[Tool]:
             final_url, ctx.registry.source_tiers(), ctx.registry.news_tier(),
         )
         authoritative = tier == "authoritative" and not warning
-        def rendered_evidence() -> str:
-            evidence = "\n\n".join(chunks)
+        relevant_links = fetched.child_links
+        direct_links = "\n".join(
+            f"Related URL only, not event evidence: {link['title']}: {link['url']}"
+            for link in relevant_links
+        )
+        def rendered_evidence(*, include_links: bool = True) -> str:
+            evidence = "\n\n".join(filter(None, (
+                text,
+                direct_links if include_links else "",
+            )))
             if tier != "authoritative":
                 label = (
                     "unverified source, check before relying on it"
@@ -757,39 +612,18 @@ def web_fetch_tools() -> list[Tool]:
                 evidence = f"SOURCE TRUST: {label}\n\n{evidence}"
             return f"{warning}\n\n{evidence}" if warning else evidence
 
-        scope_prefix = f"EVIDENCE SCOPE: {evidence_scope}\n" if evidence_scope else ""
-        while chunks:
-            evidence = rendered_evidence()
-            content_scope = (
-                "full extracted page" if chunks == [text] else "query-selected excerpts"
-            )
-            projected = (
-                f"{scope_prefix}SOURCE S0: {title or 'Fetched page'} ({final_url})\n"
-                f"CONTENT SCOPE: {content_scope}\n{evidence} {{cite:S0}}"
-            )
-            if _text_tokens(projected, model) <= available:
-                break
-            chunks.pop()
-        if not chunks:
-            cite = ctx.citations.register(
-                final_url,
-                snippet="The page was fetched, but no page text fit in the model context.",
-                title=title or "Fetched page",
-                kind="WEB",
-                provenance={
-                    "evidence_grade": "unavailable",
-                    "acquisition": fetched.acquisition.model_dump(mode="json"),
-                },
-            )
-            return f"The page was fetched, but its text did not fit. {final_url} {{cite:{cite}}}"
-        citation_evidence = evidence
+        content_scope = "partial numbered page" if truncated else "numbered extracted page"
+        evidence = rendered_evidence()
+        citation_evidence = rendered_evidence(include_links=False)
         provenance = {
             "evidence_grade": (
                 "discovery" if warning else "authoritative" if authoritative else "fetched"
             ),
             "source_tier": tier,
+            "content_complete": not truncated,
             "acquisition": fetched.acquisition.model_dump(mode="json"),
-            **({"events": fetched.structured_events} if fetched.structured_events else {}),
+            **({"links": relevant_links} if relevant_links else {}),
+            **({"structured_data": fetched.structured_data} if fetched.structured_data else {}),
         }
         cite = ctx.citations.register(
             final_url,
@@ -799,53 +633,21 @@ def web_fetch_tools() -> list[Tool]:
             provenance=provenance,
         )
         result = (
-            f"{scope_prefix}SOURCE {cite}: {title or 'Fetched page'} ({final_url})\n"
+            f"SOURCE {cite}: {title or 'Fetched page'} ({final_url})\n"
             f"CONTENT SCOPE: {content_scope}\n"
             f"{evidence} {{cite:{cite}}}"
         )
-        ctx.evidence_token_budget = max(0, available - _text_tokens(result, model))
+        if available is not None:
+            used = min(available, _text_tokens(result, model))
+            ctx.evidence_tokens_used += used
+            ctx.evidence_token_budget = max(0, available - used)
         return result
 
     return [
         Tool(
             name="web_fetch",
-            description=(
-                "Fetch and extract one known public web page. Use it after search when the page itself "
-                "is needed as evidence. Source trust is graded separately; fetching a page does not "
-                "make it authoritative. A full extracted page will not reveal different text when the "
-                "same URL is fetched with another query. If static text omits JavaScript-loaded content, "
-                "retry the same URL once with render=true. Otherwise search another page or state that "
-                "the missing detail could not be verified."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Public HTTPS URL to fetch."},
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "Claim or detail to find. Omit only when the resident's current request "
-                            "already states it clearly."
-                        ),
-                    },
-                    "render": {
-                        "type": "boolean",
-                        "description": (
-                            "Use true only after a static fetch omitted content likely loaded by "
-                            "JavaScript. This uses the browser and is slower."
-                        ),
-                        "default": False,
-                    },
-                    "evidence_scope": {
-                        "type": "string",
-                        "description": (
-                            "Optional short label for the claim this fetch is meant to support. "
-                            "Copy the label unchanged when a coordinator supplies one."
-                        ),
-                    },
-                },
-                "required": ["url"],
-            },
+            description="Fetch one public page as numbered evidence; optionally find exact text",
+            input_type=WebFetchInput,
             handler=_handler,
             open_world=True,
         )

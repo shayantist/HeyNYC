@@ -38,6 +38,11 @@ HEYNYC_REASONING_EFFORT = os.getenv("HEYNYC_REASONING_EFFORT") or None
 # capacity (requests can be rejected with a retryable capacity error). Set it for eval sweeps,
 # NEVER for the resident-facing pilot. Unset sends nothing and behavior is unchanged.
 HEYNYC_SERVICE_TIER = os.getenv("HEYNYC_SERVICE_TIER") or None
+HEYNYC_EVENT_RETRIEVAL_POLICY = os.getenv(
+    "HEYNYC_EVENT_RETRIEVAL_POLICY", "fast"
+).strip().lower()
+if HEYNYC_EVENT_RETRIEVAL_POLICY not in {"fast", "deep"}:
+    raise ValueError("HEYNYC_EVENT_RETRIEVAL_POLICY must be 'fast' or 'deep'")
 # Structured continuity compaction runs only when measured context pressure requires it.
 HEYNYC_MEMORY_MODEL = os.getenv("HEYNYC_MEMORY_MODEL", "openai/gpt-5.4-nano")
 # Governed PII-free workflow profiles get one schema-bound review before resident approval.
@@ -119,6 +124,7 @@ MODULES_DIR = PACKAGE_DIR / "modules"  # modules ship inside the package
 # External services
 SOCRATA_APP_TOKEN = os.getenv("SOCRATA_APP_TOKEN", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 TICKETMASTER_API_KEY = os.getenv("TICKETMASTER_API_KEY", "")  # Discovery API (events backbone)
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")  # forgiving fallback geocoder (intersections/POIs)
 GEOSEARCH_BASE = "https://geosearch.planninglabs.nyc/v2"
