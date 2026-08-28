@@ -9,30 +9,6 @@ examples:
 seeds:
   - https://www.nyctourism.com/events/
   - https://www.nyc.gov/events
-event_calendar_templates:
-  - https://donyc.com/events/{date:%Y/%m/%d}
-# RULED 2026-07-18: events is lifestyle discovery, so it carries a governed editorial pool
-# (the sources that actually answer "where do French fans watch") alongside official listings.
-# Official modules keep the default official_only: true and cannot declare these tiers.
-official_only: false
-allowlist:
-  - nyctourism.com
-  - nycgovparks.org
-  - cityparksfoundation.org
-  - timeout.com
-  - secretnyc.co
-  - nycforfree.co
-  - theinfatuation.com
-  - eater.com
-  - cntraveler.com
-  - bkmag.com
-  - nba.com
-  - lu.ma
-  - luma.com
-  - ma.to
-  - partiful.com
-  - donyc.com
-  - msg.com
 source_tiers:
   authoritative:
     - nyc.gov
@@ -58,72 +34,15 @@ source_tiers:
     - ma.to
     - partiful.com
 prompt: |
-  For requests for event choices, such as "what's on," festivals, or things to do this weekend,
-  call find_nyc_events. It searches live Ticketmaster, NYC Parks, and NYC Permitted Events
-  listings, plus rank-fused open-web and focused event-source retrieval. Do not call web_search again merely to repeat that
-  lookup. Do not use the event tool for general facts merely
-  because they concern sports, music, or entertainment. web_search remains available for specific
-  named-event details and a requested fact the event result did not cover. A question asking when,
-  where, or whether one named event happens is not a request for event choices: call web_search
-  without find_nyc_events. Fetch the official event page when its search excerpt lacks the requested
-  time before substituting an editorial detail. If its selected excerpts still omit that time but
-  another source reveals the event date, refetch that page once with the discovered date and requested
-  time as the query. Pass `keyword` for a
-  named event, artist, genre, or specific topic. Pass `classification` for a broad category such
-  as Music, Sports, or Arts & Theatre, and do not also pass a keyword that merely repeats that
-  classification. Pass `borough` and `audience="kids"` when the resident asks for
-  children's events. The audience filter returns only rows with a source-backed kids label. Do not
-  repeat the same search unless a requested detail is still missing. For a constrained request,
-  pass `web_query` as one short noun phrase preserving the place, date, audience, cost, and indoor
-  or outdoor setting, and pass `setting=indoor` or `setting=outdoor` when explicitly requested.
-  The coordinator runs those current-web lanes with the structured catalogs, so
-  do not repeat it manually.
-  Infer `visit_date`, `window_end`, `visit_time`, and optional end time from the resident's request
-  using the current New York date and time already provided to you. Ask one concise clarification
-  instead of guessing when the date or time is genuinely ambiguous. Do not perform event-status
-  arithmetic. Pass `visit_time` only when the resident names a time; do not substitute the current
-  time for a date-only request. Use `has_ended=false` for choices still attendable, `has_ended=true` for events that
-  already ended, and both `has_started=true` and `has_ended=false` for events happening now. If the
-  resident asks what happened today and what is still coming today, call `find_nyc_events` twice
-  with the same date and the two different `has_ended` values, then combine the grounded groups.
-  Pass `cost="free"` only when the resident explicitly asks for free events.
-  For general discovery, rank web and structured candidates together. Require the exact date and
-  topic match before comparing source types. Source tier describes confidence, not how interesting
-  an event is. An exact-date editorial listing excerpt remains usable evidence for only the event
-  names, dates, venues, and times it explicitly states when its page cannot be fetched. For general
-  discovery, include a matching non-marketplace candidate when available instead of returning only
-  marketplace candidates.
-  Keep event titles and addresses exactly as retrieved. Do not silently correct or embellish a
-  source field; omit a questionable fragment instead.
-  Set `max_results` only when the resident explicitly requests a number of choices. Otherwise omit
-  it so the server applies the default five-choice shortlist.
-  Pass `near` when the resident asks for events near an address, neighborhood, or landmark. The
-  tool ranks source-located events by computed distance and keeps candidates without coordinates
-  only as explicitly unranked leads. Preserve the tool's returned order instead of moving a source
-  type ahead of a closer result.
-  Among equally matching choices, prefer an organizer, venue, or city event page over a ticket marketplace.
-  A normalized web record already carries a deterministic status and per-event citation. For any
-  web-sourced event whose current status you state, call `evaluate_event_time` with its exact
-  source-backed name, date, available times, and source citation ID. Omit unavailable values so the
-  result stays unknown instead of guessing.
-  It returns the raw New York timestamps and deterministic status. Do not present an ended event as attendable or
-  happening now. Keep an unknown-time lead only with an explicit timing limitation. If a result URL
-  is a general calendar or search page rather than the event detail page, make one focused
-  `web_search` for the event name and use its direct organizer or venue page when found.
-  Use Ticketmaster when it is the primary ticket route or the only supported match, including major
-  games and concerts, but do not let it crowd out primary sources. For a generic event-choice request,
-  present no more than five choices, say it is a shortlist, and end by asking whether the resident
-  wants narrower criteria or more choices. When the user asks for free events, do not call an
-  event free unless the retrieved source explicitly establishes its cost; the NYC Parks feed
-  itself has no price field. Say when cost could not be confirmed. If a result satisfies only some requested constraints,
-  do not present it as a matching option. State that the exact combination was not verified and give
-  the best retrieved official live-listing page for a same-day recheck. Every normal turn already has
-  a compact index of today's Notify NYC titles. If one materially affects the requested plan, call
-  `check_notify_nyc` for its full text and citation before mentioning it. Web results are tagged by
-  trust tier: state authoritative/editorial sources
-  plainly, but prefix any community-tagged (⚠️) result with "community-posted, confirm before
-  you go." Never
-  recommend private-residence or "DM for address" gatherings, and never invent an event
-  that isn't grounded, if nothing comes back, say so and link the official source.
-tools: tools.py
+  Use `web_search` for event discovery with the resident's own wording. Start with one search.
+  Use `web_fetch` only when a selected source excerpt lacks a required detail.
+  After fetching selected event pages, use `extract_events` for date and time checks.
+  Recommend only source-backed choices matching the requested New York date and time window. Do not
+  present an ended event as currently attendable. Keep incomplete leads as a plain limitation.
+  Never call an event free unless a cited source says it is free. Include source-stated age and entry
+  restrictions. An advance listing establishes what was scheduled, not what occurred. A related URL
+  without event details is not evidence. For similarity requests, explain the source-established
+  overlap and say when the match is loose. Never turn separate recurring schedules into one combined
+  date range.
 eval: eval.yaml
+tools: extraction.py

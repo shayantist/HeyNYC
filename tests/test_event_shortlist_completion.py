@@ -37,7 +37,6 @@ async def test_default_event_shortlist_does_not_retry_for_optional_followup_copy
             "find_nyc_events": Tool(
                 name="find_nyc_events",
                 description="Find NYC events",
-                parameters={"type": "object", "properties": {}},
                 handler=events,
             )
         },
@@ -75,7 +74,6 @@ async def test_explicit_event_count_does_not_require_a_follow_up_question() -> N
             "find_nyc_events": Tool(
                 name="find_nyc_events",
                 description="Find NYC events",
-                parameters={"type": "object", "properties": {}},
                 handler=events,
             )
         },
@@ -165,7 +163,6 @@ async def test_english_answer_allows_a_source_backed_non_latin_name() -> None:
             "events": Tool(
                 name="events",
                 description="Find events",
-                parameters={"type": "object", "properties": {}},
                 handler=events,
             )
         },

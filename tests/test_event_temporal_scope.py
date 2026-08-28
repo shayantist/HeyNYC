@@ -9,6 +9,7 @@ from heynyc.modules import events
 from heynyc.modules.events.tools import (
     Event,
     EventQuery,
+    _ended_filter,
     _event_temporal_status,
     _from_parks,
     _future_only,
@@ -37,8 +38,26 @@ def test_event_query_uses_dates_and_interval_filters_without_phrase_enums():
     assert "relative_window" not in schema
     assert "temporal_scope" not in schema
     assert "weekday" not in schema
-    assert {"visit_date", "window_end", "visit_time", "window_end_time"} <= schema.keys()
-    assert {"has_started", "has_ended"} <= schema.keys()
+    assert {"starts_after", "starts_before", "active_at"} <= schema.keys()
+    assert {"visit_date", "window_end", "has_started", "has_ended"}.isdisjoint(schema)
+
+
+def test_explicit_same_day_range_does_not_exclude_events_that_ended():
+    nyc = ZoneInfo("America/New_York")
+    now = datetime(2026, 8, 20, 14, 24, tzinfo=nyc)
+
+    assert _ended_filter(
+        datetime(2026, 8, 20, tzinfo=nyc),
+        datetime(2026, 8, 21, tzinfo=nyc),
+        now,
+    ) is None
+    assert _ended_filter(None, None, now) is False
+    assert _ended_filter(
+        datetime(2026, 8, 19, tzinfo=nyc),
+        datetime(2026, 8, 20, tzinfo=nyc),
+        now,
+    ) is True
+    assert _temporal_instruction(None, None) == "include events in the requested range"
 
 
 def test_event_status_keeps_raw_times_and_computes_relation():
@@ -106,7 +125,7 @@ def test_temporal_filters_control_candidate_instructions_too():
     assert "include only ended events" in _temporal_instruction(None, True)
 
 
-async def test_generic_event_calendar_gets_one_focused_direct_page_followup(monkeypatch):
+async def test_shared_event_search_returns_direct_page_evidence_in_one_call(monkeypatch):
     calls = []
     direct_url = (
         "https://www.rockefellercenter.com/events/"
@@ -121,31 +140,34 @@ async def test_generic_event_calendar_gets_one_focused_direct_page_followup(monk
 
     async def web_search(args, ctx):
         calls.append(("search", args))
-        if len(calls) == 1:
-            url = "https://www.rockefellercenter.com/events"
-            title = "RAYE Live on TODAY at Rockefeller Center"
-            snippet = "August 20. Check-in 5:15 a.m.; concert concludes at 9:30 a.m."
-            cite = ctx.citations.register(
-                url,
-                title=title,
-                snippet=snippet,
-                provenance={"evidence_grade": "discovery"},
-            )
-            unrelated = ctx.citations.register(
-                "https://www.ticketmaster.com/event/unrelated",
-                title="Unrelated evening event",
-                snippet="August 20 at 8:00 PM",
-                provenance={"evidence_grade": "discovery"},
-            )
-        else:
-            url, title, snippet = direct_url, "RAYE music concert on TODAY", "Direct event page"
-            unrelated = ""
-            cite = ctx.citations.register(
-                url,
-                title=title,
-                snippet=snippet,
-                provenance={"evidence_grade": "discovery"},
-            )
+        url = direct_url
+        title = "RAYE Live on TODAY at Rockefeller Center"
+        snippet = "August 20. Check-in 5:15 a.m.; concert concludes at 9:30 a.m."
+        cite = ctx.citations.register(
+            url,
+            title=title,
+            snippet=snippet,
+            provenance={
+                "evidence_grade": "fetched",
+                "source_tier": "editorial",
+                "event": {
+                    "name": title,
+                    "url": url,
+                    "borough": "New York",
+                    "category": "Music",
+                    "start_date": "2026-08-20",
+                    "start_time": "05:15",
+                    "end_date": "2026-08-20",
+                    "end_time": "09:30",
+                },
+            },
+        )
+        unrelated = ctx.citations.register(
+            "https://www.ticketmaster.com/event/unrelated",
+            title="Unrelated evening event",
+            snippet="August 20 at 8:00 PM",
+            provenance={"evidence_grade": "discovery"},
+        )
         return f"[{cite}] {title} ({url})\n{snippet}\n{unrelated}"
 
     async def web_fetch(args, _ctx):
@@ -160,23 +182,24 @@ async def test_generic_event_calendar_gets_one_focused_direct_page_followup(monk
         query="Could you give me a few music events happening in NYC today?",
         event_turn="discovery",
         toolbox={
-            "web_search": Tool("web_search", "search", {"type": "object"}, web_search),
-            "web_fetch": Tool("web_fetch", "fetch", {"type": "object"}, web_fetch),
+            "web_search": Tool("web_search", "search", web_search),
+            "web_fetch": Tool("web_fetch", "fetch", web_fetch),
         },
     )
 
-    output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "visit_date": "2026-08-20", "has_ended": True}, ctx,
+    await events.tools.get_tools()[0].handler(
+        {
+            "topic": "Music",
+            "starts_after": "2026-08-20T00:00:00-04:00",
+            "starts_before": "2026-08-21T00:00:00-04:00",
+        }, ctx,
     )
 
-    assert [kind for kind, _args in calls] == ["search", "search", "fetch"]
-    assert calls[0][1]["query"] == "NYC Music events August 20, 2026"
-    assert calls[1][1]["prefer"] == ["rockefellercenter.com"]
-    assert calls[2][1]["url"] == direct_url
-    assert direct_url in output
+    assert calls == []
+    assert direct_url not in {citation["url"] for citation in ctx.citations.mapping().values()}
 
 
-async def test_initial_direct_event_page_is_fetched_without_a_redundant_search(monkeypatch):
+async def test_initial_direct_event_page_is_not_refetched(monkeypatch):
     calls = []
     direct_url = "https://example.com/events/direct-concert"
 
@@ -190,7 +213,18 @@ async def test_initial_direct_event_page_is_fetched_without_a_redundant_search(m
         calls.append(("search", args))
         direct = ctx.citations.register(
             direct_url, title="Direct music concert", snippet="August 20, 7:00 PM",
-            provenance={"evidence_grade": "discovery"},
+            provenance={
+                "evidence_grade": "fetched",
+                "source_tier": "editorial",
+                "event": {
+                    "name": "Direct music concert",
+                    "url": direct_url,
+                    "borough": "New York",
+                    "category": "Music",
+                    "start_date": "2026-08-20",
+                    "start_time": "19:00",
+                },
+            },
         )
         generic = ctx.citations.register(
             "https://www.eventbrite.com/events", title="Event calendar", snippet="Today",
@@ -208,21 +242,24 @@ async def test_initial_direct_event_page_is_fetched_without_a_redundant_search(m
         citations=CitationRegistry(), registry=Registry([]), query="music today",
         event_turn="discovery",
         toolbox={
-            "web_search": Tool("web_search", "search", {"type": "object"}, web_search),
-            "web_fetch": Tool("web_fetch", "fetch", {"type": "object"}, web_fetch),
+            "web_search": Tool("web_search", "search", web_search),
+            "web_fetch": Tool("web_fetch", "fetch", web_fetch),
         },
     )
 
-    output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "visit_date": "2026-08-20"}, ctx,
+    await events.tools.get_tools()[0].handler(
+        {
+            "topic": "Music",
+            "starts_after": "2026-08-20T00:00:00-04:00",
+            "starts_before": "2026-08-21T00:00:00-04:00",
+        }, ctx,
     )
 
-    assert [kind for kind, _args in calls] == ["search", "fetch"]
-    assert calls[1][1]["url"] == direct_url
-    assert direct_url in output
+    assert calls == []
+    assert direct_url not in {citation["url"] for citation in ctx.citations.mapping().values()}
 
 
-async def test_top_editorial_event_page_is_fetched_without_a_trust_whitelist(monkeypatch):
+async def test_top_editorial_event_page_uses_shared_read_without_a_trust_whitelist(monkeypatch):
     calls = []
     url = "https://donyc.com/events/2026/08/20"
 
@@ -234,8 +271,18 @@ async def test_top_editorial_event_page_is_fetched_without_a_trust_whitelist(mon
 
     async def web_search(_args, ctx):
         cite = ctx.citations.register(
-            url, title="Music in NYC", snippet="August 20 events",
-            provenance={"evidence_grade": "search_excerpt", "source_tier": "editorial"},
+            url, title="Music in NYC", snippet="Full editorial music event page",
+            provenance={
+                "evidence_grade": "fetched",
+                "source_tier": "editorial",
+                "event": {
+                    "name": "Full editorial music event page",
+                    "url": url,
+                    "borough": "New York",
+                    "category": "Music",
+                    "start_date": "2026-08-20",
+                },
+            },
         )
         return f"[{cite}] Music in NYC ({url})"
 
@@ -254,14 +301,18 @@ async def test_top_editorial_event_page_is_fetched_without_a_trust_whitelist(mon
         citations=CitationRegistry(), registry=Registry([]), query="music today",
         event_turn="discovery",
         toolbox={
-            "web_search": Tool("web_search", "search", {"type": "object"}, web_search),
-            "web_fetch": Tool("web_fetch", "fetch", {"type": "object"}, web_fetch),
+            "web_search": Tool("web_search", "search", web_search),
+            "web_fetch": Tool("web_fetch", "fetch", web_fetch),
         },
     )
 
     output = await events.tools.get_tools()[0].handler(
-        {"classification": "Music", "visit_date": "2026-08-20"}, ctx,
+        {
+            "topic": "Music",
+            "starts_after": "2026-08-20T00:00:00-04:00",
+            "starts_before": "2026-08-21T00:00:00-04:00",
+        }, ctx,
     )
 
-    assert calls == [url]
-    assert "Full editorial music event page" in output
+    assert calls == []
+    assert "Full editorial music event page" not in output

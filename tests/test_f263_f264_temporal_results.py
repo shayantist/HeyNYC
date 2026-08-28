@@ -122,13 +122,9 @@ async def test_f263_tool_computes_planned_local_time_and_keeps_unknown_distinct(
     assert "schedule unknown at 12:00 PM America/New_York" in output
     assert "scheduled closed at 12:00 PM America/New_York" in output
 
-    schema = cooling.get_tools()[0].parameters["properties"]
-    assert {item.get("format") for item in schema["visit_date"]["anyOf"]} == {
-        "date",
-        None,
-    }
-    assert {item.get("format") for item in schema["visit_time"]["anyOf"]} == {
-        "time",
+    schema = cooling.get_tools()[0]._input_schema()["properties"]
+    assert {item.get("format") for item in schema["active_at"]["anyOf"]} == {
+        "date-time",
         None,
     }
 
@@ -171,7 +167,9 @@ def test_f263_planned_status_handles_overnight_hours() -> None:
 
 
 @pytest.mark.asyncio
-async def test_f264_event_tool_defaults_to_five_and_exposes_max_results(monkeypatch) -> None:
+async def test_f264_event_tool_does_not_impose_a_default_answer_count(
+    monkeypatch,
+) -> None:
     async def fake_ticketmaster(**kwargs):
         return TicketmasterSearchResult(
             status="complete",
@@ -194,15 +192,19 @@ async def test_f264_event_tool_defaults_to_five_and_exposes_max_results(monkeypa
     monkeypatch.setattr(events, "query_dataset", empty_dataset)
 
     output = await events.get_tools()[0].handler(
-        {"visit_date": "2099-08-15", "window_end": "2099-08-15"},
+        {
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
+        },
         _context("events on August 15"),
     )
 
-    assert output.count("(Ticketmaster Discovery)") == 5
-    schema = events.get_tools()[0].parameters["properties"]["max_results"]
+    assert output.count("(Ticketmaster Discovery)") == 6
+    assert "strongest distinct matches" in output
+    schema = events.get_tools()[0]._input_schema()["properties"]["max_results"]
     assert schema["default"] is None
     integer_schema = next(item for item in schema["anyOf"] if item.get("type") == "integer")
-    assert integer_schema["maximum"] == 10
+    assert "maximum" not in integer_schema
 
 
 @pytest.mark.asyncio
@@ -232,8 +234,8 @@ async def test_f264_agent_extracted_max_results_controls_the_shortlist(monkeypat
 
     output = await events.get_tools()[0].handler(
         {
-            "visit_date": "2099-08-15",
-            "window_end": "2099-08-15",
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
             "max_results": 10,
         },
         _context("please give me ten events on August 15"),
@@ -243,7 +245,7 @@ async def test_f264_agent_extracted_max_results_controls_the_shortlist(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_f264_web_and_catalog_choices_share_the_same_limit(monkeypatch) -> None:
+async def test_f264_web_evidence_does_not_replace_explicit_catalog_choices(monkeypatch) -> None:
     async def fake_ticketmaster(**kwargs):
         return TicketmasterSearchResult(
             status="complete",
@@ -251,6 +253,7 @@ async def test_f264_web_and_catalog_choices_share_the_same_limit(monkeypatch) ->
                 {
                     "id": str(index),
                     "name": f"Event {index}",
+                    "url": f"https://example.com/{index}",
                     "dates": {"start": {"localDate": "2099-08-15"}},
                 }
                 for index in range(6)
@@ -275,15 +278,71 @@ async def test_f264_web_and_catalog_choices_share_the_same_limit(monkeypatch) ->
         "web_search": Tool(
             name="web_search",
             description="search",
-            parameters={"type": "object"},
             handler=web_handler,
         )
     }
 
     output = await events.get_tools()[0].handler(
-        {"visit_date": "2099-08-15", "window_end": "2099-08-15"}, ctx,
+        {
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
+            "max_results": 5,
+        },
+        ctx,
     )
 
-    assert output.count("(Ticketmaster Discovery)") == 4
-    assert output.count("(Web discovery;") == 1
-    assert output.count("\n- ") == 5
+    assert output.count("(Ticketmaster Discovery)") == 5
+    assert "One current seasonal lead" not in output
+    assert "Return no more than 5 event choices" in output
+
+
+@pytest.mark.asyncio
+async def test_f264_guide_evidence_does_not_consume_an_explicit_event_count(
+    monkeypatch,
+) -> None:
+    async def fake_ticketmaster(**_kwargs):
+        return TicketmasterSearchResult(
+            status="complete",
+            events=[
+                {
+                    "id": str(index),
+                    "name": f"Catalog event {index}",
+                    "url": f"https://tickets.example/{index}",
+                    "dates": {"start": {"localDate": "2099-08-15"}},
+                }
+                for index in range(5)
+            ],
+        )
+
+    async def empty_dataset(*_args, **_kwargs):
+        return []
+
+    async def web_handler(_args, ctx):
+        lines = []
+        for index in range(3):
+            citation_id = ctx.citations.register(
+                f"https://guide.example/{index}",
+                title=f"Editorial guide {index}",
+                snippet="A current event roundup.",
+            )
+            lines.append(f"[{citation_id}] Editorial guide {index}")
+        return "\n".join(lines)
+
+    monkeypatch.setattr(events, "ticketmaster_events", fake_ticketmaster)
+    monkeypatch.setattr(events, "query_dataset", empty_dataset)
+    ctx = _context("give me three events on August 15")
+    ctx.toolbox = {
+        "web_search": Tool("web_search", "search", web_handler),
+    }
+
+    output = await events.get_tools()[0].handler(
+        {
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
+            "max_results": 3,
+        },
+        ctx,
+    )
+
+    assert output.count("(Ticketmaster Discovery)") == 3
+    assert "Editorial guide 0" not in output

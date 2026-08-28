@@ -20,6 +20,228 @@ from heynyc.modules.events.tools import (
 )
 
 
+def test_extract_events_reuses_event_without_exposing_server_fields():
+    tool = next(tool for tool in get_tools() if tool.name == "extract_events")
+    schema = tool._input_schema()
+    event_schema = schema["$defs"]["Event"]
+
+    assert set(event_schema["required"]) == {"name", "start_date"}
+    assert "provider_record" not in event_schema["properties"]
+    assert "retrieval_rank" not in event_schema["properties"]
+    assert "structured_source" not in event_schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_extract_events_filters_source_backed_events_by_requested_time():
+    citations = CitationRegistry()
+    ended = citations.register(
+        "https://venue.example/morning-show",
+        title="Morning show",
+        snippet="Morning show, August 27, 2026, 5:00 AM to 9:30 AM in Manhattan.",
+    )
+    upcoming = citations.register(
+        "https://venue.example/evening-show",
+        title="Evening show",
+        snippet="Evening show, August 27, 2026, 7:00 PM to 9:00 PM in Manhattan.",
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    tool = next(tool for tool in get_tools() if tool.name == "extract_events")
+
+    output = await tool.handler(
+        {
+            "starts_after": "2026-08-27T18:00:00-04:00",
+            "starts_before": "2026-08-28T00:00:00-04:00",
+            "events": [
+                {
+                    "name": "Morning show",
+                    "start_date": "2026-08-27",
+                    "start_time": "05:00",
+                    "end_time": "09:30",
+                    "borough": "Manhattan",
+                    "evidence_excerpt": (
+                        "Morning show, August 27, 2026, 5:00 AM to 9:30 AM in Manhattan."
+                    ),
+                    "citation_id": ended,
+                },
+                {
+                    "name": "Evening show",
+                    "start_date": "2026-08-27",
+                    "start_time": "19:00",
+                    "end_time": "21:00",
+                    "borough": "Manhattan",
+                    "evidence_excerpt": (
+                        "Evening show, August 27, 2026, 7:00 PM to 9:00 PM in Manhattan."
+                    ),
+                    "citation_id": upcoming,
+                },
+            ],
+        },
+        ctx,
+    )
+
+    assert "Evening show" in output
+    assert "extracted fields still need confirmation" in output
+    assert "Morning show" not in output
+    assert f"{{cite:{upcoming}}}" in output
+
+
+@pytest.mark.asyncio
+async def test_extract_events_uses_schema_org_from_fetched_evidence():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://venue.example/jazz-night",
+        title="Jazz night",
+        snippet="Jazz night at Public Records on August 28, 2099.",
+        provenance={
+            "source_tier": "editorial",
+            "structured_data": [{
+                "@context": "https://schema.org",
+                "@type": "Event",
+                "name": "Jazz night",
+                "startDate": "2099-08-28T20:00:00-04:00",
+                "endDate": "2099-08-28T22:00:00-04:00",
+                "location": {
+                    "@type": "Place",
+                    "name": "Public Records",
+                    "address": {"addressLocality": "Brooklyn"},
+                },
+            }],
+        },
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    tool = next(tool for tool in get_tools() if tool.name == "extract_events")
+
+    output = await tool.handler(
+        {
+            "starts_after": "2099-08-28T00:00:00-04:00",
+            "starts_before": "2099-08-29T00:00:00-04:00",
+        },
+        ctx,
+    )
+
+    assert "Jazz night @ Public Records" in output
+    assert "2099-08-28 20:00:00" in output
+    assert f"{{cite:{citation_id}}}" in output
+
+
+@pytest.mark.asyncio
+async def test_extract_events_does_not_promote_fields_unsupported_by_the_citation():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://example.com/transit-policy",
+        title="Student transit policy",
+        snippet="Student OMNY cards do not cover express buses.",
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    tool = next(tool for tool in get_tools() if tool.name == "extract_events")
+
+    output = await tool.handler(
+        {
+            "events": [{
+                "name": "Invented free concert",
+                "start_date": "2099-08-28",
+                "start_time": "20:00",
+                "venue": "Made Up Hall",
+                "borough": "Brooklyn",
+                "free_evidence": "Free admission",
+                "evidence_excerpt": "Student OMNY cards do not cover express buses.",
+                "citation_id": citation_id,
+            }],
+        },
+        ctx,
+    )
+
+    assert "No source-backed events" in output
+    assert "could not be supported by the cited page" in output
+    assert "https://example.com/transit-policy" in output
+
+
+@pytest.mark.asyncio
+async def test_extract_events_keeps_unknown_city_as_an_incomplete_lead():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://venue.example/concert",
+        title="Concert",
+        snippet="Concert on August 28, 2099 at 8 PM.",
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    tool = next(tool for tool in get_tools() if tool.name == "extract_events")
+
+    output = await tool.handler(
+        {
+            "events": [{
+                "name": "Concert",
+                "start_date": "2099-08-28",
+                "start_time": "20:00",
+                "evidence_excerpt": "Concert on August 28, 2099 at 8 PM.",
+                "citation_id": citation_id,
+            }],
+        },
+        ctx,
+    )
+
+    assert "No source-backed events" in output
+    assert "source did not establish an NYC location" in output
+    assert "https://venue.example/concert" in output
+
+
+@pytest.mark.asyncio
+async def test_extract_events_cannot_splice_fields_across_page_passages():
+    citations = CitationRegistry()
+    citation_id = citations.register(
+        "https://guide.example/events",
+        title="Two events",
+        snippet=(
+            "L1: Alpha is on August 28, 2099 at 8 PM.\n"
+            "L2: Beta is at Made Up Hall in Brooklyn."
+        ),
+    )
+    ctx = ToolContext(citations=citations, registry=Registry([]))
+    tool = next(tool for tool in get_tools() if tool.name == "extract_events")
+
+    output = await tool.handler(
+        {
+            "events": [{
+                "name": "Alpha",
+                "start_date": "2099-08-28",
+                "start_time": "20:00",
+                "venue": "Made Up Hall",
+                "borough": "Brooklyn",
+                "evidence_excerpt": (
+                    "L1: Alpha is on August 28, 2099 at 8 PM.\n"
+                    "L2: Beta is at Made Up Hall in Brooklyn."
+                ),
+                "citation_id": citation_id,
+            }],
+        },
+        ctx,
+    )
+
+    assert "No source-backed events" in output
+    assert "unconfirmed lead" in output
+
+
+def test_schema_org_aware_datetimes_are_normalized_to_new_york_time():
+    citation = {
+        "url": "https://venue.example/late-show",
+        "snippet": "Late show at 8 PM in New York.",
+        "provenance": {"source_tier": "editorial"},
+    }
+
+    event = events._schema_event(
+        {
+            "@type": "Event",
+            "name": "Late show",
+            "startDate": "2099-08-29T00:00:00Z",
+        },
+        "S1",
+        citation,
+    )
+
+    assert event is not None
+    assert (event.start_date, event.start_time) == ("2099-08-28", "20:00:00")
+
+
 def _tm_result(rows: list[dict] | None = None) -> TicketmasterSearchResult:
     return TicketmasterSearchResult(status="complete", events=rows or [])
 
@@ -42,6 +264,7 @@ def test_from_ticketmaster_maps_fields():
             },
         },
         "accessibility": {"info": "Accessible seating is available."},
+        "ageRestrictions": {"ageRuleDescription": "21 & Over"},
         "source": {"name": "universe", "id": "universe"},
         "_embedded": {"venues": [{
             "name": "Central Park",
@@ -60,6 +283,7 @@ def test_from_ticketmaster_maps_fields():
         public_sale_end="2026-07-19T18:00:00Z", public_sale_start_tbd=False,
         accessibility_info="Accessible seating is available.",
         venue_accessibility="Call the box office.",
+        audience="21 & Over",
         provider_id="ticketmaster-event-abc",
         provider_record=raw,
     )
@@ -101,7 +325,7 @@ async def test_nearby_events_use_shared_distance_order(monkeypatch):
             },
             {
                 "title": "Nearby event",
-                "startdate": "2099-08-15T00:00:00.000",
+                "startdate": "2099-08-16T00:00:00.000",
                 "coordinates": "40.57341, -73.97590",
             },
         ]
@@ -117,7 +341,12 @@ async def test_nearby_events_use_shared_distance_order(monkeypatch):
     )
 
     output = await get_tools()[0].handler(
-        {"near": "Coney Island", "visit_date": "2099-08-15", "max_results": 1},
+        {
+            "near": "Coney Island",
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-17T00:00:00-04:00",
+            "max_results": 1,
+        },
         ctx,
     )
 
@@ -134,7 +363,7 @@ async def test_nearby_events_use_shared_distance_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_nearby_events_keep_one_transparent_non_marketplace_lead(monkeypatch):
+async def test_nearby_structured_events_do_not_consume_web_evidence(monkeypatch):
     async def ticketmaster_rows(**kwargs):
         return _tm_result([
             {
@@ -189,19 +418,22 @@ async def test_nearby_events_keep_one_transparent_non_marketplace_lead(monkeypat
             "web_search": Tool(
                 name="web_search",
                 description="search",
-                parameters={"type": "object"},
                 handler=web_handler,
             ),
         },
     )
 
     output = await get_tools()[0].handler(
-        {"near": "Union Square", "visit_date": "2099-08-15"}, ctx,
+        {
+            "near": "Union Square",
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
+            "max_results": 1,
+        }, ctx,
     )
 
-    assert output.count("- Ticketed event") == 4
-    assert "Neighborhood Arts Night" in output
-    assert "not distance-ranked" in output
+    assert output.count("- Ticketed event") == 1
+    assert "Neighborhood Arts Night" not in output
     assert "preserve this returned order" in output.lower()
     assert "source diversity has already been applied" in output.lower()
 
@@ -257,6 +489,20 @@ def test_from_parks_maps_nested_link():
     assert ev.source == "NYC Parks" and ev.tier == "authoritative"
 
 
+def test_from_parks_prefers_complete_registration_url_over_truncated_listing():
+    ev = _from_parks({
+        "title": "Book swap",
+        "startdate": "2026-08-28T00:00:00.000",
+        "link": {"url": "http://www.nycgovparks.org/events/2026/08/28/upcycled-paper-cr"},
+        "registration_url": {
+            "url": "https://www.eventbrite.com/e/upcycled-paper-crafts-tickets-123"
+        },
+    })
+
+    assert ev is not None
+    assert ev.url == "https://www.eventbrite.com/e/upcycled-paper-crafts-tickets-123"
+
+
 def test_from_parks_preserves_source_free_audience_and_borough_fields():
     ev = _from_parks({
         "title": "NYRR Open Run: Cunningham Park",
@@ -306,7 +552,10 @@ async def test_from_parks_preserves_registration_limitations_in_event_and_citati
         citations=CitationRegistry(), registry=Registry([]), query="family camping",
     )
     output = await get_tools()[0].handler(
-        {"visit_date": "2099-08-16", "window_end": "2099-08-16"}, ctx,
+        {
+            "starts_after": "2099-08-16T00:00:00-04:00",
+            "starts_before": "2099-08-17T00:00:00-04:00",
+        }, ctx,
     )
 
     assert "registration: Registration is closed." in output
@@ -347,9 +596,9 @@ async def test_named_event_lookup_keeps_a_started_registration_closed_record(mon
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "Family Camping: Staten Island",
-            "visit_date": "2026-08-16",
-            "window_end": "2026-08-16",
+            "topic": "Family Camping: Staten Island",
+            "starts_after": "2026-08-16T00:00:00-04:00",
+            "starts_before": "2026-08-17T00:00:00-04:00",
         },
         ctx,
     )
@@ -425,34 +674,6 @@ def test_future_only_filters_past():
     assert kept == [future]
 
 
-def test_known_finished_events_do_not_block_current_results():
-    now = events.datetime(2026, 7, 18, 23, 0, tzinfo=events.NYC_TZ)
-    finished = Event(
-        "Morning market", "2026-07-18", "08:00", "Plaza", "Queens", "u1",
-        "NYC Permitted Events", "authoritative", end_time="15:00",
-    )
-    still_open = Event(
-        "Night market", "2026-07-18", "18:00", "Plaza", "Queens", "u2",
-        "NYC Permitted Events", "authoritative", end_time="23:30",
-    )
-    unknown_end = Event(
-        "Concert", "2026-07-18", "20:00", "Park", "Queens", "u3",
-        "Ticketmaster", "authoritative",
-    )
-    unknown_start = Event(
-        "Date-only listing", "2026-07-18", "", "Arena", "Queens", "u4",
-        "Ticketmaster", "authoritative",
-    )
-    later = Event(
-        "Late show", "2026-07-18", "23:30", "Arena", "Queens", "u5",
-        "Ticketmaster", "authoritative",
-    )
-
-    assert events._not_ended_today(
-        [finished, still_open, unknown_end, unknown_start, later], now,
-    ) == [still_open, later]
-
-
 def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
     listed_free = Event(
         "Free Yoga", "2026-07-18", "9:00 AM", "Park", "", "u1", "NYC Parks", "authoritative",
@@ -467,21 +688,7 @@ def test_free_filter_requires_source_title_and_event_block_supplies_weekday():
     assert "Details: u1" in _event_block(listed_free, "S1")
 
 
-def test_free_is_a_cost_filter_not_an_event_keyword():
-    free_yoga = Event(
-        "Free Yoga", "2026-07-18", "9:00 AM", "Park", "Queens", "u1",
-        "NYC Parks", "authoritative", free_evidence="This program is free",
-    )
-    free_movie = Event(
-        "Movies Under the Stars", "2026-07-18", "8:00 PM", "Park", "Queens", "u2",
-        "NYC Parks", "authoritative", free_evidence="This program is free",
-    )
-
-    assert not events._matches_keyword(free_yoga, "free music or outdoor movies")
-    assert events._matches_keyword(free_movie, "free music or outdoor movies")
-
-
-async def test_broad_event_intent_is_not_sent_as_a_catalog_keyword(monkeypatch):
+async def test_topic_is_passed_without_a_local_keyword_parser(monkeypatch):
     keywords_seen = []
 
     async def fake_ticketmaster(**kwargs):
@@ -511,15 +718,15 @@ async def test_broad_event_intent_is_not_sent_as_a_catalog_keyword(monkeypatch):
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "things to do",
-            "visit_date": "2099-08-11",
-            "window_end": "2099-08-11",
+            "topic": "things to do",
+            "starts_after": "2099-08-11T00:00:00-04:00",
+            "starts_before": "2099-08-12T00:00:00-04:00",
         },
         ctx,
     )
 
     assert set(keywords_seen) == {
-        ("ticketmaster", None),
+        ("ticketmaster", "things to do"),
         (events.PARKS_DATASET_ID, None),
         (events.PERMITTED_DATASET_ID, None),
     }
@@ -557,9 +764,9 @@ async def test_multi_concept_keyword_does_not_pre_filter_socrata_rows(monkeypatc
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "street fairs markets",
-            "visit_date": "2099-08-15",
-            "window_end": "2099-08-16",
+            "topic": "street fairs markets",
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-17T00:00:00-04:00",
         },
         ctx,
     )
@@ -604,9 +811,9 @@ async def test_event_lookup_keeps_a_match_from_the_second_socrata_page(monkeypat
     )
 
     output = await get_tools()[0].handler({
-        "keyword": "unicorn",
-        "visit_date": "2099-08-15",
-        "window_end": "2099-08-15",
+        "topic": "unicorn",
+        "starts_after": "2099-08-15T00:00:00-04:00",
+        "starts_before": "2099-08-16T00:00:00-04:00",
     }, ctx)
 
     assert "Unicorn concert" in output
@@ -638,9 +845,9 @@ async def test_event_lookup_keeps_and_discloses_a_partial_socrata_page(monkeypat
     )
 
     output = await get_tools()[0].handler({
-        "keyword": "unicorn",
-        "visit_date": "2099-08-15",
-        "window_end": "2099-08-15",
+        "topic": "unicorn",
+        "starts_after": "2099-08-15T00:00:00-04:00",
+        "starts_before": "2099-08-16T00:00:00-04:00",
     }, ctx)
 
     assert "Unicorn concert" in output
@@ -648,7 +855,7 @@ async def test_event_lookup_keeps_and_discloses_a_partial_socrata_page(monkeypat
     assert "{cite:" in output
 
 
-async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypatch):
+async def test_structured_event_lookup_does_not_run_web_search(monkeypatch):
     calls = []
 
     async def no_ticketmaster(**kwargs):
@@ -659,19 +866,29 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
 
     async def web_handler(args, ctx):
         calls.append(args)
+        today = events.datetime.now(events.NYC_TZ).date().isoformat()
         citation_id = ctx.citations.register(
             "https://example.com/current-guide",
-            title="Current guide",
+            title="Current event",
             snippet="Three things happening today",
+            provenance={
+                "evidence_grade": "search_excerpt",
+                "source_tier": "editorial",
+                "event": {
+                    "name": "Current event",
+                    "url": "https://example.com/current-guide",
+                    "borough": "New York",
+                    "start_date": today,
+                },
+            },
         )
-        return f"[{citation_id}] Current guide\nThree things happening today"
+        return f"[{citation_id}] Current event\nThree things happening today"
 
     monkeypatch.setattr(events, "ticketmaster_events", no_ticketmaster)
     monkeypatch.setattr(events, "query_dataset", no_city_rows)
     web_tool = Tool(
         name="web_search",
         description="search",
-        parameters={"type": "object"},
         handler=web_handler,
     )
     ctx = ToolContext(
@@ -683,15 +900,11 @@ async def test_broad_event_lookup_runs_one_untimed_web_lane_in_parallel(monkeypa
 
     output = await get_tools()[0].handler({}, ctx)
 
-    assert calls == [{"query": "what to do in nyc today", "count": 10}]
-    assert "one shared bounded shortlist" in output
-    assert "Web discovery" in output
-    assert "Three things happening today" in output
-    assert "exact-date editorial listing excerpt" in output
-    assert "include a matching non-marketplace candidate" in output
+    assert calls == []
+    assert "Current event" not in output
 
 
-async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypatch):
+async def test_constrained_structured_lookup_leaves_web_search_to_the_agent(monkeypatch):
     calls = []
 
     async def no_ticketmaster(**kwargs):
@@ -706,6 +919,20 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
             "https://example.com/constrained-event",
             title="Official constrained event lead",
             snippet="Free indoor toddler event in Flushing on August 15.",
+            provenance={
+                "evidence_grade": "search_excerpt",
+                "source_tier": "editorial",
+                "event": {
+                    "name": "Official constrained event lead",
+                    "url": "https://example.com/constrained-event",
+                    "venue": "Flushing",
+                    "borough": "Queens",
+                    "category": "Family",
+                    "audience": "kids",
+                    "free_evidence": "Free",
+                    "start_date": "2099-08-15",
+                },
+            },
         )
         return f"[{citation_id}] Official constrained event lead"
 
@@ -719,7 +946,6 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
             "web_search": Tool(
                 name="web_search",
                 description="search",
-                parameters={"type": "object"},
                 handler=web_handler,
             )
         },
@@ -731,23 +957,19 @@ async def test_constrained_event_lookup_uses_one_model_shaped_web_lane(monkeypat
             "setting": "indoor",
             "cost": "free",
             "borough": "Queens",
-            "visit_date": "2099-08-15",
-            "window_end": "2099-08-15",
-            "web_query": "free indoor toddler events Flushing 2099-08-15",
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
         },
         ctx,
     )
 
-    assert calls == [{
-        "query": "free indoor toddler events Flushing 2099-08-15",
-        "count": 10,
-    }]
-    assert "Official constrained event lead" in output
+    assert calls == []
+    assert "Official constrained event lead" not in output
     assert "Requested setting: indoor" in output
     assert "do not infer indoor or outdoor" in output
 
 
-async def test_broad_event_lookup_discloses_an_unavailable_web_lane(monkeypatch):
+async def test_web_failure_does_not_affect_the_structured_connector(monkeypatch):
     async def no_ticketmaster(**kwargs):
         return _tm_result()
 
@@ -775,19 +997,20 @@ async def test_broad_event_lookup_discloses_an_unavailable_web_lane(monkeypatch)
             "web_search": Tool(
                 name="web_search",
                 description="search",
-                parameters={"type": "object"},
                 handler=broken_web,
             )
         },
     )
 
     output = await get_tools()[0].handler(
-        {"visit_date": "2099-08-12", "window_end": "2099-08-12"}, ctx
+        {
+            "starts_after": "2099-08-12T00:00:00-04:00",
+            "starts_before": "2099-08-13T00:00:00-04:00",
+        }, ctx
     )
 
     assert "Evening Concert" in output
-    assert "Current web event leads were unavailable" in output
-    assert "Results are partial" in output
+    assert "Current web event leads" not in output
     assert "do not claim complete coverage" not in output
 
 
@@ -814,13 +1037,12 @@ async def test_specific_event_lookup_leaves_web_search_for_model_followup(monkey
             "web_search": Tool(
                 name="web_search",
                 description="search",
-                parameters={"type": "object"},
                 handler=web_handler,
             )
         },
     )
 
-    await get_tools()[0].handler({"keyword": "Knicks"}, ctx)
+    await get_tools()[0].handler({"topic": "Knicks"}, ctx)
 
     assert calls == []
 
@@ -912,7 +1134,7 @@ def test_shortlist_deduplicates_ticket_products_for_one_venue_and_time():
         ),
     ]
 
-    assert events._shortlist(rows, 12) == [rows[0]]
+    assert events._dedupe_order(rows, 12) == [rows[0]]
 
 
 def test_shortlist_deduplicates_one_event_url_across_entry_times():
@@ -929,7 +1151,7 @@ def test_shortlist_deduplicates_one_event_url_across_entry_times():
         ),
     ]
 
-    assert events._shortlist(rows, 12) == [rows[0]]
+    assert events._dedupe_order(rows, 12) == [rows[0]]
 
 
 def test_shortlist_does_not_treat_a_generic_source_page_as_event_identity():
@@ -944,7 +1166,7 @@ def test_shortlist_does_not_treat_a_generic_source_page_as_event_identity():
         ),
     ]
 
-    assert events._shortlist(rows, 12) == rows
+    assert events._dedupe_order(rows, 12) == rows
 
 
 @pytest.fixture(autouse=True)
@@ -982,7 +1204,10 @@ async def test_find_nyc_events_merges_grounds_and_filters_future():
     async with _routed_client() as client:
         ctx = ToolContext(citations=citations, registry=Registry([]), http=client)
         out = await tool.handler(
-            {"visit_date": "2099-07-19", "window_end": "2099-08-01"}, ctx,
+            {
+                "starts_after": "2099-07-19T00:00:00-04:00",
+                "starts_before": "2099-08-02T00:00:00-04:00",
+            }, ctx,
         )
 
     assert "Concert in the Park" in out
@@ -1038,7 +1263,10 @@ async def test_ticketmaster_status_sales_accessibility_and_partial_page_reach_ev
     )
 
     output = await get_tools()[0].handler(
-        {"visit_date": "2099-08-01", "window_end": "2099-08-01"}, ctx,
+        {
+            "starts_after": "2099-08-01T00:00:00-04:00",
+            "starts_before": "2099-08-02T00:00:00-04:00",
+        }, ctx,
     )
     citations = ctx.citations.mapping().values()
     coverage = next(c for c in citations if c["title"] == "Ticketmaster search coverage")
@@ -1095,11 +1323,10 @@ async def test_find_nyc_events_grounds_the_official_indexes_when_no_event_matche
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "2030 World Cup watch parties",
-            "classification": "Sports",
+            "topic": "2030 World Cup watch parties",
             "borough": "Queens",
-            "visit_date": "2030-07-20",
-            "window_end": "2030-07-21",
+            "starts_after": "2030-07-20T00:00:00-04:00",
+            "starts_before": "2030-07-22T00:00:00-04:00",
         },
         ctx,
     )
@@ -1121,14 +1348,14 @@ def test_find_nyc_events_borough_schema_keeps_citywide_requests_citywide():
     tool = get_tools()[0]
 
     assert "only when the resident names one" in (
-        tool.parameters["properties"]["borough"]["description"]
+        tool._input_schema()["properties"]["borough"]["description"]
     )
     assert "NYC is citywide" in (
-        tool.parameters["properties"]["borough"]["description"]
+        tool._input_schema()["properties"]["borough"]["description"]
     )
 
 
-async def test_find_nyc_events_retries_only_failed_catalog_sources(monkeypatch):
+async def test_find_nyc_events_does_not_retry_failed_catalog_sources(monkeypatch):
     attempts = 0
 
     async def flaky_ticketmaster(**kwargs):
@@ -1152,12 +1379,15 @@ async def test_find_nyc_events_retries_only_failed_catalog_sources(monkeypatch):
     )
 
     output = await get_tools()[0].handler(
-        {"visit_date": "2099-07-19", "window_end": "2099-07-19"}, ctx,
+        {
+            "starts_after": "2099-07-19T00:00:00-04:00",
+            "starts_before": "2099-07-20T00:00:00-04:00",
+        }, ctx,
     )
 
-    assert attempts == 2
-    assert "Mets vs. Braves" in output
-    assert "Results are partial" not in output
+    assert attempts == 1
+    assert "Mets vs. Braves" not in output
+    assert "Results are partial" in output
 
 
 async def test_find_nyc_events_discloses_a_catalog_source_that_stays_unavailable(monkeypatch):
@@ -1179,14 +1409,14 @@ async def test_find_nyc_events_discloses_a_catalog_source_that_stays_unavailable
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "game",
-            "visit_date": "2099-07-19",
-            "window_end": "2099-07-19",
+            "topic": "game",
+            "starts_after": "2099-07-19T00:00:00-04:00",
+            "starts_before": "2099-07-20T00:00:00-04:00",
         },
         ctx,
     )
 
-    assert attempts == 2
+    assert attempts == 1
     assert "Sources unavailable for part of this lookup: Ticketmaster" in output
     assert "Results are partial" in output
     assert "do not claim complete coverage or that no matching event exists" not in output
@@ -1220,7 +1450,10 @@ async def test_find_nyc_events_includes_permitted_street_events():
             citations=citations, registry=Registry([]), http=client, query="any street fairs",
         )
         out = await get_tools()[0].handler(
-            {"visit_date": "2099-07-18", "window_end": "2099-07-18"}, ctx,
+            {
+                "starts_after": "2099-07-18T00:00:00-04:00",
+                "starts_before": "2099-07-19T00:00:00-04:00",
+            }, ctx,
         )
 
     assert "Inwood Greenmarket" in out
@@ -1292,10 +1525,10 @@ async def test_find_nyc_events_never_falls_back_across_requested_borough(
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "kids",
+            "topic": "kids",
             "borough": "Queens",
-            "visit_date": "2099-07-25",
-            "window_end": "2099-07-25",
+            "starts_after": "2099-07-25T00:00:00-04:00",
+            "starts_before": "2099-07-26T00:00:00-04:00",
         },
         ctx,
     )
@@ -1339,8 +1572,8 @@ async def test_find_nyc_events_keeps_a_matching_requested_borough(monkeypatch):
     output = await get_tools()[0].handler(
         {
             "borough": "Queens",
-            "visit_date": "2099-07-25",
-            "window_end": "2099-07-25",
+            "starts_after": "2099-07-25T00:00:00-04:00",
+            "starts_before": "2099-07-26T00:00:00-04:00",
         },
         ctx,
     )
@@ -1393,11 +1626,11 @@ async def test_find_nyc_events_keeps_free_parks_rows_in_the_requested_borough(mo
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "free events",
+            "topic": "free events",
             "borough": "Queens",
             "audience": "kids",
-            "visit_date": "2099-07-25",
-            "window_end": "2099-07-25",
+            "starts_after": "2099-07-25T00:00:00-04:00",
+            "starts_before": "2099-07-26T00:00:00-04:00",
         },
         ctx,
     )
@@ -1406,7 +1639,7 @@ async def test_find_nyc_events_keeps_free_parks_rows_in_the_requested_borough(mo
     assert "Best for Kids" in output
     assert "Queens General Concert" not in output
     assert "Brooklyn Open Run" not in output
-    audience = get_tools()[0].parameters["properties"]["audience"]
+    audience = get_tools()[0]._input_schema()["properties"]["audience"]
     assert {"const": "kids", "type": "string"} in audience["anyOf"]
 
 
@@ -1451,8 +1684,8 @@ async def test_find_nyc_events_does_not_mix_unfiltered_context_into_audience_res
     output = await get_tools()[0].handler(
         {
             "audience": "kids",
-            "visit_date": "2099-07-25",
-            "window_end": "2099-07-25",
+            "starts_after": "2099-07-25T00:00:00-04:00",
+            "starts_before": "2099-07-26T00:00:00-04:00",
         },
         ctx,
     )
@@ -1483,8 +1716,8 @@ async def test_find_nyc_events_suppresses_unverified_editorial_boroughs(monkeypa
     output = await get_tools()[0].handler(
         {
             "borough": "Queens",
-            "visit_date": "2099-07-25",
-            "window_end": "2099-07-25",
+            "starts_after": "2099-07-25T00:00:00-04:00",
+            "starts_before": "2099-07-26T00:00:00-04:00",
         },
         ctx,
     )
@@ -1578,7 +1811,10 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
             query="what's happening this weekend",
         )
         out = await get_tools()[0].handler(
-            {"visit_date": "2026-08-15", "window_end": "2026-08-16"}, ctx,
+            {
+                "starts_after": "2026-08-15T00:00:00-04:00",
+                "starts_before": "2026-08-17T00:00:00-04:00",
+            }, ctx,
         )
 
     assert "Inwood Greenmarket" in out          # permitted row competes despite the cap
@@ -1587,7 +1823,7 @@ async def test_broad_weekend_query_seats_permitted_alongside_ticketmaster_and_pa
     assert any("tvpp-9vvx" in c["url"] for c in citations.mapping().values())
 
 
-async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
+async def test_topic_does_not_become_a_local_lexical_filter(monkeypatch):
     async def no_ticketmaster(**kwargs):
         return _tm_result()
 
@@ -1624,19 +1860,15 @@ async def test_keyword_broadening_does_not_return_unrelated_events(monkeypatch):
 
     output = await get_tools()[0].handler(
         {
-            "keyword": "world cup",
+            "topic": "world cup",
             "borough": "Manhattan",
-            "visit_date": "2099-07-25",
-            "window_end": "2099-07-25",
+            "starts_after": "2099-07-25T00:00:00-04:00",
+            "starts_before": "2099-07-26T00:00:00-04:00",
         },
         ctx,
     )
 
-    assert output.startswith(events._NO_RESULTS)
-    assert "Generic Fitness Class" not in output
-    assert {
-        citation["url"] for citation in ctx.citations.mapping().values()
-    } == {events.PARKS_SOURCE_URL, events.PERMITTED_SOURCE_URL}
+    assert "Generic Fitness Class" in output
 
 
 def test_find_nyc_events_contract_explains_structured_and_web_search_ownership():
@@ -1644,10 +1876,8 @@ def test_find_nyc_events_contract_explains_structured_and_web_search_ownership()
 
     desc = get_tools()[0].description.lower()
     assert "structured" in desc
-    assert "listings" in desc
-    assert "event discovery requests" in desc
-    assert "current web" in desc
-    assert "specific" in desc and "web_search remains available" in desc
+    assert "catalogs" in desc
+    assert "web" not in desc
     assert "the source" not in desc
 
 
@@ -1691,36 +1921,67 @@ async def test_window_args_from_the_model_override_the_phrase_window(monkeypatch
     ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]),
                       query="any concerts in early august?")
     await events.get_tools()[0].handler(
-        {"keyword": "concerts", "visit_date": "2026-08-03", "window_end": "2026-08-05"}, ctx,
+        {
+            "topic": "concerts",
+            "starts_after": "2026-08-03T00:00:00-04:00",
+            "starts_before": "2026-08-06T00:00:00-04:00",
+        }, ctx,
     )
     assert captured["start_datetime"] == "2026-08-03T04:00:00Z"
     assert any("startdate >= '2026-08-03'" in w and "2026-08-05" in w for w in captured["wheres"])
 
 
 def test_find_nyc_events_schema_enforces_documented_dates_and_max_results():
-    properties = get_tools()[0].parameters["properties"]
-    assert {"format": "date", "type": "string"} in properties["visit_date"]["anyOf"]
-    assert {"format": "date", "type": "string"} in properties["window_end"]["anyOf"]
+    properties = get_tools()[0]._input_schema()["properties"]
+    assert {"format": "date-time", "type": "string"} in properties["starts_after"]["anyOf"]
+    assert {"format": "date-time", "type": "string"} in properties["starts_before"]["anyOf"]
+    assert {"format": "date-time", "type": "string"} in properties["active_at"]["anyOf"]
     assert "limit" not in properties
     max_results = next(
         item for item in properties["max_results"]["anyOf"] if item.get("type") == "integer"
     )
     assert max_results["minimum"] == 1
-    assert max_results["maximum"] == 10
-    assert "short noun phrase" in properties["web_query"]["description"].lower()
-    assert "every requested constraint" in properties["web_query"]["description"]
+    assert "maximum" not in max_results
+    assert "topic" in properties
     assert {"enum": ["indoor", "outdoor"], "type": "string"} in properties["setting"]["anyOf"]
 
 
+async def test_public_event_time_range_translates_to_internal_new_york_bounds(monkeypatch):
+    captured = {}
+
+    async def internal_handler(args, _ctx):
+        captured.update(args)
+        return "ok"
+
+    monkeypatch.setattr(events, "_handler", internal_handler)
+    ctx = ToolContext(citations=CitationRegistry(), registry=Registry([]))
+
+    result = await get_tools()[0].handler(
+        {
+            "starts_after": "2026-08-26T18:00:00-04:00",
+            "starts_before": "2026-08-27T00:00:00-04:00",
+            "topic": "jazz",
+        },
+        ctx,
+    )
+
+    assert result == "ok"
+    assert captured == {
+        "starts_after": "2026-08-26T18:00:00-04:00",
+        "starts_before": "2026-08-27T00:00:00-04:00",
+        "topic": "jazz",
+    }
+
+
 @pytest.mark.parametrize(
-    ("query", "expected"),
+    ("query", "extra_args", "expected_count", "expect_followup"),
     [
-        ("what's happening this weekend?", 5),
-        ("show me 10 events this weekend", 10),
+        ("what's happening this weekend?", {}, 12, True),
+        ("show me 10 events this weekend", {"max_results": 10}, 10, False),
     ],
 )
-async def test_find_nyc_events_enforces_default_unless_resident_asks_for_count(
-    monkeypatch, query, expected,
+async def test_find_nyc_events_only_caps_choices_when_resident_asks_for_count(
+    monkeypatch, query, extra_args, expected_count, expect_followup,
 ):
     async def no_ticketmaster(**kwargs):
         return _tm_result()
@@ -1745,13 +2006,13 @@ async def test_find_nyc_events_enforces_default_unless_resident_asks_for_count(
 
     output = await get_tools()[0].handler(
         {
-            "visit_date": "2099-08-15",
-            "window_end": "2099-08-15",
-            **({"max_results": 10} if expected == 10 else {}),
+            "starts_after": "2099-08-15T00:00:00-04:00",
+            "starts_before": "2099-08-16T00:00:00-04:00",
+            **extra_args,
         },
         ctx,
     )
 
-    assert output.count("- Resident choice") == expected
-    assert ("This is a shortlist, not every matching event" in output) is (expected == 5)
-    assert ("Offer to narrow or list more" in output) is (expected == 5)
+    assert output.count("- Resident choice") == expected_count
+    assert ("This is a shortlist, not every matching event" in output) is expect_followup
+    assert ("Offer to narrow or list more" in output) is expect_followup

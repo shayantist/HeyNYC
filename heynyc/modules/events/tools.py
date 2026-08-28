@@ -1,8 +1,7 @@
-"""events module tool: `find_nyc_events`, a thin composition (§10.3) of shared infra.
+"""Event normalization and dormant structured event connectors.
 
-Merges the Ticketmaster Discovery client (structured backbone) + NYC Parks public
-events (query_dataset over w3wp-dpdi) into one Event shape, filtered to future dates.
-No hallucinated events: every row is grounded in a live source and cited with a link.
+Production exposes only `extract_events`, which turns selected fetched evidence into
+the existing `Event` shape and applies deterministic date and time constraints.
 """
 from __future__ import annotations
 
@@ -14,18 +13,20 @@ from typing import Literal, Optional
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from heynyc.core.citations import data_provenance
+from heynyc.core.grounding import check_grounding, citation_evidence
 from heynyc.core.index.corpus import clean_html
 from heynyc.core.location import LocationRequest
-from heynyc.core.temporal import EventStatus, event_status, nyc_datetime
+from heynyc.core.temporal import EventStatus, interval_status, nyc_datetime
 from heynyc.core.ticketmaster import (
     DISCOVERY_URL,
     TicketmasterSearchResult,
     ticketmaster_events,
 )
-from heynyc.core.tools.base import Tool, ToolContext
+from heynyc.core.tools.base import Tool, ToolContext, ToolInput
 from heynyc.core.tools.datasets import (
     dataset_url,
     query_dataset,
@@ -40,7 +41,11 @@ from heynyc.core.tools.geo import (
     resident_supplied_location,
     resolve_location,
 )
-from heynyc.core.tools.web_search import _TIER_LABELS
+from heynyc.core.tools.web_fetch import _url_safe_shape
+from heynyc.core.tools.web_search import (
+    _TIER_LABELS,
+    _text_tokens,
+)
 
 PARKS_DATASET_ID = "w3wp-dpdi"  # NYC Parks Public Events (clean, upcoming, free/park-focused)
 PARKS_SOURCE_URL = "https://www.nycgovparks.org/events"
@@ -54,8 +59,6 @@ PERMITTED_SOURCE_URL = (
     "https://data.cityofnewyork.us/City-Government/NYC-Permitted-Event-Information/tvpp-9vvx"
 )
 NYC_TZ = ZoneInfo("America/New_York")
-_SOURCE_TIMEOUT_S = 8.0
-_PAGE_FETCH_TIMEOUT_S = 20.0
 _PARK_BOROUGHS = {
     "B": "Brooklyn",
     "M": "Manhattan",
@@ -64,7 +67,8 @@ _PARK_BOROUGHS = {
     "X": "Bronx",
 }
 _NYC_LOCALITIES = {
-    "bronx", "brooklyn", "new york", "new york city", "queens", "staten island",
+    "bronx", "brooklyn", "manhattan", "new york", "new york city", "queens",
+    "staten island",
 }
 
 
@@ -78,79 +82,41 @@ def _nyc_locality_borough(value: object) -> str | None:
 
 
 class EventQuery(LocationRequest):
-    """Validated resident constraints for one event lookup."""
+    """Resident-visible constraints for one event lookup."""
 
-    max_results: int | None = Field(
-        default=None, ge=1, le=10, description="Maximum events requested; omit for the default 5."
-    )
-    visit_date: date | None = Field(default=None, description="Requested New York event date.")
-    visit_time: time | None = Field(
+    starts_after: AwareDatetime | None = Field(
         default=None,
-        description=(
-            "Requested New York event time. Set only when the resident names a time; otherwise omit."
-        ),
+        description="Inclusive lower bound for event start time, with a UTC offset.",
     )
-    keyword: str | None = Field(
+    starts_before: AwareDatetime | None = Field(
         default=None,
-        description=(
-            "Specific named event, artist, genre, or topic, such as 'Joe Hisaishi' or 'jazz'. "
-            "Do not repeat a broad classification such as Music or Sports here."
-        ),
+        description="Exclusive upper bound for event start time, with a UTC offset.",
     )
-    classification: str | None = Field(
+    active_at: AwareDatetime | None = Field(
         default=None,
-        description="Optional Ticketmaster segment, such as Music, Sports, or Arts & Theatre.",
+        description="Time when the event must be in progress, with a UTC offset.",
+    )
+    topic: str | None = Field(
+        default=None,
+        description="Requested artist, event name, genre, activity, or cultural theme.",
     )
     borough: str | None = Field(
         default=None,
-        description=(
-            "Optional NYC borough. Pass only when the resident names one; NYC is citywide."
-        ),
+        description="NYC borough, only when the resident names one; NYC is citywide.",
     )
     audience: Literal["kids"] | None = Field(
         default=None,
-        description="Use kids only when the resident asks for children's events.",
-    )
-    web_query: str | None = Field(
-        default=None,
-        description=(
-            "Short noun phrase for current-web discovery preserving every requested constraint, "
-            "including date, place, audience, cost, topic, and indoor or outdoor setting."
-        ),
+        description="Use kids only for a children's event request.",
     )
     setting: Literal["indoor", "outdoor"] | None = Field(
         default=None,
-        description="Optional requested physical setting: indoor or outdoor.",
-    )
-    has_started: bool | None = Field(
-        default=None,
-        description=(
-            "Filter against the computed New York event interval: true for events that started, "
-            "false for events that have not started, or omit when start state is unrestricted."
-        ),
-    )
-    has_ended: bool | None = Field(
-        default=None,
-        description=(
-            "Filter against the computed New York event interval: true for ended events, false "
-            "for events not known to have ended, or omit to use the date-window default."
-        ),
-    )
-    window_end: date | None = Field(
-        default=None,
-        description=(
-            "ISO end date for an explicit multi-day range. Omit for a single absolute date; "
-            "visit_date then applies to that day only."
-        ),
-    )
-    window_end_time: time | None = Field(
-        default=None,
-        description="Optional local New York upper time bound inferred from the request.",
+        description="Requested indoor or outdoor setting.",
     )
     cost: Literal["free"] | None = Field(
         default=None,
         description="Use free only when the resident explicitly asks for free events.",
     )
+
     @field_validator("audience", mode="before")
     @classmethod
     def supported_audience(cls, value: str | None) -> str | None:
@@ -165,17 +131,12 @@ class EventQuery(LocationRequest):
             raise ValueError(f"Unsupported setting: {value}")
         return value
 
-
     @model_validator(mode="after")
     def ordered_window(self) -> "EventQuery":
-        if self.visit_date and self.window_end and self.window_end < self.visit_date:
-            raise ValueError("window_end must not be before visit_date")
-        if (
-            self.visit_time and self.window_end_time
-            and (self.window_end or self.visit_date) == self.visit_date
-            and self.window_end_time < self.visit_time
-        ):
-            raise ValueError("window_end_time must not be before visit_time")
+        if self.starts_after and self.starts_before and self.starts_before <= self.starts_after:
+            raise ValueError("starts_before must be after starts_after")
+        if self.active_at and (self.starts_after or self.starts_before):
+            raise ValueError("active_at cannot be combined with a start-time range")
         return self
 
 
@@ -183,36 +144,57 @@ class EventQuery(LocationRequest):
 class Event:
     name: str
     start_date: str  # YYYY-MM-DD
-    start_time: str  # local time string, possibly ""
-    venue: str
-    borough: str
-    url: str
-    source: str  # "Ticketmaster Discovery" | "NYC Parks" | "NYC Permitted Events"
-    tier: str    # authoritative | editorial | community
+    start_time: str = ""  # local time string, possibly ""
+    venue: str = ""
+    borough: str = ""
+    url: SkipJsonSchema[str] = ""
+    source: SkipJsonSchema[str] = ""
+    tier: SkipJsonSchema[str] = ""
     free_evidence: str = ""
     audience: str = ""
     end_date: str = ""
     end_time: str = ""
-    provider_status: str = ""
-    timezone: str = ""
-    public_sale_start: str = ""
-    public_sale_end: str = ""
-    public_sale_start_tbd: bool | None = None
+    timezone: SkipJsonSchema[str] = ""
     accessibility_info: str = ""
-    venue_accessibility: str = ""
-    publishing_source: str = ""
-    provider_id: str = ""
-    provider_record: dict = field(default_factory=dict)
-    retrieved_at: str = ""
     registration_info: str = ""
-    evidence_excerpt: str = ""
     citation_id: str = ""
-    retrieval_rank: int | None = None
-    structured_source: bool = False
-    category: str = ""
-    lat: float | None = None
-    lon: float | None = None
-    distance_miles: float | None = None
+    evidence_excerpt: str = ""
+    category: SkipJsonSchema[str] = ""
+    lat: SkipJsonSchema[float | None] = None
+    lon: SkipJsonSchema[float | None] = None
+    provider_status: SkipJsonSchema[str] = ""
+    public_sale_start: SkipJsonSchema[str] = ""
+    public_sale_end: SkipJsonSchema[str] = ""
+    public_sale_start_tbd: SkipJsonSchema[bool | None] = None
+    venue_accessibility: SkipJsonSchema[str] = ""
+    publishing_source: SkipJsonSchema[str] = ""
+    provider_id: SkipJsonSchema[str] = ""
+    provider_record: SkipJsonSchema[dict] = field(default_factory=dict)
+    retrieved_at: SkipJsonSchema[str] = ""
+    retrieval_rank: SkipJsonSchema[int | None] = None
+    structured_source: SkipJsonSchema[bool] = False
+    distance_miles: SkipJsonSchema[float | None] = None
+
+
+class ExtractEventsInput(ToolInput):
+    starts_after: AwareDatetime | None = Field(None, description="Earliest start")
+    starts_before: AwareDatetime | None = Field(None, description="Latest start")
+    active_at: AwareDatetime | None = Field(None, description="Must be underway then")
+    max_results: int | None = Field(None, ge=1, description="Resident-requested count")
+    audience: Literal["kids"] | None = Field(None, description="Kids only")
+    cost: Literal["free"] | None = Field(None, description="Free only")
+    events: list[Event] = Field(
+        default_factory=list,
+        description="Events extracted from fetched page text; cite each source",
+    )
+
+    @model_validator(mode="after")
+    def ordered_window(self) -> "ExtractEventsInput":
+        if self.starts_after and self.starts_before and self.starts_before <= self.starts_after:
+            raise ValueError("starts_before must be after starts_after")
+        if self.active_at and (self.starts_after or self.starts_before):
+            raise ValueError("active_at cannot be combined with a start-time range")
+        return self
 
 
 def _coordinates(latitude: object, longitude: object) -> tuple[float | None, float | None]:
@@ -284,6 +266,7 @@ def _from_ticketmaster(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         end_time=end.get("localTime") or "",
         accessibility_info=(raw.get("accessibility") or {}).get("info") or "",
         venue_accessibility=(venues[0].get("accessibleSeatingDetail") or "") if venues else "",
+        audience=(raw.get("ageRestrictions") or {}).get("ageRuleDescription") or "",
         publishing_source=source.get("name") or source.get("id") or "",
         provider_id=str(raw.get("id") or raw.get("url") or ""),
         provider_record=raw,
@@ -306,6 +289,14 @@ def _from_parks(raw: dict, *, retrieved_at: str = "") -> Optional[Event]:
         return None
     link = raw.get("link")
     url = link.get("url", "") if isinstance(link, dict) else (link or "")
+    registration_link = raw.get("registration_url")
+    registration_url = (
+        registration_link.get("url", "")
+        if isinstance(registration_link, dict)
+        else (registration_link or "")
+    )
+    if _url_safe_shape(str(registration_url)):
+        url = str(registration_url)
     if url.startswith("http://www.nycgovparks.org/"):
         url = f"https://{url.removeprefix('http://')}"
     _unused, description = clean_html(str(raw.get("description") or ""))
@@ -375,7 +366,9 @@ def _from_web_citation(citation_id: str, citation: dict, *, rank: int) -> Event:
     """Normalize one already-registered web discovery into the shared Event shape."""
     provenance = citation.get("provenance") or {}
     event_fields = provenance.get("event") or {}
-    url = str(event_fields.get("url") or citation.get("url") or "")
+    source_url = str(citation.get("url") or "")
+    candidate_url = str(event_fields.get("url") or source_url)
+    url = candidate_url if _url_safe_shape(candidate_url) else source_url
     host = (urlsplit(url).hostname or "").removeprefix("www.")
     evidence_excerpt = str(citation.get("snippet") or "")
     if event_fields:
@@ -399,9 +392,19 @@ def _from_web_citation(citation_id: str, citation: dict, *, rank: int) -> Event:
         url=url,
         source="Web discovery",
         tier=str(provenance.get("source_tier") or "unverified"),
+        free_evidence=str(event_fields.get("free_evidence") or ""),
+        audience=str(event_fields.get("audience") or ""),
         publishing_source=host,
         provider_id=url,
-        provider_record=event_fields or citation,
+        provider_record=(
+            {
+                "event": event_fields,
+                "source_url": str(citation.get("url") or ""),
+                "source_provenance": provenance,
+            }
+            if event_fields
+            else citation
+        ),
         retrieved_at=str((provenance.get("acquisition") or {}).get("fetched_at") or ""),
         evidence_excerpt=evidence_excerpt,
         citation_id=citation_id,
@@ -412,9 +415,12 @@ def _from_web_citation(citation_id: str, citation: dict, *, rank: int) -> Event:
 
 
 def _from_web_citation_events(citation_id: str, citation: dict, *, rank: int) -> list[Event]:
-    structured = (citation.get("provenance") or {}).get("events") or []
+    provenance = citation.get("provenance") or {}
+    structured = provenance.get("events") or []
+    if event := provenance.get("event"):
+        structured = [event]
     if not structured:
-        return [_from_web_citation(citation_id, citation, rank=rank)]
+        return []
     return [
         _from_web_citation(
             citation_id,
@@ -429,33 +435,93 @@ def _from_web_citation_events(citation_id: str, citation: dict, *, rank: int) ->
     ]
 
 
+def _schema_nodes(value: object):
+    if isinstance(value, list):
+        for item in value:
+            yield from _schema_nodes(item)
+    elif isinstance(value, dict):
+        yield value
+        yield from _schema_nodes(value.get("@graph"))
+
+
+def _schema_date_time(value: object) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if len(raw) == 10:
+        return _iso_date(raw), ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return "", ""
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(NYC_TZ)
+    return parsed.date().isoformat(), parsed.strftime("%H:%M:%S")
+
+
+def _schema_event(value: dict, citation_id: str, citation: dict) -> Event | None:
+    schema_type = value.get("@type")
+    types = schema_type if isinstance(schema_type, list) else [schema_type]
+    if not any(str(item or "").casefold().endswith("event") for item in types):
+        return None
+    start = str(value.get("startDate") or "")
+    start_date, start_time = _schema_date_time(start)
+    if not value.get("name") or not start_date:
+        return None
+    end = str(value.get("endDate") or "")
+    end_date, end_time = _schema_date_time(end)
+    location = value.get("location") if isinstance(value.get("location"), dict) else {}
+    address = location.get("address")
+    address = address if isinstance(address, dict) else {}
+    locality = str(address.get("addressLocality") or "")
+    borough = _nyc_locality_borough(locality) or ""
+    offers = value.get("offers")
+    offers = offers if isinstance(offers, list) else [offers]
+    free = any(
+        isinstance(offer, dict) and str(offer.get("price") or "").strip() in {"0", "0.0", "0.00"}
+        for offer in offers
+    )
+    source_url = str(citation.get("url") or "")
+    event_url = str(value.get("url") or source_url)
+    return Event(
+        name=str(value["name"]),
+        start_date=start_date,
+        start_time=start_time,
+        end_date=end_date,
+        end_time=end_time,
+        venue=str(location.get("name") or ""),
+        borough=borough,
+        url=event_url if _url_safe_shape(event_url) else source_url,
+        free_evidence="Schema.org offer price is 0" if free else "",
+        audience=str(value.get("typicalAgeRange") or ""),
+        accessibility_info=str(value.get("accessibilityFeature") or ""),
+        citation_id=citation_id,
+        category=str(value.get("eventType") or ""),
+        source="Web discovery",
+        tier=str((citation.get("provenance") or {}).get("source_tier") or "unverified"),
+        provider_id=event_url,
+        provider_record=value,
+        evidence_excerpt=str(citation.get("snippet") or ""),
+        structured_source=True,
+    )
+
+
 def _future_only(events: list[Event], today: str) -> list[Event]:
     """Keep events whose source interval overlaps or follows `today`."""
     return [e for e in events if max(e.start_date, e.end_date or "") >= today]
 
 
-def _not_ended_today(events: list[Event], now: datetime) -> list[Event]:
-    """Legacy strict filter retained for callers that require confirmed attendability."""
-    return [
-        event
-        for event in events
-        if event.start_date != now.date().isoformat()
-        or _event_temporal_status(event, now) in {"upcoming", "in_progress"}
-    ]
-
-
-def _shortlist(events: list[Event], limit: int) -> list[Event]:
-    """Cap structured rows while preserving source and requested-date coverage."""
+def _dedupe_order(
+    events: list[Event],
+    limit: int | None,
+) -> list[Event]:
+    """Deduplicate records, order them deterministically, then apply an explicit count."""
     unique: list[Event] = []
     identities: set[tuple[str, ...]] = set()
-    urls: set[str] = set()
+    url_names: set[tuple[str, str]] = set()
     generic_urls = {
         DISCOVERY_URL.casefold(), PARKS_SOURCE_URL.casefold(), PERMITTED_SOURCE_URL.casefold(),
     }
     for event in events:
         url = event.url.strip().casefold()
-        if url and url not in generic_urls and url in urls:
-            continue
         identity = (
             event.source.casefold(),
             event.start_date,
@@ -466,10 +532,13 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
                 else event.name.casefold()
             ),
         )
+        url_name = (url, event.name.casefold())
+        if url and url not in generic_urls and url_name in url_names:
+            continue
         if identity in identities:
             continue
         if url and url not in generic_urls:
-            urls.add(url)
+            url_names.add(url_name)
         identities.add(identity)
         unique.append(event)
     seen: dict[tuple[str, str], int] = {}
@@ -484,12 +553,12 @@ def _shortlist(events: list[Event], limit: int) -> list[Event]:
         item[1] or "9999-12-31",
         _parse_start_time(item[2].start_time) or datetime.max.time(),
     ))
-    return [event for _, _, event in ranked[:limit]]
+    ordered = [event for _, _, event in ranked]
+    return ordered[:limit] if limit is not None else ordered
 
 
 _NO_RESULTS = (
-    "No NYC events matched that from the live sources (Ticketmaster + NYC Parks + "
-    "NYC Permitted Events)."
+    "No matching structured event records were returned."
 )
 
 _TIME_FORMATS = ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M")
@@ -510,20 +579,21 @@ def _event_temporal_status(ev: Event, now: datetime) -> EventStatus:
     if not ev.start_date:
         return "unknown"
     event_day = date.fromisoformat(ev.start_date)
+    end_day = date.fromisoformat(ev.end_date) if ev.end_date else None
+    if event_day < now.date() and (end_day is None or end_day < now.date()):
+        return "ended"
     start_time = _parse_start_time(ev.start_time)
     if start_time is None:
-        if event_day < now.date():
-            return "ended"
         return "upcoming" if event_day > now.date() else "unknown"
     start_at = nyc_datetime(event_day, start_time)
     end_time = _parse_start_time(ev.end_time)
     end_at = None
     if end_time is not None:
-        end_day = date.fromisoformat(ev.end_date) if ev.end_date else event_day
+        end_day = end_day or event_day
         if not ev.end_date and end_time <= start_time:
             end_day += timedelta(days=1)
         end_at = nyc_datetime(end_day, end_time)
-    return event_status(start_at, end_at, now)
+    return interval_status(start_at, end_at, now)
 
 
 def _temporal_filter(
@@ -556,7 +626,19 @@ def _temporal_instruction(has_started: bool | None, has_ended: bool | None) -> s
         )
     if has_started is False:
         return "include only events that have not started; keep unknown-time leads separate"
-    return "exclude events known to have ended"
+    if has_ended is False:
+        return "exclude events known to have ended"
+    return "include events in the requested range"
+
+
+def _ended_filter(
+    starts_after: datetime | None,
+    starts_before: datetime | None,
+    now: datetime,
+) -> bool | None:
+    if not starts_after and not starts_before:
+        return False
+    return True if starts_before and starts_before <= now else None
 
 
 def _today_timing_note(ev: Event, now: datetime) -> str:
@@ -630,73 +712,19 @@ def _explicitly_free(events: list[Event], cost: Literal["free"] | None) -> list[
     ]
 
 
-_GENERIC_EVENT_WORDS = {
-    "a", "activities", "activity", "any", "anything", "around", "city", "do",
-    "event", "events", "find", "for", "free", "going", "happen", "happening",
-    "in", "me", "new", "nyc", "on", "show", "stuff", "thing", "things", "this",
-    "to", "today", "tonight", "week", "weekend", "what", "whats", "york",
-}
-
-
-def _keyword_terms(keyword: str) -> set[str]:
-    raw_terms = {
-        term
-        for term in re.findall(r"[a-z0-9]+", keyword.lower())
-        if len(term) >= 3 and term not in _GENERIC_EVENT_WORDS
-    }
-    return {
-        term[:-1] if len(term) > 4 and term.endswith("s") else term
-        for term in raw_terms
-    }
-
-
-def _matches_keyword(event: Event, keyword: str, *, match_all: bool = False) -> bool:
-    terms = _keyword_terms(keyword)
-    blob = " ".join(
-        (event.name, event.venue, event.audience, event.free_evidence, event.evidence_excerpt)
-    ).lower()
-    return not terms or (
-        all(term in blob for term in terms)
-        if match_all
-        else any(term in blob for term in terms)
-    )
-
-
-def _matches_classification(event: Event, classification: str) -> bool:
-    terms = _keyword_terms(classification)
-    blob = " ".join(
-        (event.name, event.category or event.evidence_excerpt)
-    ).casefold()
-    return not terms or any(term in blob for term in terms)
-
-
-def _event_discovery_domains(ctx: ToolContext) -> list[str]:
-    return sorted({
-        domain
-        for module in ctx.registry.modules
-        if module.name == "events"
-        for domains in module.source_tiers.values()
-        for domain in domains
-    })
-
-
-def _is_generic_event_page(url: str) -> bool:
-    return urlsplit(url).path.rstrip("/").casefold() in {"", "/discover", "/event", "/events"}
-
-
 async def _handler(args: dict, ctx: ToolContext) -> str:
     query = EventQuery.model_validate(args)
-    keyword = (query.keyword or "").strip() or None
-    if keyword and not _keyword_terms(keyword):
-        keyword = None
-    classification = (query.classification or "").strip() or None
+    keyword = (query.topic or "").strip() or None
     borough = (query.borough or "").strip().lower()
     audience = (query.audience or "").strip().lower()
-    web_query = (query.web_query or "").strip()
     setting = (query.setting or "").strip().lower()
     resident_requested_count = query.max_results is not None
-    max_results = query.max_results or 5
+    result_budget = query.max_results
     near = (query.near or "").strip()
+    if near.casefold() in {"nyc", "new york", "new york city"}:
+        near = ""
+    current_time = datetime.now(NYC_TZ)
+    now = query.active_at.astimezone(NYC_TZ) if query.active_at else current_time
     origin = None
     if near:
         stored_origin = current_resolved_location(near, ctx)
@@ -714,24 +742,33 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if origin.resident_query:
             ctx.current_location = origin
 
-    now = datetime.now(NYC_TZ)
     today = now.strftime("%Y-%m-%d")
 
-    # The agent extracts the resident's date window. Python validates it and computes event state.
-    arg_start = query.visit_date.isoformat() if query.visit_date else None
-    arg_end = query.window_end.isoformat() if query.window_end else None
-    if arg_start:
-        window_start, window_end = arg_start, arg_end or arg_start
-    elif arg_end:
-        window_start, window_end = today, arg_end
+    if query.active_at:
+        window_start = window_end = now.date().isoformat()
+        start_time_bound = end_time_bound = None
+        has_started_constraint, has_ended = True, False
     else:
-        window_start = window_end = today
-    has_ended = query.has_ended
-    if has_ended is None:
-        has_ended = bool(window_end and window_end < today)
-    temporal_instruction = _temporal_instruction(query.has_started, has_ended)
-    start_time_bound = query.visit_time
-    end_time_bound = query.window_end_time
+        starts_after = query.starts_after.astimezone(NYC_TZ) if query.starts_after else None
+        starts_before = (
+            query.starts_before.astimezone(NYC_TZ) if query.starts_before else None
+        )
+        inclusive_end = starts_before - timedelta(microseconds=1) if starts_before else None
+        window_start = (starts_after.date() if starts_after else current_time.date()).isoformat()
+        window_end = (inclusive_end.date() if inclusive_end else date.fromisoformat(window_start)).isoformat()
+        start_time_bound = (
+            starts_after.time().replace(tzinfo=None)
+            if starts_after and starts_after.time().replace(tzinfo=None) != time.min
+            else None
+        )
+        end_time_bound = (
+            inclusive_end.time().replace(tzinfo=None)
+            if inclusive_end and starts_before.time().replace(tzinfo=None) != time.min
+            else None
+        )
+        has_started_constraint = None
+        has_ended = _ended_filter(starts_after, starts_before, current_time)
+    temporal_instruction = _temporal_instruction(has_started_constraint, has_ended)
 
     def local_bound(day: date, value: time) -> str:
         return datetime.combine(day, value, tzinfo=NYC_TZ).astimezone(timezone.utc).strftime(
@@ -749,7 +786,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         local_bound(start_day, start_time_bound)
         if start_time_bound
         else utc_midnight(start_day)
-        if window_start != today or has_ended or query.has_started is True
+        if window_start != today or has_ended or has_started_constraint is True
         else now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     end_dt = (
@@ -760,13 +797,10 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         else None
     )
     ticketmaster_keyword = keyword
-    if keyword and classification and keyword.casefold() == classification.casefold():
-        ticketmaster_keyword = None
-
     async def ticketmaster_source():
         return await ticketmaster_events(
             keyword=ticketmaster_keyword,
-            classification=classification,
+            classification=None,
             start_datetime=start_dt,
             end_datetime=end_dt,
             size=200,
@@ -811,330 +845,29 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         "permitted": "NYC Permitted Events",
     }
     sources = [(name, source()) for name, source in catalog_sources.items()]
-    broad_web = (
-        (bool(web_query) or ctx.event_turn == "discovery" or (not keyword and not classification))
-        and bool(ctx.query.strip())
-        and ctx.toolbox is not None
-        and "web_search" in ctx.toolbox
-    )
-    search_query = ""
-    calendar_urls: list[str] = []
-    web_citations_before = set(ctx.citations.mapping())
-    if broad_web:
-        query_terms = [
-            term
-            for term in (keyword or classification, borough, audience, setting, query.cost)
-            if term
-        ]
-        start_day = date.fromisoformat(window_start)
-        search_parts = [
-            "NYC",
-            *query_terms,
-            "events",
-            f"{start_day.strftime('%B')} {start_day.day}, {start_day.year}",
-        ]
-        if window_end and window_end != window_start:
-            end_day = date.fromisoformat(window_end)
-            search_parts.append(
-                f"to {end_day.strftime('%B')} {end_day.day}, {end_day.year}"
+    source_tasks = {
+        name: asyncio.create_task(call) for name, call in sources
+    }
+    if ctx.event_retrieval_policy == "deep":
+        done, pending = await asyncio.wait(source_tasks.values(), timeout=60)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        results = {
+            name: (
+                task.result()
+                if task in done and not task.cancelled() and task.exception() is None
+                else TimeoutError("deep retrieval deadline")
             )
-        search_query = web_query or (
-            " ".join(search_parts) if query_terms else ctx.query.strip()
-        )
-        web_args = {"query": search_query, "count": 10}
-        if preferred_domains := _event_discovery_domains(ctx):
-            web_args["prefer"] = preferred_domains
-        sources.append((
-            "broad_web",
-            ctx.toolbox["web_search"].handler(web_args, ctx),
-        ))
-        # ponytail: direct calendars currently cover single-day lookups. Range searches keep
-        # using the bounded web lane until a real recall failure justifies several page fetches.
-        if window_end == window_start and "web_fetch" in ctx.toolbox:
-            calendar_urls = list(dict.fromkeys(
-                template.format(date=start_day)
-                for module in ctx.registry.modules
-                if module.name == "events"
-                for template in module.event_calendar_templates
-            ))
-            sources.extend(
-                (
-                    f"event_calendar_{index}",
-                    ctx.toolbox["web_fetch"].handler(
-                        {"url": url, "query": search_query}, ctx,
-                    ),
-                )
-                for index, url in enumerate(calendar_urls)
-            )
-    gathered = await asyncio.gather(*(
-        asyncio.wait_for(
-            call,
-            timeout=(
-                _PAGE_FETCH_TIMEOUT_S
-                if name.startswith("event_calendar_")
-                else _SOURCE_TIMEOUT_S
-            ),
-        )
-        for name, call in sources
-    ), return_exceptions=True)
-    results = dict(zip((name for name, _ in sources), gathered))
-    failed_catalog = [
-        name for name in catalog_sources if isinstance(results[name], BaseException)
-    ]
-    retryable_failed = [
-        name for name in failed_catalog
-    ]
-    if retryable_failed:
-        retried = await asyncio.gather(*(
-            asyncio.wait_for(catalog_sources[name](), timeout=_SOURCE_TIMEOUT_S)
-            for name in retryable_failed
-        ), return_exceptions=True)
-        results.update(zip(retryable_failed, retried))
+            for name, task in source_tasks.items()
+        }
+    else:
+        gathered = await asyncio.gather(*source_tasks.values(), return_exceptions=True)
+        results = dict(zip(source_tasks, gathered))
     unavailable_catalog = [
         name for name in catalog_sources if isinstance(results[name], BaseException)
     ]
-    web_results = [
-        result for name, result in results.items()
-        if name == "broad_web" or name.startswith("event_calendar_")
-    ]
-    web_failed = bool(web_results) and all(
-        isinstance(result, BaseException) for result in web_results
-    )
-    web_context = "\n\n".join(
-        str(result) for result in web_results
-        if result and not isinstance(result, BaseException)
-    ) or None
-    added = ctx.citations.mapping()
-    new_citations = [
-        citation
-        for citation_id, citation in added.items()
-        if citation_id not in web_citations_before
-    ]
-    generic = next(
-        (
-            citation
-            for citation in new_citations[:1]
-            if _is_generic_event_page(citation["url"])
-        ),
-        None,
-    )
-    resolved_primary = next(
-        (
-            citation
-            for citation in new_citations
-            if not _is_generic_event_page(citation["url"])
-            and (
-                generic is None
-                or (urlsplit(citation["url"]).hostname or "").removeprefix("www.")
-                == (urlsplit(generic["url"]).hostname or "").removeprefix("www.")
-            )
-        ),
-        None,
-    )
-    if generic is not None and ctx.toolbox is not None and "web_search" in ctx.toolbox:
-        host = (urlsplit(generic["url"]).hostname or "").removeprefix("www.")
-        resolved_primary = next(
-            (
-                citation
-                for citation_id, citation in added.items()
-                if citation_id not in web_citations_before
-                and citation["url"] != generic["url"]
-                and (urlsplit(citation["url"]).hostname or "").removeprefix("www.") == host
-                and not _is_generic_event_page(citation["url"])
-            ),
-            None,
-        )
-        focused_query = " ".join(
-            part for part in (generic.get("title", ""), generic.get("snippet", "")[:240])
-            if part
-        )
-        if resolved_primary is None and host and focused_query:
-            focused_citations_before = set(added)
-            try:
-                focused = await asyncio.wait_for(
-                    ctx.toolbox["web_search"].handler(
-                        {"query": focused_query, "prefer": [host], "count": 5}, ctx,
-                    ),
-                    timeout=_SOURCE_TIMEOUT_S,
-                )
-            except Exception:
-                focused = ""
-            if focused:
-                web_context = f"{web_context}\n\nFocused direct-page search:\n{focused}"
-                resolved_primary = next(
-                    (
-                        citation
-                        for citation_id, citation in ctx.citations.mapping().items()
-                        if citation_id not in focused_citations_before
-                        and (urlsplit(citation["url"]).hostname or "").removeprefix("www.")
-                        == host
-                        and not _is_generic_event_page(citation["url"])
-                    ),
-                    None,
-                )
-    if (
-        web_context
-        and ctx.toolbox is not None
-        and "web_fetch" in ctx.toolbox
-    ):
-        added = ctx.citations.mapping()
-        direct_candidates = [
-            citation
-            for citation_id, citation in added.items()
-            if citation_id not in web_citations_before
-            and not _is_generic_event_page(citation["url"])
-        ]
-        if resolved_primary is not None:
-            direct_candidates.insert(0, resolved_primary)
-        requested_dates = {
-            value
-            for day in (start_day, end_day)
-            if day is not None
-            for value in (
-                day.isoformat(),
-                f"{day.strftime('%B')} {day.day}",
-            )
-        }
-        requested_topics = _keyword_terms(keyword or classification or "")
-
-        def fetch_priority(citation: dict) -> tuple[bool, bool]:
-            blob = " ".join(
-                str(citation.get(field) or "") for field in ("title", "snippet", "url")
-            ).casefold()
-            return (
-                any(value.casefold() in blob for value in requested_dates),
-                any(topic in blob for topic in requested_topics),
-            )
-
-        if generic is not None and resolved_primary is not None:
-            primaries = [resolved_primary]
-        else:
-            direct_candidates.sort(key=fetch_priority, reverse=True)
-            primaries = list(
-                {citation["url"]: citation for citation in direct_candidates}.values()
-            )[:2]
-
-        async def fetch_primary(primary: dict) -> str:
-            try:
-                return await asyncio.wait_for(
-                    ctx.toolbox["web_fetch"].handler(
-                        {"url": primary["url"], "query": search_query},
-                        ctx,
-                    ),
-                    timeout=_PAGE_FETCH_TIMEOUT_S,
-                )
-            except Exception:
-                return ""
-
-        fetched_pages = await asyncio.gather(*(fetch_primary(primary) for primary in primaries))
-        for fetched in fetched_pages:
-            if fetched:
-                web_context = f"{web_context}\n\nSelected event page:\n{fetched}"
-
-        current_fetch_citation_ids = {
-            citation_id
-            for citation_id in ctx.citations.mapping()
-            if f"[{citation_id}]" in web_context
-            or f"{{cite:{citation_id}}}" in web_context
-            or f"SOURCE {citation_id}:" in web_context
-        }
-        attempted_urls = {
-            citation["url"]
-            for citation_id, citation in ctx.citations.mapping().items()
-            if citation_id in current_fetch_citation_ids
-            if (citation.get("provenance") or {}).get("acquisition")
-            or (citation.get("provenance") or {}).get("evidence_grade") == "unavailable"
-        }
-        child_pages: list[dict[str, str]] = []
-        for citation_id, citation in ctx.citations.mapping().items():
-            if citation_id not in current_fetch_citation_ids:
-                continue
-            for event_fields in (citation.get("provenance") or {}).get("events") or ():
-                event_url = str(event_fields.get("url") or "")
-                if not event_url or event_url in attempted_urls or event_fields.get("borough"):
-                    continue
-                event_end = str(event_fields.get("end_date") or event_fields.get("start_date") or "")
-                event_start = str(event_fields.get("start_date") or "")
-                if not event_start or event_end < window_start or (
-                    window_end and event_start > window_end
-                ):
-                    continue
-                candidate = _from_web_citation(
-                    citation_id,
-                    {
-                        **citation,
-                        "provenance": {
-                            **(citation.get("provenance") or {}), "event": event_fields,
-                        },
-                    },
-                    rank=0,
-                )
-                if (keyword or classification) and not _matches_keyword(
-                    candidate,
-                    keyword or classification or "",
-                    match_all=bool(web_query and keyword and not classification),
-                ):
-                    continue
-                attempted_urls.add(event_url)
-                child_pages.append({"url": event_url})
-                if len(child_pages) == 2:
-                    break
-            if len(child_pages) == 2:
-                break
-        fetched_children = await asyncio.gather(
-            *(fetch_primary(primary) for primary in child_pages)
-        )
-        for fetched in fetched_children:
-            if fetched:
-                web_context = f"{web_context}\n\nVerified direct event page:\n{fetched}"
-    current_web_citation_ids = {
-        citation_id
-        for citation_id in ctx.citations.mapping()
-        if f"[{citation_id}]" in (web_context or "")
-        or f"{{cite:{citation_id}}}" in (web_context or "")
-        or f"SOURCE {citation_id}:" in (web_context or "")
-    }
-    raw_web_citation_items = [
-        (citation_id, citation)
-        for citation_id, citation in ctx.citations.mapping().items()
-        if citation_id in current_web_citation_ids
-    ]
-    web_citation_ids = {citation_id for citation_id, _citation in raw_web_citation_items}
-    citation_by_url: dict[str, tuple[str, dict]] = {}
-    url_order: list[str] = []
-    evidence_priority = {
-        "unavailable": 0, "discovery": 1, "search_excerpt": 2,
-        "authoritative_excerpt": 3, "fetched": 4, "authoritative": 5,
-    }
-    for citation_id, citation in raw_web_citation_items:
-        url = citation["url"]
-        existing = citation_by_url.get(url)
-        if existing is None:
-            url_order.append(url)
-        if existing is None or evidence_priority.get(
-            (citation.get("provenance") or {}).get("evidence_grade", ""), 0,
-        ) > evidence_priority.get(
-            (existing[1].get("provenance") or {}).get("evidence_grade", ""), 0,
-        ):
-            citation_by_url[url] = (citation_id, citation)
-    web_citation_items = [citation_by_url[url] for url in url_order]
-    direct_web_items = [
-        item for item in web_citation_items if not _is_generic_event_page(item[1]["url"])
-    ]
-    if direct_web_items:
-        web_citation_items = direct_web_items
-    calendar_event_ranks = {
-        str(event.get("url") or ""): rank
-        for _citation_id, citation in web_citation_items
-        if citation["url"] in calendar_urls
-        for rank, event in enumerate((citation.get("provenance") or {}).get("events") or ())
-        if event.get("url")
-    }
-    web_limitation = (
-        "Current web event leads were unavailable. Results are partial."
-        if web_failed
-        else ""
-    )
     ticketmaster_result = results["ticketmaster"]
     if not isinstance(ticketmaster_result, BaseException):
         if ticketmaster_result.status == "unavailable":
@@ -1162,61 +895,32 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
     events += [
         e for e in (_from_permitted(r, retrieved_at=retrieved_at) for r in raw_permitted) if e
     ]
-    events += [
-        event
-        for rank, (citation_id, citation) in enumerate(web_citation_items)
-        for event in _from_web_citation_events(
-            citation_id,
-            citation,
-            rank=(
-                0
-                if citation["url"] in calendar_urls
-                else calendar_event_ranks.get(citation["url"], rank)
-            ),
-        )
-    ]
-    if keyword:
-        events = [
-            event for event in events
-            if event.source == "Ticketmaster Discovery"
-            or _matches_keyword(
-                event,
-                keyword,
-                match_all=bool(web_query and not classification),
-            )
-        ]
-    elif classification:
-        events = [
-            event for event in events
-            if event.source == "Ticketmaster Discovery"
-            or _matches_classification(event, classification)
-        ]
-
     def _window_filter(rows: list[Event]) -> list[Event]:
         incomplete = [event for event in rows if not event.start_date]
         kept = _future_only([event for event in rows if event.start_date], window_start)
         if window_end:
             kept = [e for e in kept if e.start_date <= window_end]
-        if ctx.event_turn != "preparation" or query.has_started is not None or query.has_ended is not None:
+        if ctx.event_turn != "preparation" or query.active_at is not None:
             kept = _temporal_filter(
-                kept, has_started=query.has_started, has_ended=has_ended, now=now,
+                kept, has_started=has_started_constraint, has_ended=has_ended, now=now,
             )
-        kept = _explicitly_free(kept, query.cost)
-        if start_time_bound or end_time_bound:
-            kept = [
-                event for event in kept
-                if (parsed := _parse_start_time(event.start_time)) is not None
-                and (start_time_bound is None or parsed >= start_time_bound)
-                and (end_time_bound is None or parsed <= end_time_bound)
-            ]
-        if borough:
-            kept = [e for e in kept if borough in e.borough.lower()]
-        if audience == "kids":
-            kept = [e for e in kept if "kids" in e.audience.lower()]
+            kept = _explicitly_free(kept, query.cost)
+            if start_time_bound or end_time_bound:
+                kept = [
+                    event for event in kept
+                    if (parsed := _parse_start_time(event.start_time)) is not None
+                    and (start_time_bound is None or parsed >= start_time_bound)
+                    and (end_time_bound is None or parsed <= end_time_bound)
+                ]
+            if borough:
+                kept = [e for e in kept if borough in e.borough.lower()]
+            if audience == "kids":
+                kept = [e for e in kept if "kids" in e.audience.lower()]
         kept += incomplete
         return kept
 
     events = _window_filter(events)
+    event_result_limit = result_budget
     location_note = ""
     if origin is not None:
         located = [
@@ -1236,20 +940,8 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         )
         for event, distance_m in ranked:
             event.distance_miles = miles(distance_m)
-        events = [event for event, _distance_m in ranked[:max_results]]
-        unlocated_non_marketplace = [
-            event for event in unlocated
-            if event.source != "Ticketmaster Discovery"
-        ]
-        if (
-            len(events) == max_results
-            and max_results > 1
-            and all(event.source == "Ticketmaster Discovery" for event in events)
-            and unlocated_non_marketplace
-        ):
-            events[-1] = _shortlist(unlocated_non_marketplace, 1)[0]
-        if len(events) < max_results:
-            events += _shortlist(unlocated, max_results - len(events))
+        events = [event for event, _distance_m in ranked]
+        events += _dedupe_order(unlocated, None)
         location_note = f"Distance from {origin.label}: located listings are ranked nearest first.\n"
         location_note += (
             "Preserve this returned order in the answer; do not reorder by source type.\n"
@@ -1265,11 +957,36 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 "leads are not distance-ranked.\n"
             )
     else:
-        events = _shortlist(events, max_results)
-    selected_web_citation_ids = {event.citation_id for event in events if event.citation_id}
-    ctx.citations.discard(
-        (web_citation_ids - web_citations_before) - selected_web_citation_ids
+        events = _dedupe_order(events, None)
+    complete_events = [
+        event for event in events
+        if event.start_date and event.name and event.url
+        and (event.source != "Web discovery" or event.structured_source)
+    ]
+    incomplete_events = [event for event in events if event not in complete_events]
+    selected_events = (
+        complete_events[:event_result_limit]
+        if origin is not None and event_result_limit is not None
+        else complete_events
+        if origin is not None
+        else _dedupe_order(complete_events, event_result_limit)
     )
+    events = selected_events
+    ctx.tool_runs.append({
+        "operation": "event_candidate_selection",
+        "policy": ctx.event_retrieval_policy,
+        "catalog_candidates": len(complete_events),
+        "unresolved_leads": len(incomplete_events),
+        "eligible_candidates": len(complete_events),
+        "selected_candidates": len(selected_events),
+        "selected_source_mix": {
+            source: sum(event.source == source for event in selected_events)
+            for source in sorted({event.source for event in selected_events})
+        },
+        "stopping_reason": (
+            "resident_count" if event_result_limit is not None else "all_eligible_records"
+        ),
+    })
     limited_catalog = set(unavailable_catalog)
     coverage_note = ""
     if limited_catalog:
@@ -1363,6 +1080,14 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         if setting
         else ""
     )
+    count_instruction = (
+        f"Return no more than {query.max_results} event choices. "
+        if resident_requested_count
+        else (
+            "Choose only the strongest distinct matches for a concise conversational shortlist, "
+            "and make clear that more can be listed. "
+        )
+    )
     if not events:
         parks_cite = ctx.citations.register(
             PARKS_SOURCE_URL,
@@ -1384,14 +1109,22 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             f"{{cite:{permitted_cite}}}."
         )
     if not events:
-        return "\n\n".join(
-            part for part in (setting_note + no_results, web_limitation) if part
-        )
-
-    blocks = []
+        return setting_note + no_results
+    blocks: list[tuple[str, str]] = []
     for ev in events:
-        if ev.citation_id and not ev.structured_source:
-            blocks.append(_event_block(ev, ev.citation_id, now))
+        if ev.source == "Web discovery" and not ev.structured_source:
+            source_record = ev.provider_record if isinstance(ev.provider_record, dict) else {}
+            cite = ctx.citations.register(
+                ev.url,
+                snippet=ev.evidence_excerpt,
+                title=ev.name,
+                kind="WEB",
+                provenance=source_record.get("provenance") or {
+                    "evidence_grade": "discovery",
+                    "source_tier": ev.tier,
+                },
+            )
+            blocks.append((cite, _event_block(ev, cite, now)))
             continue
         weekday = date.fromisoformat(ev.start_date).strftime("%A")
         # The snapshot carries the FULL row the model will describe, time and source included,
@@ -1447,7 +1180,7 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
                 "point": [ev.lat, ev.lon],
                 "distance_mi": ev.distance_miles,
             }
-        if ev.structured_source:
+        if ev.structured_source and ev.citation_id:
             derivation["source_citation_id"] = ev.citation_id
         provenance = data_provenance(
             ev.provider_record,
@@ -1468,17 +1201,36 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
             title=ev.name or "NYC event", kind="DATA",
             provenance=provenance,
         )
-        blocks.append(_event_block(ev, cite, now))
+        ev.citation_id = cite
+        blocks.append((cite, _event_block(ev, cite, now)))
+
+    available = ctx.evidence_token_budget
+    packed_blocks = []
+    for citation_id, block in blocks:
+        needed = _text_tokens(block, ctx.evidence_model)
+        if available is not None and needed > available:
+            continue
+        packed_blocks.append(block)
+        if available is not None:
+            available -= needed
+    if ctx.evidence_token_budget is not None:
+        ctx.evidence_tokens_used += ctx.evidence_token_budget - available
+        ctx.evidence_token_budget = available
+    packing_note = (
+        f"{len(blocks) - len(packed_blocks)} additional ranked event records did not fit in the "
+        "current model context; offer a narrower follow-up to inspect them.\n"
+        if len(packed_blocks) < len(blocks)
+        else ""
+    )
 
     window = f" for {window_start} through {window_end}" if window_end else ""
     free_scope = " whose official source evidence says free" if query.cost == "free" else ""
     header = (
-        f"{setting_note}{location_note}{coverage_note}"
-        f"NYC event candidates{window}{free_scope} from live catalog and web sources. "
-        "A web lead with unknown fields stays explicitly incomplete until its source establishes "
-        "them:\n"
+        f"{setting_note}{location_note}{coverage_note}{packing_note}"
+        f"NYC event candidates and grounding evidence{window}{free_scope} from live structured "
+        "catalogs:\n"
     )
-    catalog = header + "\n".join(blocks) if blocks else no_results
+    catalog = header + "\n".join(packed_blocks) if packed_blocks else no_results
     followup = (
         "\nThis is a shortlist, not every matching event. Offer to narrow or list more."
         if not resident_requested_count
@@ -1494,21 +1246,169 @@ async def _handler(args: dict, ctx: ToolContext) -> str:
         )
     )
     return (
-        "These candidates already passed one shared bounded shortlist. Choose by exact date and "
-        "topic match first, then apply NYC location and this "
-        f"temporal rule: {temporal_instruction}, before relevance and variety. "
-        "Source tier describes evidence confidence, not how "
-        "interesting an event is. A normalized web record already includes its deterministic "
-        "status and per-event citation. Before making a time-status claim from any web-sourced "
-        "event, call evaluate_event_time with its exact name, date, and available times and "
-        "cite its derived result. Omit unavailable values so the result stays unknown instead of "
-        "guessing. Resolve a general calendar URL to the direct event page with "
-        "one focused web search. Preserve a useful link as an unconfirmed lead when its excerpt "
-        "does not establish every hard constraint. An exact-date editorial listing excerpt "
-        "remains usable evidence for only the event names, dates, venues, and times it explicitly "
-        f"states when its page cannot be fetched. {diversity_instruction}:\n"
-        + "\n\n".join(part for part in (catalog, web_limitation) if part)
+        f"These candidates form one shared ranked candidate set. Use it in order and "
+        f"{temporal_instruction}. Choose by exact date and topic match first. "
+        f"{count_instruction}"
+        "An exact-date editorial listing excerpt supports only the fields it states. "
+        "Normalized candidates already include server-computed temporal status. For an "
+        "unstructured web lead, state only the source-backed date and time rather than inferring "
+        "a current status. "
+        "Keep an incomplete lead only with its specific limitation. "
+        f"{diversity_instruction}:\n"
+        + catalog
         + followup
+    )
+
+
+def _event_start_at(event: Event) -> datetime | None:
+    start_date = _iso_date(event.start_date)
+    if not start_date:
+        return None
+    start_time = _parse_start_time(event.start_time)
+    return nyc_datetime(date.fromisoformat(start_date), start_time or time.min)
+
+
+def _event_fields_supported(event: Event, citation: dict) -> bool:
+    evidence = citation_evidence(citation) or ""
+    excerpt = " ".join(event.evidence_excerpt.split())
+    normalized = " ".join(evidence.casefold().split())
+    if not excerpt or excerpt.casefold() not in normalized:
+        return False
+    normalized = excerpt.casefold()
+    for value in (
+        event.name,
+        event.venue,
+        event.borough,
+        event.free_evidence,
+        event.audience,
+        event.accessibility_info,
+        event.registration_info,
+    ):
+        if value and " ".join(value.casefold().split()) not in normalized:
+            return False
+    claim = "; ".join(filter(None, (
+        event.name,
+        event.start_date,
+        event.start_time,
+        event.end_date,
+        event.end_time,
+        event.venue,
+        event.free_evidence,
+    ))) + f" {{cite:{event.citation_id}}}"
+    scoped_citation = {
+        **citation,
+        "snippet": excerpt,
+        "title": "",
+        "provenance": {},
+    }
+    result = check_grounding(claim, {event.citation_id: scoped_citation})
+    return result is None or result.passed
+
+
+async def _extract_events_handler(args: ExtractEventsInput, ctx: ToolContext) -> str:
+    request = ExtractEventsInput.model_validate(args)
+    citations = ctx.citations.mapping()
+    events: list[Event] = []
+    limitations: list[str] = []
+
+    for citation_id in ctx.citations.touched_ids():
+        citation = citations.get(citation_id) or {}
+        for value in (citation.get("provenance") or {}).get("structured_data") or ():
+            events.extend(
+                event
+                for node in _schema_nodes(value)
+                if (event := _schema_event(node, citation_id, citation)) is not None
+            )
+
+    for event in request.events:
+        citation = citations.get(event.citation_id)
+        if citation is None:
+            limitations.append(f"{event.name}: source citation was not available")
+            continue
+        source_url = str(citation.get("url") or "")
+        if not _event_fields_supported(event, citation):
+            limitations.append(
+                f"{event.name}: extracted fields could not be supported by the cited page, "
+                f"check {source_url}"
+            )
+            continue
+        ctx.citations.touch(event.citation_id)
+        event.url = source_url
+        event.source = "Web discovery"
+        event.tier = str((citation.get("provenance") or {}).get("source_tier") or "unverified")
+        event.provider_id = event.url
+        event.provider_record = citation
+        event.structured_source = False
+        events.append(event)
+
+    after = request.starts_after.astimezone(NYC_TZ) if request.starts_after else None
+    before = request.starts_before.astimezone(NYC_TZ) if request.starts_before else None
+    selected: list[Event] = []
+    for event in _dedupe_order(events, None):
+        if _nyc_locality_borough(event.borough) is None:
+            limitations.append(
+                f"{event.name}: source did not establish an NYC location, check {event.url}"
+            )
+            continue
+        start = _event_start_at(event)
+        if start is None:
+            limitations.append(f"{event.name}: source did not establish a valid start date")
+            continue
+        if not event.start_time and any(
+            bound is not None and bound.timetz().replace(tzinfo=None) != time.min
+            for bound in (after, before)
+        ):
+            limitations.append(f"{event.name}: source did not establish a start time")
+            continue
+        if after is not None and start < after:
+            continue
+        if before is not None and start >= before:
+            continue
+        if request.active_at is not None and _event_temporal_status(
+            event, request.active_at.astimezone(NYC_TZ),
+        ) != "in_progress":
+            continue
+        if request.audience == "kids" and "kids" not in event.audience.casefold():
+            continue
+        if request.cost == "free" and not event.free_evidence:
+            continue
+        selected.append(event)
+
+    selected = _dedupe_order(selected, request.max_results)
+    now = datetime.now(NYC_TZ)
+    confirmed_blocks = [
+        _event_block(event, event.citation_id, now)
+        for event in selected
+        if event.citation_id and event.structured_source
+    ]
+    lead_blocks = [
+        _event_block(event, event.citation_id, now)
+        for event in selected
+        if event.citation_id and not event.structured_source
+    ]
+    if not confirmed_blocks:
+        result = "No source-backed events matched the requested hard constraints."
+    else:
+        result = "Source-backed events after deterministic date and time checks:\n" + "\n".join(
+            confirmed_blocks
+        )
+    if lead_blocks:
+        result += (
+            "\nSource-reported leads whose extracted fields still need confirmation:\n"
+            + "\n".join(lead_blocks)
+        )
+    if limitations:
+        result += "\nIncomplete leads:\n- " + "\n- ".join(limitations)
+    return result
+
+
+def extract_events_tool() -> Tool:
+    return Tool(
+        name="extract_events",
+        description="Validate and time-filter events extracted from fetched sources",
+        input_type=ExtractEventsInput,
+        handler=_extract_events_handler,
+        title="Extract events",
     )
 
 
@@ -1517,26 +1417,14 @@ def get_tools() -> list[Tool]:
         Tool(
             name="find_nyc_events",
             description=(
-                "Find structured NYC event listings by date, borough, audience, topic, or category. "
-                "It combines live Ticketmaster, NYC Parks, and NYC Permitted Events into grounded, "
-                "dated, linked listings. For event discovery requests, it also "
-                "searches the current web in parallel so the model does not need to coordinate a "
-                "second required call. Use it when the "
-                "resident wants event choices or wants to filter earlier choices. Do not use it for "
-                "general facts merely because they concern sports, music, or entertainment. "
-                "For a specific event topic, web_search remains available for fresh context, "
-                "named-event details, and gaps the structured listings do not cover. Pass `keyword` "
-                "for a specific event topic, plus "
-                "optional `classification`, `borough`, source-backed `audience`, and date window. "
-                "For a constrained request, pass `web_query` as a short noun phrase that preserves "
-                "every requested constraint so the coordinator runs one matching web lane."
-                " Pass the inferred ISO date and optional local time window. Use `has_started` "
-                "and `has_ended` only for a requested interval relation; the server computes "
-                "those values against the New York clock."
+                "Structured NYC event catalogs. Pass absolute New York times and stated topic, "
+                "place, audience, setting, cost, or explicit count. Use `active_at` only when the "
+                "event must be underway then."
             ),
-            parameters=EventQuery.model_json_schema(),
+            input_type=EventQuery,
             handler=_handler,
             open_world=True,  # hits live Ticketmaster + Socrata
             title="Find NYC events",
         ),
+        extract_events_tool(),
     ]
